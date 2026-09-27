@@ -477,6 +477,7 @@ class WebTerminal {
      * 处理电压保护事件
      */
     handlePowerEvent(msg) {
+        if (this.destroyed || !this.terminal) return;
         const state = msg.state || 'UNKNOWN';
         const voltage = msg.voltage ? msg.voltage.toFixed(2) : '?.??';
         const countdown = msg.countdown || 0;
@@ -535,6 +536,19 @@ class WebTerminal {
         }
         
         if (notification) {
+            const canRestoreLocalInput =
+                !this.destroyed &&
+                this.connected &&
+                this.ws &&
+                this.ws.readyState === WebSocket.OPEN &&
+                !this.sshMode &&
+                !this.sshConnecting &&
+                !this.sshDisconnecting &&
+                !this.restoring;
+            if (!canRestoreLocalInput) {
+                this.writeln(`\r\n${color}${notification}\x1b[0m`);
+                return;
+            }
             // 保存当前输入状态
             const savedBuffer = this.inputBuffer;
             const savedPosition = this.cursorPosition;

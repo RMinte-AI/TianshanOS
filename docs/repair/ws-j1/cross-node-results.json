@@ -1,0 +1,18 @@
+[
+  {
+    "language": "zh-CN",
+    "command": [
+      "node",
+      "tests/prompts/project-cross.cjs"
+    ],
+    "exit": 0
+  },
+  {
+    "language": "en-US",
+    "command": [
+      "node",
+      "tests/prompts/project-cross.cjs"
+    ],
+    "exit": 0
+  }
+]

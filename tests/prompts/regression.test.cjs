@@ -169,3 +169,40 @@ for(const lang of ['zh-CN','en-US']) {
   }
  });
 }
+
+for (const lang of ['zh-CN','en-US']) {
+ test(`${lang}: J1 power alerts preserve local line, SSH ownership, transition guards and filtering`,async()=>{
+  const h=await setup(lang),{run,ctx}=h;
+  run(`window.j1=new WebTerminal('fixture');window.j1Writes=[];window.j1Sent=[];window.j1Input=null;
+   j1.terminal={write:s=>j1Writes.push(s),writeln:s=>j1Writes.push(s),onData:f=>j1Input=f};
+   j1.ws={readyState:WebSocket.OPEN,send:s=>j1Sent.push(JSON.parse(s))};j1.connected=true;
+   j1.inputBuffer='abcd';j1.cursorPosition=2;j1.setupInputHandler();`);
+  const alert={type:'power_event',event:'low_voltage',voltage:10.5};
+  const snapshot=()=>run(`JSON.stringify([j1.connected,j1.sshMode,j1.sshConnecting,j1.sshDisconnecting,j1.restoring,j1.inputBuffer,j1.cursorPosition])`);
+  const deliver=msg=>ctx.j1.handleMessage(msg||alert);
+  const original=snapshot();deliver();deliver();assert.equal(snapshot(),original);assert.equal(ctx.j1Sent.length,0);
+  const local=[...ctx.j1Writes];assert.equal(local.length,8);
+  for(const offset of [0,4]){assert.equal(local[offset],'\r\x1b[K');assert(local[offset+1].includes(ctx.t('terminal.lowVoltageWarning',{voltage:'10.50'})));assert.equal(local[offset+2],'tianshan> abcd');assert.equal(local[offset+3],'\x1b[2D');}
+  const cases=[{sshMode:true},{sshConnecting:true},{sshMode:true,sshDisconnecting:true},{restoring:true,connected:false},{restoring:true},{connected:false},{socket:3},{socket:null}];
+  for(const changes of cases){
+   run(`Object.assign(j1,{connected:true,sshMode:false,sshConnecting:false,sshDisconnecting:false,restoring:false});j1.ws={readyState:1,send:s=>j1Sent.push(JSON.parse(s))};j1Writes.length=0;`);
+   for(const [key,value]of Object.entries(changes)){if(key==='socket'){if(value===null)ctx.j1.ws=null;else ctx.j1.ws.readyState=value;}else ctx.j1[key]=value;}
+   const before=snapshot();deliver();deliver();assert.equal(snapshot(),before);assert.equal(ctx.j1Sent.length,0);
+   assert.equal(ctx.j1Writes.length,2);for(const line of ctx.j1Writes){assert(line.startsWith('\r\n'));assert(!line.includes('tianshan>'));assert(!line.includes('abcd'));assert(!line.includes('\x1b[K'));assert(!line.includes('\x1b[2D'));}
+   if(changes.sshConnecting||changes.sshDisconnecting||changes.connected===false){run('j1Input('+JSON.stringify('x\r')+')');assert.equal(ctx.j1Sent.length,0);}
+  }
+  run(`Object.assign(j1,{connected:true,sshMode:true,sshConnecting:false,sshDisconnecting:false,restoring:false});j1.ws={readyState:1,send:s=>j1Sent.push(JSON.parse(s))};j1Writes.length=0;`);
+  deliver();run(`j1Input('z')`);assert.equal(ctx.j1Sent[0].type,'ssh_input');assert.equal(ctx.j1Sent[0].data,'z');
+  run(`j1Input('\x1c')`);assert.equal(ctx.j1Sent[1].type,'ssh_disconnect');assert(ctx.j1.sshMode);assert(!ctx.j1Writes.join('').includes('tianshan>'));
+  deliver({type:'ssh_status',status:'disconnecting'});deliver();assert(ctx.j1.sshMode);assert(!ctx.j1Writes.join('').includes('tianshan>'));
+  deliver({type:'ssh_status',status:'closed'});assert(!ctx.j1.sshMode);assert.equal(ctx.j1Writes.filter(x=>x==='tianshan> ').length,1);
+  ctx.j1Writes.length=0;deliver();assert.equal(ctx.j1Writes[2],'tianshan> abcd');assert.equal(ctx.j1Writes[3],'\x1b[2D');assert.equal(ctx.j1Sent.length,2);
+  ctx.j1Writes.length=0;deliver({type:'power_event',event:'countdown_tick',countdown:31});assert.equal(ctx.j1Writes.length,0);
+  for(const event of ['low_voltage','shutdown_start','protected','recovery_start','recovery_complete','debug_tick','state_changed','countdown_tick']){
+   ctx.j1Writes.length=0;deliver({type:'power_event',event,countdown:30,voltage:10.5,state:'NORMAL'});assert.equal(ctx.j1Writes.length,4,event);
+  }
+  ctx.j1.destroyed=true;ctx.j1.terminal=new Proxy({}, {get(){throw Error('destroyed terminal accessed');}});
+  assert.doesNotThrow(()=>ctx.j1.handlePowerEvent(alert));assert.doesNotThrow(()=>deliver());
+  ctx.j1.destroyed=false;ctx.j1.terminal=null;assert.doesNotThrow(()=>ctx.j1.handlePowerEvent(alert));assert.equal(ctx.j1Sent.length,2);
+ });
+}

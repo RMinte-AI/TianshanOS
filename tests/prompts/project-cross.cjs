@@ -48,6 +48,22 @@ async function main(){
  if(baseline){assert(!recovered && next.type!=='ssh_input');await step({cmd:'finish'});await done;assert.equal(exit,0,err);console.log('CONFIRMED H1: actual C request error leaves op OPEN but JS exits SSH and next input is not routed to SSH');return;}
  assert(recovered,'request failure changed active SSH mode/prompt/recovery');assert.equal(next.type,'ssh_input');
  let cs=await step({message:next});assert.equal(cs.writes,afterSignal.writes+1,'next frontend input must execute on original C Shell');
+ // J1: real C protection notification must not fabricate local SSH input.
+ const j1Before=await state(),j1Frames=records.length,j1Identity=cs.identity,j1Writes=cs.writes;
+ await e.run(`term.inputBuffer='local-buffer';term.cursorPosition=3;`);
+ const j1Fields=()=>e.run(`JSON.stringify([term.connected,term.sshMode,term.sshConnecting,term.sshDisconnecting,term.restoring,term.inputBuffer,term.cursorPosition])`);
+ const j1Snapshot=await j1Fields();cs=await step({cmd:'power'});
+ const j1After=await state(),j1Display=j1After.lines.slice(j1Before.lines.length);
+ assert(records.slice(j1Frames).some(r=>r.fd===1&&r.frame?.type==='power_event'),'actual C power frame absent');
+ assert.equal(j1Display.length,1);assert(j1Display[0].startsWith('\r\n'));
+ assert(!j1Display.join('').includes('tianshan>')&&!j1Display.join('').includes('local-buffer')&&!j1Display.join('').includes('\x1b[K'));
+ assert.equal(await j1Fields(),j1Snapshot);assert.deepEqual(j1After.sent,j1Before.sent);
+ await e.run(`input('j')`);const j1Request=await e.run('sent.shift()');assert.equal(j1Request.type,'ssh_input');
+ cs=await step({message:j1Request});assert.equal(cs.identity,j1Identity);assert.equal(cs.writes,j1Writes+1);
+ await e.run(`input('\\x1c')`);await sendNext();assert(!(await state()).mode);assert.equal((await step({cmd:'drain'})).channels,0);
+ assert((await state()).lines.slice(j1Before.lines.length).includes('tianshan> '));
+ await e.run(`term.inputBuffer='';term.cursorPosition=0;`);cs=await start();assert((await state()).mode);
+ console.log('PASS J1 C power event -> actual JS -> original SSH input -> normal exit and channel cleanup');
  for(const message of [{type:'ssh_resize',width:0,height:20},{type:'ssh_resize',width:80.5,height:20}]){await step({message});assert((await state()).mode);}
  await step({cmd:'resize_reject'});await step({message:{type:'ssh_resize',width:80,height:24}});assert((await state()).mode);await step({cmd:'reset_driver'});
  // Another page cannot input, disconnect, signal or resize the current owner.

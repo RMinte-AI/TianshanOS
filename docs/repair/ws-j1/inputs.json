@@ -1,0 +1,31 @@
+{
+  "head": "8ad39a9b1ca39d225f94fb4db602fb2ee7438d09",
+  "branch": "fix/v0.5.2-reliability-and-prompts",
+  "sha256": {
+    "components/ts_webui/web/index.html": {
+      "before": "cb1baa1bfbd2fac00a5fc55caa5442da07ab83b99996af52a41fc5c7e6e98092",
+      "after": "ad6e0ed5e11c34b8797877be912ea2e42a5dc632b6cdae1b915222ea6ea6315b"
+    },
+    "components/ts_webui/web/js/terminal.js": {
+      "before": "6d93870c3b33b1888388f3a288cfca581a3034a2a212e1e4130853d1aceda581",
+      "after": "8bfa9622f6fafb8cf1c88ab1081b47fa32df0fdd1814acdf67bd7708326ec0a1"
+    },
+    "tests/prompts/project-cross.cjs": {
+      "before": "7928610e031f5e0b6ad001f14f0dd5ac39f534dfea253108747f433ae5e92a76",
+      "after": "882a05fea9b75a9d3b959e4e7c1e44db8b89289faaa5837ab9e1779959e6a70c"
+    },
+    "tests/prompts/regression.test.cjs": {
+      "before": "c372b74e125b361103defe66017c3eeb286fea9975cf4f3167ed5cf981050516",
+      "after": "40ced30bd90f4e7c8529ef0ccb3c89af573796a4feff7a0531095c0cf60ff82c"
+    },
+    "tests/ws_subscriptions/test_project.c": {
+      "before": "c8026c5105688edfe0e06e502bddcd7e44fcafb2def960bec53d773b6135e675",
+      "after": "071fd81304d303ecb4c3679952ba9da648c088447aa47cf6bde120830f890d46"
+    },
+    "tests/ws_subscriptions/verify_project_assets.py": {
+      "before": "0ed7406a6927115f4574187158e53bd085d6cf3afc2962254c62133c839c9c43",
+      "after": "555cded164a2d1f8d096b1071e06c63928c121bb05be6d44fe8da7522d0b2e6b"
+    }
+  },
+  "scope": "terminal.js outside handlePowerEvent unchanged; index only cache key; no production backend changes"
+}
