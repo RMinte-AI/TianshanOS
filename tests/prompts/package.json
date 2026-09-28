@@ -6,7 +6,8 @@
   },
   "scripts": {
     "test": "cd ../.. && node --test tests/prompts/static.test.cjs tests/prompts/regression.test.cjs",
-    "test:browser": "cd ../.. && node --test tests/prompts/browser.test.cjs tests/prompts/ownership.browser.test.cjs"
+    "test:browser": "cd ../.. && node --test tests/prompts/browser.test.cjs tests/prompts/ownership.browser.test.cjs",
+    "test:xterm": "cd ../.. && node --test tests/prompts/xterm-vendor.test.cjs tests/prompts/xterm-offline.test.cjs"
   },
   "devDependencies": {
     "acorn": "8.16.0",

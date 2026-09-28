@@ -4,7 +4,7 @@
  */
 
 /**
- * 按需加载 xterm.js 及其插件（从 CDN）
+ * 按需加载 xterm.js 及其插件（设备本地资源）
  * 仅在首次打开终端页面时触发，后续调用直接返回
  */
 const _xtermReady = (function() {
@@ -30,9 +30,9 @@ const _xtermReady = (function() {
     }
     return function ensureXtermLoaded() {
         if (_promise) return _promise;
-        _promise = loadResource('https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css', true)
-            .then(() => loadResource('https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js', false))
-            .then(() => loadResource('https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js', false))
+        _promise = loadResource('/vendor/xterm/xterm.css?v=' + encodeURIComponent(window.TS_ASSET_VERSION), true)
+            .then(() => loadResource('/vendor/xterm/xterm.min.js?v=' + encodeURIComponent(window.TS_ASSET_VERSION), false))
+            .then(() => loadResource('/vendor/xterm/fit.min.js?v=' + encodeURIComponent(window.TS_ASSET_VERSION), false))
             .catch(error => { _promise = null; throw error; });
         return _promise;
     };
@@ -70,7 +70,7 @@ class WebTerminal {
             return false;
         }
 
-        // 按需加载 xterm.js（首次访问终端页面时从 CDN 拉取）
+        // 按需加载 xterm.js（首次访问终端页面时从设备加载）
         try { await _xtermReady(); }
         catch (error) {
             if (this.destroyed) return false;

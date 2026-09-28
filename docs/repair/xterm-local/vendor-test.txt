@@ -1,0 +1,10 @@
+✔ fixed vendor integrity, skip minify, gzip identity, local loader only (40.058417ms)
+✔ production lazy loader: same-origin cold load, shared promise and retry (1.65575ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 85.629625

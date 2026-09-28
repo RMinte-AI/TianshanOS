@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/Users/massif/esp/v5.5.2/esp-idf/components/spiffs/spiffsgen.py", line 590, in <module>
+    main()
+    ~~~~^^
+  File "/Users/massif/esp/v5.5.2/esp-idf/components/spiffs/spiffsgen.py", line 582, in main
+    spiffs.create_file('/' + os.path.relpath(full_path, args.base_dir).replace('\\', '/'), full_path)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/massif/esp/v5.5.2/esp-idf/components/spiffs/spiffsgen.py", line 407, in create_file
+    raise RuntimeError("object name '%s' too long" % img_path)
+RuntimeError: object name '/vendor/xterm/LICENSE-xterm-addon-fit' too long

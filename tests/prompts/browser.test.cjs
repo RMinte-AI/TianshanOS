@@ -71,7 +71,7 @@ test('delayed language package and rapid switches keep the latest requested lang
  }finally{release();await context.close();}
 });
 test('terminal resource failure presents retry; a rejected cached promise is not reused',async()=>{
- const {page,context,errors}=await pageFor('en-US');let attempts=0;
+ const {page,context,errors}=await pageFor('en-US',async(route,u)=>{if(u.pathname.startsWith('/vendor/')){await route.abort();return true;}return false;});let attempts=0;
  try{await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
   page.on('request',r=>{if(r.url().includes('xterm.css'))attempts++;});
   await page.evaluate(()=>{closeLoginModal();return loadTerminalPage();});
@@ -118,15 +118,12 @@ test('failed language switch preserves the loaded language; retry clears failure
  }finally{await context.close();}
 });
 test('terminal can initialize after failed resource load using newly served resources',async()=>{
- const {page,context,errors}=await pageFor('en-US');
+ let fail=true;
+ const {page,context,errors}=await pageFor('en-US',async(route,u)=>{if(fail&&u.pathname.startsWith('/vendor/')){await route.abort();return true;}return false;});
  try{await page.goto(base);await page.waitForFunction(()=>i18n.isReady());await page.evaluate(()=>{closeLoginModal();return loadTerminalPage();});
-  await page.route('https://cdn.jsdelivr.net/**',async route=>{
-   const url=route.request().url();let body='';
-   if(url.includes('xterm.min.js')) body=`window.Terminal=class {constructor(){this.cols=80;this.rows=24;}open(el){el.replaceChildren();el.dataset.terminalReady='yes';}onData(){}loadAddon(){}write(){}writeln(){}focus(){}dispose(){}};`;
-   if(url.includes('xterm-addon-fit'))body='window.FitAddon={FitAddon:class {fit(){}}};';
-   await route.fulfill({contentType:url.endsWith('.css')?'text/css':'application/javascript',body});
-  });
-  await page.locator('#terminal-container button').click();await page.waitForSelector('#terminal-container[data-terminal-ready="yes"]');
+  assert.equal(await page.locator('#terminal-container button').count(),1);
+  fail=false;await page.locator('#terminal-container button').click();await page.waitForSelector('#terminal-container .xterm');
+  assert(await page.evaluate(()=>webTerminal.terminal instanceof Terminal&&!!webTerminal.fitAddon));
   assert.equal(await page.locator('#terminal-container button').count(),0);assert.deepEqual(errors,[]);
  }finally{await context.close();}
 });

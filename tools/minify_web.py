@@ -123,6 +123,9 @@ def process_directory(web_dir: str) -> None:
     
     # 处理 JS 文件
     for filepath in glob.glob(os.path.join(web_dir, '**', '*.js'), recursive=True):
+        # Preserve third-party release bytes; gzip still runs below.
+        if os.path.relpath(filepath, web_dir).split(os.sep)[0] == 'vendor':
+            continue
         original_size = os.path.getsize(filepath)
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -141,6 +144,9 @@ def process_directory(web_dir: str) -> None:
     
     # 处理 CSS 文件
     for filepath in glob.glob(os.path.join(web_dir, '**', '*.css'), recursive=True):
+        # Preserve third-party release bytes; gzip still runs below.
+        if os.path.relpath(filepath, web_dir).split(os.sep)[0] == 'vendor':
+            continue
         original_size = os.path.getsize(filepath)
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
