@@ -1,0 +1,2 @@
+Assertion failed: (!strcmp(n,"ssh_poll") && stack==8192 && caps==MALLOC_CAP_SPIRAM), function adapter_create_caps, file test_operation_adapter.c, line 138.
+tests/ws_subscriptions/run_operation_adapter.sh: line 11: 36726 Abort trap: 6           "$build/adapter"

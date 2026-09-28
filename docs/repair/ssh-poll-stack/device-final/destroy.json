@@ -1,0 +1,2489 @@
+{
+  "state": {
+    "url": "http://10.10.99.97/#/",
+    "login": false,
+    "Terminal": "function",
+    "FitAddon": "object",
+    "terminal": false
+  },
+  "requests": [
+    {
+      "url": "http://10.10.99.97/",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/css/style.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/fonts/remixicon.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-48.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/api.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/router.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/terminal.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/dragSort.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/app.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/lang/zh-CN.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/fonts/remixicon.woff2",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/config/get?key=system.language",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ota/version",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/auth/login",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/xterm.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/xterm.min.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/fit.min.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/time/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/memory",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/network/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/protection/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/fan/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/service/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/led/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/usb/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ui/widgets/get",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/time/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/memory",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/network/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/protection/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/fan/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/service/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/led/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/usb/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ui/widgets/get",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ssh/hosts/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ssh/commands/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3.6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3.6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3-Embedding-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3-Embedding-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3-Reranker-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3-Reranker-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=drop",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=drop",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Embedding-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Reranker-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Embedding-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Reranker-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    }
+  ],
+  "errors": [],
+  "frames": [
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "events": [
+        "*"
+      ]
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_stop"
+    },
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "topic": "system.dashboard",
+      "params": {
+        "interval": 1000
+      }
+    },
+    {
+      "direction": "received",
+      "type": "subscribed",
+      "topic": "system.dashboard",
+      "success": true
+    },
+    {
+      "direction": "sent",
+      "type": "unsubscribe",
+      "topic": "system.dashboard"
+    },
+    {
+      "direction": "received",
+      "type": "unsubscribed",
+      "topic": "system.dashboard",
+      "success": true
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_input",
+      "data": "voltprot --status"
+    },
+    {
+      "direction": "received",
+      "type": "done",
+      "code": 0
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "events": [
+        "*"
+      ]
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_input",
+      "data": "voltprot --debug"
+    },
+    {
+      "direction": "received",
+      "type": "done",
+      "code": 0
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_connect",
+      "host": "10.10.99.98",
+      "port": 22,
+      "user": "rm01"
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "connecting",
+      "message": "Connecting to SSH server..."
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "connected",
+      "message": "SSH shell ready"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.428800582885742,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.428800582885742,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.30340003967285,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.30340003967285,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.28059959411621,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.28059959411621,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "e"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "c"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "h"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "o"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": " "
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "T"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "I"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "N"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "S"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "H"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "N"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "_"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "J"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "1"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "_"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "R"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "E"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "L"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "_"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "P"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "S"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "S"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "\r"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.46299934387207,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.46299934387207,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.23499870300293,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.23499870300293,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.37179946899414,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.37179946899414,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.337600708007812,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.337600708007812,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.29199981689453,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.29199981689453,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_disconnect"
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "disconnecting",
+      "message": "Closing SSH session..."
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "closed",
+      "message": "SSH session closed"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "events": [
+        "*"
+      ]
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_input",
+      "data": "echo TIANSHAN_LOCAL_AFTER_J1"
+    },
+    {
+      "direction": "received",
+      "type": "done",
+      "code": 0
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_stop"
+    },
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "topic": "system.dashboard",
+      "params": {
+        "interval": 1000
+      }
+    },
+    {
+      "direction": "received",
+      "type": "subscribed",
+      "topic": "system.dashboard",
+      "success": true
+    },
+    {
+      "direction": "received",
+      "type": "data",
+      "topic": "system.dashboard",
+      "timestamp": 585,
+      "data": {
+        "cpu": {
+          "cores": [
+            {
+              "id": 0,
+              "usage": 27
+            },
+            {
+              "id": 1,
+              "usage": 13
+            }
+          ],
+          "total_usage": 20,
+          "total_runtime": 585609736,
+          "task_count": 24
+        },
+        "memory": {
+          "free_heap": 7636428,
+          "min_free_heap": 7485660,
+          "internal": {
+            "total": 308043,
+            "free": 72755,
+            "allocated": 235288,
+            "largest_block": 31744
+          },
+          "psram": {
+            "total": 8370180,
+            "free": 7579208,
+            "allocated": 790972,
+            "largest_block": 7471104
+          }
+        },
+        "info": {
+          "app": {
+            "name": "TianShanOS",
+            "version": "0.5.2+3a19128d.09281801",
+            "idf_version": "v5.5.2",
+            "compile_time": "18:01:50",
+            "compile_date": "Sep 28 2026"
+          },
+          "chip": {
+            "model": "ESP32-S3",
+            "cores": 2,
+            "revision": 2,
+            "features": [
+              "WiFi",
+              "BLE"
+            ]
+          },
+          "flash_size": 16777216,
+          "uptime_ms": 585611
+        },
+        "network": {
+          "hostname": "TianshanOS",
+          "ethernet": {
+            "status": "connected",
+            "link_up": true,
+            "ip": "10.10.99.97",
+            "netmask": "255.255.255.0",
+            "gateway": "10.10.99.100",
+            "dns1": "8.8.8.8",
+            "mac": "20:6e:f1:a1:d5:8f"
+          },
+          "wifi_sta": {
+            "status": "down",
+            "connected": false
+          },
+          "wifi_ap": {
+            "status": "down",
+            "sta_count": 0
+          }
+        },
+        "power": {
+          "voltage": {
+            "supply_v": 20.337600708007812,
+            "adc_raw": 2105,
+            "timestamp_ms": 586165
+          },
+          "power_chip": {
+            "valid": false,
+            "voltage_v": 20,
+            "current_a": 4.5,
+            "power_w": 90,
+            "crc_valid": false
+          },
+          "protection": {
+            "running": true,
+            "state": "正常运行",
+            "countdown_sec": 0,
+            "current_voltage_v": 20.337600708007812
+          },
+          "stats": {
+            "samples": 114,
+            "avg_voltage_v": 20.465604782104492,
+            "avg_current_a": 0,
+            "avg_power_w": 0,
+            "uptime_ms": 584526
+          },
+          "monitoring_active": true
+        },
+        "fan": {
+          "fans": [
+            {
+              "id": 0,
+              "mode": "auto",
+              "duty": 21,
+              "target_duty": 21,
+              "rpm": 0,
+              "temperature": 52.8,
+              "enabled": true,
+              "running": true,
+              "fault": false,
+              "control_temperature": 52.8,
+              "guard_temperature": 52.8,
+              "predicted_temperature": 52.5,
+              "slope_c_per_min": -0.4000000059604645,
+              "controller_gain": 0.75,
+              "cooling_response": 0,
+              "auto_state": "active",
+              "guard_active": false,
+              "temp_stale": false
+            }
+          ],
+          "temperature": 52.79999923706055,
+          "temp_valid": true,
+          "temp_source": "agx-info.temperature.tj"
+        },
+        "services": {
+          "total": 12,
+          "running": 12,
+          "services": [
+            {
+              "name": "automation",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 2397,
+              "start_duration_ms": 1726
+            },
+            {
+              "name": "console",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 4864,
+              "start_duration_ms": 521
+            },
+            {
+              "name": "webui",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 5398,
+              "start_duration_ms": 438
+            },
+            {
+              "name": "https",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4133,
+              "start_duration_ms": 17
+            },
+            {
+              "name": "api",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4293,
+              "start_duration_ms": 372
+            },
+            {
+              "name": "security",
+              "state": "RUNNING",
+              "phase": "SECURITY",
+              "healthy": true,
+              "start_time_ms": 2109,
+              "start_duration_ms": 267
+            },
+            {
+              "name": "network",
+              "state": "RUNNING",
+              "phase": "NETWORK",
+              "healthy": true,
+              "start_time_ms": 1867,
+              "start_duration_ms": 223
+            },
+            {
+              "name": "power",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1005,
+              "start_duration_ms": 123
+            },
+            {
+              "name": "drivers",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1137,
+              "start_duration_ms": 169
+            },
+            {
+              "name": "led",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1314,
+              "start_duration_ms": 178
+            },
+            {
+              "name": "storage",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1508,
+              "start_duration_ms": 263
+            },
+            {
+              "name": "hal",
+              "state": "RUNNING",
+              "phase": "HAL",
+              "healthy": true,
+              "start_time_ms": 898,
+              "start_duration_ms": 89
+            }
+          ]
+        }
+      }
+    },
+    {
+      "direction": "received",
+      "type": "data",
+      "topic": "system.dashboard",
+      "timestamp": 586,
+      "data": {
+        "cpu": {
+          "cores": [
+            {
+              "id": 0,
+              "usage": 25
+            },
+            {
+              "id": 1,
+              "usage": 3
+            }
+          ],
+          "total_usage": 14,
+          "total_runtime": 586643040,
+          "task_count": 24
+        },
+        "memory": {
+          "free_heap": 7632408,
+          "min_free_heap": 7485660,
+          "internal": {
+            "total": 308043,
+            "free": 72755,
+            "allocated": 235288,
+            "largest_block": 31744
+          },
+          "psram": {
+            "total": 8369732,
+            "free": 7574100,
+            "allocated": 795632,
+            "largest_block": 7471104
+          }
+        },
+        "info": {
+          "app": {
+            "name": "TianShanOS",
+            "version": "0.5.2+3a19128d.09281801",
+            "idf_version": "v5.5.2",
+            "compile_time": "18:01:50",
+            "compile_date": "Sep 28 2026"
+          },
+          "chip": {
+            "model": "ESP32-S3",
+            "cores": 2,
+            "revision": 2,
+            "features": [
+              "WiFi",
+              "BLE"
+            ]
+          },
+          "flash_size": 16777216,
+          "uptime_ms": 586645
+        },
+        "network": {
+          "hostname": "TianshanOS",
+          "ethernet": {
+            "status": "connected",
+            "link_up": true,
+            "ip": "10.10.99.97",
+            "netmask": "255.255.255.0",
+            "gateway": "10.10.99.100",
+            "dns1": "8.8.8.8",
+            "mac": "20:6e:f1:a1:d5:8f"
+          },
+          "wifi_sta": {
+            "status": "down",
+            "connected": false
+          },
+          "wifi_ap": {
+            "status": "down",
+            "sta_count": 0
+          }
+        },
+        "power": {
+          "voltage": {
+            "supply_v": 20.51999855041504,
+            "adc_raw": 2125,
+            "timestamp_ms": 587165
+          },
+          "power_chip": {
+            "valid": false,
+            "voltage_v": 20,
+            "current_a": 4.5,
+            "power_w": 90,
+            "crc_valid": false
+          },
+          "protection": {
+            "running": true,
+            "state": "正常运行",
+            "countdown_sec": 0,
+            "current_voltage_v": 20.51999855041504
+          },
+          "stats": {
+            "samples": 114,
+            "avg_voltage_v": 20.465604782104492,
+            "avg_current_a": 0,
+            "avg_power_w": 0,
+            "uptime_ms": 585553
+          },
+          "monitoring_active": true
+        },
+        "fan": {
+          "fans": [
+            {
+              "id": 0,
+              "mode": "auto",
+              "duty": 21,
+              "target_duty": 21,
+              "rpm": 0,
+              "temperature": 52.8,
+              "enabled": true,
+              "running": true,
+              "fault": false,
+              "control_temperature": 52.8,
+              "guard_temperature": 52.8,
+              "predicted_temperature": 52.8,
+              "slope_c_per_min": 0,
+              "controller_gain": 0.75,
+              "cooling_response": 0,
+              "auto_state": "active",
+              "guard_active": false,
+              "temp_stale": false
+            }
+          ],
+          "temperature": 52.79999923706055,
+          "temp_valid": true,
+          "temp_source": "agx-info.temperature.tj"
+        },
+        "services": {
+          "total": 12,
+          "running": 12,
+          "services": [
+            {
+              "name": "automation",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 2397,
+              "start_duration_ms": 1726
+            },
+            {
+              "name": "console",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 4864,
+              "start_duration_ms": 521
+            },
+            {
+              "name": "webui",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 5398,
+              "start_duration_ms": 438
+            },
+            {
+              "name": "https",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4133,
+              "start_duration_ms": 17
+            },
+            {
+              "name": "api",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4293,
+              "start_duration_ms": 372
+            },
+            {
+              "name": "security",
+              "state": "RUNNING",
+              "phase": "SECURITY",
+              "healthy": true,
+              "start_time_ms": 2109,
+              "start_duration_ms": 267
+            },
+            {
+              "name": "network",
+              "state": "RUNNING",
+              "phase": "NETWORK",
+              "healthy": true,
+              "start_time_ms": 1867,
+              "start_duration_ms": 223
+            },
+            {
+              "name": "power",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1005,
+              "start_duration_ms": 123
+            },
+            {
+              "name": "drivers",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1137,
+              "start_duration_ms": 169
+            },
+            {
+              "name": "led",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1314,
+              "start_duration_ms": 178
+            },
+            {
+              "name": "storage",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1508,
+              "start_duration_ms": 263
+            },
+            {
+              "name": "hal",
+              "state": "RUNNING",
+              "phase": "HAL",
+              "healthy": true,
+              "start_time_ms": 898,
+              "start_duration_ms": 89
+            }
+          ]
+        }
+      }
+    },
+    {
+      "direction": "received",
+      "type": "data",
+      "topic": "system.dashboard",
+      "timestamp": 587,
+      "data": {
+        "cpu": {
+          "cores": [
+            {
+              "id": 0,
+              "usage": 39
+            },
+            {
+              "id": 1,
+              "usage": 36
+            }
+          ],
+          "total_usage": 37,
+          "total_runtime": 587693752,
+          "task_count": 24
+        },
+        "memory": {
+          "free_heap": 7636432,
+          "min_free_heap": 7485660,
+          "internal": {
+            "total": 308043,
+            "free": 72755,
+            "allocated": 235288,
+            "largest_block": 31744
+          },
+          "psram": {
+            "total": 8370180,
+            "free": 7579208,
+            "allocated": 790972,
+            "largest_block": 7471104
+          }
+        },
+        "info": {
+          "app": {
+            "name": "TianShanOS",
+            "version": "0.5.2+3a19128d.09281801",
+            "idf_version": "v5.5.2",
+            "compile_time": "18:01:50",
+            "compile_date": "Sep 28 2026"
+          },
+          "chip": {
+            "model": "ESP32-S3",
+            "cores": 2,
+            "revision": 2,
+            "features": [
+              "WiFi",
+              "BLE"
+            ]
+          },
+          "flash_size": 16777216,
+          "uptime_ms": 587695
+        },
+        "network": {
+          "hostname": "TianshanOS",
+          "ethernet": {
+            "status": "connected",
+            "link_up": true,
+            "ip": "10.10.99.97",
+            "netmask": "255.255.255.0",
+            "gateway": "10.10.99.100",
+            "dns1": "8.8.8.8",
+            "mac": "20:6e:f1:a1:d5:8f"
+          },
+          "wifi_sta": {
+            "status": "down",
+            "connected": false
+          },
+          "wifi_ap": {
+            "status": "down",
+            "sta_count": 0
+          }
+        },
+        "power": {
+          "voltage": {
+            "supply_v": 20.44019889831543,
+            "adc_raw": 2117,
+            "timestamp_ms": 588166
+          },
+          "power_chip": {
+            "valid": false,
+            "voltage_v": 20,
+            "current_a": 4.5,
+            "power_w": 90,
+            "crc_valid": false
+          },
+          "protection": {
+            "running": true,
+            "state": "正常运行",
+            "countdown_sec": 0,
+            "current_voltage_v": 20.44019889831543
+          },
+          "stats": {
+            "samples": 114,
+            "avg_voltage_v": 20.465604782104492,
+            "avg_current_a": 0,
+            "avg_power_w": 0,
+            "uptime_ms": 586577
+          },
+          "monitoring_active": true
+        },
+        "fan": {
+          "fans": [
+            {
+              "id": 0,
+              "mode": "auto",
+              "duty": 20,
+              "target_duty": 20,
+              "rpm": 0,
+              "temperature": 52.9,
+              "enabled": true,
+              "running": true,
+              "fault": false,
+              "control_temperature": 52.9,
+              "guard_temperature": 52.9,
+              "predicted_temperature": 52.9,
+              "slope_c_per_min": 0,
+              "controller_gain": 0.75,
+              "cooling_response": 0,
+              "auto_state": "active",
+              "guard_active": false,
+              "temp_stale": false
+            }
+          ],
+          "temperature": 52.9000015258789,
+          "temp_valid": true,
+          "temp_source": "agx-info.temperature.tj"
+        },
+        "services": {
+          "total": 12,
+          "running": 12,
+          "services": [
+            {
+              "name": "automation",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 2397,
+              "start_duration_ms": 1726
+            },
+            {
+              "name": "console",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 4864,
+              "start_duration_ms": 521
+            },
+            {
+              "name": "webui",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 5398,
+              "start_duration_ms": 438
+            },
+            {
+              "name": "https",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4133,
+              "start_duration_ms": 17
+            },
+            {
+              "name": "api",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4293,
+              "start_duration_ms": 372
+            },
+            {
+              "name": "security",
+              "state": "RUNNING",
+              "phase": "SECURITY",
+              "healthy": true,
+              "start_time_ms": 2109,
+              "start_duration_ms": 267
+            },
+            {
+              "name": "network",
+              "state": "RUNNING",
+              "phase": "NETWORK",
+              "healthy": true,
+              "start_time_ms": 1867,
+              "start_duration_ms": 223
+            },
+            {
+              "name": "power",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1005,
+              "start_duration_ms": 123
+            },
+            {
+              "name": "drivers",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1137,
+              "start_duration_ms": 169
+            },
+            {
+              "name": "led",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1314,
+              "start_duration_ms": 178
+            },
+            {
+              "name": "storage",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1508,
+              "start_duration_ms": 263
+            },
+            {
+              "name": "hal",
+              "state": "RUNNING",
+              "phase": "HAL",
+              "healthy": true,
+              "start_time_ms": 898,
+              "start_duration_ms": 89
+            }
+          ]
+        }
+      }
+    },
+    {
+      "direction": "received",
+      "type": "data",
+      "topic": "system.dashboard",
+      "timestamp": 588,
+      "data": {
+        "cpu": {
+          "cores": [
+            {
+              "id": 0,
+              "usage": 23
+            },
+            {
+              "id": 1,
+              "usage": 1
+            }
+          ],
+          "total_usage": 12,
+          "total_runtime": 588721054,
+          "task_count": 24
+        },
+        "memory": {
+          "free_heap": 7636436,
+          "min_free_heap": 7485660,
+          "internal": {
+            "total": 308043,
+            "free": 72755,
+            "allocated": 235288,
+            "largest_block": 31744
+          },
+          "psram": {
+            "total": 8370180,
+            "free": 7579216,
+            "allocated": 790964,
+            "largest_block": 7471104
+          }
+        },
+        "info": {
+          "app": {
+            "name": "TianShanOS",
+            "version": "0.5.2+3a19128d.09281801",
+            "idf_version": "v5.5.2",
+            "compile_time": "18:01:50",
+            "compile_date": "Sep 28 2026"
+          },
+          "chip": {
+            "model": "ESP32-S3",
+            "cores": 2,
+            "revision": 2,
+            "features": [
+              "WiFi",
+              "BLE"
+            ]
+          },
+          "flash_size": 16777216,
+          "uptime_ms": 588722
+        },
+        "network": {
+          "hostname": "TianshanOS",
+          "ethernet": {
+            "status": "connected",
+            "link_up": true,
+            "ip": "10.10.99.97",
+            "netmask": "255.255.255.0",
+            "gateway": "10.10.99.100",
+            "dns1": "8.8.8.8",
+            "mac": "20:6e:f1:a1:d5:8f"
+          },
+          "wifi_sta": {
+            "status": "down",
+            "connected": false
+          },
+          "wifi_ap": {
+            "status": "down",
+            "sta_count": 0
+          }
+        },
+        "power": {
+          "voltage": {
+            "supply_v": 20.337600708007812,
+            "adc_raw": 2107,
+            "timestamp_ms": 589165
+          },
+          "power_chip": {
+            "valid": false,
+            "voltage_v": 20,
+            "current_a": 4.5,
+            "power_w": 90,
+            "crc_valid": false
+          },
+          "protection": {
+            "running": true,
+            "state": "正常运行",
+            "countdown_sec": 0,
+            "current_voltage_v": 20.337600708007812
+          },
+          "stats": {
+            "samples": 114,
+            "avg_voltage_v": 20.465604782104492,
+            "avg_current_a": 0,
+            "avg_power_w": 0,
+            "uptime_ms": 587602
+          },
+          "monitoring_active": true
+        },
+        "fan": {
+          "fans": [
+            {
+              "id": 0,
+              "mode": "auto",
+              "duty": 21,
+              "target_duty": 21,
+              "rpm": 0,
+              "temperature": 53,
+              "enabled": true,
+              "running": true,
+              "fault": false,
+              "control_temperature": 53,
+              "guard_temperature": 53,
+              "predicted_temperature": 53.1,
+              "slope_c_per_min": 0.20000000298023224,
+              "controller_gain": 0.75,
+              "cooling_response": 0,
+              "auto_state": "active",
+              "guard_active": false,
+              "temp_stale": false
+            }
+          ],
+          "temperature": 53,
+          "temp_valid": true,
+          "temp_source": "agx-info.temperature.tj"
+        },
+        "services": {
+          "total": 12,
+          "running": 12,
+          "services": [
+            {
+              "name": "automation",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 2397,
+              "start_duration_ms": 1726
+            },
+            {
+              "name": "console",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 4864,
+              "start_duration_ms": 521
+            },
+            {
+              "name": "webui",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 5398,
+              "start_duration_ms": 438
+            },
+            {
+              "name": "https",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4133,
+              "start_duration_ms": 17
+            },
+            {
+              "name": "api",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4293,
+              "start_duration_ms": 372
+            },
+            {
+              "name": "security",
+              "state": "RUNNING",
+              "phase": "SECURITY",
+              "healthy": true,
+              "start_time_ms": 2109,
+              "start_duration_ms": 267
+            },
+            {
+              "name": "network",
+              "state": "RUNNING",
+              "phase": "NETWORK",
+              "healthy": true,
+              "start_time_ms": 1867,
+              "start_duration_ms": 223
+            },
+            {
+              "name": "power",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1005,
+              "start_duration_ms": 123
+            },
+            {
+              "name": "drivers",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1137,
+              "start_duration_ms": 169
+            },
+            {
+              "name": "led",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1314,
+              "start_duration_ms": 178
+            },
+            {
+              "name": "storage",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1508,
+              "start_duration_ms": 263
+            },
+            {
+              "name": "hal",
+              "state": "RUNNING",
+              "phase": "HAL",
+              "healthy": true,
+              "start_time_ms": 898,
+              "start_duration_ms": 89
+            }
+          ]
+        }
+      }
+    },
+    {
+      "direction": "received",
+      "type": "data",
+      "topic": "system.dashboard",
+      "timestamp": 589,
+      "data": {
+        "cpu": {
+          "cores": [
+            {
+              "id": 0,
+              "usage": 23
+            },
+            {
+              "id": 1,
+              "usage": 6
+            }
+          ],
+          "total_usage": 14,
+          "total_runtime": 589735957,
+          "task_count": 24
+        },
+        "memory": {
+          "free_heap": 7636432,
+          "min_free_heap": 7485660,
+          "internal": {
+            "total": 308043,
+            "free": 72755,
+            "allocated": 235288,
+            "largest_block": 31744
+          },
+          "psram": {
+            "total": 8370180,
+            "free": 7579216,
+            "allocated": 790964,
+            "largest_block": 7471104
+          }
+        },
+        "info": {
+          "app": {
+            "name": "TianShanOS",
+            "version": "0.5.2+3a19128d.09281801",
+            "idf_version": "v5.5.2",
+            "compile_time": "18:01:50",
+            "compile_date": "Sep 28 2026"
+          },
+          "chip": {
+            "model": "ESP32-S3",
+            "cores": 2,
+            "revision": 2,
+            "features": [
+              "WiFi",
+              "BLE"
+            ]
+          },
+          "flash_size": 16777216,
+          "uptime_ms": 589737
+        },
+        "network": {
+          "hostname": "TianshanOS",
+          "ethernet": {
+            "status": "connected",
+            "link_up": true,
+            "ip": "10.10.99.97",
+            "netmask": "255.255.255.0",
+            "gateway": "10.10.99.100",
+            "dns1": "8.8.8.8",
+            "mac": "20:6e:f1:a1:d5:8f"
+          },
+          "wifi_sta": {
+            "status": "down",
+            "connected": false
+          },
+          "wifi_ap": {
+            "status": "down",
+            "sta_count": 0
+          }
+        },
+        "power": {
+          "voltage": {
+            "supply_v": 20.83919906616211,
+            "adc_raw": 2157,
+            "timestamp_ms": 590165
+          },
+          "power_chip": {
+            "valid": false,
+            "voltage_v": 20,
+            "current_a": 4.5,
+            "power_w": 90,
+            "crc_valid": false
+          },
+          "protection": {
+            "running": true,
+            "state": "正常运行",
+            "countdown_sec": 0,
+            "current_voltage_v": 20.83919906616211
+          },
+          "stats": {
+            "samples": 114,
+            "avg_voltage_v": 20.465604782104492,
+            "avg_current_a": 0,
+            "avg_power_w": 0,
+            "uptime_ms": 588627
+          },
+          "monitoring_active": true
+        },
+        "fan": {
+          "fans": [
+            {
+              "id": 0,
+              "mode": "auto",
+              "duty": 21,
+              "target_duty": 21,
+              "rpm": 0,
+              "temperature": 52.8,
+              "enabled": true,
+              "running": true,
+              "fault": false,
+              "control_temperature": 52.8,
+              "guard_temperature": 52.8,
+              "predicted_temperature": 52.5,
+              "slope_c_per_min": -0.4000000059604645,
+              "controller_gain": 0.75,
+              "cooling_response": 0,
+              "auto_state": "active",
+              "guard_active": false,
+              "temp_stale": false
+            }
+          ],
+          "temperature": 52.79999923706055,
+          "temp_valid": true,
+          "temp_source": "agx-info.temperature.tj"
+        },
+        "services": {
+          "total": 12,
+          "running": 12,
+          "services": [
+            {
+              "name": "automation",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 2397,
+              "start_duration_ms": 1726
+            },
+            {
+              "name": "console",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 4864,
+              "start_duration_ms": 521
+            },
+            {
+              "name": "webui",
+              "state": "RUNNING",
+              "phase": "UI",
+              "healthy": true,
+              "start_time_ms": 5398,
+              "start_duration_ms": 438
+            },
+            {
+              "name": "https",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4133,
+              "start_duration_ms": 17
+            },
+            {
+              "name": "api",
+              "state": "RUNNING",
+              "phase": "SERVICE",
+              "healthy": true,
+              "start_time_ms": 4293,
+              "start_duration_ms": 372
+            },
+            {
+              "name": "security",
+              "state": "RUNNING",
+              "phase": "SECURITY",
+              "healthy": true,
+              "start_time_ms": 2109,
+              "start_duration_ms": 267
+            },
+            {
+              "name": "network",
+              "state": "RUNNING",
+              "phase": "NETWORK",
+              "healthy": true,
+              "start_time_ms": 1867,
+              "start_duration_ms": 223
+            },
+            {
+              "name": "power",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1005,
+              "start_duration_ms": 123
+            },
+            {
+              "name": "drivers",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1137,
+              "start_duration_ms": 169
+            },
+            {
+              "name": "led",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1314,
+              "start_duration_ms": 178
+            },
+            {
+              "name": "storage",
+              "state": "RUNNING",
+              "phase": "DRIVER",
+              "healthy": true,
+              "start_time_ms": 1508,
+              "start_duration_ms": 263
+            },
+            {
+              "name": "hal",
+              "state": "RUNNING",
+              "phase": "HAL",
+              "healthy": true,
+              "start_time_ms": 898,
+              "start_duration_ms": 89
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

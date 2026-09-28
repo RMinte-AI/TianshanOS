@@ -1,0 +1,82 @@
+[
+  {
+    "round": 1,
+    "minimum_hwm_bytes": 4096,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7672364,
+    "psram_free": 7614416,
+    "uptime_ms": 319336
+  },
+  {
+    "round": 2,
+    "minimum_hwm_bytes": 4108,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7672156,
+    "psram_free": 7614208,
+    "uptime_ms": 368074
+  },
+  {
+    "round": 3,
+    "minimum_hwm_bytes": 4096,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7671944,
+    "psram_free": 7613996,
+    "uptime_ms": 408198
+  },
+  {
+    "round": 4,
+    "minimum_hwm_bytes": 4096,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7671944,
+    "psram_free": 7613996,
+    "uptime_ms": 468330
+  },
+  {
+    "round": 5,
+    "minimum_hwm_bytes": 4096,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7671940,
+    "psram_free": 7613996,
+    "uptime_ms": 536996
+  },
+  {
+    "round": 6,
+    "minimum_hwm_bytes": 4108,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7671940,
+    "psram_free": 7613996,
+    "uptime_ms": 574826
+  },
+  {
+    "round": 7,
+    "minimum_hwm_bytes": 4096,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7671720,
+    "psram_free": 7613768,
+    "uptime_ms": 629959
+  },
+  {
+    "round": 8,
+    "minimum_hwm_bytes": 4096,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7670896,
+    "psram_free": 7613204,
+    "uptime_ms": 684751
+  },
+  {
+    "round": 9,
+    "minimum_hwm_bytes": 3952,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7671940,
+    "psram_free": 7613996,
+    "uptime_ms": 749250
+  },
+  {
+    "round": 10,
+    "minimum_hwm_bytes": 3876,
+    "closed_ssh_poll_count": 0,
+    "free_heap": 7671576,
+    "psram_free": 7613736,
+    "uptime_ms": 795443
+  }
+]

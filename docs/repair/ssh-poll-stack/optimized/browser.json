@@ -1,0 +1,31 @@
+[
+  {
+    "name": "browser",
+    "command": [
+      "npm",
+      "run",
+      "test:browser",
+      "--prefix",
+      "tests/prompts"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "cross-browser-en-US",
+    "command": [
+      "node",
+      "tests/prompts/project-cross.cjs",
+      "--browser"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "cross-browser-zh-CN",
+    "command": [
+      "node",
+      "tests/prompts/project-cross.cjs",
+      "--browser"
+    ],
+    "exit": 0
+  }
+]

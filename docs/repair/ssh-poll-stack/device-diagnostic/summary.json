@@ -1,0 +1,11 @@
+{
+  "minimum_sampled_hwm": 3984,
+  "serial_faults": [],
+  "final_pollers": [],
+  "manual_rounds": 1,
+  "automatic_successful_rounds": 9,
+  "failed_harness_attempts": 1,
+  "device_left_running": "formal candidate, restored and HTTP health verified",
+  "minimum_all_observed_hwm": 3644,
+  "evidence_boundary": "1 manual browser round + 9 native WS protocol rounds against real device and SSH host; not 10 browser keyboard rounds"
+}

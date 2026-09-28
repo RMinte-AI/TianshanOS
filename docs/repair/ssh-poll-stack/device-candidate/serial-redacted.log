@@ -1,0 +1,749 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037a8b6
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x1700
+load:0x403c8700,len:0xec0
+load:0x403cb700,len:0x31c0
+entry 0x403c894c
+I (24) boot: ESP-IDF v5.5.2 2nd stage bootloader
+I (24) boot: compile time Sep 28 2026 18:02:01
+I (25) boot: Multicore bootloader
+I (25) boot: chip revision: v0.2
+I (27) boot: efuse block revision: v1.3
+I (31) qio_mode: Enabling default flash chip QIO
+I (35) boot.esp32s3: Boot SPI Speed : 80MHz
+I (39) boot.esp32s3: SPI Mode       : QIO
+I (43) boot.esp32s3: SPI Flash Size : 16MB
+I (47) boot: Enabling RNG early entropy source...
+I (51) boot: Partition Table:
+I (54) boot: ## Label            Usage          Type ST Offset   Length
+I (60) boot:  0 nvs              WiFi data        01 02 00009000 0000c000
+I (67) boot:  1 nvs_keys         NVS keys         01 04 00015000 00001000
+I (73) boot:  2 otadata          OTA data         01 00 00016000 00002000
+I (80) boot:  3 phy_init         RF data          01 01 00018000 00001000
+I (86) boot:  4 ota_0            OTA app          00 10 00020000 00300000
+I (93) boot:  5 ota_1            OTA app          00 11 00320000 00300000
+I (99) boot:  6 storage          Unknown data     01 82 00620000 00080000
+I (106) boot:  7 www              Unknown data     01 82 006a0000 00300000
+I (112) boot:  8 fatfs            Unknown data     01 81 009a0000 00010000
+I (119) boot: End of partition table
+I (123) esp_image: segment 0: paddr=00020020 vaddr=3c170020 size=97008h (618504) map
+I (222) esp_image: segment 1: paddr=000b7030 vaddr=3fc9bf00 size=04efch ( 20220) load
+I (226) esp_image: segment 2: paddr=000bbf34 vaddr=40374000 size=040e4h ( 16612) load
+I (229) esp_image: segment 3: paddr=000c0020 vaddr=42000020 size=1612dch (1446620) map
+I (448) esp_image: segment 4: paddr=00221304 vaddr=403780e4 size=13dc4h ( 81348) load
+I (464) esp_image: segment 5: paddr=002350d0 vaddr=50000000 size=00020h (    32) load
+I (473) boot: Loaded app from partition at offset 0x20000
+I (474) boot: Disabling RNG early entropy source...
+I (484) octal_psram: vendor id    : 0x0d (AP)
+I (484) octal_psram: dev id       : 0x02 (generation 3)
+I (484) octal_psram: density      : 0x03 (64 Mbit)
+I (486) octal_psram: good-die     : 0x01 (Pass)
+I (490) octal_psram: Latency      : 0x01 (Fixed)
+I (495) octal_psram: VCC          : 0x01 (3V)
+I (499) octal_psram: SRF          : 0x01 (Fast Refresh)
+I (504) octal_psram: BurstType    : 0x01 (Hybrid Wrap)
+I (509) octal_psram: BurstLen     : 0x01 (32 Byte)
+I (513) octal_psram: Readlatency  : 0x02 (10 cycles@Fixed)
+I (518) octal_psram: DriveStrength: 0x00 (1/1)
+I (523) MSPI Timing: Enter psram timing tuning
+I (527) esp_psram: Found 8MB PSRAM device
+I (530) esp_psram: Speed: 80MHz
+I (533) cpu_start: Multicore app
+I (969) esp_psram: SPI SRAM memory test OK
+I (978) cpu_start: GPIO 44 and 43 are used as console UART I/O pins
+I (978) cpu_start: Pro cpu start user code
+I (978) cpu_start: cpu freq: 240000000 Hz
+I (980) app_init: Application information:
+I (984) app_init: Project name:     TianShanOS
+I (988) app_init: App version:      0.5.2+3a19128d.09281801
+I (993) app_init: Compile time:     Sep 28 2026 18:01:50
+I (998) app_init: ELF file SHA256:  2c29402b1...
+I (1003) app_init: ESP-IDF:          v5.5.2
+I (1007) efuse_init: Min chip rev:     v0.0
+I (1011) efuse_init: Max chip rev:     v0.99 
+I (1015) efuse_init: Chip rev:         v0.2
+I (1019) heap_init: Initializing. RAM available for dynamic allocation:
+I (1025) heap_init: At 3FCB0048 len 000396C8 (229 KiB): RAM
+I (1030) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM
+I (1035) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM
+I (1041) heap_init: At 600FE000 len 00001FE8 (7 KiB): RTCRAM
+I (1046) esp_psram: Adding pool of 8179K of PSRAM memory to heap allocator
+I (1053) spi_flash: detected chip: generic
+I (1056) spi_flash: flash io: qio
+I (1060) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (1066) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (1073) main_task: Started on CPU0
+I (1076) esp_psram: Reserving pool of 16K of internal memory for DMA/internal allocations
+I (1084) main_task: Calling app_main()
+
+╔════════════════════════════════════════════════════════════════════════╗
+║                                                                        ║
+║   ████████╗██╗ █████╗ ███╗   ██╗███████╗██╗  ██╗ █████╗ ███╗   ██╗     ║
+║   ╚══██╔══╝██║██╔══██╗████╗  ██║██╔════╝██║  ██║██╔══██╗████╗  ██║     ║
+║      ██║   ██║███████║██╔██╗ ██║███████╗███████║███████║██╔██╗ ██║     ║
+║      ██║   ██║██╔══██║██║╚██╗██║╚════██║██╔══██║██╔══██║██║╚██╗██║     ║
+║      ██║   ██║██║  ██║██║ ╚████║███████║██║  ██║██║  ██║██║ ╚████║     ║
+║      ╚═╝   ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝     ║
+║                                                                        ║
+║                   TianShanOS 0.5.2+3a19128d.09281801                   ║
+║                     ESP32 Rack Management Operating System             ║
+║                                                                        ║
+╚════════════════════════════════════════════════════════════════════════╝
+
+I (1259) main: System Information:
+I (1262) main:   - IDF Version: v5.5.2
+I (1265) main:   - Free Heap: 8630188 bytes
+I (1269) main:   - Min Free Heap: 8630188 bytes
+I (1274) main:   - Chip: ESP32-S3, 2 cores, WiFi/BLE
+I (1278) main: Initializing TianShanOS...
+I (1282) ts_core: TianShanOS Core v0.5.2+3a19128d.09281801 initializing...
+I (1289) ts_mempool: Initializing memory pools in PSRAM...
+I (1294) ts_mempool: Pool 0: 16 x 256 bytes = 4 KB (PSRAM)
+I (1299) ts_mempool: Pool 1: 12 x 1024 bytes = 12 KB (PSRAM)
+I (1304) ts_mempool: Pool 2: 8 x 4096 bytes = 32 KB (PSRAM)
+I (1310) ts_mempool: Pool 3: 4 x 8192 bytes = 32 KB (PSRAM)
+I (1315) ts_mempool: Memory pools initialized successfully
+I (1320) ts_core: Memory pools initialized in PSRAM
+I (1325) ts_core: cJSON PSRAM hooks installed
+I (1329) ts_core: Initializing configuration system...
+I (1334) ts_config: Initializing TianShanOS Configuration System...
+I (1340) ts_config: Configuration system initialized successfully
+I (1346) ts_config_nvs: Initializing NVS configuration backend...
+I (1401) ts_config_nvs: NVS backend initialized (namespace: ts_config)
+I (1402) ts_config: Registered backend 1 with priority 80
+I (1402) ts_config_file: Initializing file configuration backend...
+I (1408) ts_config_file: File backend initialized (waiting for storage)
+I (1414) ts_config: Registered backend 2 with priority 60
+I (1419) ts_core: Initializing logging system...
+[0;32mI (1424) ts_log: Initializing TianShanOS Logging System...[0m
+[0;32mI (1434) ts_log: Log buffer allocated in PSRAM (500 entries, 148000 bytes)[0m
+[0;32mI (1438) ts_log: ESP_LOG capture hook installed[0m
+[0;32mI (1443) ts_log: Logging system initialized (level=3, outputs=0x05, buffer=500)[0m
+I (1451) ts_core: Initializing event system...
+I (1455) ts_event: Initializing TianShanOS Event System...
+I (1460) ts_event: Event loop task started
+I (1464) ts_event: Event system initialized (queue_size=32)
+I (1469) ts_config_file: Registered storage event handler for auto-load
+I (1476) ts_config_schemas: Initializing configuration module system...
+I (1482) ts_config_module: Initializing configuration module system...
+I (1488) ts_config_meta: Initializing configuration meta management...
+I (1496) ts_config_meta: Meta initialized: global_seq=6, sync_seq=6, pending=0x00
+I (1502) ts_config_module: Configuration module system initialized
+I (1508) ts_config_schemas: Registering configuration modules...
+I (1513) ts_config_module: Registered module NET (nvs=ts_net, schema_v=1)
+I (1520) ts_config_module: Registered module DHCP (nvs=ts_dhcp, schema_v=1)
+I (1526) ts_config_module: Registered module WIFI (nvs=ts_wifi, schema_v=1)
+I (1533) ts_config_module: Registered module NAT (nvs=ts_nat, schema_v=1)
+I (1540) ts_config_module: Registered module LED (nvs=ts_led, schema_v=1)
+I (1546) ts_config_module: Registered module FAN (nvs=ts_fan, schema_v=1)
+I (1553) ts_config_module: Registered module DEVICE (nvs=ts_device, schema_v=1)
+I (1560) ts_config_module: Registered module SYSTEM (nvs=ts_system, schema_v=1)
+I (1567) ts_config_module: Registered module TEMP (nvs=ts_temp, schema_v=0)
+I (1573) ts_config_module: Registered module RULES (nvs=ts_rules, schema_v=0)
+I (1580) ts_config_module: Registered module ACTIONS (nvs=ts_actions, schema_v=0)
+I (1588) ts_config_module: Registered module SOURCES (nvs=ts_sources, schema_v=0)
+I (1595) ts_config_schemas: All configuration modules registered
+I (1600) ts_config_schemas: Loading module configurations...
+I (1606) ts_config_module: Loading module NET...
+I (1610) ts_config_module: Using schema defaults for module NET
+I (1616) ts_config_module: Loading module DHCP...
+I (1620) ts_config_module: Using schema defaults for module DHCP
+I (1626) ts_config_module: Loading module WIFI...
+I (1630) ts_config_module: Using schema defaults for module WIFI
+I (1636) ts_config_module: Loading module NAT...
+I (1640) ts_config_module: Using schema defaults for module NAT
+I (1646) ts_config_module: Loading module LED...
+I (1650) ts_config_module: Using schema defaults for module LED
+I (1656) ts_config_module: Loading module FAN...
+I (1662) ts_config_module: Loading module DEVICE...
+I (1665) ts_config_module: Using schema defaults for module DEVICE
+I (1671) ts_config_module: Loading module SYSTEM...
+I (1675) ts_config_module: Using schema defaults for module SYSTEM
+I (1682) ts_config_module: Loading module TEMP...
+I (1686) ts_config_module: Loading module RULES...
+I (1690) ts_config_module: Using schema defaults for module RULES
+I (1696) ts_config_module: Loading module ACTIONS...
+I (1701) ts_config_module: Using schema defaults for module ACTIONS
+I (1707) ts_config_module: Loading module SOURCES...
+I (1711) ts_config_module: Using schema defaults for module SOURCES
+I (1718) ts_config_meta: === Configuration Meta ===
+I (1722) ts_config_meta:   global_seq:   6
+I (1726) ts_config_meta:   sync_seq:     6
+I (1730) ts_config_meta:   pending_sync: 0x00
+I (1734) ts_config_meta:   Schema versions:
+I (1738) ts_config_meta: ==========================
+I (1742) ts_config_schemas: Configuration module system initialized
+I (1748) ts_core: Initializing service management...
+I (1753) ts_service: Initializing TianShanOS Service Management...
+I (1759) ts_service: Service management initialized
+I (1763) ts_core: TianShanOS Core initialized successfully
+I (1769) main: Registering core services...
+I (1773) ts_services: Registering services...
+I (1777) ts_service: Registered service: hal (phase=HAL)
+I (1782) ts_services:   - hal service registered
+I (1786) ts_service: Registered service: storage (phase=DRIVER)
+I (1792) ts_services:   - storage service registered
+I (1796) ts_service: Registered service: led (phase=DRIVER)
+I (1802) ts_services:   - led service registered
+I (1806) ts_service: Registered service: drivers (phase=DRIVER)
+I (1812) ts_services:   - drivers service registered
+I (1816) ts_service: Registered service: power (phase=DRIVER)
+I (1822) ts_services:   - power service registered
+I (1826) ts_service: Registered service: network (phase=NETWORK)
+I (1832) ts_services:   - network service registered
+I (1837) ts_service: Registered service: security (phase=SECURITY)
+I (1843) ts_services:   - security service registered
+I (1847) ts_service: Registered service: api (phase=SERVICE)
+I (1853) ts_services:   - api service registered
+I (1857) ts_service: Registered service: https (phase=SERVICE)
+I (1863) ts_services:   - https service registered
+I (1867) ts_service: Registered service: webui (phase=UI)
+I (1872) ts_services:   - webui service registered
+I (1877) ts_service: Registered service: console (phase=UI)
+I (1882) ts_services:   - console service registered
+I (1887) ts_service: Registered service: automation (phase=SERVICE)
+I (1893) ts_services:   - automation service registered
+I (1898) ts_services: All core services registered
+I (1902) main: Starting TianShanOS services...
+I (1906) ts_core: Starting TianShanOS...
+I (1910) ts_service: Starting all services...
+I (1914) ts_service: === Phase 0: PLATFORM ===
+I (1918) ts_service: === Phase 1: CORE ===
+I (1922) ts_service: === Phase 2: HAL ===
+I (1926) ts_service: Starting 1 services in phase HAL
+I (1931) ts_service: Starting service: hal
+I (1934) ts_services: Initializing HAL service...
+[0;32mI (892) ts_hal: Initializing HAL module v1.0.0[0m
+[0;32mI (897) ts_pin: Initializing pin manager[0m
+[0;32mI (902) ts_pin: Pin manager initialized[0m
+[0;32mI (906) ts_hal: No pin config in NVS, loading defaults[0m
+[0;32mI (912) ts_pin: Loading default pin mappings for ESP32S3[0m
+[0;32mI (918) ts_gpio: Initializing GPIO subsystem[0m
+[0;32mI (923) ts_hal: Early hardware init: setting reset pins to safe state[0m
+[0;32mI (930) ts_hal: W5500_RST (GPIO39) = HIGH (normal)[0m
+[0;32mI (936) ts_hal: AGX_RESET (GPIO1) = LOW (normal)[0m
+[0;32mI (941) ts_hal: AGX_POWER (GPIO3) = LOW (allow boot)[0m
+[0;32mI (947) ts_pwm: Initializing PWM subsystem[0m
+[0;32mI (951) ts_i2c: Initializing I2C subsystem[0m
+[0;32mI (956) ts_spi: Initializing SPI subsystem[0m
+[0;32mI (961) ts_uart: Initializing UART subsystem[0m
+[0;32mI (966) ts_adc: Initializing ADC subsystem[0m
+[0;32mI (971) ts_hal: HAL initialization complete, platform: ESP32S3[0m
+I (2024) ts_service: Service 'hal' started in 89 ms
+I (2029) ts_service: === Phase 3: DRIVER ===
+I (2033) ts_service: Starting 4 services in phase DRIVER
+I (2038) ts_service: Starting service: power
+I (2042) ts_services: Initializing power service...
+[0;32mI (999) ts_power_policy: Initializing power policy v1.0.0[0m
+[0;32mI (1006) ts_power_policy: NVS: enabled_on_boot = true[0m
+[0;32mI (1011) ts_power_policy: Registered SD card mount event handler[0m
+[0;32mI (1018) ts_power_policy: Power policy initialized (Low: 12.6V, Recovery: 18.0V, Delay: 60s) [source: defaults][0m
+I (2076) ts_power_monitor: Initializing power monitor v1.0.0
+I (2081) ts_power_monitor: Initializing voltage monitor on GPIO 18 (ADC2_CH7)
+I (2088) ts_power_monitor: ADC calibration initialized
+I (2093) ts_power_monitor: Voltage monitor initialized (divider ratio: 11.4:1)
+I (2100) ts_power_monitor: Initializing power chip communication on GPIO 47 (UART1)
+I (2107) uart: queue free spaces: 10
+I (2110) ts_power_monitor: Power chip communication initialized (baud: 9600)
+I (2117) ts_power_monitor: Power monitor initialized successfully
+I (2123) ts_services: Starting power service...
+I (2127) ts_power_monitor: Starting power monitor
+I (2131) ts_power_monitor: Power monitor task started
+I (2136) ts_power_monitor: Power monitor started
+[0;32mI (1094) ts_power_policy: Starting power policy monitoring[0m
+[0;32mI (1100) ts_power_policy: Power policy task started[0m
+[0;32mI (1106) ts_power_policy: Power policy monitoring started[0m
+I (2158) ts_services: Power protection started (auto-start enabled)
+I (2164) ts_service: Service 'power' started in 123 ms
+I (2169) ts_service: Starting service: drivers
+I (2173) ts_services: Initializing drivers service...
+[0;32mI (1131) ts_drivers: Initializing device drivers[0m
+[0;32mI (1137) ts_temp_source: Loaded preferred source from NVS: variable[0m
+[0;32mI (1145) ts_temp_source: Loaded 1 weighted bound vars from NVS[0m
+[0;32mI (1150) ts_temp_source: Temperature source manager initialized (v1.0.0), preferred: variable[0m
+[0;32mI (1159) ts_drivers: Temperature source manager initialized[0m
+[0;32mI (1166) ts_fan: Subscribed to temperature events[0m
+[0;32mI (1171) ts_fan: Fan driver initialized[0m
+[0;32mI (1176) ts_fan: Fan 0 configured: PWM=GPIO41, TACH=-1, curve=0 points[0m
+[0;32mI (1183) ts_drivers: Fan 0 configured on GPIO 41[0m
+[0;32mI (1188) ts_power: Power monitor initialized[0m
+[0;32mI (1193) ts_device: Device control initialized[0m
+[0;32mI (1198) ts_device: AGX configured: FORCE_SHUTDOWN=GPIO3(LOW=run), RESET=GPIO1(LOW=normal)[0m
+[0;32mI (1207) ts_drivers: AGX configured (pwr=3, rst=1, rcv=40)[0m
+[0;32mI (1213) ts_device: LPMU configured (power=46[pulse HIGH], reset=2[pulse HIGH])[0m
+[0;32mI (1221) ts_drivers: LPMU configured (pwr=46, rst=2)[0m
+[0;32mI (1227) ts_usb_mux: USB MUX driver initialized[0m
+[0;32mI (1232) ts_usb_mux: Loaded USB MUX target from NVS: 0[0m
+[0;32mI (1238) ts_usb_mux: USB MUX -> ESP32 (sel0=0, sel1=0)[0m
+[0;32mI (1244) ts_usb_mux: USB MUX configured (sel0=8, sel1=48), restored target: 0[0m
+[0;32mI (1251) ts_drivers: USB MUX configured (sel0=8, sel1=48)[0m
+I (2304) ts_compute_monitor: Initializing compute monitor v1.0.0
+[0;32mI (1263) ts_temp_source: Provider registered: agx_cpu (agx)[0m
+I (2316) ts_compute_monitor: Initialized, server: 10.10.99.98:58090
+[0;32mI (1276) ts_drivers: Compute monitor initialized (use 'compute --start' to connect)[0m
+[0;32mI (1284) ts_drivers: Device drivers initialized[0m
+[0;32mI (1290) ts_fan: Restored fan 0: mode=2, duty=25%, curve=9 pts[0m
+I (2342) ts_service: Service 'drivers' started in 169 ms
+I (2347) ts_service: Starting service: led
+I (2351) ts_services: Initializing LED service...
+[0;32mI (1309) led_cc: Loaded config from NVS[0m
+[0;32mI (1314) led_cc: Color correction initialized (enabled=true)[0m
+[0;32mI (1320) ts_led: LED subsystem initialized[0m
+I (2371) ts_services: Starting LED service...
+[0;32mI (1329) led_preset: Touch LED: using hardcoded GPIO 45[0m
+[0;32mI (1334) led_driver: Using RMT backend for 1 LEDs on GPIO 45[0m
+[0;32mI (1342) led_driver: LED driver initialized: 'led_touch' - GPIO 45, 1 LEDs[0m
+[0;32mI (1348) ts_led: Created LED device 'led_touch' with 1 LEDs[0m
+[0;32mI (1355) led_preset: Touch LED initialized: 1 LEDs on GPIO 45[0m
+[0;32mI (1361) led_preset: Board LED: using hardcoded GPIO 42[0m
+[0;32mI (1367) led_driver: Using RMT backend for 28 LEDs on GPIO 42[0m
+[0;32mI (1375) led_driver: LED driver initialized: 'led_board' - GPIO 42, 28 LEDs[0m
+[0;32mI (1381) ts_led: Created LED device 'led_board' with 28 LEDs[0m
+[0;32mI (1387) led_preset: Board LED initialized: 28 LEDs on GPIO 42[0m
+[0;32mI (1394) led_preset: Matrix LED: pin_manager returned GPIO 9[0m
+[0;32mI (1400) led_driver: Using SPI backend for 1024 LEDs on GPIO 9[0m
+[0;32mI (1438) led_driver: LED driver initialized: 'led_matrix' - GPIO 9, 1024 LEDs[0m
+[0;32mI (1439) ts_led: Created LED device 'led_matrix' with 1024 LEDs[0m
+[0;32mI (1442) led_preset: Matrix LED initialized: 32x32 on GPIO 9[0m
+[0;32mI (1448) led_preset: Loading LED boot configurations...[0m
+[0;32mI (1461) led_preset: Restored touch: animation=solid, speed=50, brightness=80, color=#FFCCCC[0m
+[0;32mI (1465) led_preset: Restored board: animation=solid, speed=50, brightness=60, color=#FFFFFF[0m
+[0;32mI (1474) led_preset: Restored matrix: animation=solid, speed=50, brightness=52, color=#FFFFFF[0m
+I (2529) ts_service: Service 'led' started in 178 ms
+I (2533) ts_service: Starting service: storage
+I (2537) ts_services: Initializing storage service...
+[0;32mI (1499) ts_storage: Storage subsystem initialized[0m
+I (2547) ts_services: Starting storage service...
+[0;32mI (1505) storage_spiffs: Mounting SPIFFS at /spiffs (partition: storage)[0m
+[0;32mI (1549) storage_spiffs: SPIFFS mounted: 474641 total, 0 used, 474641 free[0m
+I (2597) ts_services: SPIFFS mounted at /spiffs
+[0;32mI (1551) storage_sd: Good: /sdcard not in FATFS s_fat_ctxs[] (info returned ESP_ERR_INVALID_STATE)[0m
+[0;32mI (1560) storage_sd: Mounting SD card at /sdcard (mode: 2, freq: 20000 kHz)[0m
+[0;32mI (1568) storage_sd: SD GPIO: CMD=15, CLK=16, D0=4, D1=5, D2=6, D3=7[0m
+[0;32mI (1634) storage_sd: SD card mounted:[0m
+[0;32mI (1635) storage_sd:   Name: MSSD0[0m
+[0;32mI (1635) storage_sd:   Type: SDHC/SDXC[0m
+I (2682) ts_config: Saving configuration...
+[0;32mI (1636) storage_sd:   Speed: default[0m
+[0;32mI (1645) storage_sd:   Size: 29850MB[0m
+I (2693) ts_config: Saved configuration to backend 1
+[0;32mI (1656) ts_power_policy: SD card mounted, syncing power policy config...[0m
+I (2703) ts_config: Configuration saved
+I (2712) ts_config_pack: Loaded plain config: /sdcard/config/power_policy.json (180 bytes)
+[0;32mI (1673) ts_power_policy: SD: low_voltage_threshold = 12.60V[0m
+[0;32mI (1679) ts_power_policy: SD: recovery_voltage_threshold = 18.00V[0m
+[0;32mI (1686) ts_power_policy: SD: shutdown_delay_sec = 60[0m
+[0;32mI (1692) ts_power_policy: SD: recovery_hold_sec = 5[0m
+[0;32mI (1697) ts_power_policy: SD: fan_stop_delay_sec = 60[0m
+I (2708) ts_services: SD card mounted at /sdcard
+[0;32mI (1703) ts_power_policy: SD: enabled_on_boot = true[0m
+[0;32mI (1713) ts_power_policy: Loaded power policy config from SD card[0m
+[0;32mI (1720) ts_power_policy: Config loaded from SD card, syncing to NVS[0m
+I (2774) ts_config: Saving configuration...
+I (2784) ts_config: Saved configuration to backend 1
+I (2784) ts_config: Configuration saved
+I (2785) ts_config_file: SD card mounted, loading configuration files...
+I (2778) ts_recovery: Checking for SD card recovery...
+I (2793) ts_config_file: Loading configuration files from: /sdcard/config
+I (2806) ts_recovery: No recovery directory found
+I (2807) ts_config_file: Loading: power_policy.json
+I (2812) ts_config_json: Loading JSON config: /sdcard/config/power_policy.json
+I (2820) ts_service: Service 'storage' started in 282 ms
+I (2822) ts_config_json: JSON config loaded successfully
+I (2830) ts_config_file: Loading: led_color_correction.json
+I (2835) ts_config_json: Loading JSON config: /sdcard/config/led_color_correction.json
+I (2836) ts_service: === Phase 4: NETWORK ===
+I (2846) ts_config_json: JSON config loaded successfully
+I (2852) ts_config_file: Loading: fan_curve_config_0.json
+I (2856) ts_config_json: Loading JSON config: /sdcard/config/fan_curve_config_0.json
+I (2865) ts_service: Starting 1 services in phase NETWORK
+I (2869) ts_config_json: JSON config loaded successfully
+I (2875) ts_config_file: Loading: fan.json
+I (2878) ts_config_json: Loading JSON config: /sdcard/config/fan.json
+I (2878) ts_service: Starting service: network
+I (2887) ts_config_json: JSON config loaded successfully
+I (2894) ts_config_file: Loading: ui_widgets.json
+I (2898) ts_config_json: Loading JSON config: /sdcard/config/ui_widgets.json
+I (2905) ts_services: Initializing network service...
+I (2908) ts_config_json: JSON config loaded successfully
+I (2915) ts_config_file: Loaded 5 JSON configs, skipped 1
+I (2919) ts_config_file: Configuration files loaded successfully
+[0;32mI (1874) ts_net_mgr: Initializing network manager...[0m
+[0;32mI (1884) ts_net_mgr: No saved config in NVS, using defaults[0m
+[0;32mI (1891) ts_net_mgr: Ethernet pins: MOSI=11 MISO=13 SCLK=12 CS=10 INT=38 RST=39[0m
+[0;32mI (1898) ts_eth: Initializing Ethernet (W5500)[0m
+[0;32mI (1904) ts_eth: Created Ethernet netif with DHCP server mode[0m
+[0;32mI (1914) ts_eth:   Device IP: 10.10.99.97[0m
+[0;32mI (1914) ts_eth:   Gateway:   10.10.99.100[0m
+[0;32mI (1919) ts_eth:   Netmask:   255.255.255.0[0m
+[0;32mI (1953) ts_eth: Ethernet MAC: 20:6e:f1:a1:d5:8f[0m
+I (3000) esp_eth.netif.netif_glue: 20:6e:f1:a1:d5:8f
+I (3001) esp_eth.netif.netif_glue: ethernet attached to netif
+[0;32mI (1958) ts_eth: DHCP lease range configured: 10.10.99.100 - 10.10.99.103[0m
+[0;32mI (1965) ts_eth: DHCP DNS server configured: 8.8.8.8[0m
+[0;32mI (1971) ts_eth: Ethernet initialized[0m
+[0;32mI (1975) ts_net_mgr: Ethernet initialized, MAC: 20:6e:f1:a1:d5:8f[0m
+[0;32mI (1982) ts_net_mgr: Network manager initialized[0m
+[0;32mI (1992) ts_dhcps: Initializing DHCP server...[0m
+[0;32mI (1992) ts_dhcps: DHCP event task started[0m
+[0;32mI (1997) ts_dhcps: No saved config, using defaults[0m
+[0;32mI (2003) ts_dhcps: DHCP server initialized (event queue enabled)[0m
+I (3056) ts_services: Starting network service...
+[0;32mI (2014) ts_net_mgr: Starting Ethernet...[0m
+[0;32mI (2019) ts_net_mgr: Using static IP: 10.10.99.97[0m
+[0;32mI (2040) ts_net_mgr: Ethernet started[0m
+[0;32mI (2040) ts_eth: Ethernet started[0m
+[0;32mI (2041) ts_net_mgr: Ethernet started, waiting for link...[0m
+I (3091) ts_time_sync: Timezone set to: CST-8
+I (3095) ts_time_sync: Time sync module initialized
+I (3099) ts_time_sync:   NTP server 1: 10.10.99.99
+I (3104) ts_time_sync:   NTP server 2: 10.10.99.98
+I (3108) ts_time_sync:   NTP server 3: 10.10.99.100
+I (3116) ts_time_sync: Starting NTP sync with primary: 10.10.99.99, secondary: 10.10.99.98
+I (3121) ts_time_sync: NTP synchronization started (retry enabled for unreliable servers)
+[0;32mI (2082) ts_device: LPMU startup detection: waiting for network...[0m
+[0;32mI (2089) ts_device: LPMU startup detection task started[0m
+I (3141) ts_service: Service 'network' started in 237 ms
+I (3147) ts_service: === Phase 5: SECURITY ===
+I (3156) ts_service: Starting 1 services in phase SECURITY
+I (3156) ts_service: Starting service: security
+I (3160) ts_services: Initializing security service...
+I (3167) ts_ssh_hosts_cfg: NVS has 0 hosts, will load from SD card in background
+I (3172) ts_ssh_hosts_cfg: SSH hosts config initialized (SD card loading deferred)
+I (3215) ts_ssh_cmd_cfg: NVS has 6 commands, will load from SD card in background
+I (3216) ts_ssh_cmd_cfg: SSH commands config initialized (SD card loading deferred)
+[0;32mI (2173) ts_security: Security subsystem initialized[0m
+I (3225) ts_keystore: Initializing secure keystore...
+I (3234) ts_keystore: Keystore initialized
+I (3234) ts_known_hosts: Known hosts module initialized
+I (3397) ts_cert: Initialized, status: activated, has_key=1, has_cert=1
+I (3398) pki_client: PKI client initialized, server=10.10.99.100:57443, device_id=TIANSHAN-DEVICE-001
+I (3402) ts_services: Certificate status: activated, time validity: valid
+I (3409) ts_config_pack: Config pack system initialized, device fingerprint: 50c2e523d3483956...
+I (3417) ts_config_file: Loading encrypted configuration files from: /sdcard/config
+I (3432) ts_service: Service 'security' started in 272 ms
+I (3432) ts_service: === Phase 6: SERVICE ===
+I (3434) ts_service: Starting 3 services in phase SERVICE
+I (3439) ts_service: Starting service: automation
+I (3443) ts_services: Initializing automation service...
+I (3448) ts_automation: Initializing automation engine v1.0.0
+I (3459) ts_source_mgr: Initializing source manager (max 16)
+I (3468) ts_source_mgr: Source manager initialized (loading deferred)
+I (3469) ts_rule_engine: Initializing rule engine (max 32 rules)
+I (3471) ts_rule_engine: Rule engine initialized (loading deferred)
+I (3477) ts_action_mgr: Initializing action manager
+I (3483) ts_action_mgr: Action executor task started (DRAM stack)
+I (3487) ts_action_mgr: Action manager initialized (loading deferred)
+I (3493) ts_automation: Loading config from: /sdcard/config/automation.json
+I (3509) ts_ssh_cmd_cfg: Pre-creating variables for all SSH commands
+[0;32mI (2500) ts_power_policy: Registered 8 automation variables for power policy[0m
+I (3547) ts_automation: Automation engine initialized
+I (3548) ts_services: Starting automation service...
+I (3553) ts_source_mgr: Starting all data sources
+I (3908) ts_config: Saving configuration...
+I (3919) ts_config: Saved configuration to backend 1
+I (3919) ts_config: Configuration saved
+[0;32mI (4041) ts_net_mgr: Ethernet link up[0m
+[0;32mI (4042) ts_net_mgr: Ethernet IP (static/DHCPS): 10.10.99.97[0m
+[0;32mI (4042) ts_net: mDNS disabled by config[0m
+[0;32mI (4046) ts_eth: Ethernet link up[0m
+[0;32mI (4050) ts_eth: Ethernet MAC: 20:6e:f1:a1:d5:8f[0m
+I (5171) ts_source_mgr: Network ready, starting external sources
+I (5171) ts_automation: Automation task started
+I (5171) ts_services: Automation engine running: 0 sources, 0 rules, 36 variables
+I (5177) ts_service: Service 'automation' started in 1734 ms
+I (5190) ts_service: Starting service: https
+I (5191) ts_https: HTTPS server deinitialized
+I (5191) ts_https: HTTPS server initialized (port=443, mTLS=required)
+[0;32mI (4149) ts_dhcps: Starting DHCP server on ethernet...[0m
+I (5197) ts_https_api: Registering permission test endpoints...
+[0;32mI (4156) ts_dhcps: Ethernet IP preserved: 10.10.99.97[0m
+I (5208) ts_https: Registered endpoint: GET / (min_role=anonymous)
+[0;32mI (4168) ts_dhcps: I (5220) ts_https: Registered endpoint: GET /api/auth/whoami (min_role=viewer)
+I (5230) ts_https: Registered endpoint: GET /api/test/viewer (min_role=viewer)
+I (5236) ts_https: Registered endpoint: GET /api/test/operator (min_role=operator)
+Applied config for ethernet:[0m
+I (5246) ts_https: Registered endpoint: GET /api/test/admin (min_role=admin)
+[0;32mI (4199) ts_dhcps:   Gateway: 10.10.99.100[0m
+I (5253) ts_https: Registered endpoint: POST /api/test/admin-action (min_role=admin)
+[0;32mI (4211) ts_dhcps:   Pool:    10.10.99.100 - 10.10.99.103[0m
+I (5265) ts_https: mTLS enabled: client certificates required
+I (5277) esp_https_server: Starting server
+[0;32mI (4225) ts_dhcps:   Lease:   1440 min[0m
+I (5284) esp_https_server: Server listening on port 443
+[0;32mI (4238) ts_dhcps: DHCP server started on ethernet[0m
+I (5291) ts_https: HTTPS server started on port 443 with 6 endpoints
+[0;32mI (4249) ts_eth: DHCP server started via ts_dhcp_server[0m
+I (5253) ts_ssh_cmd_cfg: Deferred: checking SD card for config (NVS has 6 commands)...
+I (5317) ts_ssh_cmd_cfg: SD card has config, clearing NVS and importing...
+I (5197) ts_service: Service 'https' started in 6 ms
+I (5327) ts_service: Starting service: api
+I (5330) ts_services: Initializing API service...
+[0;32mI (4288) ts_api: API endpoints allocated in PSRAM (25344 bytes)[0m
+I (5336) ts_ssh_cmd_cfg: Cleared all SSH commands
+[0;32mI (4294) ts_api: API layer initialized (max 288 endpoints)[0m
+I (5350) ts_ssh_cmd_cfg: Cleared all SSH commands
+I (5352) ts_services: Starting API service...
+I (5365) ts_config_pack: Loaded plain config: /sdcard/config/ssh_commands/Qwen3_6-35B-A3B.json (1095 bytes)
+I (5397) ts_ssh_cmd_cfg: Added SSH command: Qwen3.6-35B-A3B (Qwen3_6-35B-A3B)
+I (5407) ts_config_pack: Loaded plain config: /sdcard/config/ssh_commands/Qwen3-Embedding-0_6B.json (885 bytes)
+[0;32mI (4361) ts_api: Registering all API modules...[0m
+[0;32mI (4366) api_config: Config API registered (11 endpoints)[0m
+[0;32mI (4370) api_device: Registering device APIs[0m
+[0;32mI (4377) api_led: Registering LED APIs[0m
+[0;32mI (4381) api_network: Registering network APIs[0m
+[0;32mI (4388) api_fan: Registering fan APIs[0m
+[0;32mI (4390) api_power: Registering power APIs[0m
+I (5466) ts_ssh_cmd_cfg: Added SSH command: Qwen3-Embedding-0.6B (Qwen3-Embedding-0_6B)
+[0;32mI (4422) api_temp: Registering temperature APIs[0m
+[0;32mI (4427) api_service: Registering service APIs...[0m
+I (5477) ts_config_pack: Loaded plain config: /sdcard/config/ssh_commands/Qwen3-Reranker-0_6B.json (1064 bytes)
+[0;32mI (4431) api_service: Service APIs registered (5 endpoints)[0m
+[0;32mI (4448) api_storage: Registering storage APIs...[0m
+[0;32mI (4468) api_storage: Storage APIs registered (9 endpoints)[0m
+[0;32mI (4468) api_gpio: Registering GPIO APIs...[0m
+[0;32mI (4469) api_gpio: GPIO APIs registered (4 endpoints)[0m
+[0;32mI (4475) api_monitor: Registering monitor APIs...[0m
+[0;32mI (4480) api_monitor: Monitor APIs registered: 6 endpoints[0m
+[0;32mI (4491) api_ssh: Registering SSH APIs...[0m
+I (5557) ts_ssh_cmd_cfg: Added SSH command: Qwen3-Reranker-0.6B (Qwen3-Reranker-0_6B)
+I (5565) ts_config_pack: Loaded plain config: /sdcard/config/ssh_commands/drop.json (395 bytes)
+[0;32mI (4548) api_sftp: Registering SFTP APIs...[0m
+I (5597) ts_api_ota: Registering OTA APIs
+I (5615) ts_ota: Running from partition: ota_0 (addr=0x20000, size=3072 KB)
+I (5616) ts_ota: OTA subsystem initialized
+I (5626) ts_ssh_cmd_cfg: Added SSH command: drop (drop)
+I (5627) ts_api_ota: Loaded OTA server URL: (not set)
+I (5634) ts_config_pack: Loaded plain config: /sdcard/config/ssh_commands/Qwen3_8_27B_Quark_INT4_MTP3.json (672 bytes)
+I (5664) ts_api_ota: Registered 21 OTA API endpoints
+[0;32mI (4621) api_log: Log API endpoints registered[0m
+[0;32mI (4623) api_automation: Registering automation APIs[0m
+I (5679) ts_ssh_hosts_cfg: Deferred: checking SD card for config (NVS has 0 hosts)...
+I (5682) ts_ssh_hosts_cfg: SD card has config, clearing NVS and importing...
+[0;32mI (4639) api_automation: Automation APIs registered[0m
+[0;32mI (4664) api_cert: Certificate APIs registered[0m
+I (5741) ts_ssh_cmd_cfg: Added SSH command: Qwen3.8-27B-Quark-INT4-MTP3 (Qwen3_8_27B_Quark_INT4_MTP3)
+I (5752) ts_ssh_hosts_cfg: Cleared all SSH host configs
+I (5763) ts_ssh_hosts_cfg: Cleared all SSH host configs
+I (5768) ts_config_pack: Loading encrypted config: /sdcard/config/ssh_hosts/rm01@10.10.99.98.tscfg
+[0;32mI (4722) ts_auth: Auth module initialized (version 3)[0m
+I (5774) ts_config_pack: Loaded plain config: /sdcard/config/ssh_commands/quark_stop_repair.json (472 bytes)
+I (5851) ts_ssh_cmd_cfg: Async sync to SD card...
+I (5861) ts_ssh_cmd_cfg: Async sync to SD card...
+I (5882) ts_ssh_cmd_cfg: Added SSH command: Quark进程与内存检查 (quark_stop_repair)
+I (5888) ts_ssh_cmd_cfg: Loaded 6 SSH commands from directory: /sdcard/config/ssh_commands (skipped 0)
+[0;32mI (4860) api_auth: Auth APIs registered[0m
+[0;32mI (4867) api_ui: Registering UI APIs[0m
+[0;32mI (4884) api_config_pack: Config Pack API registered (8 endpoints)[0m
+[0;32mI (4901) ts_api: All API modules registered (263 endpoints)[0m
+I (5956) ts_service: Service 'api' started in 625 ms
+I (5961) ts_service: === Phase 7: UI ===
+I (5965) ts_service: Starting 2 services in phase UI
+I (5973) ts_source_mgr: Deferred source loading started
+I (5973) ts_service: Starting service: console
+I (5998) ts_services: Initializing console service...
+[0;32mI (4955) ts_i18n: I18n initialized, language: English[0m
+I (6021) ts_ssh_cmd_cfg: Exported 6 SSH commands to /sdcard/config/ssh_commands/
+[0;32mI (4986) ts_console: Console initialized[0m
+[0;32mI (5004) cmd_register: Registering all console commands...[0m
+[0;32mI (5029) cmd_system: System commands registered[0m
+[0;32mI (5045) cmd_service: Service commands registered[0m
+[0;32mI (5054) cmd_config: Config commands registered (with pack support)[0m
+[0;32mI (5080) cmd_fan: Fan commands registered (API mode)[0m
+[0;32mI (5093) cmd_storage: Storage commands registered[0m
+I (6161) ts_ssh_cmd_cfg: Exported 6 SSH commands to /sdcard/config/ssh_commands/
+I (6193) ts_ssh_cmd_cfg: Loaded 6 commands from SD card (.tscfg > .json)
+[0;32mI (5154) cmd_net: Network commands registered[0m
+[0;32mI (5156) cmd_device: Device commands registered[0m
+[0;32mI (5160) cmd_led: LED commands registered[0m
+[0;32mI (5162) cmd_wifi: WiFi commands registered[0m
+[0;32mI (5173) ts_nat: Initializing NAT module[0m
+[0;32mI (5174) ts_nat: No saved NAT config, using defaults[0m
+[0;32mI (5176) ts_nat: NAT module initialized (auto_start=yes)[0m
+[0;32mI (5195) cmd_key: Registered command: key[0m
+[0;32mI (5197) cmd_ssh: Registered command: ssh[0m
+I (6216) ts_config_pack: Loaded plain config: /sdcard/config/sources/agx-info.json (192 bytes)
+I (6253) ts_ssh_hosts_cfg: Async sync to SD card...
+[0;32mI (5199) cmd_sftp: Registered command: sftp[0m
+I (6262) ts_ssh_hosts_cfg: Exported 0 SSH hosts to /sdcard/config/ssh_hosts/
+I (6264) ts_ssh_hosts_cfg: Async sync to SD card...
+[0;32mI (5217) cmd_hosts: Registered command: hosts[0m
+I (6285) ts_ssh_hosts_cfg: Exported 0 SSH hosts to /sdcard/config/ssh_hosts/
+I (6265) ts_source_mgr: Loaded 1 sources from directory: /sdcard/config/sources
+I (6298) ts_source_mgr: Loaded 1 sources from SD card directory
+[0;32mI (5242) cmd_fs: File system commands registered: 9 succeeded, 0 failed[0m
+I (6325) cmd_gpio: GPIO command registered (high priority)
+I (6328) cmd_ota: OTA command registered
+[0;32mI (5283) cmd_pki: Registered 'pki' command[0m
+I (6332) cmd_auto: Command 'auto' registered
+[0;32mI (5287) cmd_register: Command registration complete: 24 succeeded, 0 failed[0m
+I (6346) ts_services: Starting console service...
+[0;32mI (5301) ts_console: Console task started[0m
+TianShanOS> I (6350) ts_source_mgr: Exported 1 sources to directory: /sdcard/config/sources
+I (6365) ts_source_mgr: Saved 1 sources to NVS and SD card
+I (6366) ts_source_mgr: Deferred source loading complete: 1 sources
+I (6372) ts_config_pack: Successfully loaded encrypted config: /sdcard/config/ssh_hosts/rm01@10.10.99.98.tscfg
+[0;32mI (5302) ts_console: Console started[0m
+I (6378) ts_source_mgr: Starting loaded data sources...
+W (6399) ts_ssh_hosts_cfg: SD card import failed: ESP_ERR_NOT_FOUND
+I (6400) ts_source_mgr: Starting all data sources
+I (6411) ts_source_mgr: Network ready, starting external sources
+I (6412) ts_source_mgr: Starting Socket.IO source: agx-info
+I (6424) ts_source_mgr: SIO [agx-info] connection started
+I (6405) ts_service: Service 'console' started in 407 ms
+I (6427) ts_service: Starting service: webui
+I (6447) websocket_client: Started
+I (6450) ts_services: Initializing WebUI service...
+I (6471) ts_rule_engine: Deferred rule loading started
+I (6485) ts_config_pack: Loaded plain config: /sdcard/config/rules/Qwen3.6-35B-A3B.json (281 bytes)
+I (6508) ts_config_pack: Loaded plain config: /sdcard/config/rules/Qwen3-Embedding-0.6B.json (301 bytes)
+I (6529) ts_config_pack: Loaded plain config: /sdcard/config/rules/Qwen3-Reranker-0.6B.json (297 bytes)
+I (6555) ts_config_pack: Loaded plain config: /sdcard/config/rules/drop.json (245 bytes)
+I (6575) ts_config_pack: Loaded plain config: /sdcard/config/rules/Qwen3_8_27B_Quark_INT4_MTP3.json (324 bytes)
+I (6579) ts_rule_engine: Deferred rule loading complete: 5 rules
+I (6814) ts_services: Mounted www partition at /www (2541877/2884241 bytes)
+[0;32mI (5768) ts_webui: Initializing WebUI[0m
+[0;32mI (5769) ts_http: HTTP server initialized[0m
+[0;32mI (5780) ts_webui: WebUI initialized[0m
+I (6827) ts_services: Starting WebUI service...
+[0;32mI (5783) ts_http: HTTP server started on port 80[0m
+[0;32mI (5794) webui_api: Initializing API routes[0m
+[0;32mI (5797) webui_api: API routes registered[0m
+[0;32mI (5798) webui_ws: Initializing WebSocket with Terminal support[0m
+[0;32mI (5809) webui_ws: Terminal buffer allocated in PSRAM (32768 bytes)[0m
+[0;32mI (5811) webui_ws: Power policy event handler registered[0m
+[0;32mI (5822) webui_ws: WebSocket handler registered at /ws[0m
+[0;32mI (5823) ts_webui: WebUI started[0m
+I (6881) ts_services: WebUI server started on port 80
+I (6882) ts_service: Service 'webui' started in 432 ms
+I (6882) ts_service: All services started in 4969 ms
+I (6894) ts_core: TianShanOS started
+I (6894) main: TianShanOS started successfully!
+I (6895) main: Build: Sep 28 2026 18:02:01
+I (6906) ts_service: === Service Status ===
+I (6907) ts_service: Total: 12, Running: 12, Stopped: 0, Error: 0
+I (6918) ts_service: Startup time: 4969 ms
+I (6918) ts_service:   [SERVICE] automation - RUNNING (1734 ms)
+I (6919) ts_service:   [UI] console - RUNNING (407 ms)
+I (6934) ts_service:   [UI] webui - RUNNING (432 ms)
+I (6935) ts_service:   [SERVICE] https - RUNNING (6 ms)
+I (6936) ts_service:   [SERVICE] api - RUNNING (625 ms)
+I (6947) ts_service:   [SECURITY] security - RUNNING (272 ms)
+I (6948) ts_service:   [NETWORK] network - RUNNING (237 ms)
+I (6959) ts_service:   [DRIVER] power - RUNNING (123 ms)
+I (6960) ts_service:   [DRIVER] drivers - RUNNING (169 ms)
+I (6973) ts_service:   [DRIVER] led - RUNNING (178 ms)
+I (6974) ts_service:   [DRIVER] storage - RUNNING (282 ms)
+I (6975) ts_service:   [HAL] hal - RUNNING (89 ms)
+I (6986) ts_service: ======================
+I (6986) main: Entering main loop...
+I (6988) ts_action_mgr: Deferred action template loading started
+I (7008) ts_config_pack: Loaded plain config: /sdcard/config/actions/Qwen3.6-35B-A3B.json (190 bytes)
+I (7016) ts_config_pack: Loaded plain config: /sdcard/config/actions/Qwen3-Embedding-0.6B.json (205 bytes)
+I (7024) ts_config_pack: Loaded plain config: /sdcard/config/actions/Qwen3-Reranker-0.6B.json (202 bytes)
+I (7032) ts_config_pack: Loaded plain config: /sdcard/config/actions/drop.json (157 bytes)
+I (7041) ts_config_pack: Loaded plain config: /sdcard/config/actions/Qwen3_8_27B_Quark_INT4_MTP3.json (272 bytes)
+I (7054) ts_action_mgr: Loaded 5 templates from directory: /sdcard/config/actions
+I (7055) ts_action_mgr: Loaded 5 action templates from SD card directory
+I (7184) ts_action_mgr: Exported 5 templates to directory: /sdcard/config/actions
+I (7186) ts_action_mgr: Saved 5 action templates to NVS and SD card
+I (7197) ts_action_mgr: Deferred action template loading complete: 5 templates
+[0;32mI (7088) ts_device: LPMU startup detection: checking if LPMU is online...[0m
+[0;32mI (7093) ts_device: LPMU detected online at 10.10.99.99, setting state to ON[0m
+I (94537) ts_config_pack: Loaded plain config: /sdcard/config/ui_widgets.json (480 bytes)
+[0;32mI (93493) api_ui: Loaded widgets from SD card[0m
+[0;32mI (93494) api_ui: Loaded UI widgets config (source: sdcard)[0m
+[0;32mI (96487) ts_security: Session created: 386af091[0m
+[0;32mI (96488) ts_auth: User root logged in (level 4, session 386af091)[0m
+I (97706) ts_config_pack: Loaded plain config: /sdcard/config/ui_widgets.json (480 bytes)
+[0;32mI (96661) api_ui: Loaded widgets from SD card[0m
+[0;32mI (96663) api_ui: Loaded UI widgets config (source: sdcard)[0m
+[0;32mI (99383) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+[0;32mI (112607) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (113659) ts_ssh: SSH client initialized (libssh2 version: 1.10.1_DEV)
+I (114229) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (114454) ts_shell: Interactive shell opened
+
+TianShanOS Console Commands
+============================
+
+[System]
+  hexdump
+  mv
+  cp
+  rm
+  mkdir
+  pwd
+  cd
+  cat
+  ls
+  dhcp
+  storage
+  service
+  system
+  lang
+  echo
+  clear
+  reboot
+  sysinfo
+  version
+  help
+
+[Configuration]
+  config
+
+[LED]
+  led
+
+[Fan]
+  fan
+
+[Network]
+  wifi
+  net
+
+[Device]
+  device
+
+[Debug]
+  log
+  free
+  tasks
+
+Use '<command> --help' for command details
+
+[0;32mI (334884) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (336502) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (336710) ts_shell: Interactive shell opened
+[0;32mI (377695) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (379307) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (379712) ts_shell: Interactive shell opened
+[0;32mI (434939) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (436558) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (436971) ts_shell: Interactive shell opened
+[0;32mI (505756) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (507371) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (507731) ts_shell: Interactive shell opened
+[0;32mI (544589) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (546199) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (546489) ts_shell: Interactive shell opened
+[0;32mI (598411) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (600027) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (600239) ts_shell: Interactive shell opened
+[0;32mI (650760) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (652371) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (652745) ts_shell: Interactive shell opened
+[0;32mI (711464) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (713083) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (713493) ts_shell: Interactive shell opened
+[0;32mI (760262) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (761875) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (762246) ts_shell: Interactive shell opened
+[0;32mI (788583) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (789816) ts_config_pack: Loaded plain config: /sdcard/config/ui_widgets.json (480 bytes)
+[0;32mI (788772) api_ui: Loaded widgets from SD card[0m
+[0;32mI (788773) api_ui: Loaded UI widgets config (source: sdcard)[0m

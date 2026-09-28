@@ -50,6 +50,7 @@
 
 /* SSH Shell 输出缓冲区大小 */
 #define SSH_OUTPUT_BUF_SIZE 2048
+#define SSH_POLL_STACK_SIZE 8192
 
 typedef enum {
     WS_CLIENT_TYPE_EVENT,      // 普通事件订阅客户端
@@ -271,7 +272,7 @@ static void ssh_poll_task(void *arg)
     }
     shell_resources_close(ctx);
     ts_ws_op_executor_done(op);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 static void ssh_cleanup(void)
 {
@@ -308,7 +309,7 @@ static void handle_ssh_connect(httpd_req_t *req,cJSON *params)
     error="Failed to open shell";
     if(ts_ssh_shell_open(ctx->session,&shell_config,&ctx->shell)!=ESP_OK)goto failed;
     ts_ws_op_executor_take(op);
-    if(xTaskCreateWithCaps(ssh_poll_task,"ssh_poll",4096,ctx,5,NULL,MALLOC_CAP_SPIRAM)!=pdPASS){ts_ws_op_executor_done(op);error="Failed to create SSH session";goto failed;}
+    if(xTaskCreateWithCaps(ssh_poll_task,"ssh_poll",SSH_POLL_STACK_SIZE,ctx,5,NULL,MALLOC_CAP_SPIRAM)!=pdPASS){ts_ws_op_executor_done(op);error="Failed to create SSH session";goto failed;}
     poller=true;error="SSH shell closed during startup";
     if(!ts_ssh_shell_is_active(ctx->shell))goto failed;
     error="SSH readiness delivery failed";

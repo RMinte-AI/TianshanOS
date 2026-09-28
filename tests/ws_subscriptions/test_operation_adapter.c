@@ -42,6 +42,8 @@ static char *host_strdup(const char *s){size_t n=strlen(s)+1;char *p=tracked_mal
 static char *host_strndup(const char *s,size_t n){char *p=tracked_malloc(n+1);if(p){memcpy(p,s,n);p[n]=0;}return p;}
 static struct {void (*fn)(void *);void *arg;} shell_task,exec_task;
 static bool task_create_fail,close_during_create,inline_exec;
+static unsigned caps_deletes;
+static void adapter_delete_caps(TaskHandle_t task);
 static int adapter_create(void(*fn)(void*),const char *name,unsigned stack,void *arg,unsigned priority,TaskHandle_t *out){
  (void)stack;(void)priority;(void)out;if(task_create_fail)return 0;
  if(!strcmp(name,"ssh_poll"))shell_task=(typeof(shell_task)){fn,arg};else exec_task=(typeof(exec_task)){fn,arg};
@@ -58,7 +60,9 @@ static int adapter_create_caps(void(*fn)(void*),const char *n,unsigned stack,voi
 #define heap_caps_calloc host_heap_calloc
 #define xTaskCreate adapter_create
 #define xTaskCreateWithCaps adapter_create_caps
+#define vTaskDeleteWithCaps adapter_delete_caps
 #include "ts_webui_ws.c"
+_Static_assert(SSH_POLL_STACK_SIZE == 8192, "SSH poll stack budget is bytes");
 #undef malloc
 #undef calloc
 #undef free
@@ -68,6 +72,7 @@ static int adapter_create_caps(void(*fn)(void*),const char *n,unsigned stack,voi
 #undef heap_caps_calloc
 #undef xTaskCreate
 #undef xTaskCreateWithCaps
+#undef vTaskDeleteWithCaps
 #ifndef PROJECT_REAL_DRIVER
 struct ts_ssh_session_s {bool aborted;ts_ssh_config_t config;};
 #endif
@@ -130,11 +135,21 @@ esp_err_t ts_log_remove_callback(ts_log_callback_handle_t h){(void)h;return remo
 size_t ts_log_buffer_search(ts_log_entry_t *e,size_t n,ts_log_level_t min,ts_log_level_t max,const char *tag,const char *keyword){(void)e;(void)n;(void)min;(void)max;(void)tag;(void)keyword;return 0;}
 httpd_handle_t ts_http_server_get_handle(void){return (void*)11;}
 void ts_http_server_set_stop_hooks(esp_err_t(*stop)(httpd_handle_t),void(*stopped)(httpd_handle_t)){(void)stop;(void)stopped;}
-static int adapter_create_caps(void(*fn)(void*),const char*n,unsigned stack,void*arg,unsigned p,TaskHandle_t*out,unsigned caps){(void)caps;
+static int adapter_create_caps(void(*fn)(void*),const char*n,unsigned stack,void*arg,unsigned p,TaskHandle_t*out,unsigned caps){
+assert(!strcmp(n,"ssh_poll") && stack==8192 && caps==MALLOC_CAP_SPIRAM);
 #ifndef PROJECT_REAL_DRIVER
 if(close_during_create)((ssh_shell_context_t*)arg)->shell->active=false;
 #endif
 return adapter_create(fn,n,stack,arg,p,out);}
+static void adapter_delete_caps(TaskHandle_t task){
+ assert(!task);
+ ts_ws_op_stats_t ledger;ts_ws_op_stats(TS_WS_OP_SHELL,&ledger);
+ assert(!ledger.executors);
+ /* The original context remains pinned until queued terminal settlement. */
+ ts_ws_operation_t *op=ts_ws_op_shell_owner();
+ if(op){ssh_shell_context_t *ctx=ts_ws_op_data(op);assert(!ctx->shell && !ctx->session);ts_ws_op_release(op);}
+ caps_deletes++;
+}
 static void drive_all(void){for(unsigned i=0;i<12;i++){ts_ws_op_poll();pump();timer_pump();}assert(!timer_queued);}
 static void setup(void){start();memset(s_clients,0,sizeof(s_clients));s_server=(void*)11;s_ws_stopping=false;ts_ws_op_enable();transport_server.closed=peer_closed;for(int fd=1;fd<=2;fd++){reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};current=(void*)3;assert(add_client(&reqs[fd],WS_CLIENT_TYPE_EVENT)==ESP_OK);}current=(void*)1;}
 static void finish_all(void){drive_all();assert(!ts_ws_op_busy());stop();assert(!live_allocations);}
@@ -292,6 +307,13 @@ int main(void){
  assert(ts_webui_ssh_exec_start_ex("fake",22,"user",NULL,"password","cmd",&opts,&id)==0);
  exec_task.fn(exec_task.arg);drive_all();assert(terminal_frames==2 && !output_after_terminal && variable_writes);finish_all();
  setup();inline_exec=true;assert(ts_webui_ssh_exec_start("fake",22,"user",NULL,"password","cmd",&id)==0);inline_exec=false;finish_all();
+ for(unsigned i=0;i<10;i++){
+  setup();connect_shell();unsigned before=caps_deletes;
+  ssh_cleanup();shell_task.fn(shell_task.arg);
+  assert(caps_deletes==before+1);finish_all();
+  ts_ws_op_stats_t ledger;ts_ws_op_stats(TS_WS_OP_SHELL,&ledger);
+  assert(ledger.phase==OP_FREE && !ledger.refs && !ledger.executors);
+ }
  operation_cross_tests();
  printf("PASS complete production WS unit: Shell output failure/close/startup failure, Exec task/callback/match/variables/timer cleanup and task-before-create-return; destroyed=%u\n",session_destroys);
  return 0;

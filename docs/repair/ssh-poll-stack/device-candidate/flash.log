@@ -1,0 +1,233 @@
+Checking "python3" ...
+Python 3.12.4
+"python3" has been detected
+Activating ESP-IDF 5.5
+Setting IDF_PATH to '/Users/massif/esp/v5.5.2/esp-idf'.
+* Checking python version ... 3.12.4
+* Checking python dependencies ... OK
+* Deactivating the current ESP-IDF environment (if any) ... OK
+* Establishing a new ESP-IDF environment ... OK
+* Identifying shell ... zsh
+* Detecting outdated tools in system ... Found tools that are not used by active ESP-IDF version.
+For removing old versions of riscv32-esp-elf, cmake, xtensa-esp-elf, openocd-esp32, esp-rom-elfs, xtensa-esp-elf-gdb, riscv32-esp-elf-gdb use command 'python /Users/massif/esp/v5.5.2/esp-idf/tools/idf_tools.py uninstall'
+To free up even more space, remove installation packages of those tools.
+Use option python /Users/massif/esp/v5.5.2/esp-idf/tools/idf_tools.py uninstall --remove-archives.
+* Shell completion ... Autocompletion code generated
+
+Done! You can now compile ESP-IDF projects.
+Go to the project directory and run:
+
+  idf.py build
+Executing action: flash
+Running ninja in directory /private/tmp/tianshan-ssh-stack-candidate/build
+Executing "ninja flash"...
+[1/6] cd /tmp/tianshan-ssh-stack-candidate/build/esp-idf/esptool_py && /Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /tmp/tianshan-ssh-stack-candidate/build/partition_table/partition-table.bin /tmp/tianshan-ssh-stack-candidate/build/TianShanOS.bin
+TianShanOS.bin binary size 0x215120 bytes. Smallest app partition is 0x300000 bytes. 0xeaee0 bytes (31%) free.
+[2/6] Performing build step for 'bootloader'
+[1/1] cd /tmp/tianshan-ssh-stack-candidate/build/bootloader/esp-idf/esptool_py && /Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /tmp/tianshan-ssh-stack-candidate/build/bootloader/bootloader.bin
+Bootloader binary size 0x57e0 bytes. 0x2820 bytes (31%) free.
+[3/6] No install step for 'bootloader'
+[4/6] cd /tmp/tianshan-ssh-stack-candidate/build/esp-idf/ts_webui && /Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/spiffs/spiffsgen.py 0x300000 /tmp/tianshan-ssh-stack-candidate/build/esp-idf/ts_webui/web_optimized /tmp/tianshan-ssh-stack-candidate/build/www.bin --page-size=256 --obj-name-len=32 --meta-len=4 --use-magic --use-magic-len
+[5/6] Completed 'bootloader'
+[5/6] cd /Users/massif/esp/v5.5.2/esp-idf/components/esptool_py && /Users/massif/.espressif/tools/cmake/3.30.2/CMake.app/Contents/bin/cmake -D IDF_PATH=/Users/massif/esp/v5.5.2/esp-idf -D "SERIAL_TOOL=/Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python;;/Users/massif/esp/v5.5.2/esp-idf/components/esptool_py/esptool/esptool.py;--chip;esp32s3" -D "SERIAL_TOOL_ARGS=--before=default_reset;--after=hard_reset;write_flash;@flash_args" -D WORKING_DIRECTORY=/tmp/tianshan-ssh-stack-candidate/build -P /Users/massif/esp/v5.5.2/esp-idf/components/esptool_py/run_serial_tool.cmake
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem11401 -b 460800 --before=default_reset --after=hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB 0x0 bootloader/bootloader.bin 0x20000 TianShanOS.bin 0x8000 partition_table/partition-table.bin 0x16000 ota_data_initial.bin 0x6a0000 www.bin
+esptool.py v4.12.dev2
+Serial port /dev/cu.usbmodem11401
+Connecting...
+Chip is ESP32-S3 (QFN56) (revision v0.2)
+Features: WiFi, BLE, Embedded PSRAM 8MB (AP_3v3)
+Crystal is 40MHz
+USB mode: USB-Serial/JTAG
+MAC: 20:6e:f1:a1:d5:8c
+Uploading stub...
+Running stub...
+Stub running...
+Changing baud rate to 460800
+Changed.
+Configuring flash size...
+Flash will be erased from 0x00000000 to 0x00005fff...
+Flash will be erased from 0x00020000 to 0x00235fff...
+Flash will be erased from 0x00008000 to 0x00008fff...
+Flash will be erased from 0x00016000 to 0x00017fff...
+Flash will be erased from 0x006a0000 to 0x0099ffff...
+SHA digest in image updated
+Compressed 22496 bytes to 14268...
+Writing at 0x00000000... (100 %)
+Wrote 22496 bytes (14268 compressed) at 0x00000000 in 0.2 seconds (effective 772.9 kbit/s)...
+Hash of data verified.
+Compressed 2183456 bytes to 1263518...
+Writing at 0x00020000... (1 %)
+Writing at 0x0002d6dd... (2 %)
+Writing at 0x0003a71d... (3 %)
+Writing at 0x000484b4... (5 %)
+Writing at 0x0005521d... (6 %)
+Writing at 0x00063d24... (7 %)
+Writing at 0x00072802... (8 %)
+Writing at 0x0008112c... (10 %)
+Writing at 0x0008ccac... (11 %)
+Writing at 0x00091c05... (12 %)
+Writing at 0x00097a9e... (14 %)
+Writing at 0x0009c625... (15 %)
+Writing at 0x000a1481... (16 %)
+Writing at 0x000a67ff... (17 %)
+Writing at 0x000ae703... (19 %)
+Writing at 0x000ba623... (20 %)
+Writing at 0x000c1041... (21 %)
+Writing at 0x000c81ff... (23 %)
+Writing at 0x000ce459... (24 %)
+Writing at 0x000d50ef... (25 %)
+Writing at 0x000db231... (26 %)
+Writing at 0x000e15af... (28 %)
+Writing at 0x000e7467... (29 %)
+Writing at 0x000ed190... (30 %)
+Writing at 0x000f2f45... (32 %)
+Writing at 0x000f88c0... (33 %)
+Writing at 0x000fe6c4... (34 %)
+Writing at 0x001043db... (35 %)
+Writing at 0x0010aa9a... (37 %)
+Writing at 0x001103e6... (38 %)
+Writing at 0x001161f1... (39 %)
+Writing at 0x0011c34d... (41 %)
+Writing at 0x001224fd... (42 %)
+Writing at 0x00128680... (43 %)
+Writing at 0x0012e957... (44 %)
+Writing at 0x00134ac3... (46 %)
+Writing at 0x0013abb4... (47 %)
+Writing at 0x001411d5... (48 %)
+Writing at 0x00147993... (50 %)
+Writing at 0x0014dba3... (51 %)
+Writing at 0x0015441e... (52 %)
+Writing at 0x0015a5a0... (53 %)
+Writing at 0x00160d44... (55 %)
+Writing at 0x00166ef8... (56 %)
+Writing at 0x0016cf42... (57 %)
+Writing at 0x001737ac... (58 %)
+Writing at 0x001794f2... (60 %)
+Writing at 0x0017f67f... (61 %)
+Writing at 0x0018593a... (62 %)
+Writing at 0x0018bacf... (64 %)
+Writing at 0x00191cc1... (65 %)
+Writing at 0x001978b4... (66 %)
+Writing at 0x0019d7aa... (67 %)
+Writing at 0x001a362b... (69 %)
+Writing at 0x001a91c2... (70 %)
+Writing at 0x001af3d3... (71 %)
+Writing at 0x001b563e... (73 %)
+Writing at 0x001bbb88... (74 %)
+Writing at 0x001c1f49... (75 %)
+Writing at 0x001c7e5e... (76 %)
+Writing at 0x001cd96b... (78 %)
+Writing at 0x001d3bcc... (79 %)
+Writing at 0x001d98fb... (80 %)
+Writing at 0x001df9f1... (82 %)
+Writing at 0x001e4ef4... (83 %)
+Writing at 0x001ea174... (84 %)
+Writing at 0x001ef7a2... (85 %)
+Writing at 0x001f49c0... (87 %)
+Writing at 0x001faa91... (88 %)
+Writing at 0x002002da... (89 %)
+Writing at 0x0020673c... (91 %)
+Writing at 0x0020d4a7... (92 %)
+Writing at 0x00214a5f... (93 %)
+Writing at 0x0021b72f... (94 %)
+Writing at 0x00221ae7... (96 %)
+Writing at 0x00227b2f... (97 %)
+Writing at 0x0022e27b... (98 %)
+Writing at 0x00234311... (100 %)
+Wrote 2183456 bytes (1263518 compressed) at 0x00020000 in 11.6 seconds (effective 1512.2 kbit/s)...
+Hash of data verified.
+Compressed 3072 bytes to 180...
+Writing at 0x00008000... (100 %)
+Wrote 3072 bytes (180 compressed) at 0x00008000 in 0.0 seconds (effective 726.3 kbit/s)...
+Hash of data verified.
+Compressed 8192 bytes to 31...
+Writing at 0x00016000... (100 %)
+Wrote 8192 bytes (31 compressed) at 0x00016000 in 0.0 seconds (effective 1425.2 kbit/s)...
+Hash of data verified.
+Compressed 3145728 bytes to 1301907...
+Writing at 0x006a0000... (1 %)
+Writing at 0x006a457e... (2 %)
+Writing at 0x006a89e3... (3 %)
+Writing at 0x006b047c... (5 %)
+Writing at 0x006baf69... (6 %)
+Writing at 0x006d1206... (7 %)
+Writing at 0x006da3ed... (8 %)
+Writing at 0x006def13... (10 %)
+Writing at 0x006e398f... (11 %)
+Writing at 0x006e81c3... (12 %)
+Writing at 0x006ec7fd... (13 %)
+Writing at 0x006f0d22... (15 %)
+Writing at 0x006f5a46... (16 %)
+Writing at 0x006faa98... (17 %)
+Writing at 0x006fefab... (18 %)
+Writing at 0x007035af... (20 %)
+Writing at 0x007082a8... (21 %)
+Writing at 0x0070c80f... (22 %)
+Writing at 0x007122f1... (23 %)
+Writing at 0x007195c7... (25 %)
+Writing at 0x0071e795... (26 %)
+Writing at 0x00724b4d... (27 %)
+Writing at 0x00729ad6... (28 %)
+Writing at 0x0072de98... (30 %)
+Writing at 0x00732372... (31 %)
+Writing at 0x00736749... (32 %)
+Writing at 0x0073ab18... (33 %)
+Writing at 0x0073eee3... (35 %)
+Writing at 0x007433b1... (36 %)
+Writing at 0x007477a8... (37 %)
+Writing at 0x0074bb76... (38 %)
+Writing at 0x0074ff3f... (40 %)
+Writing at 0x0075447a... (41 %)
+Writing at 0x0075c5f8... (42 %)
+Writing at 0x00769000... (43 %)
+Writing at 0x00778601... (45 %)
+Writing at 0x00789b0f... (46 %)
+Writing at 0x0079ac96... (47 %)
+Writing at 0x007af271... (48 %)
+Writing at 0x007bf6f8... (50 %)
+Writing at 0x007d0f1b... (51 %)
+Writing at 0x007e45da... (52 %)
+Writing at 0x007f75ac... (53 %)
+Writing at 0x00807e03... (55 %)
+Writing at 0x0081a13e... (56 %)
+Writing at 0x0082d777... (57 %)
+Writing at 0x0083fde1... (58 %)
+Writing at 0x0085163b... (60 %)
+Writing at 0x0085ee5a... (61 %)
+Writing at 0x0086c200... (62 %)
+Writing at 0x008775dc... (63 %)
+Writing at 0x00883eaf... (65 %)
+Writing at 0x008903ff... (66 %)
+Writing at 0x00897717... (67 %)
+Writing at 0x0089ba87... (68 %)
+Writing at 0x0089feb5... (70 %)
+Writing at 0x008a4410... (71 %)
+Writing at 0x008a884e... (72 %)
+Writing at 0x008acbf6... (73 %)
+Writing at 0x008b17d0... (75 %)
+Writing at 0x008b5b99... (76 %)
+Writing at 0x008b9f62... (77 %)
+Writing at 0x008be429... (78 %)
+Writing at 0x008c27e8... (80 %)
+Writing at 0x008c6bba... (81 %)
+Writing at 0x008caf7b... (82 %)
+Writing at 0x008cf43f... (83 %)
+Writing at 0x008d3802... (85 %)
+Writing at 0x008d7bc6... (86 %)
+Writing at 0x008dbf87... (87 %)
+Writing at 0x008e0a40... (88 %)
+Writing at 0x008e6b82... (90 %)
+Writing at 0x008eaf45... (91 %)
+Writing at 0x008ef3fe... (92 %)
+Writing at 0x008f3874... (93 %)
+Writing at 0x008fc62d... (95 %)
+Writing at 0x0090dc54... (96 %)
+Writing at 0x0091db75... (97 %)
+Writing at 0x0092f6a7... (98 %)
+Writing at 0x0093dbfb... (100 %)
+Wrote 3145728 bytes (1301907 compressed) at 0x006a0000 in 14.5 seconds (effective 1737.0 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting via RTS pin...
+Done

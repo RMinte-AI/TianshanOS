@@ -1,0 +1,30 @@
+ need_streaming=0, current=0[0m
+[0;32mI (92696) webui_ws: update_log_stream_state: need_streaming=0, current=0[0m
+I (93748) ts_ssh: SSH client initialized (libssh2 version: 1.10.1_DEV)
+I (94318) ts_known_hosts: Host key verified: 10.10.99.98:22
+I (94718) ts_shell: Interactive shell opened
+
+***ERROR*** A stack overflow in task ssh_poll has been detected.
+
+
+Backtrace: 0x4037ebfd:0x3c2dc980 0x4037ebc5:0x3c2dc9a0 0x4037fcf2:0x3c2dc9c0 0x40381793:0x3c2dca40 0x4037fdb8:0x3c2dca60 0x4037fdae:0xa5a5a5a5 |<-CORRUPTED
+
+
+
+
+ELF file SHA256: 6265f4e96
+
+Rebooting...
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037ed9d
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x1700
+load:0x403c8700,len:0xec0
+load:0x403cb700,len:0x31c0
+entry 0x403c894c
+I (24) boot: ESP-IDF v5.5.2 2nd stage bootloader
+I (24) boot: compile time Sep 28 2026 17:09:05
+I (24) boot: M
