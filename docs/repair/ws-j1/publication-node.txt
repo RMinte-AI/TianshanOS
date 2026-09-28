@@ -1,0 +1,10 @@
+✔ zh-CN: J1 power alerts preserve local line, SSH ownership, transition guards and filtering (16.265167ms)
+✔ en-US: J1 power alerts preserve local line, SSH ownership, transition guards and filtering (5.204708ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 65.025875

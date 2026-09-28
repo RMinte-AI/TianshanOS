@@ -1,0 +1,6 @@
+PASS real Shell+client: zero data is not EOF; EOF then close releases wrapper/channel/session/socket; close callback exactly once
+PASS real Shell+client: fatal write/timeout retires channel; persistent close EAGAIN falls back to local session teardown without waiting
+PASS real Shell+client: partial initialization/open/PTY/shell-start failure and bounded EAGAIN all release owned resources
+PASS Shell run: local exit requested by input callback stops before another network read; close still owns cleanup
+PASS actual WebUI cleanup twice uses cleared handles; original operation/ticket/target and actual lower resources drain
+PASS real lower resources survive stop timeout; accepted output and terminal drain on retry with no new business message

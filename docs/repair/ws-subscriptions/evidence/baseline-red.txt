@@ -1,0 +1,14 @@
+T02 no subscribers: API reads=7 (expected 0)
+Expected business assertion failure: T02
+T05 before next deadline: API reads=7 (expected 0)
+Expected business assertion failure: T05
+T06/T07 2 targets, 3 connected: global broadcast calls=2 => 6 frames (expected 2 targeted frames)
+Expected business assertion failure: T07
+In file included from tests/ws_subscriptions/test_event.c:4:
+/tmp/ts-ws-baseline.WTMhh8/ts_event.c:721:23: warning: result of comparison against a string literal is unspecified (use an explicit string comparison function instead) [-Wstring-compare]
+  721 |     if (handler->base != TS_EVENT_ANY_BASE && handler->base != NULL) {
+      |                       ^  ~~~~~~~~~~~~~~~~~
+1 warning generated.
+./tests/ws_subscriptions/run_baseline.sh: line 24: 98428 Abort trap: 6           "$build/event" > "$build/event.log" 2>&1
+==98428==ERROR: AddressSanitizer: heap-use-after-free on address 0x6040000009b0 at pc 0x00010430885c bp 0x00016bafa010 sp 0x00016bafa008
+Expected T32 baseline failure: actual dispatch accesses self-unregistered freed node

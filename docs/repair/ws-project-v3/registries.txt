@@ -1,0 +1,68 @@
+main/ts_services.c:627:    esp_err_t ret = ts_api_register_all();
+main/ts_services.c:1032:    .name = "hal",
+main/ts_services.c:1044:    .name = "storage",
+main/ts_services.c:1056:    .name = "led",
+main/ts_services.c:1068:    .name = "drivers",
+main/ts_services.c:1080:    .name = "power",
+main/ts_services.c:1092:    .name = "network",
+main/ts_services.c:1104:    .name = "security",
+main/ts_services.c:1116:    .name = "api",
+main/ts_services.c:1128:    .name = "https",
+main/ts_services.c:1140:    .name = "webui",
+main/ts_services.c:1152:    .name = "console",
+main/ts_services.c:1164:    .name = "automation",
+main/ts_services.c:1186:    ret = ts_service_register(&s_hal_service_def, &s_hal_handle);
+main/ts_services.c:1194:    ret = ts_service_register(&s_storage_service_def, &s_storage_handle);
+main/ts_services.c:1202:    ret = ts_service_register(&s_led_service_def, &s_led_handle);
+main/ts_services.c:1210:    ret = ts_service_register(&s_drivers_service_def, &s_drivers_handle);
+main/ts_services.c:1218:    ret = ts_service_register(&s_power_service_def, &s_power_handle);
+main/ts_services.c:1226:    ret = ts_service_register(&s_network_service_def, &s_network_handle);
+main/ts_services.c:1234:    ret = ts_service_register(&s_security_service_def, &s_security_handle);
+main/ts_services.c:1242:    ret = ts_service_register(&s_api_service_def, &s_api_handle);
+main/ts_services.c:1250:    ret = ts_service_register(&s_https_service_def, &s_https_handle);
+main/ts_services.c:1258:    ret = ts_service_register(&s_webui_service_def, &s_webui_handle);
+main/ts_services.c:1266:    ret = ts_service_register(&s_console_service_def, &s_console_handle);
+main/ts_services.c:1274:    ret = ts_service_register(&s_automation_service_def, &s_automation_handle);
+components/ts_webui/src/ts_webui_ws.c:990:        .uri = "/ws",
+components/ts_api/src/ts_api_ssh.c:2415:        .name = "ssh.exec",
+components/ts_api/src/ts_api_ssh.c:2422:        .name = "ssh.exec_stream",
+components/ts_api/src/ts_api_ssh.c:2429:        .name = "ssh.cancel",
+components/ts_api/src/ts_api_ssh.c:2436:        .name = "ssh.test",
+components/ts_api/src/ts_api_ssh.c:2443:        .name = "ssh.copyid",
+components/ts_api/src/ts_api_ssh.c:2450:        .name = "ssh.revoke",
+components/ts_api/src/ts_api_ssh.c:2457:        .name = "ssh.keygen",
+components/ts_api/src/ts_api_ssh.c:2465:        .name = "ssh.hosts.list",
+components/ts_api/src/ts_api_ssh.c:2472:        .name = "ssh.hosts.add",
+components/ts_api/src/ts_api_ssh.c:2479:        .name = "ssh.hosts.remove",
+components/ts_api/src/ts_api_ssh.c:2486:        .name = "ssh.hosts.get",
+components/ts_api/src/ts_api_ssh.c:2493:        .name = "ssh.hosts.export",
+components/ts_api/src/ts_api_ssh.c:2500:        .name = "ssh.hosts.import",
+components/ts_api/src/ts_api_ssh.c:2508:        .name = "ssh.commands.list",
+components/ts_api/src/ts_api_ssh.c:2515:        .name = "ssh.commands.add",
+components/ts_api/src/ts_api_ssh.c:2522:        .name = "ssh.commands.remove",
+components/ts_api/src/ts_api_ssh.c:2529:        .name = "ssh.commands.get",
+components/ts_api/src/ts_api_ssh.c:2536:        .name = "ssh.commands.export",
+components/ts_api/src/ts_api_ssh.c:2543:        .name = "ssh.commands.import",
+components/ts_api/src/ts_api_ssh.c:2554:    return ts_api_register_multiple(ssh_endpoints, 
+components/ts_webui/web/js/app.js:175:    router.register('/', loadSystemPage);
+components/ts_webui/web/js/app.js:176:    router.register('/system', loadSystemPage);
+components/ts_webui/web/js/app.js:177:    router.register('/network', loadNetworkPage);
+components/ts_webui/web/js/app.js:178:    router.register('/ota', loadOtaPage);
+components/ts_webui/web/js/app.js:179:    router.register('/files', loadFilesPage);
+components/ts_webui/web/js/app.js:181:    router.register('/logs', () => {
+components/ts_webui/web/js/app.js:189:    router.register('/terminal', loadTerminalPage);
+components/ts_webui/web/js/app.js:190:    router.register('/commands', loadCommandsPage);
+components/ts_webui/web/js/app.js:191:    router.register('/security', loadSecurityPage);
+components/ts_webui/web/js/app.js:192:    router.register('/automation', loadAutomationPage);
+components/ts_webui/web/js/app.js:2034:    if (selectedName && !availableTempVars.find(v => v.name === selectedName)) {
+components/ts_webui/web/js/app.js:2068:        tempVarBindings[index].name = name;
+components/ts_webui/web/js/app.js:2110:        const varInfo = availableTempVars.find(v => v.name === b.name);
+components/ts_webui/web/js/app.js:2431:                    let existing = availableTempVars.find(v => v.name === bv.name);
+components/ts_webui/web/js/app.js:2870:            if (result.data.devices.some(d => d.name === 'matrix' || d.layout === 'matrix')) {
+components/ts_webui/web/js/app.js:5169:            if (result.data.devices.some(d => d.name === 'matrix' || d.layout === 'matrix')) {
+components/ts_webui/web/js/app.js:5202:    const isMatrix = dev.name === 'matrix' || dev.layout === 'matrix';
+components/ts_webui/web/js/app.js:5430:    const deviceData = window.ledDevicesCache?.find(d => d.name === device);
+components/ts_webui/web/js/app.js:5514:    const deviceData = window.ledDevicesCache?.find(d => d.name === device);
+components/ts_webui/web/js/app.js:5976:    const deviceData = window.ledDevicesCache?.find(d => d.name === device);
+components/ts_webui/web/js/app.js:16116:    const firmware = files.find(entry => entry.name === 'TianShanOS.bin') ||
+components/ts_webui/web/js/app.js:21061:        params.uri = document.getElementById('source-ws-uri').value.trim();

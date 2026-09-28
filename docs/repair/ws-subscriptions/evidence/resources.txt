@@ -1,0 +1,17 @@
+00000000 00000160 B ws_tcb_size
+/tmp/tianshan-ws-build/build/esp-idf/ts_webui/CMakeFiles/__idf_ts_webui.dir/src/ts_ws_subscriptions.c.obj:
+00000000 00000008 d s_lock
+00000000 0000000c b s_handlers
+00000000 0000001f T ts_ws_subscriptions_wake
+00000000 000000f0 T ts_ws_subscriptions_init
+00000000 00000128 b s_stats
+00000000 000001d3 T ts_ws_subscriptions_deinit
+00000000 000002e9 T ts_ws_subscribe
+00000000 00000460 b s_events
+00000000 00000a00 b s_subs
+00000000 00000008 d s_lock
+00000000 00000020 b s_server
+00000000 00000048 b s_tx_stats
+00000000 00000080 b s_messages
+00000000 00000100 b s_peers
+00000000 00000c80 b s_deliveries

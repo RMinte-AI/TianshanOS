@@ -1,0 +1,13 @@
+PASS G1 same observable assertion: old rejection callback cannot corrupt replacement Shell (whole production unit)
+PASS G2 same observable assertion: pending A fails while B prepares; B settles before terminal, no output follows terminal
+PASS B11 timer delete/barrier retry retains original params; busy stop recovers without new business; late timer cannot abort replacement
+PASS bounded timer drain retry exhaustion is retained and explicitly resumed by stop retry
+PASS B09 observation failure still executes actual matching and variable updates without aborting remote command
+PASS original timeout and stop-on-match business abort semantics retained
+PASS original cancel ID contract, user disconnecting status and frozen terminal recipient snapshot
+PASS no recipients: no observation JSON/payload allocation; business executes and tickets retire
+PASS task-create and allocation failure sweep: all actual contexts, credentials, output buffers and reservations reclaimed
+PASS output encoding allocation sweep: no partial protocol objects escape, original ticket/resource ledgers drain
+PASS healthy stop drains original Shell within bounded wait, worker self-stop rejected, timer barrier callback-before-return remains pinned
+PASS timer allocation/start failure cleanup: no timer reference leak; underlying SSH deadline policy unchanged
+PASS complete production WS unit: Shell output failure/close/startup failure, Exec task/callback/match/variables/timer cleanup and task-before-create-return; destroyed=84

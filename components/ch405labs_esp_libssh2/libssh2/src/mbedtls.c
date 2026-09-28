@@ -43,7 +43,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #define MBEDTLS_DEBUG_TAG "libssh2_mbedtls"
-#define MBEDTLS_DEBUG(fmt, ...) ESP_LOGI(MBEDTLS_DEBUG_TAG, fmt, ##__VA_ARGS__)
+#define MBEDTLS_DEBUG(fmt, ...) ESP_LOGD(MBEDTLS_DEBUG_TAG, fmt, ##__VA_ARGS__)
 #define MBEDTLS_ERROR(fmt, ...) ESP_LOGE(MBEDTLS_DEBUG_TAG, fmt, ##__VA_ARGS__)
 #else
 #define MBEDTLS_DEBUG(fmt, ...) 

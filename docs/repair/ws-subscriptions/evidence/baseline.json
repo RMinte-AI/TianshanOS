@@ -1,0 +1,11 @@
+{
+  "head": "35238b4645ae5e9e0e99555d4fb64080d945565c",
+  "branch": "fix/v0.5.2-reliability-and-prompts",
+  "status": "?? docs/runtime-repair/evidence/reviewer-fixes/diff-check.txt\n?? output/\n?? tmp/",
+  "remotes": "fork\thttps://github.com/massif-01/TianshanOS.git (fetch)\nfork\thttps://github.com/massif-01/TianshanOS.git (push)\norigin\thttps://github.com/RMinte/TianshanOS (fetch)\norigin\thttps://github.com/RMinte/TianshanOS (push)",
+  "sha256": {
+    "components/ts_webui/src/ts_ws_subscriptions.c": "d082852a6e0e1811a3b791f97dde48f0d452d91b63168bc3b5ac275eb7f2bdb9",
+    "components/ts_webui/src/ts_webui_ws.c": "48f3d045fb4522d95d60c6c32633220d0761209d772b91989085801bb2c61c64",
+    "components/ts_core/ts_event/src/ts_event.c": "64e988c10aa267fdb7d7fe9d2f2532510a09c48a0d877560c145c568d5c08944"
+  }
+}

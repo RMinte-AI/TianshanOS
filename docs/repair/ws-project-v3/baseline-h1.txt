@@ -1,0 +1,1 @@
+CONFIRMED H1: actual C request error leaves op OPEN but JS exits SSH and next input is not routed to SSH

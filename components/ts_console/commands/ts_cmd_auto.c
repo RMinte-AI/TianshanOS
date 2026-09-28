@@ -246,6 +246,7 @@ static int cmd_auto_list(bool json_output)
                        rule.conditions.count,
                        rule.action_count);
             }
+            ts_rule_release(&rule);
         }
     }
     

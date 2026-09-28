@@ -1,0 +1,3 @@
+v1 business_contract=FAIL
+v2 business_contract=FAIL
+CONFIRMED: both failures are production business assertions; complete frozen source hashes verified

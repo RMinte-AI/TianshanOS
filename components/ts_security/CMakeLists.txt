@@ -13,6 +13,8 @@ idf_component_register(
         "src/ts_ssh_hosts_config.c"
         "src/ts_ssh_commands_config.c"
         "src/ts_ssh_log_watch.c"
+        "src/ts_ssh_probe.c"
+        "src/ts_ssh_service.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

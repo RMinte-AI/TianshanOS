@@ -95,12 +95,19 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
                              ts_ssh_shell_t *shell_out);
 
 /**
- * @brief Close the shell session
+ * @brief Consume and release an allocated Shell handle, including EOF/ERROR.
+ * Caller must clear its handle; a second call with a freed pointer is invalid.
+ * If channel release would block, locally disconnect its owning SSH session.
+ * This does not confirm that remote processes have terminated.
  * 
  * @param shell Shell handle
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t ts_ssh_shell_close(ts_ssh_shell_t shell);
+
+/** Request local loop exit without freeing the handle or confirming remote exit.
+ * The caller serializes this with other Shell access and still calls close(). */
+esp_err_t ts_ssh_shell_request_close(ts_ssh_shell_t shell);
 
 /**
  * @brief Write data to the shell (send to remote)
@@ -108,7 +115,8 @@ esp_err_t ts_ssh_shell_close(ts_ssh_shell_t shell);
  * @param shell Shell handle
  * @param data Data to write
  * @param len Length of data
- * @param written Pointer to receive bytes written (optional)
+ * @param written Bytes accepted by the transport, including partial failure (optional).
+ * Write/setup waits are bounded; timeout leaves ERROR and must not be replayed.
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t ts_ssh_shell_write(ts_ssh_shell_t shell,

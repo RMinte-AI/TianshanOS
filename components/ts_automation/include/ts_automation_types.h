@@ -287,6 +287,7 @@ typedef enum {
     TS_AUTO_ACT_DEVICE_CTRL,             /**< Device control - deprecated, use CLI */
     TS_AUTO_ACT_SSH_CMD_REF,             /**< SSH command reference (from registered commands) */
     TS_AUTO_ACT_CLI,                     /**< TianShanOS CLI command execution */
+    TS_AUTO_ACT_TEMPLATE_REF, /**< Unresolved template-only reference; never execute directly. */
 } ts_auto_action_type_t;
 
 /**
@@ -442,6 +443,8 @@ typedef struct {
     ts_auto_action_condition_t condition; /**< Execute only if condition is met */
     
     /* Template reference (for rule actions) */
+    bool runtime_snapshot; /**< Execution-only; never serialized. */
+    void *runtime_binding; /**< Owned execution snapshot; never serialized. */
     char template_id[TS_AUTO_NAME_MAX_LEN]; /**< Source template ID (optional, for tracing) */
 
     union {
@@ -465,7 +468,14 @@ typedef struct {
     char name[TS_AUTO_LABEL_MAX_LEN];   /**< Display name */
     char icon[64];                       /**< Display icon (emoji or /sdcard/images/xxx.png) */
     bool enabled;                        /**< Is rule enabled */
-    bool manual_trigger;                 /**< Can be manually triggered from UI */
+    bool manual_trigger;                 /**< Exclude from automatic evaluation */
+    bool show_on_dashboard;
+    bool allow_manual_trigger;
+    uint8_t presentation_fields;          /**< bit 0: show present; bit 1: allow present */
+    bool reference_unresolved;
+    uint32_t revision;
+    uint32_t instance;
+    void *lease;                         /**< Internal read ownership, never persisted */
     uint32_t cooldown_ms;                /**< Min time between triggers */
 
     ts_auto_condition_group_t conditions; /**< Trigger conditions */

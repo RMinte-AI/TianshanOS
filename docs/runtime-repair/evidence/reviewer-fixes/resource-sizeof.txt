@@ -1,0 +1,7 @@
+
+warning: Section .debug_aranges in /Users/massif/TianshanOS/build/TianShanOS.elf entry at offset 56 debug_info_offset 3221684224 does not exists, ignoring .debug_aranges.
+$1 = 416
+$2 = 24
+$3 = 620
+$4 = 2372
+$5 = 168

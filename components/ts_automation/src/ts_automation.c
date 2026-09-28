@@ -26,6 +26,7 @@
 #include "freertos/semphr.h"
 #include "cJSON.h"
 
+#include <stdatomic.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -40,6 +41,7 @@ static const char *TAG = "ts_automation";
  */
 typedef struct {
     ts_automation_state_t state;         // 当前状态
+    atomic_bool stopping;
     TaskHandle_t task_handle;            // 主任务句柄
     SemaphoreHandle_t mutex;             // 状态互斥锁
     
@@ -198,11 +200,12 @@ esp_err_t ts_automation_deinit(void)
     ESP_LOGI(TAG, "Deinitializing automation engine");
 
     // 先停止
-    ts_automation_stop();
-
-    // 反初始化子模块
-    ts_action_manager_deinit();
-    ts_rule_engine_deinit();
+    esp_err_t ret = ts_automation_stop();
+    if (ret != ESP_OK) return ret;
+    ret = ts_action_manager_deinit();
+    if (ret != ESP_OK) return ret;
+    ret = ts_rule_engine_deinit();
+    if (ret != ESP_OK) return ret;
     ts_source_manager_deinit();
     ts_variable_deinit();
 
@@ -227,86 +230,52 @@ bool ts_automation_is_initialized(void)
 /*                              控制接口                                      */
 /*===========================================================================*/
 
-esp_err_t ts_automation_start(void)
-{
-    if (s_ctx.state == TS_AUTO_STATE_UNINITIALIZED) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (s_ctx.state == TS_AUTO_STATE_RUNNING) {
-        ESP_LOGW(TAG, "Already running");
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "Starting automation engine");
-
-    // 启动数据源
-    esp_err_t ret = ts_source_start_all();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Some sources failed to start");
-    }
-
-    // 创建主任务
-    BaseType_t xret = xTaskCreatePinnedToCore(
-        automation_task,
-        "ts_auto",
-        CONFIG_TS_AUTOMATION_TASK_STACK_SIZE,
-        NULL,
-        CONFIG_TS_AUTOMATION_TASK_PRIORITY,
-        &s_ctx.task_handle,
-        1  // CPU 1
-    );
-
-    if (xret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create task");
-        return ESP_ERR_NO_MEM;
-    }
-
+esp_err_t ts_automation_start(void) {
+    if (!s_ctx.mutex) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
+    if (s_ctx.stopping) { xSemaphoreGive(s_ctx.mutex); return ESP_ERR_INVALID_STATE; }
+    if (s_ctx.state == TS_AUTO_STATE_RUNNING) { xSemaphoreGive(s_ctx.mutex); return ESP_OK; }
+    if (s_ctx.task_handle || ts_action_manager_resume() != ESP_OK) {
+        xSemaphoreGive(s_ctx.mutex); return ESP_ERR_INVALID_STATE;
+    }
+    ts_source_start_all();
     s_ctx.state = TS_AUTO_STATE_RUNNING;
+    BaseType_t ret = xTaskCreatePinnedToCore(automation_task, "ts_auto",
+        CONFIG_TS_AUTOMATION_TASK_STACK_SIZE, NULL, CONFIG_TS_AUTOMATION_TASK_PRIORITY,
+        &s_ctx.task_handle, 1);
+    if (ret != pdPASS) s_ctx.state = TS_AUTO_STATE_INITIALIZED;
     xSemaphoreGive(s_ctx.mutex);
-
-    ESP_LOGI(TAG, "Automation engine started");
-    return ESP_OK;
+    return ret == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
-
-esp_err_t ts_automation_stop(void)
-{
-    if (s_ctx.state != TS_AUTO_STATE_RUNNING && 
-        s_ctx.state != TS_AUTO_STATE_PAUSED) {
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "Stopping automation engine");
-
-    // 设置停止状态
+esp_err_t ts_automation_stop(void) {
+    if (!s_ctx.mutex) return ESP_OK;
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
-    s_ctx.state = TS_AUTO_STATE_INITIALIZED;
+    s_ctx.stopping = true;
     xSemaphoreGive(s_ctx.mutex);
-
-    // 等待任务退出
-    if (s_ctx.task_handle) {
-        // 给任务一些时间自行退出
-        vTaskDelay(pdMS_TO_TICKS(100));
-        
-        // 如果还在运行，强制删除
-        if (eTaskGetState(s_ctx.task_handle) != eDeleted) {
-            vTaskDelete(s_ctx.task_handle);
-        }
-        s_ctx.task_handle = NULL;
+    /* No external vTaskDelete: evaluator returns through rule lease cleanup.
+     * Async actions may outlive it; do not reopen admission until both are idle. */
+    bool exited = false;
+    esp_err_t idle = ESP_ERR_TIMEOUT;
+    for (unsigned waited = 0; waited <= 200; waited += 10) {
+        idle = ts_action_manager_quiesce();
+        xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
+        exited = s_ctx.task_handle == NULL;
+        xSemaphoreGive(s_ctx.mutex);
+        if (exited && idle == ESP_OK) break;
+        if (waited < 200) vTaskDelay(pdMS_TO_TICKS(10));
     }
-
-    // 停止数据源
+    if (!exited || idle != ESP_OK) return ESP_ERR_TIMEOUT;
+    xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
     ts_source_stop_all();
-
-    ESP_LOGI(TAG, "Automation engine stopped");
+    s_ctx.state = TS_AUTO_STATE_INITIALIZED;
+    s_ctx.stopping = false;
+    xSemaphoreGive(s_ctx.mutex);
     return ESP_OK;
 }
 
 esp_err_t ts_automation_pause(void)
 {
-    if (s_ctx.state != TS_AUTO_STATE_RUNNING) {
+    if (s_ctx.stopping || s_ctx.state != TS_AUTO_STATE_RUNNING) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -320,7 +289,7 @@ esp_err_t ts_automation_pause(void)
 
 esp_err_t ts_automation_resume(void)
 {
-    if (s_ctx.state != TS_AUTO_STATE_PAUSED) {
+    if (s_ctx.stopping || s_ctx.state != TS_AUTO_STATE_PAUSED) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -390,9 +359,10 @@ static void automation_task(void *arg)
         // 检查状态
         xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
         ts_automation_state_t state = s_ctx.state;
+        bool stopping = s_ctx.stopping;
         xSemaphoreGive(s_ctx.mutex);
 
-        if (state != TS_AUTO_STATE_RUNNING && state != TS_AUTO_STATE_PAUSED) {
+        if (stopping || (state != TS_AUTO_STATE_RUNNING && state != TS_AUTO_STATE_PAUSED)) {
             break;  // 退出任务
         }
 
@@ -418,7 +388,9 @@ static void automation_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Automation task exiting");
+    xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
     s_ctx.task_handle = NULL;
+    xSemaphoreGive(s_ctx.mutex);
     vTaskDelete(NULL);
 }
 

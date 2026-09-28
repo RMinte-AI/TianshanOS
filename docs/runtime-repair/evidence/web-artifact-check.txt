@@ -1,0 +1,3 @@
+PASS: optimized JavaScript syntax; gzip matches optimized originals; resource version 20260924-prompts-runtime; regenerated SPIFFS bytes identical to build/www.bin.
+PASS: modified source SHA manifest stable during final build.
+NOT RUN: browser downloading these resources from ESP32.

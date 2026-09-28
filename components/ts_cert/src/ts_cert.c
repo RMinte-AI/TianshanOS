@@ -13,6 +13,12 @@
  */
 
 #include "ts_cert.h"
+#include "ts_cert_time.h"
+#include "ts_event.h"
+#include "freertos/semphr.h"
+#include "mbedtls/platform_util.h"
+#include "mbedtls/sha256.h"
+#include <ctype.h>
 #include "ts_crypto.h"
 #include "ts_core.h"
 #include "ts_time_sync.h"
@@ -38,6 +44,28 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 
+static esp_err_t ts_cert_init_locked(void);
+static void ts_cert_deinit_locked(void);
+static esp_err_t ts_cert_generate_keypair_locked(void);
+static bool ts_cert_has_keypair_locked(void);
+static esp_err_t ts_cert_delete_keypair_locked(void);
+static esp_err_t ts_cert_generate_csr_locked(const ts_cert_csr_opts_t *opts,
+                                char *csr_pem, size_t *csr_len);
+static esp_err_t ts_cert_generate_csr_default_locked(char *csr_pem, size_t *csr_len);
+static esp_err_t ts_cert_install_certificate_ex_locked(const char *pem, size_t len, ts_cert_op_error_t *detail);
+static esp_err_t ts_cert_install_ca_chain_ex_locked(const char *pem, size_t len, ts_cert_op_error_t *detail);
+static esp_err_t ts_cert_install_certificate_locked(const char *pem, size_t len);
+static esp_err_t ts_cert_install_ca_chain_locked(const char *pem, size_t len);
+static esp_err_t ts_cert_get_certificate_locked(char *cert_pem, size_t *cert_len);
+static esp_err_t ts_cert_get_private_key_locked(char *key_pem, size_t *key_len);
+static esp_err_t ts_cert_get_ca_chain_locked(char *ca_chain_pem, size_t *ca_chain_len);
+static esp_err_t ts_cert_refresh_status_locked(void);
+static esp_err_t ts_cert_get_status_locked(ts_cert_pki_status_t *status);
+static esp_err_t ts_cert_get_info_locked(ts_cert_info_t *info);
+static bool ts_cert_is_valid_locked(void);
+static int ts_cert_days_until_expiry_locked(void);
+static esp_err_t ts_cert_factory_reset_locked(void);
+static esp_err_t ts_cert_get_snapshot_locked(bool require_ca, ts_cert_snapshot_t *snapshot);
 static const char *TAG = "ts_cert";
 
 /*===========================================================================*/
@@ -58,6 +86,25 @@ static const char *TAG = "ts_cert";
 /*                          Static Variables                                  */
 /*===========================================================================*/
 
+/* Initialized once during boot, retained across deinit to protect late readers. */
+static StaticSemaphore_t s_mutex_storage;
+static SemaphoreHandle_t s_mutex;
+static portMUX_TYPE s_mutex_init_lock = portMUX_INITIALIZER_UNLOCKED;
+static void material_lock(void)
+{
+    portENTER_CRITICAL(&s_mutex_init_lock);
+    if (!s_mutex) s_mutex = xSemaphoreCreateMutexStatic(&s_mutex_storage);
+    portEXIT_CRITICAL(&s_mutex_init_lock);
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+}
+static uint32_t s_generation = 1, s_metadata_generation;
+static ts_cert_info_t s_metadata;
+static bool s_key_valid, s_key_matches, s_ca_valid, s_storage_error;
+static char s_fingerprint[65];
+static void refresh_metadata(void);
+static void evaluate_time(ts_cert_info_t *info, int64_t now);
+static esp_err_t info_from_crt(const mbedtls_x509_crt *crt, ts_cert_info_t *info);
+
 static bool s_initialized = false;
 static nvs_handle_t s_nvs_handle = 0;
 
@@ -76,6 +123,17 @@ static bool s_rng_initialized = false;
 /*                          Internal Functions                                */
 /*===========================================================================*/
 
+/* mbedTLS can combine a high-level error with a low-level allocation error. */
+static bool allocation_error(int error)
+{
+    if (error >= 0) return false;
+    int high = (-error) & 0xFF80;
+    int low = (-error) & 0x007F;
+    return high == -MBEDTLS_ERR_X509_ALLOC_FAILED || high == -MBEDTLS_ERR_PK_ALLOC_FAILED ||
+           high == -MBEDTLS_ERR_ECP_ALLOC_FAILED || low == -MBEDTLS_ERR_MPI_ALLOC_FAILED ||
+           low == -MBEDTLS_ERR_ASN1_ALLOC_FAILED;
+}
+
 static esp_err_t init_rng(void)
 {
     if (s_rng_initialized) return ESP_OK;
@@ -90,7 +148,9 @@ static esp_err_t init_rng(void)
         char err_buf[128];
         mbedtls_strerror(ret, err_buf, sizeof(err_buf));
         ESP_LOGE(TAG, "RNG seed failed: %s", err_buf);
-        return ESP_FAIL;
+        mbedtls_ctr_drbg_free(&s_ctr_drbg);
+        mbedtls_entropy_free(&s_entropy);
+        return allocation_error(ret) ? ESP_ERR_NO_MEM : ESP_FAIL;
     }
     
     s_rng_initialized = true;
@@ -113,43 +173,50 @@ static esp_err_t nvs_read_string(const char *key, char **out_str)
     }
     if (!*out_str) return ESP_ERR_NO_MEM;
     
-    return nvs_get_str(s_nvs_handle, key, *out_str, &required_size);
+    err = nvs_get_str(s_nvs_handle, key, *out_str, &required_size);
+    if (err != ESP_OK) { free(*out_str); *out_str = NULL; }
+    return err;
 }
 
 static esp_err_t nvs_write_string(const char *key, const char *str)
 {
+    const char *stage = "set";
     esp_err_t err = nvs_set_str(s_nvs_handle, key, str);
-    if (err != ESP_OK) return err;
-    return nvs_commit(s_nvs_handle);
+    if (err == ESP_OK) { stage = "commit"; err = nvs_commit(s_nvs_handle); }
+    if (err != ESP_OK) {
+        s_storage_error = true; /* Persistence uncertain: block future TLS loading. */
+        ESP_LOGE(TAG, "NVS %s (%s): %s", stage, key, esp_err_to_name(err));
+    }
+    return err;
+}
+
+static void set_status(const ts_cert_info_t *current)
+{
+    ts_cert_info_t info = *current;
+    if (s_storage_error || (s_private_key_pem && !s_key_valid) ||
+        (s_certificate_pem && (info.validity == TS_CERT_VALIDITY_INVALID ||
+                              (s_private_key_pem && !s_key_matches)))) {
+        s_status = TS_CERT_STATUS_ERROR;
+    } else if (s_private_key_pem && s_certificate_pem) {
+        switch (info.validity) {
+        case TS_CERT_VALIDITY_TIME_UNVERIFIED: s_status = TS_CERT_STATUS_TIME_UNVERIFIED; break;
+        case TS_CERT_VALIDITY_NOT_YET_VALID: s_status = TS_CERT_STATUS_NOT_YET_VALID; break;
+        case TS_CERT_VALIDITY_VALID: s_status = TS_CERT_STATUS_ACTIVATED; break;
+        case TS_CERT_VALIDITY_EXPIRED: s_status = TS_CERT_STATUS_EXPIRED; break;
+        default: s_status = TS_CERT_STATUS_ERROR; break;
+        }
+    } else if (s_private_key_pem) {
+        if (s_status != TS_CERT_STATUS_CSR_PENDING) s_status = TS_CERT_STATUS_KEY_GENERATED;
+    } else s_status = TS_CERT_STATUS_NOT_INITIALIZED;
+    /* Derived status never writes NVS. */
 }
 
 static void update_status(void)
 {
-    if (s_private_key_pem && s_certificate_pem) {
-        /* 
-         * Check if certificate is expired
-         * 但如果系统时间未同步，跳过过期检查（使用统一的 ts_time_sync API）
-         */
-        if (ts_time_sync_needs_sync()) {
-            /* 时间未同步，假设证书有效（这是正常的启动顺序，NTP 同步在网络就绪后完成） */
-            ESP_LOGI(TAG, "Time not synced yet, deferring cert expiry check");
-            s_status = TS_CERT_STATUS_ACTIVATED;
-        } else {
-            ts_cert_info_t info;
-            if (ts_cert_get_info(&info) == ESP_OK && info.is_valid) {
-                s_status = TS_CERT_STATUS_ACTIVATED;
-            } else {
-                s_status = TS_CERT_STATUS_EXPIRED;
-            }
-        }
-    } else if (s_private_key_pem) {
-        s_status = TS_CERT_STATUS_KEY_GENERATED;
-    } else {
-        s_status = TS_CERT_STATUS_NOT_INITIALIZED;
-    }
-    
-    nvs_set_u8(s_nvs_handle, NVS_KEY_STATUS, (uint8_t)s_status);
-    nvs_commit(s_nvs_handle);
+    refresh_metadata();
+    ts_cert_info_t info = s_metadata;
+    evaluate_time(&info, (int64_t)time(NULL));
+    set_status(&info);
 }
 
 /*===========================================================================*/
@@ -166,7 +233,7 @@ static void update_status(void)
  *     iPAddress  [7] OCTET STRING
  * }
  */
-static int build_san_extension(const ts_cert_csr_opts_t *opts, 
+static int build_san_extension(const ts_cert_csr_opts_t *opts,
                                 unsigned char *buf, size_t buf_size,
                                 size_t *olen)
 {
@@ -224,7 +291,7 @@ static int build_san_extension(const ts_cert_csr_opts_t *opts,
 /*                           Public Functions                                 */
 /*===========================================================================*/
 
-esp_err_t ts_cert_init(void)
+static esp_err_t ts_cert_init_locked(void)
 {
     if (s_initialized) return ESP_OK;
     
@@ -234,29 +301,20 @@ esp_err_t ts_cert_init(void)
         return err;
     }
     
-    /* Load existing credentials */
     err = nvs_read_string(NVS_KEY_PRIVKEY, &s_private_key_pem);
-    if (err == ESP_OK && s_private_key_pem) {
-        ESP_LOGI(TAG, "Loaded private key from NVS (%d bytes)", strlen(s_private_key_pem));
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "Failed to read private key: %s", esp_err_to_name(err));
+    if (err == ESP_OK) err = nvs_read_string(NVS_KEY_CERT, &s_certificate_pem);
+    if (err == ESP_OK) err = nvs_read_string(NVS_KEY_CA_CHAIN, &s_ca_chain_pem);
+    if (err != ESP_OK) {
+        if (s_private_key_pem) mbedtls_platform_zeroize(s_private_key_pem, strlen(s_private_key_pem));
+        free(s_private_key_pem); free(s_certificate_pem); free(s_ca_chain_pem);
+        s_private_key_pem = s_certificate_pem = s_ca_chain_pem = NULL;
+        nvs_close(s_nvs_handle); s_nvs_handle = 0;
+        s_storage_error = true;
+        return err;
     }
-    
-    err = nvs_read_string(NVS_KEY_CERT, &s_certificate_pem);
-    if (err == ESP_OK && s_certificate_pem) {
-        ESP_LOGI(TAG, "Loaded certificate from NVS (%d bytes)", strlen(s_certificate_pem));
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "Failed to read certificate: %s", esp_err_to_name(err));
-    }
-    
-    err = nvs_read_string(NVS_KEY_CA_CHAIN, &s_ca_chain_pem);
-    if (err == ESP_OK && s_ca_chain_pem) {
-        ESP_LOGI(TAG, "Loaded CA chain from NVS (%d bytes)", strlen(s_ca_chain_pem));
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "Failed to read CA chain: %s", esp_err_to_name(err));
-    }
-    
-    /* 必须先设置 initialized，因为 update_status 会调用 ts_cert_get_info */
+    s_storage_error = false;
+    s_metadata_generation = 0;
+    /* 必须先设置 initialized，因为 update_status 会调用 ts_cert_get_info_locked */
     s_initialized = true;
     
     update_status();
@@ -269,10 +327,11 @@ esp_err_t ts_cert_init(void)
     return ESP_OK;
 }
 
-void ts_cert_deinit(void)
+static void ts_cert_deinit_locked(void)
 {
     if (!s_initialized) return;
     
+    if (s_private_key_pem) mbedtls_platform_zeroize(s_private_key_pem, strlen(s_private_key_pem));
     free(s_private_key_pem);
     free(s_certificate_pem);
     free(s_ca_chain_pem);
@@ -298,7 +357,7 @@ void ts_cert_deinit(void)
 /*                         Key Pair Management                                */
 /*===========================================================================*/
 
-esp_err_t ts_cert_generate_keypair(void)
+static esp_err_t ts_cert_generate_keypair_locked(void)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     
@@ -331,6 +390,7 @@ esp_err_t ts_cert_generate_keypair(void)
     
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Key export failed: %s", esp_err_to_name(err));
+        mbedtls_platform_zeroize(key_pem, TS_CERT_KEY_MAX_LEN);
         free(key_pem);
         return err;
     }
@@ -339,42 +399,55 @@ esp_err_t ts_cert_generate_keypair(void)
     err = nvs_write_string(NVS_KEY_PRIVKEY, key_pem);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to store key: %s", esp_err_to_name(err));
+        mbedtls_platform_zeroize(key_pem, TS_CERT_KEY_MAX_LEN);
         free(key_pem);
         return err;
     }
     
-    /* Update cache */
-    free(s_private_key_pem);
-    s_private_key_pem = key_pem;
-    
-    /* Clear existing certificate (key changed) */
-    nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);
-    nvs_commit(s_nvs_handle);
-    free(s_certificate_pem);
-    s_certificate_pem = NULL;
-    
+    err = nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(s_nvs_handle);
+    if (err != ESP_OK) {
+        s_storage_error = true;
+        mbedtls_platform_zeroize(key_pem, strlen(key_pem)); free(key_pem);
+        return err;
+    }
+    if (s_private_key_pem) mbedtls_platform_zeroize(s_private_key_pem, strlen(s_private_key_pem));
+    free(s_private_key_pem); s_private_key_pem = key_pem;
+    free(s_certificate_pem); s_certificate_pem = NULL;
+    ++s_generation;
+    s_status = TS_CERT_STATUS_KEY_GENERATED;
     update_status();
-    
+
     ESP_LOGI(TAG, "Key pair generated and stored");
     return ESP_OK;
 }
 
-bool ts_cert_has_keypair(void)
+static bool ts_cert_has_keypair_locked(void)
 {
     return s_private_key_pem != NULL;
 }
 
-esp_err_t ts_cert_delete_keypair(void)
+static esp_err_t ts_cert_delete_keypair_locked(void)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     
-    nvs_erase_key(s_nvs_handle, NVS_KEY_PRIVKEY);
-    nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);
-    nvs_commit(s_nvs_handle);
-    
+    esp_err_t err = ESP_OK;
+    if (err == ESP_OK) {
+        err = nvs_erase_key(s_nvs_handle, NVS_KEY_PRIVKEY);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) err = nvs_commit(s_nvs_handle);
+    if (err != ESP_OK) { s_storage_error = true; return err; }
+    ++s_generation;
+
     /* Securely clear memory */
     if (s_private_key_pem) {
-        memset(s_private_key_pem, 0, strlen(s_private_key_pem));
+        mbedtls_platform_zeroize(s_private_key_pem, strlen(s_private_key_pem));
         free(s_private_key_pem);
         s_private_key_pem = NULL;
     }
@@ -392,7 +465,7 @@ esp_err_t ts_cert_delete_keypair(void)
 /*                           CSR Generation                                   */
 /*===========================================================================*/
 
-esp_err_t ts_cert_generate_csr(const ts_cert_csr_opts_t *opts, 
+static esp_err_t ts_cert_generate_csr_locked(const ts_cert_csr_opts_t *opts,
                                 char *csr_pem, size_t *csr_len)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
@@ -490,8 +563,7 @@ esp_err_t ts_cert_generate_csr(const ts_cert_csr_opts_t *opts,
     
     *csr_len = strlen(csr_pem) + 1;
     s_status = TS_CERT_STATUS_CSR_PENDING;
-    nvs_set_u8(s_nvs_handle, NVS_KEY_STATUS, (uint8_t)s_status);
-    nvs_commit(s_nvs_handle);
+
     
     ESP_LOGI(TAG, "CSR generated for %s", opts->device_id);
     err = ESP_OK;
@@ -502,7 +574,7 @@ cleanup:
     return err;
 }
 
-esp_err_t ts_cert_generate_csr_default(char *csr_pem, size_t *csr_len)
+static esp_err_t ts_cert_generate_csr_default_locked(char *csr_pem, size_t *csr_len)
 {
     /* Get device IP address */
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -531,166 +603,127 @@ esp_err_t ts_cert_generate_csr_default(char *csr_pem, size_t *csr_len)
     };
     opts.ip_sans[0] = ip_addr;
     
-    return ts_cert_generate_csr(&opts, csr_pem, csr_len);
+    return ts_cert_generate_csr_locked(&opts, csr_pem, csr_len);
 }
 
 /*===========================================================================*/
 /*                        Certificate Management                              */
 /*===========================================================================*/
 
-esp_err_t ts_cert_install_certificate(const char *cert_pem, size_t cert_len)
+static char *copy_pem(const char *pem, size_t len)
 {
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
-    if (!cert_pem || cert_len == 0) return ESP_ERR_INVALID_ARG;
-    if (!s_private_key_pem) {
-        ESP_LOGE(TAG, "No private key, cannot install certificate");
-        return ESP_ERR_INVALID_STATE;
+    char *p = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = malloc(len);
+    if (p) memcpy(p, pem, len);
+    return p;
+}
+
+static void save_ca_copy(const char *pem)
+{
+    struct stat st;
+    if (stat(CA_CHAIN_SDCARD_DIR, &st) != 0 && mkdir(CA_CHAIN_SDCARD_DIR, 0755) != 0) {
+        ESP_LOGW(TAG, "CA saved in NVS; SD copy unavailable"); return;
     }
-    
-    /* Parse and validate certificate */
+    FILE *file = fopen(CA_CHAIN_SDCARD_PATH, "w");
+    if (!file) { ESP_LOGW(TAG, "CA saved in NVS; SD copy open failed"); return; }
+    size_t len = strlen(pem);
+    size_t written = fwrite(pem, 1, len, file);
+    int closed = fclose(file);
+    if (written != len || closed != 0) ESP_LOGW(TAG, "CA saved in NVS; SD copy write failed");
+}
+
+static esp_err_t install_material(const char *pem, size_t len, bool ca, ts_cert_op_error_t *detail)
+{
+    ts_cert_op_error_t why = TS_CERT_OP_OK;
+    esp_err_t err = ESP_ERR_INVALID_ARG;
+    char *replacement = NULL;
     mbedtls_x509_crt crt;
-    mbedtls_x509_crt_init(&crt);
-    
-    int ret = mbedtls_x509_crt_parse(&crt, (const unsigned char *)cert_pem, cert_len);
-    if (ret != 0) {
-        char err_buf[128];
-        mbedtls_strerror(ret, err_buf, sizeof(err_buf));
-        ESP_LOGE(TAG, "Failed to parse certificate: %s", err_buf);
-        mbedtls_x509_crt_free(&crt);
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    /* Verify certificate matches private key */
     mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
-    
-    esp_err_t err = init_rng();
-    if (err != ESP_OK) {
-        mbedtls_x509_crt_free(&crt);
-        return err;
+    mbedtls_x509_crt_init(&crt); mbedtls_pk_init(&pk);
+    if (!s_initialized) { why = TS_CERT_OP_NOT_INITIALIZED; err = ESP_ERR_INVALID_STATE; goto done; }
+    if (!pem || len <= 1) { why = TS_CERT_OP_INVALID_INPUT; goto done; }
+    size_t cap = ca ? TS_CERT_CA_CHAIN_MAX_LEN : TS_CERT_PEM_MAX_LEN;
+    if (cap > TS_CERT_INSTALL_MAX_LEN) cap = TS_CERT_INSTALL_MAX_LEN;
+    if (len > cap) { why = TS_CERT_OP_INPUT_TOO_LARGE; goto done; }
+    if (pem[len-1] != 0 || memchr(pem, 0, len-1)) { why = TS_CERT_OP_INVALID_INPUT; goto done; }
+    size_t i = 0;
+    while (i < len-1 && isspace((unsigned char)pem[i])) ++i;
+    if (i == len-1) { why = TS_CERT_OP_INVALID_INPUT; goto done; }
+    if (!ca && !s_private_key_pem) {
+        why = TS_CERT_OP_PRIVATE_KEY_MISSING; err = ESP_ERR_INVALID_STATE; goto done;
     }
-    
-    ret = mbedtls_pk_parse_key(&pk, (const unsigned char *)s_private_key_pem,
-                                strlen(s_private_key_pem) + 1, NULL, 0,
-                                mbedtls_ctr_drbg_random, &s_ctr_drbg);
+    if (s_storage_error) { why = TS_CERT_OP_STORAGE_FAILED; err = ESP_FAIL; goto done; }
+    char *old = ca ? s_ca_chain_pem : s_certificate_pem;
+    replacement = copy_pem(pem, len);
+    if (!replacement) { why = TS_CERT_OP_NO_MEMORY; err = ESP_ERR_NO_MEM; goto done; }
+    int ret = mbedtls_x509_crt_parse(&crt, (const unsigned char *)pem, len);
     if (ret != 0) {
-        ESP_LOGE(TAG, "Failed to parse private key for verification");
-        mbedtls_x509_crt_free(&crt);
-        mbedtls_pk_free(&pk);
-        return ESP_FAIL;
+        ESP_LOGW(TAG, "PEM parse: %d", ret);
+        why = allocation_error(ret) ? TS_CERT_OP_NO_MEMORY : TS_CERT_OP_PEM_PARSE_FAILED;
+        err = why == TS_CERT_OP_NO_MEMORY ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+        goto done;
     }
-    
-    /* Check if public keys match */
-    unsigned char cert_pub[256], key_pub[256];
-    size_t cert_pub_len, key_pub_len;
-    
-    ret = mbedtls_pk_write_pubkey_der(&crt.pk, cert_pub, sizeof(cert_pub));
-    if (ret < 0) {
-        ESP_LOGE(TAG, "Failed to extract certificate public key");
-        err = ESP_FAIL;
-        goto verify_cleanup;
+    if (!ca) {
+        err = init_rng();
+        if (err != ESP_OK) { why = err == ESP_ERR_NO_MEM ? TS_CERT_OP_NO_MEMORY : TS_CERT_OP_CRYPTO_FAILED; goto done; }
+        ret = mbedtls_pk_parse_key(&pk, (const unsigned char *)s_private_key_pem,
+                strlen(s_private_key_pem)+1, NULL, 0, mbedtls_ctr_drbg_random, &s_ctr_drbg);
+        if (ret != 0) {
+            why = allocation_error(ret) ? TS_CERT_OP_NO_MEMORY : TS_CERT_OP_PRIVATE_KEY_INVALID;
+            err = why == TS_CERT_OP_NO_MEMORY ? ESP_ERR_NO_MEM : ESP_FAIL;
+            goto done;
+        }
+        ret = mbedtls_pk_check_pair(&crt.pk, &pk, mbedtls_ctr_drbg_random, &s_ctr_drbg);
+        if (ret != 0) {
+            why = allocation_error(ret) ? TS_CERT_OP_NO_MEMORY : TS_CERT_OP_KEY_MISMATCH;
+            err = why == TS_CERT_OP_NO_MEMORY ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_STATE;
+            goto done;
+        }
     }
-    cert_pub_len = ret;
-    
-    ret = mbedtls_pk_write_pubkey_der(&pk, key_pub, sizeof(key_pub));
-    if (ret < 0) {
-        ESP_LOGE(TAG, "Failed to extract private key public component");
-        err = ESP_FAIL;
-        goto verify_cleanup;
+    /* Reuse the candidate parser for metadata: no second parse or allocation after persistence. */
+    ts_cert_info_t info = {0};
+    unsigned char hash[32];
+    if (!ca) {
+        info_from_crt(&crt, &info);
+        ret = mbedtls_sha256(crt.raw.p, crt.raw.len, hash, 0);
+        if (ret != 0) { why = TS_CERT_OP_CRYPTO_FAILED; err = ESP_FAIL; goto done; }
     }
-    key_pub_len = ret;
-    
-    /* Public keys are written at the end of the buffer */
-    if (cert_pub_len != key_pub_len || 
-        memcmp(cert_pub + sizeof(cert_pub) - cert_pub_len,
-               key_pub + sizeof(key_pub) - key_pub_len,
-               cert_pub_len) != 0) {
-        ESP_LOGE(TAG, "Certificate does not match private key");
-        err = ESP_ERR_INVALID_STATE;
-        goto verify_cleanup;
+    bool changed = !old || strcmp(old, pem) != 0;
+    if (changed) {
+        err = nvs_write_string(ca ? NVS_KEY_CA_CHAIN : NVS_KEY_CERT, pem);
+        if (err != ESP_OK) { why = TS_CERT_OP_STORAGE_FAILED; goto done; }
+        if (ca) s_ca_chain_pem = replacement; else s_certificate_pem = replacement;
+        replacement = NULL;
+        free(old);
+        ++s_generation;
     }
-    
-    /* Store certificate */
-    err = nvs_write_string(NVS_KEY_CERT, cert_pem);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to store certificate: %s", esp_err_to_name(err));
-        goto verify_cleanup;
+    if (ca) s_ca_valid = true;
+    else {
+        s_metadata = info;
+        s_key_valid = s_key_matches = true;
+        ts_cert_hex(hash, sizeof(hash), s_fingerprint, sizeof(s_fingerprint));
     }
-    
-    /* Update cache */
-    free(s_certificate_pem);
-    s_certificate_pem = strdup(cert_pem);
-    
+    s_metadata_generation = s_generation;
     update_status();
-    
-    ESP_LOGI(TAG, "Certificate installed successfully");
+    if (ca && changed) save_ca_copy(pem);
     err = ESP_OK;
-    
-verify_cleanup:
-    mbedtls_x509_crt_free(&crt);
-    mbedtls_pk_free(&pk);
+ done:
+    free(replacement);
+    mbedtls_pk_free(&pk); mbedtls_x509_crt_free(&crt);
+    if (detail) *detail = why;
     return err;
 }
 
-esp_err_t ts_cert_install_ca_chain(const char *ca_chain_pem, size_t ca_chain_len)
-{
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
-    if (!ca_chain_pem || ca_chain_len == 0) return ESP_ERR_INVALID_ARG;
-    
-    /* Validate CA chain can be parsed */
-    mbedtls_x509_crt ca;
-    mbedtls_x509_crt_init(&ca);
-    
-    int ret = mbedtls_x509_crt_parse(&ca, (const unsigned char *)ca_chain_pem, ca_chain_len);
-    mbedtls_x509_crt_free(&ca);
-    
-    if (ret != 0) {
-        char err_buf[128];
-        mbedtls_strerror(ret, err_buf, sizeof(err_buf));
-        ESP_LOGE(TAG, "Invalid CA chain: %s", err_buf);
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    /* Store CA chain in NVS */
-    esp_err_t err = nvs_write_string(NVS_KEY_CA_CHAIN, ca_chain_pem);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to store CA chain: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    /* Update cache */
-    free(s_ca_chain_pem);
-    s_ca_chain_pem = strdup(ca_chain_pem);
-    
-    /* Save CA chain to SD card for user download */
-    /* Create directory if not exists */
-    struct stat st;
-    if (stat(CA_CHAIN_SDCARD_DIR, &st) != 0) {
-        if (mkdir(CA_CHAIN_SDCARD_DIR, 0755) != 0) {
-            ESP_LOGW(TAG, "Failed to create %s directory (SD card may not be mounted)", CA_CHAIN_SDCARD_DIR);
-            /* Continue anyway, NVS storage succeeded */
-        }
-    }
-    
-    /* Write CA chain file */
-    FILE *f = fopen(CA_CHAIN_SDCARD_PATH, "w");
-    if (f) {
-        size_t written = fwrite(ca_chain_pem, 1, strlen(ca_chain_pem), f);
-        fclose(f);
-        if (written == strlen(ca_chain_pem)) {
-            ESP_LOGI(TAG, "CA chain saved to %s for user download", CA_CHAIN_SDCARD_PATH);
-        } else {
-            ESP_LOGW(TAG, "Partial write to SD card: %zu/%zu bytes", written, strlen(ca_chain_pem));
-        }
-    } else {
-        ESP_LOGW(TAG, "Could not save CA chain to SD card (SD card may not be mounted)");
-    }
-    
-    ESP_LOGI(TAG, "CA chain installed");
-    return ESP_OK;
-}
+static esp_err_t ts_cert_install_certificate_ex_locked(const char *pem, size_t len, ts_cert_op_error_t *detail)
+{ return install_material(pem, len, false, detail); }
+static esp_err_t ts_cert_install_ca_chain_ex_locked(const char *pem, size_t len, ts_cert_op_error_t *detail)
+{ return install_material(pem, len, true, detail); }
+static esp_err_t ts_cert_install_certificate_locked(const char *pem, size_t len)
+{ return ts_cert_install_certificate_ex_locked(pem, len, NULL); }
+static esp_err_t ts_cert_install_ca_chain_locked(const char *pem, size_t len)
+{ return ts_cert_install_ca_chain_ex_locked(pem, len, NULL); }
 
-esp_err_t ts_cert_get_certificate(char *cert_pem, size_t *cert_len)
+static esp_err_t ts_cert_get_certificate_locked(char *cert_pem, size_t *cert_len)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (!cert_pem || !cert_len) return ESP_ERR_INVALID_ARG;
@@ -710,7 +743,7 @@ esp_err_t ts_cert_get_certificate(char *cert_pem, size_t *cert_len)
     return ESP_OK;
 }
 
-esp_err_t ts_cert_get_private_key(char *key_pem, size_t *key_len)
+static esp_err_t ts_cert_get_private_key_locked(char *key_pem, size_t *key_len)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (!key_pem || !key_len) return ESP_ERR_INVALID_ARG;
@@ -730,7 +763,7 @@ esp_err_t ts_cert_get_private_key(char *key_pem, size_t *key_len)
     return ESP_OK;
 }
 
-esp_err_t ts_cert_get_ca_chain(char *ca_chain_pem, size_t *ca_chain_len)
+static esp_err_t ts_cert_get_ca_chain_locked(char *ca_chain_pem, size_t *ca_chain_len)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (!ca_chain_pem || !ca_chain_len) return ESP_ERR_INVALID_ARG;
@@ -754,7 +787,7 @@ esp_err_t ts_cert_get_ca_chain(char *ca_chain_pem, size_t *ca_chain_len)
 /*                           Status & Info                                    */
 /*===========================================================================*/
 
-esp_err_t ts_cert_refresh_status(void)
+static esp_err_t ts_cert_refresh_status_locked(void)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     
@@ -773,50 +806,57 @@ esp_err_t ts_cert_refresh_status(void)
     return ESP_OK;
 }
 
-esp_err_t ts_cert_get_status(ts_cert_pki_status_t *status)
+static esp_err_t ts_cert_get_status_locked(ts_cert_pki_status_t *status)
 {
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (!status) return ESP_ERR_INVALID_ARG;
-    
+    memset(status, 0, sizeof(*status));
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    refresh_metadata();
+    status->has_private_key = s_private_key_pem != NULL;
+    status->has_certificate = s_certificate_pem != NULL;
+    status->has_ca_chain = s_ca_chain_pem != NULL;
+    status->generation = s_generation;
+    status->storage_error = s_storage_error;
+    status->key_valid = s_key_valid;
+    status->key_matches = s_key_matches;
+    status->ca_valid = s_ca_valid;
+    status->cert_info = s_metadata;
+    int64_t now = (int64_t)time(NULL);
+    status->time_ready = ts_cert_time_ready(now, TS_TIME_MIN_VALID_YEAR);
+    evaluate_time(&status->cert_info, now);
+    set_status(&status->cert_info);
     status->status = s_status;
-    status->has_private_key = (s_private_key_pem != NULL);
-    status->has_certificate = (s_certificate_pem != NULL);
-    status->has_ca_chain = (s_ca_chain_pem != NULL);
-    
-    if (status->has_certificate) {
-        ts_cert_get_info(&status->cert_info);
-    } else {
-        memset(&status->cert_info, 0, sizeof(status->cert_info));
-    }
-    
     return ESP_OK;
 }
 
-esp_err_t ts_cert_get_info(ts_cert_info_t *info)
+static esp_err_t ts_cert_get_info_locked(ts_cert_info_t *info)
 {
-    if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (!info) return ESP_ERR_INVALID_ARG;
+    memset(info, 0, sizeof(*info));
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (!s_certificate_pem) return ESP_ERR_NOT_FOUND;
-    
-    return ts_cert_parse_certificate(s_certificate_pem, strlen(s_certificate_pem) + 1, info);
+    refresh_metadata();
+    *info = s_metadata;
+    evaluate_time(info, (int64_t)time(NULL));
+    return info->validity == TS_CERT_VALIDITY_INVALID ? ESP_ERR_INVALID_ARG : ESP_OK;
 }
 
-bool ts_cert_is_valid(void)
+static bool ts_cert_is_valid_locked(void)
 {
     if (!s_certificate_pem) return false;
     
     ts_cert_info_t info;
-    if (ts_cert_get_info(&info) != ESP_OK) return false;
+    if (ts_cert_get_info_locked(&info) != ESP_OK) return false;
     
     return info.is_valid;
 }
 
-int ts_cert_days_until_expiry(void)
+static int ts_cert_days_until_expiry_locked(void)
 {
     if (!s_certificate_pem) return INT32_MAX;
     
     ts_cert_info_t info;
-    if (ts_cert_get_info(&info) != ESP_OK) return INT32_MAX;
+    if (ts_cert_get_info_locked(&info) != ESP_OK) return INT32_MAX;
     
     return info.days_until_expiry;
 }
@@ -825,20 +865,35 @@ int ts_cert_days_until_expiry(void)
 /*                          Factory Reset                                     */
 /*===========================================================================*/
 
-esp_err_t ts_cert_factory_reset(void)
+static esp_err_t ts_cert_factory_reset_locked(void)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     
     /* Erase all NVS keys */
-    nvs_erase_key(s_nvs_handle, NVS_KEY_PRIVKEY);
-    nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);
-    nvs_erase_key(s_nvs_handle, NVS_KEY_CA_CHAIN);
-    nvs_erase_key(s_nvs_handle, NVS_KEY_STATUS);
-    nvs_commit(s_nvs_handle);
-    
+    esp_err_t err = ESP_OK;
+    if (err == ESP_OK) {
+        err = nvs_erase_key(s_nvs_handle, NVS_KEY_PRIVKEY);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(s_nvs_handle, NVS_KEY_CA_CHAIN);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_erase_key(s_nvs_handle, NVS_KEY_STATUS);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    }
+    if (err == ESP_OK) err = nvs_commit(s_nvs_handle);
+    if (err != ESP_OK) { s_storage_error = true; return err; }
+    ++s_generation;
+
     /* Securely clear memory */
     if (s_private_key_pem) {
-        memset(s_private_key_pem, 0, strlen(s_private_key_pem));
+        mbedtls_platform_zeroize(s_private_key_pem, strlen(s_private_key_pem));
         free(s_private_key_pem);
         s_private_key_pem = NULL;
     }
@@ -868,26 +923,18 @@ const char *ts_cert_status_to_str(ts_cert_status_t status)
         case TS_CERT_STATUS_ACTIVATED:       return "activated";
         case TS_CERT_STATUS_EXPIRED:         return "expired";
         case TS_CERT_STATUS_ERROR:           return "error";
+        case TS_CERT_STATUS_TIME_UNVERIFIED: return "time_unverified";
+        case TS_CERT_STATUS_NOT_YET_VALID: return "not_yet_valid";
         default:                             return "unknown";
     }
 }
 
-esp_err_t ts_cert_parse_certificate(const char *cert_pem, size_t cert_len, 
-                                     ts_cert_info_t *info)
+static esp_err_t info_from_crt(const mbedtls_x509_crt *crt, ts_cert_info_t *info)
 {
-    if (!cert_pem || !info) return ESP_ERR_INVALID_ARG;
-    
-    mbedtls_x509_crt crt;
-    mbedtls_x509_crt_init(&crt);
-    
-    int ret = mbedtls_x509_crt_parse(&crt, (const unsigned char *)cert_pem, cert_len);
-    if (ret != 0) {
-        mbedtls_x509_crt_free(&crt);
-        return ESP_ERR_INVALID_ARG;
-    }
-    
+    memset(info, 0, sizeof(*info));
+    info->validity = TS_CERT_VALIDITY_INVALID;
     /* Extract subject CN */
-    const mbedtls_x509_name *name = &crt.subject;
+    const mbedtls_x509_name *name = &crt->subject;
     info->subject_cn[0] = '\0';
     info->subject_ou[0] = '\0';
     while (name) {
@@ -907,7 +954,7 @@ esp_err_t ts_cert_parse_certificate(const char *cert_pem, size_t cert_len,
     }
     
     /* Extract issuer CN */
-    name = &crt.issuer;
+    name = &crt->issuer;
     info->issuer_cn[0] = '\0';
     while (name) {
         if (MBEDTLS_OID_CMP(MBEDTLS_OID_AT_CN, &name->oid) == 0) {
@@ -920,36 +967,332 @@ esp_err_t ts_cert_parse_certificate(const char *cert_pem, size_t cert_len,
         name = name->next;
     }
     
-    /* Convert validity times */
-    struct tm tm_from, tm_to;
-    tm_from.tm_year = crt.valid_from.year - 1900;
-    tm_from.tm_mon = crt.valid_from.mon - 1;
-    tm_from.tm_mday = crt.valid_from.day;
-    tm_from.tm_hour = crt.valid_from.hour;
-    tm_from.tm_min = crt.valid_from.min;
-    tm_from.tm_sec = crt.valid_from.sec;
-    info->not_before = mktime(&tm_from);
+    if (!ts_cert_time_utc(crt->valid_from.year, crt->valid_from.mon, crt->valid_from.day,
+                         crt->valid_from.hour, crt->valid_from.min, crt->valid_from.sec, &info->not_before) ||
+        !ts_cert_time_utc(crt->valid_to.year, crt->valid_to.mon, crt->valid_to.day,
+                         crt->valid_to.hour, crt->valid_to.min, crt->valid_to.sec, &info->not_after) ||
+        info->not_after < info->not_before) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    info->serial_truncated = ts_cert_hex(crt->serial.p, crt->serial.len, info->serial, sizeof(info->serial));
+    info->validity = TS_CERT_VALIDITY_VALID;
+    return ESP_OK;
+}
+
+esp_err_t ts_cert_parse_certificate(const char *cert_pem, size_t cert_len,
+                                     ts_cert_info_t *info)
+{
+    if (!info) return ESP_ERR_INVALID_ARG;
+    memset(info, 0, sizeof(*info));
+    info->validity = TS_CERT_VALIDITY_INVALID;
+    if (!cert_pem || cert_len <= 1 || cert_pem[cert_len-1] != 0 || memchr(cert_pem, 0, cert_len-1))
+        return ESP_ERR_INVALID_ARG;
     
-    tm_to.tm_year = crt.valid_to.year - 1900;
-    tm_to.tm_mon = crt.valid_to.mon - 1;
-    tm_to.tm_mday = crt.valid_to.day;
-    tm_to.tm_hour = crt.valid_to.hour;
-    tm_to.tm_min = crt.valid_to.min;
-    tm_to.tm_sec = crt.valid_to.sec;
-    info->not_after = mktime(&tm_to);
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crt_init(&crt);
     
-    /* Serial number (hex) */
-    for (size_t i = 0; i < crt.serial.len && i < 32; i++) {
-        sprintf(info->serial + i * 2, "%02X", crt.serial.p[i]);
+    int ret = mbedtls_x509_crt_parse(&crt, (const unsigned char *)cert_pem, cert_len);
+    if (ret != 0) {
+        mbedtls_x509_crt_free(&crt);
+        return ESP_ERR_INVALID_ARG;
     }
     
-    /* Calculate validity */
-    time_t now;
-    time(&now);
-    
-    info->is_valid = (now >= info->not_before && now <= info->not_after);
-    info->days_until_expiry = (int)((info->not_after - now) / 86400);
-    
+    ret = info_from_crt(&crt, info);
+    if (ret == ESP_OK) evaluate_time(info, (int64_t)time(NULL));
     mbedtls_x509_crt_free(&crt);
+    return ret;
+}
+
+static void evaluate_time(ts_cert_info_t *info, int64_t now)
+{
+    info->is_valid = false;
+    info->seconds_until_expiry = 0;
+    info->days_until_expiry = 0;
+    info->time_ready = ts_cert_time_ready(now, TS_TIME_MIN_VALID_YEAR);
+    if (info->validity == TS_CERT_VALIDITY_NONE || info->validity == TS_CERT_VALIDITY_INVALID) return;
+    if (!info->time_ready) { info->validity = TS_CERT_VALIDITY_TIME_UNVERIFIED; return; }
+    info->seconds_until_expiry = info->not_after - now;
+    info->days_until_expiry = ts_cert_time_days(info->seconds_until_expiry);
+    info->validity = now < info->not_before ? TS_CERT_VALIDITY_NOT_YET_VALID :
+                     now > info->not_after ? TS_CERT_VALIDITY_EXPIRED : TS_CERT_VALIDITY_VALID;
+    info->is_valid = info->validity == TS_CERT_VALIDITY_VALID;
+}
+
+static void refresh_metadata(void)
+{
+    if (s_metadata_generation == s_generation) return;
+    memset(&s_metadata, 0, sizeof(s_metadata));
+    s_key_valid = s_key_matches = s_ca_valid = false;
+    s_fingerprint[0] = 0;
+    mbedtls_pk_context key;
+    mbedtls_x509_crt crt, ca;
+    mbedtls_pk_init(&key); mbedtls_x509_crt_init(&crt); mbedtls_x509_crt_init(&ca);
+    if (s_private_key_pem && init_rng() == ESP_OK)
+        s_key_valid = mbedtls_pk_parse_key(&key, (const unsigned char *)s_private_key_pem,
+            strlen(s_private_key_pem)+1, NULL, 0, mbedtls_ctr_drbg_random, &s_ctr_drbg) == 0;
+    if (s_certificate_pem) {
+        s_metadata.validity = TS_CERT_VALIDITY_INVALID;
+        if (mbedtls_x509_crt_parse(&crt, (const unsigned char *)s_certificate_pem, strlen(s_certificate_pem)+1) == 0) {
+            info_from_crt(&crt, &s_metadata);
+            s_key_matches = s_key_valid && mbedtls_pk_check_pair(&crt.pk, &key, mbedtls_ctr_drbg_random, &s_ctr_drbg) == 0;
+            unsigned char hash[32];
+            if (mbedtls_sha256(crt.raw.p, crt.raw.len, hash, 0) == 0)
+                ts_cert_hex(hash, sizeof(hash), s_fingerprint, sizeof(s_fingerprint));
+        }
+    }
+    if (s_ca_chain_pem)
+        s_ca_valid = mbedtls_x509_crt_parse(&ca, (const unsigned char *)s_ca_chain_pem, strlen(s_ca_chain_pem)+1) == 0;
+    mbedtls_pk_free(&key); mbedtls_x509_crt_free(&crt); mbedtls_x509_crt_free(&ca);
+    s_metadata_generation = s_generation;
+}
+
+bool ts_cert_prerequisites(const ts_cert_pki_status_t *s, bool require_ca)
+{
+    return s && !s->storage_error && s->time_ready && s->has_private_key && s->key_valid &&
+        s->has_certificate && s->key_matches && s->cert_info.is_valid &&
+        (!require_ca || (s->has_ca_chain && s->ca_valid));
+}
+
+const char *ts_cert_validity_to_str(ts_cert_validity_t v)
+{
+    static const char *names[] = {"none", "invalid", "time_unverified", "not_yet_valid", "valid", "expired"};
+    return (unsigned)v < sizeof(names)/sizeof(names[0]) ? names[v] : "invalid";
+}
+const char *ts_cert_op_error_to_str(ts_cert_op_error_t e)
+{
+    static const char *names[] = {"Saved", "Certificate module not ready", "Provide non-empty PEM text",
+        "PEM exceeds 3999 content bytes (4000 including NUL)", "Cannot parse certificate PEM",
+        "Generate the device key first", "Stored private key is invalid", "Certificate does not match device key; use its CSR",
+        "Insufficient device memory", "Credential storage failed; restart and check stored materials", "Device cryptographic operation failed"};
+    return (unsigned)e < sizeof(names)/sizeof(names[0]) ? names[e] : "Certificate operation failed";
+}
+
+void ts_cert_free_snapshot(ts_cert_snapshot_t *s)
+{
+    if (!s) return;
+    if (s->key) mbedtls_platform_zeroize(s->key, strlen(s->key));
+    free(s->key); free(s->certificate); free(s->ca);
+    memset(s, 0, sizeof(*s));
+}
+
+static esp_err_t ts_cert_get_snapshot_locked(bool require_ca, ts_cert_snapshot_t *snapshot)
+{
+    if (!snapshot) return ESP_ERR_INVALID_ARG;
+    memset(snapshot, 0, sizeof(*snapshot));
+    ts_cert_pki_status_t status;
+    esp_err_t err = ts_cert_get_status_locked(&status);
+    if (err != ESP_OK) return err;
+    if (!ts_cert_prerequisites(&status, require_ca)) return ESP_ERR_INVALID_STATE;
+    snapshot->key = copy_pem(s_private_key_pem, strlen(s_private_key_pem)+1);
+    snapshot->certificate = copy_pem(s_certificate_pem, strlen(s_certificate_pem)+1);
+    if (s_ca_chain_pem && s_ca_valid) snapshot->ca = copy_pem(s_ca_chain_pem, strlen(s_ca_chain_pem)+1);
+    if (!snapshot->key || !snapshot->certificate || (require_ca && !snapshot->ca)) {
+        ts_cert_free_snapshot(snapshot); return ESP_ERR_NO_MEM;
+    }
+    snapshot->generation = s_generation;
+    memcpy(snapshot->certificate_sha256, s_fingerprint, sizeof(s_fingerprint));
     return ESP_OK;
+}
+
+/* All public cache/RNG operations take the same lock; events are posted after release.
+ * Lock order: material only -> unlock -> event; never material -> TLS/service manager.
+ */
+static void material_unlock(uint32_t previous, uint32_t kind)
+{
+    uint32_t generation = s_generation;
+    xSemaphoreGive(s_mutex);
+    if (generation != previous) {
+        struct { uint32_t generation; uint32_t kind; } event = {generation, kind};
+        esp_err_t err = ts_event_post(TS_EVENT_BASE_PKI, TS_EVENT_PKI_MATERIAL_CHANGED, &event, sizeof(event), 0);
+        if (err != ESP_OK) ESP_LOGW(TAG, "Material notification lost: %s", esp_err_to_name(err));
+    }
+}
+
+esp_err_t ts_cert_init(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_init_locked();
+    material_unlock(previous, 0);
+    return result;
+}
+
+void ts_cert_deinit(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    ts_cert_deinit_locked();
+    material_unlock(previous, 0);
+}
+
+esp_err_t ts_cert_generate_keypair(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_generate_keypair_locked();
+    material_unlock(previous, 3);
+    return result;
+}
+
+bool ts_cert_has_keypair(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    bool result = ts_cert_has_keypair_locked();
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_delete_keypair(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_delete_keypair_locked();
+    material_unlock(previous, 4);
+    return result;
+}
+
+esp_err_t ts_cert_generate_csr(const ts_cert_csr_opts_t *opts,
+                                char *csr_pem, size_t *csr_len)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_generate_csr_locked(opts, csr_pem, csr_len);
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_generate_csr_default(char *csr_pem, size_t *csr_len)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_generate_csr_default_locked(csr_pem, csr_len);
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_install_certificate_ex(const char *pem, size_t len, ts_cert_op_error_t *detail)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_install_certificate_ex_locked(pem, len, detail);
+    material_unlock(previous, 1);
+    return result;
+}
+
+esp_err_t ts_cert_install_ca_chain_ex(const char *pem, size_t len, ts_cert_op_error_t *detail)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_install_ca_chain_ex_locked(pem, len, detail);
+    material_unlock(previous, 2);
+    return result;
+}
+
+esp_err_t ts_cert_install_certificate(const char *pem, size_t len)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_install_certificate_locked(pem, len);
+    material_unlock(previous, 1);
+    return result;
+}
+
+esp_err_t ts_cert_install_ca_chain(const char *pem, size_t len)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_install_ca_chain_locked(pem, len);
+    material_unlock(previous, 2);
+    return result;
+}
+
+esp_err_t ts_cert_get_certificate(char *cert_pem, size_t *cert_len)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_get_certificate_locked(cert_pem, cert_len);
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_get_private_key(char *key_pem, size_t *key_len)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_get_private_key_locked(key_pem, key_len);
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_get_ca_chain(char *ca_chain_pem, size_t *ca_chain_len)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_get_ca_chain_locked(ca_chain_pem, ca_chain_len);
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_refresh_status(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_refresh_status_locked();
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_get_status(ts_cert_pki_status_t *status)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_get_status_locked(status);
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_get_info(ts_cert_info_t *info)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_get_info_locked(info);
+    material_unlock(previous, 0);
+    return result;
+}
+
+bool ts_cert_is_valid(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    bool result = ts_cert_is_valid_locked();
+    material_unlock(previous, 0);
+    return result;
+}
+
+int ts_cert_days_until_expiry(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    int result = ts_cert_days_until_expiry_locked();
+    material_unlock(previous, 0);
+    return result;
+}
+
+esp_err_t ts_cert_factory_reset(void)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_factory_reset_locked();
+    material_unlock(previous, 4);
+    return result;
+}
+
+esp_err_t ts_cert_get_snapshot(bool require_ca, ts_cert_snapshot_t *snapshot)
+{
+    material_lock();
+    uint32_t previous = s_generation;
+    esp_err_t result = ts_cert_get_snapshot_locked(require_ca, snapshot);
+    material_unlock(previous, 0);
+    return result;
 }

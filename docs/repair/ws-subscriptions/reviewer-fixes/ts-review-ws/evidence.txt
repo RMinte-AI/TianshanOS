@@ -1,0 +1,3 @@
+CONFIRMED R1: stop returned busy; worker absent; accepted two-recipient message sent to only one; pending jobs=1
+CONFIRMED R2: three real ssh_send_status calls produce two frames; final frame={"type":"ssh_status","status":"connected","message":"SSH shell ready"}
+CONFIRMED R3: actual terminal_start changes client role, but both queued and new log frames still reach this peer

@@ -4,42 +4,36 @@
  */
 
 /**
- * 按需加载 xterm.js 及其插件（从 CDN）
+ * 按需加载 xterm.js 及其插件（设备本地资源）
  * 仅在首次打开终端页面时触发，后续调用直接返回
  */
 const _xtermReady = (function() {
     let _promise = null;
 
-    function loadCSS(href) {
-        return new Promise(function(resolve, reject) {
-            if (document.querySelector('link[href="' + href + '"]')) { resolve(); return; }
-            var link = document.createElement('link');
-            link.rel = 'stylesheet';
-            link.href = href;
-            link.onload = resolve;
-            link.onerror = reject;
-            document.head.appendChild(link);
+    function loadResource(url, css) {
+        return new Promise((resolve, reject) => {
+            const selector = css ? 'link[href="' + url + '"]' : 'script[src="' + url + '"]';
+            const existing = document.querySelector(selector);
+            if (existing?.dataset.ready === 'true') { resolve(); return; }
+            if (existing) existing.remove();
+            const node = document.createElement(css ? 'link' : 'script');
+            if (css) { node.rel = 'stylesheet'; node.href = url; } else node.src = url;
+            const timer = setTimeout(() => finish(false), 15000);
+            function finish(ok) {
+                clearTimeout(timer); node.onload = node.onerror = null;
+                if (ok) { node.dataset.ready = 'true'; resolve(); }
+                else { node.remove(); reject(new Error('Terminal resource unavailable: ' + url)); }
+            }
+            node.onload = () => finish(true); node.onerror = () => finish(false);
+            document.head.appendChild(node);
         });
     }
-    function loadScript(src) {
-        return new Promise(function(resolve, reject) {
-            if (document.querySelector('script[src="' + src + '"]')) { resolve(); return; }
-            var s = document.createElement('script');
-            s.src = src;
-            s.onload = resolve;
-            s.onerror = reject;
-            document.head.appendChild(s);
-        });
-    }
-
     return function ensureXtermLoaded() {
         if (_promise) return _promise;
-        if (typeof Terminal !== 'undefined' && typeof FitAddon !== 'undefined') {
-            return (_promise = Promise.resolve());
-        }
-        _promise = loadCSS('https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css')
-            .then(function() { return loadScript('https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js'); })
-            .then(function() { return loadScript('https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js'); });
+        _promise = loadResource('/vendor/xterm/xterm.css?v=' + encodeURIComponent(window.TS_ASSET_VERSION), true)
+            .then(() => loadResource('/vendor/xterm/xterm.min.js?v=' + encodeURIComponent(window.TS_ASSET_VERSION), false))
+            .then(() => loadResource('/vendor/xterm/fit.min.js?v=' + encodeURIComponent(window.TS_ASSET_VERSION), false))
+            .catch(error => { _promise = null; throw error; });
         return _promise;
     };
 })();
@@ -60,6 +54,10 @@ class WebTerminal {
         // SSH Shell 模式
         this.sshMode = false;
         this.sshConnecting = false;
+        this.sshDisconnecting = false;
+        this.restoring = false;
+        this.restoreTimer = null;
+        this.destroyed = false;
     }
 
     /**
@@ -72,8 +70,19 @@ class WebTerminal {
             return false;
         }
 
-        // 按需加载 xterm.js（首次访问终端页面时从 CDN 拉取）
-        await _xtermReady();
+        // 按需加载 xterm.js（首次访问终端页面时从设备加载）
+        try { await _xtermReady(); }
+        catch (error) {
+            if (this.destroyed) return false;
+            console.error(error);
+            container.replaceChildren();
+            const message = document.createElement('p'); message.textContent = t('promptRepair.terminalLoadFailed');
+            const retry = document.createElement('button'); retry.className = 'btn'; retry.textContent = t('promptRepair.retry');
+            retry.onclick = () => loadTerminalPage();
+            container.append(message, retry);
+            return false;
+        }
+        if (this.destroyed) return false;
 
         // 创建 xterm.js 终端
         this.terminal = new Terminal({
@@ -141,7 +150,7 @@ class WebTerminal {
      */
     setupInputHandler() {
         this.terminal.onData(data => {
-            if (!this.connected) return;
+            if (!this.connected || this.sshConnecting || this.sshDisconnecting) return;
             
             // SSH Shell 模式
             if (this.sshMode) {
@@ -297,26 +306,32 @@ class WebTerminal {
      * 连接到 WebSocket
      */
     connect() {
+        if (this.destroyed) return;
+        if (this.ws) this.disconnect();
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws`;
         
-        this.ws = new WebSocket(wsUrl);
+        const ws = new WebSocket(wsUrl);
+        this.ws = ws;
+        const current = () => !this.destroyed && this.ws === ws;
         this.pingInterval = null;
         
-        this.ws.onopen = () => {
+        ws.onopen = () => {
+            if (!current()) return;
             console.log('Terminal WebSocket connected');
             // 发送终端启动请求
-            this.ws.send(JSON.stringify({ type: 'terminal_start' }));
+            ws.send(JSON.stringify({ type: 'terminal_start' }));
             
             // 启动心跳机制
             this.pingInterval = setInterval(() => {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ type: 'ping' }));
+                if (current() && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'ping' }));
                 }
             }, 15000); // 每15秒发送心跳
         };
         
-        this.ws.onmessage = (event) => {
+        ws.onmessage = (event) => {
+            if (!current()) return;
             try {
                 const msg = JSON.parse(event.data);
                 this.handleMessage(msg);
@@ -325,9 +340,12 @@ class WebTerminal {
             }
         };
         
-        this.ws.onclose = (event) => {
+        ws.onclose = (event) => {
+            if (!current()) return;
             console.log('Terminal WebSocket disconnected, code:', event.code);
             this.connected = false;
+            this.sshMode = this.sshConnecting = this.sshDisconnecting = false;
+            if (this.restoring) this.finishRestore(false);
             
             // 清除心跳
             if (this.pingInterval) {
@@ -341,7 +359,7 @@ class WebTerminal {
             if (event.code !== 1000) { // 非正常关闭
                 this.writeln('\x1b[33m' + (typeof t === 'function' ? t('terminal.reconnectIn') : '5秒后尝试重新连接...') + '\x1b[0m');
                 const tryReconnect = () => {
-                    if (this.connected) return;
+                    if (!current() || this.connected) return;
                     if (document.visibilityState !== 'visible') {
                         document.addEventListener('visibilitychange', function handler() {
                             document.removeEventListener('visibilitychange', handler);
@@ -356,7 +374,8 @@ class WebTerminal {
             }
         };
         
-        this.ws.onerror = (error) => {
+        ws.onerror = (error) => {
+            if (!current()) return;
             console.error('Terminal WebSocket error:', error);
             this.writeln('\r\n\x1b[1;31m' + (typeof t === 'function' ? t('terminal.connectionError') : '连接错误') + '\x1b[0m');
         };
@@ -365,9 +384,20 @@ class WebTerminal {
     /**
      * 处理 WebSocket 消息
      */
+    finishRestore(ok, timeout = false) {
+        clearTimeout(this.restoreTimer); this.restoreTimer = null;
+        this.restoring = false;
+        const key = ok ? 'terminalRestored' : timeout ? 'terminalRestoreTimeout' : 'terminalRestoreFailed';
+        this.writeln(t('promptRepair.' + key));
+        showToast(t('promptRepair.' + key), ok ? 'success' : 'warning');
+    }
+
     handleMessage(msg) {
+        if (this.destroyed) return;
         switch (msg.type) {
             case 'connected':
+                if (this.sshMode || this.sshConnecting || this.sshDisconnecting) return;
+                if (this.restoring) this.finishRestore(true);
                 this.connected = true;
                 this.prompt = msg.prompt || 'tianshan> ';
                 this.writeln('\x1b[1;32m' + (typeof t === 'function' ? t('terminal.connected') : '已连接到设备') + '\x1b[0m');
@@ -384,17 +414,28 @@ class WebTerminal {
                 break;
                 
             case 'done':
+                if (this.sshMode || this.sshConnecting || this.sshDisconnecting) return;
                 // 命令执行完成
                 this.writePrompt();
                 break;
                 
             case 'error': {
                 const errMsg = msg.message || (typeof t === 'function' ? t('terminal.unknownError') : '未知错误');
+                if (this.sshMode || this.sshConnecting || this.sshDisconnecting) {
+                    this.writeln('\x1b[1;31m' + this.sshMessageText(errMsg) + '\x1b[0m');
+                    if (this.sshConnecting && !this.sshMode) { this.sshConnecting = false; this.writePrompt(); }
+                    break; // request failure is not an operation terminal
+                }
                 if (errMsg.indexOf('Not a terminal session') >= 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ type: 'terminal_start' }));
-                    const toast = typeof showToast === 'function' ? showToast : function(m) { console.log(m); };
-                    toast(typeof t === 'function' ? t('terminal.sessionRestored') : '会话已恢复，请重试', 'success');
+                    if (!this.restoring) {
+                        this.restoring = true; this.connected = false;
+                        this.ws.send(JSON.stringify({type: 'terminal_start'}));
+                        showToast(t('promptRepair.terminalRestoring'), 'info');
+                        const restoringSocket = this.ws;
+                        this.restoreTimer = setTimeout(() => { if (!this.destroyed && this.ws === restoringSocket && this.restoring) this.finishRestore(false, true); }, 10000);
+                    }
                 } else {
+                    if (this.restoring) this.finishRestore(false);
                     this.writeln('\x1b[1;31m' + (typeof t === 'function' ? t('terminal.errorLabel') : '错误') + ': ' + errMsg + '\x1b[0m');
                     this.writePrompt();
                 }
@@ -423,6 +464,7 @@ class WebTerminal {
             
             case 'session_closed':
                 this.connected = false;
+                this.sshMode = this.sshConnecting = this.sshDisconnecting = false;
                 this.writeln('\x1b[33m' + (typeof t === 'function' ? t('terminal.sessionClosed') : '会话已关闭，请重新连接') + '\x1b[0m');
                 break;
                 
@@ -435,6 +477,7 @@ class WebTerminal {
      * 处理电压保护事件
      */
     handlePowerEvent(msg) {
+        if (this.destroyed || !this.terminal) return;
         const state = msg.state || 'UNKNOWN';
         const voltage = msg.voltage ? msg.voltage.toFixed(2) : '?.??';
         const countdown = msg.countdown || 0;
@@ -493,6 +536,19 @@ class WebTerminal {
         }
         
         if (notification) {
+            const canRestoreLocalInput =
+                !this.destroyed &&
+                this.connected &&
+                this.ws &&
+                this.ws.readyState === WebSocket.OPEN &&
+                !this.sshMode &&
+                !this.sshConnecting &&
+                !this.sshDisconnecting &&
+                !this.restoring;
+            if (!canRestoreLocalInput) {
+                this.writeln(`\r\n${color}${notification}\x1b[0m`);
+                return;
+            }
             // 保存当前输入状态
             const savedBuffer = this.inputBuffer;
             const savedPosition = this.cursorPosition;
@@ -570,10 +626,9 @@ class WebTerminal {
     startSshShell(params) {
         if (this.sshConnecting || this.sshMode) {
             this.writeln('\x1b[1;31m' + (typeof t === 'function' ? t('terminal.sshSessionInProgress') : 'SSH 会话已在进行中') + '\x1b[0m');
-            this.writePrompt();
             return;
         }
-        
+        if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         this.sshConnecting = true;
         const connMsg = typeof t === 'function' ? t('terminal.sshConnectingTo', { user: params.user, host: params.host, port: params.port }) : `正在连接到 ${params.user}@${params.host}:${params.port}...`;
         this.writeln(`\x1b[36m${connMsg}\x1b[0m`);
@@ -604,29 +659,66 @@ class WebTerminal {
     /**
      * 处理 SSH 状态消息
      */
+    sshMessageText(message) {
+        const keys = {
+            "Missing host or user": "sshShellRequiresParams",
+            "SSH result delivery capacity unavailable": "sshCapacity",
+            "Failed to create SSH session": "sshCreateFailed",
+            "Failed to open shell": "sshOpenFailed",
+            "SSH shell closed during startup": "sshStartupClosed",
+            "SSH connection status delivery failed": "sshStatusFailed",
+            "SSH readiness delivery failed": "sshStatusFailed",
+            "SSH status delivery failed": "sshStatusFailed",
+            "SSH output delivery incomplete; remote command result is not confirmed": "sshOutputIncomplete",
+            "SSH session closed": "sshClosed",
+            "Closing SSH session...": "sshClosing",
+            "Connecting to SSH server...": "sshConnecting",
+            "SSH shell ready": "sshReady",
+            "Service is stopping": "sshServiceStopping",
+            'Unsupported SSH signal': 'sshControlUnsupported',
+            'Invalid SSH control parameters': 'sshControlInvalid',
+            'SSH control request failed; input was not replayed': 'sshControlFailed',
+            'SSH channel failed; remote result is not confirmed': 'sshChannelUnknown',
+            'This connection does not own an active SSH session': 'sshWrongOwner',
+            'Another SSH session is active': 'sshBusy',
+            'SSH request rejected': 'sshRequestRejected'
+        };
+        return keys[message] && typeof t === 'function' ? t('terminal.' + keys[message]) : message;
+    }
+
     handleSshStatus(msg) {
         const status = msg.status;
-        const message = msg.message || '';
+        const message = this.sshMessageText(msg.message || '');
         
         switch (status) {
             case 'connecting':
                 this.writeln(`\x1b[33m${message}\x1b[0m`);
                 break;
             case 'connected':
+                if (!this.sshConnecting) return;
+                this.sshDisconnecting = false;
                 this.sshMode = true;
                 this.sshConnecting = false;
                 this.writeln(`\x1b[1;32m${message}\x1b[0m`);
                 this.writeln('\x1b[90m' + (typeof t === 'function' ? t('terminal.exitSshHint') : '(按 Ctrl+\\ 退出 SSH shell)') + '\x1b[0m');
                 this.writeln('');
                 break;
-            case 'closed':
             case 'disconnecting':
+                if (!this.sshMode) return;
+                this.sshDisconnecting = true;
+                this.writeln(`\r\n\x1b[33m${message}\x1b[0m`);
+                break;
+            case 'closed':
+                if (!this.sshMode && !this.sshConnecting) return;
+                this.sshDisconnecting = false;
                 this.sshMode = false;
                 this.sshConnecting = false;
                 this.writeln(`\r\n\x1b[33m${message}\x1b[0m`);
                 this.writePrompt();
                 break;
             case 'error':
+                if (!this.sshMode && !this.sshConnecting) return;
+                this.sshDisconnecting = false;
                 this.sshMode = false;
                 this.sshConnecting = false;
                 this.writeln(`\x1b[1;31m${message}\x1b[0m`);
@@ -686,6 +778,7 @@ class WebTerminal {
      * 断开连接
      */
     disconnect() {
+        clearTimeout(this.restoreTimer); this.restoring = false;
         // 清除心跳
         if (this.pingInterval) {
             clearInterval(this.pingInterval);
@@ -701,12 +794,14 @@ class WebTerminal {
             this.ws = null;
         }
         this.connected = false;
+        this.sshMode = this.sshConnecting = this.sshDisconnecting = false;
     }
 
     /**
      * 销毁终端
      */
     destroy() {
+        this.destroyed = true;
         this.disconnect();
         if (this.terminal) {
             this.terminal.dispose();

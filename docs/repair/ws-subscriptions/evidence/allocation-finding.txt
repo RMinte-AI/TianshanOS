@@ -1,0 +1,3 @@
+Allocation sweep initially failed at allocation 10: live=2 versus session-only baseline=1.
+SDK cJSON_AddItemReferenceToObject creates a reference then returns false when key allocation fails without reclaiming that reference.
+Replaced with explicit short-lived borrowed reference and constant-key insertion, with ownership cleanup on every failure.

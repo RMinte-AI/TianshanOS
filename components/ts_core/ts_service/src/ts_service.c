@@ -143,7 +143,8 @@ esp_err_t ts_service_deinit(void)
     ESP_LOGI(TAG, "Deinitializing service management...");
 
     // 停止所有服务
-    ts_service_stop_all();
+    esp_err_t ret = ts_service_stop_all();
+    if (ret != ESP_OK) return ret;
 
     xSemaphoreTake(s_svc_ctx.mutex, portMAX_DELAY);
 
@@ -380,7 +381,8 @@ esp_err_t ts_service_stop_all(void)
             if (service->def.phase == phase && 
                 service->state == TS_SERVICE_STATE_RUNNING) {
                 xSemaphoreGive(s_svc_ctx.mutex);
-                ts_service_stop(service);
+                esp_err_t ret = ts_service_stop(service);
+                if (ret != ESP_OK) return ret; /* keep dependencies and registry for retry */
                 xSemaphoreTake(s_svc_ctx.mutex, portMAX_DELAY);
             }
             service = service->next;
@@ -490,7 +492,8 @@ esp_err_t ts_service_restart(ts_service_handle_t handle)
     ESP_LOGI(TAG, "Restarting service: %s", service->def.name);
 
     esp_err_t ret = ts_service_stop(handle);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+    if (ret != ESP_OK && (ret != ESP_ERR_INVALID_STATE ||
+                         service->state == TS_SERVICE_STATE_RUNNING)) {
         return ret;
     }
 
@@ -910,7 +913,9 @@ static esp_err_t stop_service_internal(ts_service_instance_t *service)
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Service '%s' stop returned error: %s", 
                      service->def.name, esp_err_to_name(ret));
-            // 继续停止流程
+            /* Failed stop retains the service and its resources for a later retry. */
+            set_service_state(service, old_state);
+            return ret;
         }
     }
 

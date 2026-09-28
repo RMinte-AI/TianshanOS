@@ -123,6 +123,12 @@ esp_err_t ts_http_set_cors(ts_http_request_t *req, const char *origin);
  */
 httpd_handle_t ts_http_server_get_handle(void);
 
+/* Owner hooks: before_stop must drain users; failure preserves the live handle. */
+void ts_http_server_set_stop_hooks(esp_err_t (*before)(httpd_handle_t),
+                                   void (*after)(httpd_handle_t));
+
+bool ts_http_server_is_stopping(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,0 +1,2 @@
+Assertion failed: (ts_ssh_shell_read(shell,buf,sizeof(buf),&n)==ESP_ERR_TIMEOUT && ts_ssh_shell_is_active(shell)), function main, file test_shell_driver.c, line 30.
+tests/ws_subscriptions/run_shell_driver.sh: line 19: 80350 Abort trap: 6           "$build/adapter" "$@"

@@ -1,0 +1,108 @@
+[
+  {
+    "name": "host",
+    "command": [
+      "bash",
+      "tests/ws_subscriptions/run_host.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "operation",
+    "command": [
+      "bash",
+      "tests/ws_subscriptions/run_operation.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "adapter",
+    "command": [
+      "bash",
+      "tests/ws_subscriptions/run_operation_adapter.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "control",
+    "command": [
+      "bash",
+      "tests/ws_subscriptions/run_control.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "reviewer",
+    "command": [
+      "bash",
+      "tests/ws_subscriptions/run_reviewer.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "f1_f2",
+    "command": [
+      "bash",
+      "tests/ws_subscriptions/run_f1_f2.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "runtime",
+    "command": [
+      "bash",
+      "tests/runtime/run_all.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "certificate",
+    "command": [
+      "bash",
+      "tests/certificate/run_host.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "prompts",
+    "command": [
+      "npm",
+      "test",
+      "--prefix",
+      "tests/prompts"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "release",
+    "command": [
+      "python3",
+      "tests/release/test_release.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "shell_driver",
+    "command": [
+      "bash",
+      "tests/ws_subscriptions/run_shell_driver.sh"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "cross-node-en-US",
+    "command": [
+      "node",
+      "tests/prompts/project-cross.cjs"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "cross-node-zh-CN",
+    "command": [
+      "node",
+      "tests/prompts/project-cross.cjs"
+    ],
+    "exit": 0
+  }
+]

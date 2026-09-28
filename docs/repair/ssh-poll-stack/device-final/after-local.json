@@ -1,0 +1,1138 @@
+{
+  "state": {
+    "url": "http://10.10.99.97/#/terminal",
+    "login": false,
+    "Terminal": "function",
+    "FitAddon": "object",
+    "terminal": true,
+    "connected": true,
+    "ssh": false,
+    "text": "(base) rm01@agx:~$ \n📊 [调试] NORMAL | 电压: 20.44V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.55V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.46V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.44V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.23V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.37V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.34V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.50V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.49V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.49V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.49V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.29V | 倒计时: 0s\n📊 [调试] NORMAL | 电压: 20.44V | 倒计时: 0s\n^\\  (退出 SSH shell)\n正在结束 SSH 会话，请等待确认。\nSSH 会话已结束。\ntianshan> echo TIANSHAN_LOCAL_AFTER_J1\nTIANSHAN_LOCAL_AFTER_J1\ntianshan>  "
+  },
+  "requests": [
+    {
+      "url": "http://10.10.99.97/",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/css/style.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/fonts/remixicon.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-48.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/api.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/router.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/terminal.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/dragSort.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/app.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/lang/zh-CN.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/fonts/remixicon.woff2",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/config/get?key=system.language",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ota/version",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/auth/login",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/xterm.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/xterm.min.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/fit.min.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/time/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/memory",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/network/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/protection/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/fan/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/service/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/led/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/usb/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ui/widgets/get",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    }
+  ],
+  "errors": [],
+  "frames": [
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "events": [
+        "*"
+      ]
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_stop"
+    },
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "topic": "system.dashboard",
+      "params": {
+        "interval": 1000
+      }
+    },
+    {
+      "direction": "received",
+      "type": "subscribed",
+      "topic": "system.dashboard",
+      "success": true
+    },
+    {
+      "direction": "sent",
+      "type": "unsubscribe",
+      "topic": "system.dashboard"
+    },
+    {
+      "direction": "received",
+      "type": "unsubscribed",
+      "topic": "system.dashboard",
+      "success": true
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "received",
+      "type": "session_closed",
+      "reason": "Another terminal session requested"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_start"
+    },
+    {
+      "direction": "received",
+      "type": "connected",
+      "message": "Terminal session started",
+      "prompt": "tianshan> "
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_input",
+      "data": "voltprot --status"
+    },
+    {
+      "direction": "received",
+      "type": "done",
+      "code": 0
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "events": [
+        "*"
+      ]
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_input",
+      "data": "voltprot --debug"
+    },
+    {
+      "direction": "received",
+      "type": "done",
+      "code": 0
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_connect",
+      "host": "10.10.99.98",
+      "port": 22,
+      "user": "rm01"
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "connecting",
+      "message": "Connecting to SSH server..."
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "connected",
+      "message": "SSH shell ready"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.428800582885742,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.428800582885742,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.30340003967285,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.30340003967285,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.51999855041504,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.28059959411621,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.28059959411621,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "e"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "c"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "h"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "o"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": " "
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "T"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "I"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "N"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "S"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "H"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "N"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "_"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "J"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "1"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "_"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "R"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "E"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "L"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "_"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "P"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "A"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "S"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "S"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_input",
+      "data": "\r"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.55419921875,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.46299934387207,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.46299934387207,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.23499870300293,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.23499870300293,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.37179946899414,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.37179946899414,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.337600708007812,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.337600708007812,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.49720001220703,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.48579978942871,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.29199981689453,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.29199981689453,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "received",
+      "type": "power_event",
+      "state": "NORMAL",
+      "voltage": 20.44019889831543,
+      "countdown": 0,
+      "protection_count": 0,
+      "event": "debug_tick"
+    },
+    {
+      "direction": "sent",
+      "type": "ssh_disconnect"
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "disconnecting",
+      "message": "Closing SSH session..."
+    },
+    {
+      "direction": "received",
+      "type": "ssh_status",
+      "status": "closed",
+      "message": "SSH session closed"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    },
+    {
+      "direction": "sent",
+      "type": "subscribe",
+      "events": [
+        "*"
+      ]
+    },
+    {
+      "direction": "sent",
+      "type": "terminal_input",
+      "data": "echo TIANSHAN_LOCAL_AFTER_J1"
+    },
+    {
+      "direction": "received",
+      "type": "done",
+      "code": 0
+    },
+    {
+      "direction": "sent",
+      "type": "ping"
+    },
+    {
+      "direction": "received",
+      "type": "pong"
+    }
+  ]
+}

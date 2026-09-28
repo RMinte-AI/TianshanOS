@@ -1,0 +1,72 @@
+{
+  "head": "3a19128d8638771c958fe47df1d6a7d339a10a4c",
+  "before_source": {
+    "path": "/tmp/ssh-poll-before.c",
+    "sha256": "cb8f801a18672c24636fe744cacf0f1e0379f75b579bcd4869bb9c9d8e541949"
+  },
+  "after_source_sha256": "e53fa635a9775b571a143f9e54fdfd329eeb501345d878833b6567a3f41b21bb",
+  "builds": {
+    "candidate": {
+      "dir": "/tmp/tianshan-ssh-stack-candidate/build",
+      "config_sha256": "1340e033b5865e39dd6b8c3516dffb27d01da5aff41127c69b583cbfb99acef0",
+      "vendor": [
+        {
+          "file": "xterm.min.js",
+          "sha256": "fc1dd31b221e3e5f929486e07a80b477a8aaf9dce2b4f9c3ffe7dd25f370655d",
+          "raw": 283670,
+          "gzip": 65684
+        },
+        {
+          "file": "xterm.css",
+          "sha256": "832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872",
+          "raw": 5383,
+          "gzip": 2037
+        },
+        {
+          "file": "fit.min.js",
+          "sha256": "c78e5795c6487acdf24ab436798d4a9cec3848101b281bc65b061f39db714be1",
+          "raw": 1789,
+          "gzip": 822
+        }
+      ],
+      "flash_files": {
+        "0x0": "bootloader/bootloader.bin",
+        "0x20000": "TianShanOS.bin",
+        "0x8000": "partition_table/partition-table.bin",
+        "0x16000": "ota_data_initial.bin",
+        "0x6a0000": "www.bin"
+      }
+    },
+    "diagnostic": {
+      "dir": "/tmp/tianshan-ssh-stack-diagnostic/build",
+      "config_sha256": "cf1c9534a0686d9ce89fd3b31e3f1db2b8f984d1b646bad8bd467afae2c05e7c",
+      "vendor": [
+        {
+          "file": "xterm.min.js",
+          "sha256": "fc1dd31b221e3e5f929486e07a80b477a8aaf9dce2b4f9c3ffe7dd25f370655d",
+          "raw": 283670,
+          "gzip": 65684
+        },
+        {
+          "file": "xterm.css",
+          "sha256": "832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872",
+          "raw": 5383,
+          "gzip": 2037
+        },
+        {
+          "file": "fit.min.js",
+          "sha256": "c78e5795c6487acdf24ab436798d4a9cec3848101b281bc65b061f39db714be1",
+          "raw": 1789,
+          "gzip": 822
+        }
+      ],
+      "flash_files": {
+        "0x0": "bootloader/bootloader.bin",
+        "0x20000": "TianShanOS.bin",
+        "0x8000": "partition_table/partition-table.bin",
+        "0x16000": "ota_data_initial.bin",
+        "0x6a0000": "www.bin"
+      }
+    }
+  }
+}

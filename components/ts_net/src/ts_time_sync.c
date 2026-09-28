@@ -31,6 +31,13 @@ static struct {
     .ntp_started = false,
 };
 
+static void notify_clock_updated(void)
+{
+    esp_err_t err = ts_event_post(TS_EVENT_BASE_TIME, TS_EVENT_TIME_SYNCED,
+                                 &s_time_sync.info, sizeof(s_time_sync.info), 0);
+    if (err != ESP_OK) ESP_LOGW(TAG, "Time notification lost: %s", esp_err_to_name(err));
+}
+
 /* NTP 同步回调 */
 static void time_sync_notification_cb(struct timeval *tv)
 {
@@ -50,8 +57,7 @@ static void time_sync_notification_cb(struct timeval *tv)
     ESP_LOGI(TAG, "Local time: %s (%s)", strftime_buf, s_time_sync.timezone);
     
     /* 发布时间同步完成事件 */
-    ts_event_post(TS_EVENT_BASE_TIME, TS_EVENT_TIME_SYNCED, 
-                  &s_time_sync.info, sizeof(s_time_sync.info), 0);
+    notify_clock_updated();
 }
 
 esp_err_t ts_time_sync_init(const ts_time_sync_config_t *config)
@@ -265,6 +271,7 @@ esp_err_t ts_time_sync_set_time(int64_t timestamp_ms, ts_time_source_t source)
     ESP_LOGI(TAG, "Time set from %s: %s (offset: %lld ms)", 
              source_str, strftime_buf, (long long)(s_time_sync.info.offset_us / 1000));
     
+    notify_clock_updated();
     return ESP_OK;
 }
 
@@ -306,7 +313,7 @@ bool ts_time_sync_needs_sync(void)
     time_t now;
     time(&now);
     struct tm timeinfo;
-    localtime_r(&now, &timeinfo);
+    if (now == (time_t)-1 || !gmtime_r(&now, &timeinfo)) return true;
     
     /* 如果年份 < 2025，说明系统时间无效（ESP32 默认 1970） */
     return (timeinfo.tm_year + 1900) < TS_TIME_MIN_VALID_YEAR;

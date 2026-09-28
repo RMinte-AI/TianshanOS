@@ -83,7 +83,10 @@ esp_err_t ts_rule_disable(const char *id);
  * @param id Rule ID
  * @return Rule pointer or NULL
  */
-const ts_auto_rule_t *ts_rule_get(const char *id);
+typedef struct {int applied,durable,mirror_synced;uint32_t revision;const char *error_code;} ts_rule_commit_result_t;
+esp_err_t ts_rule_acquire(const char *id,ts_auto_rule_t *out);
+void ts_rule_release(ts_auto_rule_t *rule);
+esp_err_t ts_rule_commit(const ts_auto_rule_t *candidate,const char *id,uint32_t expected_revision,ts_rule_commit_result_t *result);
 
 /**
  * @brief Get number of registered rules
@@ -185,7 +188,7 @@ esp_err_t ts_action_execute_array(const ts_auto_action_t *actions, int count,
  * @brief Get rule by index
  *
  * @param index Rule index (0 to rule_count-1)
- * @param rule Output rule structure
+ * @param rule Pinned output; caller MUST ts_rule_release after use
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if index out of range
  */
 esp_err_t ts_rule_get_by_index(int index, ts_auto_rule_t *rule);
@@ -345,6 +348,12 @@ esp_err_t ts_rules_load(void);
  * @return ESP_OK on success
  */
 esp_err_t ts_rules_load_from_file(const char *filepath);
+
+/* Cold API/load path only: may allocate and resolve command/template references. */
+void ts_rule_resolve_presentation(ts_auto_rule_t *rule);
+bool ts_rule_edit_begin(void);
+void ts_rule_edit_end(void);
+void ts_rule_config_status(bool *loaded, bool *recovery);
 
 #ifdef __cplusplus
 }

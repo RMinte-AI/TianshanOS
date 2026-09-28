@@ -1,0 +1,23 @@
+PASS F1: actual Shell output immediate/deferred failure settles original operation; early callbacks remain safe
+PASS F2: protection transition survives ordinary log saturation
+PASS F1: actual Shell output immediate/deferred failure settles original operation; early callbacks remain safe
+PASS F1: actual Shell output immediate/deferred failure settles original operation; early callbacks remain safe
+PASS original peer and operation identity isolation across reconnect
+PASS actual Exec callback: partial failure settles each target; observation closes while business collection continues without remote abort or replay
+PASS actual Exec callback: partial failure settles each target; observation closes while business collection continues without remote abort or replay
+PASS protection queue recovery without new messages; partial socket failure never replays successful recipient
+PASS separate ordinary slot/descriptor/byte exhaustion cannot consume power quota; power overload counted without construction
+PASS persistent SDK rejection has bounded retry and observable terminal settlement
+PASS ordinary class retained with completion; busy/timeout stop preserves output and protection progress
+PASS ordinary class retained with completion; busy/timeout stop preserves output and protection progress
+PASS ordinary class retained with completion; busy/timeout stop preserves output and protection progress
+PASS ticks cannot evict transitions; four accepted transitions retain order, fifth overload is explicit
+fair system.dashboard=25
+fair system.info=18
+fair system.memory=18
+fair system.cpu=24
+fair network.status=18
+fair power.status=18
+fair fan.status=18
+fair service.list=18
+PASS bounded sustained log/protection/topic competition: all eligible classes progress

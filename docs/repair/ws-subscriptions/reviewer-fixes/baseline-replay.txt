@@ -1,0 +1,14 @@
+CONFIRMED R1: stop returned busy; worker absent; accepted two-recipient message sent to only one; pending jobs=1
+CONFIRMED R2: three real ssh_send_status calls produce two frames; final frame={"type":"ssh_status","status":"connected","message":"SSH shell ready"}
+CONFIRMED R3: actual terminal_start changes client role, but both queued and new log frames still reach this peer
+system.dashboard: api=100 serialized=100
+system.info: api=100 serialized=100
+system.memory: api=100 serialized=100
+system.cpu: api=100 serialized=100
+network.status: api=100 serialized=100
+power.status: api=100 serialized=100
+fan.status: api=100 serialized=0
+service.list: api=100 serialized=0
+CONFIRMED R5: fan/status and service/list starve for 100 completed cycles, although their APIs are collected each time
+CONFIRMED R4: actual event drain timed out at 6000000 us, but actual core_deinit returned OK and deinitialized log/config while callback was still running
+CONFIRMED R4 aggregate: failed WebUI stop was ignored; lower-phase dependency stopped; service_deinit released registry and returned OK despite repeated failure

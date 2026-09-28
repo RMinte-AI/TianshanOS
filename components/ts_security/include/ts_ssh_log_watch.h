@@ -40,6 +40,9 @@ extern "C" {
  * @brief 日志监测配置
  */
 typedef struct {
+    uint32_t run_generation;
+    bool recovery_only;
+    char command_id[32];
     char host_id[32];                /**< 主机 ID */
     char log_file[256];              /**< 日志文件路径（如 /tmp/ts_nohup_xxx.log） */
     char ready_pattern[128];         /**< 就绪匹配模式 */
@@ -52,7 +55,11 @@ typedef struct {
 /**
  * @brief 监测任务句柄（内部使用）
  */
-typedef void* ts_ssh_log_watch_handle_t;
+typedef uint32_t ts_ssh_log_watch_handle_t;
+esp_err_t ts_ssh_log_watch_init(void);
+/* Stop requests are asynchronous; false means worker cleanup has completed. */
+bool ts_ssh_log_watch_pending(ts_ssh_log_watch_handle_t handle);
+esp_err_t ts_ssh_log_watch_cancel_name(const char *var_name);
 
 /*===========================================================================*/
 /*                          Public API                                        */

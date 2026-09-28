@@ -1,0 +1,17 @@
+PASS R1: busy stop retains real worker; final fanout drains with no new producer message
+PASS R1 timeout: handler-barrier and transport-drain failures retain worker; accepted fanout progresses before retry
+PASS R3: real role change drops old queued logs, including unsubscribe/resubscribe ABA
+PASS R2: task-create failure/early close never end as connected; reserved failure survives normal pool saturation and SDK queue rejection; late READY invalid
+PASS R2 exec: admitted result reservation survives ordinary saturation and preserves recipients at completion
+R5 observed system.dashboard: 75 delivered frames
+R5 observed system.info: 75 delivered frames
+R5 observed system.memory: 75 delivered frames
+R5 observed system.cpu: 75 delivered frames
+R5 observed network.status: 75 delivered frames
+R5 observed power.status: 75 delivered frames
+R5 observed fan.status: 75 delivered frames
+R5 observed service.list: 75 delivered frames
+PASS R5: all eight topics progress under six-slot pressure; no API collection without message/descriptor/byte capacity
+PASS R4 service: stop errors retain registry/dependencies; retry drains then releases ownership
+PASS R4 core: real event drain timeout retains downstream resources; service/config/log errors propagate; partial deinit retries succeed
+PASS R1 HTTP admission: stopping rejects writes before body/handler execution; reads and resumed admission remain valid

@@ -1,0 +1,1 @@
+PASS Chrome zh-CN: actual C frames + JS dispatcher + next C requests; recoverable/fatal/start/EOF/owner/encoding/socket paths; C resources zero

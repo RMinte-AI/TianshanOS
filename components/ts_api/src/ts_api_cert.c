@@ -17,6 +17,7 @@
 
 #include "ts_api.h"
 #include "ts_cert.h"
+#include "ts_https.h"
 #include "ts_log.h"
 #include <string.h>
 #include <time.h>
@@ -41,14 +42,76 @@ static const char *status_to_display(ts_cert_status_t status)
         case TS_CERT_STATUS_CSR_PENDING:
             return "CSR 已生成，等待签发";
         case TS_CERT_STATUS_ACTIVATED:
-            return "已激活";
+            return "设备证书时间有效";
         case TS_CERT_STATUS_EXPIRED:
             return "已过期";
+        case TS_CERT_STATUS_TIME_UNVERIFIED: return "待校时确认";
+        case TS_CERT_STATUS_NOT_YET_VALID: return "尚未生效";
         case TS_CERT_STATUS_ERROR:
             return "错误";
         default:
             return "未知";
     }
+}
+
+static void add_validity(cJSON *data, const ts_cert_info_t *info)
+{
+    cJSON_AddStringToObject(data, "validity", ts_cert_validity_to_str(info->validity));
+    cJSON_AddBoolToObject(data, "time_ready", info->time_ready);
+    cJSON_AddBoolToObject(data, "serial_truncated", info->serial_truncated);
+    if (info->time_ready && info->validity != TS_CERT_VALIDITY_INVALID && info->validity != TS_CERT_VALIDITY_NONE)
+        cJSON_AddNumberToObject(data, "seconds_until_expiry", (double)info->seconds_until_expiry);
+    else cJSON_AddNullToObject(data, "seconds_until_expiry");
+    cJSON_AddBoolToObject(data, "expires_soon", info->is_valid && info->seconds_until_expiry < 30LL * 86400);
+}
+
+static void add_runtime(cJSON *data, const ts_cert_pki_status_t *s)
+{
+    ts_https_runtime_t runtime;
+    ts_https_get_runtime(&runtime);
+    cJSON_AddBoolToObject(data, "time_ready", s->time_ready);
+    cJSON_AddStringToObject(data, "validity", ts_cert_validity_to_str(s->cert_info.validity));
+    cJSON_AddNumberToObject(data, "configured_generation", s->generation);
+    cJSON_AddBoolToObject(data, "prerequisites_satisfied", ts_cert_prerequisites(s, runtime.require_client_cert));
+    cJSON_AddBoolToObject(data, "restart_required", runtime.running && runtime.loaded_generation != s->generation);
+    cJSON *blocked = cJSON_AddArrayToObject(data, "blocked_by");
+#define BLOCK(condition, name) if (condition) cJSON_AddItemToArray(blocked, cJSON_CreateString(name))
+    BLOCK(!s->time_ready, "time_not_ready");
+    BLOCK(!s->has_private_key, "private_key_missing");
+    BLOCK(s->has_private_key && !s->key_valid, "private_key_invalid");
+    BLOCK(!s->has_certificate, "certificate_missing");
+    BLOCK(s->has_certificate && s->cert_info.validity == TS_CERT_VALIDITY_INVALID, "certificate_invalid");
+    BLOCK(s->has_certificate && s->key_valid && s->cert_info.validity != TS_CERT_VALIDITY_INVALID && !s->key_matches, "key_mismatch");
+    BLOCK(s->cert_info.validity == TS_CERT_VALIDITY_NOT_YET_VALID, "not_yet_valid");
+    BLOCK(s->cert_info.validity == TS_CERT_VALIDITY_EXPIRED, "expired");
+    BLOCK(runtime.require_client_cert && !s->has_ca_chain, "ca_missing");
+    BLOCK(runtime.require_client_cert && s->has_ca_chain && !s->ca_valid, "ca_invalid");
+    BLOCK(s->storage_error, "storage_error");
+#undef BLOCK
+    cJSON *https = cJSON_AddObjectToObject(data, "https");
+    cJSON_AddBoolToObject(https, "running", runtime.running);
+    cJSON_AddNumberToObject(https, "port", runtime.port);
+    if (runtime.running) {
+        cJSON_AddNumberToObject(https, "loaded_generation", runtime.loaded_generation);
+        cJSON_AddStringToObject(https, "loaded_certificate_sha256", runtime.loaded_certificate_sha256);
+    } else {
+        cJSON_AddNullToObject(https, "loaded_generation");
+        cJSON_AddNullToObject(https, "loaded_certificate_sha256");
+    }
+    if (runtime.last_error != ESP_OK) {
+        cJSON_AddStringToObject(https, "last_error_stage", runtime.last_error_stage);
+        cJSON_AddStringToObject(https, "last_error", esp_err_to_name(runtime.last_error));
+    } else {
+        cJSON_AddNullToObject(https, "last_error_stage"); cJSON_AddNullToObject(https, "last_error");
+    }
+}
+
+static esp_err_t install_error(ts_api_result_t *result, esp_err_t err, ts_cert_op_error_t detail)
+{
+    ts_api_result_error(result, err == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM :
+        err == ESP_ERR_INVALID_ARG ? TS_API_ERR_INVALID_ARG : TS_API_ERR_INTERNAL,
+        ts_cert_op_error_to_str(detail));
+    return err;
 }
 
 /*===========================================================================*/
@@ -104,6 +167,8 @@ static esp_err_t api_cert_status(const cJSON *params, ts_api_result_t *result)
     cJSON_AddBoolToObject(data, "has_certificate", pki_status.has_certificate);
     cJSON_AddBoolToObject(data, "has_ca_chain", pki_status.has_ca_chain);
     
+    add_runtime(data, &pki_status);
+
     // 如果有证书，添加证书信息
     if (pki_status.has_certificate) {
         cJSON *cert_info = cJSON_CreateObject();
@@ -115,11 +180,8 @@ static esp_err_t api_cert_status(const cJSON *params, ts_api_result_t *result)
         cJSON_AddBoolToObject(cert_info, "is_valid", pki_status.cert_info.is_valid);
         cJSON_AddNumberToObject(cert_info, "days_until_expiry", pki_status.cert_info.days_until_expiry);
         
-        // 计算是否即将过期（30 天内）
-        cJSON_AddBoolToObject(cert_info, "expires_soon", 
-            pki_status.cert_info.days_until_expiry >= 0 && 
-            pki_status.cert_info.days_until_expiry < 30);
-        
+        add_validity(cert_info, &pki_status.cert_info);
+
         cJSON_AddItemToObject(data, "cert_info", cert_info);
     }
     
@@ -266,23 +328,12 @@ static esp_err_t api_cert_install(const cJSON *params, ts_api_result_t *result)
     }
     
     const char *cert_pem = cert_obj->valuestring;
-    size_t cert_len = strlen(cert_pem);
+    size_t cert_len = strlen(cert_pem) + 1;
     
-    esp_err_t ret = ts_cert_install_certificate(cert_pem, cert_len);
-    if (ret != ESP_OK) {
-        TS_LOGE(TAG, "Failed to install certificate: %s", esp_err_to_name(ret));
-        
-        const char *err_msg = "Failed to install certificate";
-        if (ret == ESP_ERR_INVALID_ARG) {
-            err_msg = "Invalid certificate format";
-        } else if (ret == ESP_ERR_INVALID_STATE) {
-            err_msg = "Certificate does not match private key";
-        }
-        
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, err_msg);
-        return ret;
-    }
-    
+    ts_cert_op_error_t detail;
+    esp_err_t ret = ts_cert_install_certificate_ex(cert_pem, cert_len, &detail);
+    if (ret != ESP_OK) return install_error(result, ret, detail);
+
     // 获取安装后的证书信息
     ts_cert_info_t info;
     cJSON *data = cJSON_CreateObject();
@@ -296,6 +347,7 @@ static esp_err_t api_cert_install(const cJSON *params, ts_api_result_t *result)
         cJSON_AddNumberToObject(cert_info, "not_before", (double)info.not_before);
         cJSON_AddNumberToObject(cert_info, "not_after", (double)info.not_after);
         cJSON_AddNumberToObject(cert_info, "days_until_expiry", info.days_until_expiry);
+        add_validity(cert_info, &info);
         cJSON_AddItemToObject(data, "cert_info", cert_info);
     }
     
@@ -323,16 +375,12 @@ static esp_err_t api_cert_install_ca(const cJSON *params, ts_api_result_t *resul
     }
     
     const char *ca_pem = ca_obj->valuestring;
-    size_t ca_len = strlen(ca_pem);
+    size_t ca_len = strlen(ca_pem) + 1;
     
-    esp_err_t ret = ts_cert_install_ca_chain(ca_pem, ca_len);
-    if (ret != ESP_OK) {
-        TS_LOGE(TAG, "Failed to install CA chain: %s", esp_err_to_name(ret));
-        ts_api_result_error(result, TS_API_ERR_INTERNAL,
-            "Failed to install CA certificate chain");
-        return ret;
-    }
-    
+    ts_cert_op_error_t detail;
+    esp_err_t ret = ts_cert_install_ca_chain_ex(ca_pem, ca_len, &detail);
+    if (ret != ESP_OK) return install_error(result, ret, detail);
+
     cJSON *data = cJSON_CreateObject();
     cJSON_AddBoolToObject(data, "success", true);
     cJSON_AddStringToObject(data, "message", "CA chain installed successfully");

@@ -4,6 +4,8 @@ idf_component_register(
         "src/ts_webui_api.c"
         "src/ts_webui_ws.c"
         "src/ts_ws_subscriptions.c"
+        "src/ts_ws_transport.c"
+        "src/ts_ws_operation.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -66,6 +68,6 @@ if(EXISTS "${WEB_SRC_DIR}")
     add_custom_target(optimize_web ALL DEPENDS ${FINAL_STAMP})
 
     # 从优化后的构建目录创建 SPIFFS 镜像
-    spiffs_create_partition_image(www ${WEB_BUILD_DIR} FLASH_IN_PROJECT)
+    spiffs_create_partition_image(www ${WEB_BUILD_DIR} FLASH_IN_PROJECT DEPENDS optimize_web)
 
 endif()

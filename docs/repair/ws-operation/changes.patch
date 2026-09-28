@@ -1,0 +1,3215 @@
+diff --git a/components/ts_webui/CMakeLists.txt b/components/ts_webui/CMakeLists.txt
+index 666c0de..0fd6e09 100644
+--- a/components/ts_webui/CMakeLists.txt
++++ b/components/ts_webui/CMakeLists.txt
+@@ -5,6 +5,7 @@ idf_component_register(
+         "src/ts_webui_ws.c"
+         "src/ts_ws_subscriptions.c"
+         "src/ts_ws_transport.c"
++        "src/ts_ws_operation.c"
+     INCLUDE_DIRS
+         "include"
+     REQUIRES
+diff --git a/components/ts_webui/include/ts_ws_subscriptions.h b/components/ts_webui/include/ts_ws_subscriptions.h
+index 1f9b169..2f872ac 100644
+--- a/components/ts_webui/include/ts_ws_subscriptions.h
++++ b/components/ts_webui/include/ts_ws_subscriptions.h
+@@ -69,3 +69,7 @@ void ts_ws_broadcast_to_topic(const char *topic, cJSON *data);
+ #ifdef __cplusplus
+ }
+ #endif
++
++/* Stable existing worker wake; does not allocate or start a new task. */
++void ts_ws_subscriptions_wake(void);
++bool ts_ws_subscriptions_in_context(void);
+diff --git a/components/ts_webui/include/ts_ws_transport.h b/components/ts_webui/include/ts_ws_transport.h
+index bbd37ee..6f4ee12 100644
+--- a/components/ts_webui/include/ts_ws_transport.h
++++ b/components/ts_webui/include/ts_ws_transport.h
+@@ -125,3 +125,7 @@ esp_err_t ts_ws_power_reserve(bool tick, ts_ws_reservation_t *r);
+ esp_err_t ts_ws_power_publish(ts_ws_reservation_t *r, const char *text);
+ 
+ esp_err_t ts_ws_result_publish(ts_ws_reservation_t *r,const ts_ws_peer_t *peers,unsigned count);
++
++/* Bind an original terminal recipient before transferring its reserved target. */
++esp_err_t ts_ws_reserved_target(ts_ws_reservation_t *r, unsigned index, ts_ws_peer_t peer,
++    uint64_t revision, uint64_t delivery, ts_ws_delivery_done_t done);
+diff --git a/components/ts_webui/src/ts_webui_ws.c b/components/ts_webui/src/ts_webui_ws.c
+index 6d0f56c..e8c2a9c 100644
+--- a/components/ts_webui/src/ts_webui_ws.c
++++ b/components/ts_webui/src/ts_webui_ws.c
+@@ -14,7 +14,10 @@
+ #include "ts_keystore.h"
+ #include "ts_ws_subscriptions.h"
+ #include "ts_ws_transport.h"
++#include "ts_ws_operation.h"
++#include "freertos/timers.h"
+ #include <stdatomic.h>
++#include <assert.h>
+ #include "esp_timer.h"
+ // ts_var.h 已废弃，统一使用 ts_variable.h（ts_automation 变量系统）
+ #include "ts_variable.h"
+@@ -65,7 +68,6 @@ typedef struct {
+ 
+ static ws_client_t s_clients[MAX_WS_CLIENTS];
+ static _Atomic(httpd_handle_t) s_server = NULL;
+-static ts_ws_peer_t s_ssh_peer;
+ static atomic_bool s_ws_stopping;
+ static SemaphoreHandle_t s_terminal_mutex = NULL;
+ static int s_terminal_client_fd = -1;  // 当前终端会话的 fd
+@@ -75,36 +77,14 @@ static char *s_terminal_output_buf = NULL;
+ static size_t s_terminal_output_len = 0;
+ static SemaphoreHandle_t s_output_mutex = NULL;
+ 
+-/* SSH Shell 会话状态 */
+-static ts_ssh_session_t s_ssh_session = NULL;
+-static ts_ssh_shell_t s_ssh_shell = NULL;
+-static atomic_int s_ssh_client_fd = -1;
+-static atomic_bool s_ssh_running = false;
+-static atomic_bool s_ssh_poll_alive;
+-enum { SSH_IDLE, SSH_STARTING, SSH_READY, SSH_TERMINAL };
+-static atomic_uint s_ssh_state, s_ssh_generation, s_ssh_result_pending;
+-static ts_ws_reservation_t s_ssh_terminal;
+-static ts_ws_reservation_t s_exec_terminal;
+-/* One producer per stream. Pending includes each accepted destination, including
+- * publication callbacks that can run before submit returns. Terminal buffers
+- * are not published/released until all earlier output has settled. */
+-static atomic_uint s_ssh_output_pending, s_exec_output_pending;
+-static atomic_bool s_ssh_output_failed, s_exec_output_failed;
+-static atomic_bool s_ssh_terminal_ready, s_exec_terminal_ready, s_exec_result_active, s_exec_terminal_claimed;
+-static ts_ws_peer_t s_exec_result_peers[TS_WS_CONNECTIONS];
+-static unsigned s_exec_result_count;
+-static void ssh_terminal_flush(void);
+-static void ssh_exec_terminal_flush(void);
+-static void ssh_exec_terminal_publish(const char *json,uint32_t session_id);
+-
+-/* SSH Exec 流式执行状态 */
+-static ts_ssh_session_t s_exec_session = NULL;
+-static TaskHandle_t s_exec_task = NULL;
+-static atomic_bool s_exec_running = false;
+-static atomic_uint s_exec_creators;
+-static volatile bool s_exec_cancel_requested = false;  /* 实时匹配触发的取消请求 */
+-static volatile uint32_t s_exec_session_id = 0;
+-static TimerHandle_t s_exec_timeout_timer = NULL;      /* 超时定时器 */
++/* Business resources belong to the operation held by task args and borrowers. */
++typedef struct {
++    ts_ws_operation_t *op;
++    ts_ssh_session_t session;
++    ts_ssh_shell_t shell;
++    SemaphoreHandle_t io;
++    atomic_bool disconnect_requested;
++} ssh_shell_context_t;
+ 
+ /* 电压保护事件处理器句柄 */
+ static ts_event_handler_handle_t s_power_event_handle = NULL;
+@@ -117,6 +97,7 @@ static atomic_bool s_log_streaming_enabled = false;
+ static const char *s_level_names[] = {"NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"};
+ 
+ /* 前向声明 */
++static void exec_retry_timer_drain(void);
+ static void update_log_stream_state(void);
+ esp_err_t ts_webui_log_stream_enable(bool enable);
+ esp_err_t ts_webui_ws_stop(httpd_handle_t server);
+@@ -194,22 +175,6 @@ static void power_policy_event_handler(const ts_event_t *event, void *user_data)
+ /*                          SSH Shell Functions                               */
+ /*===========================================================================*/
+ 
+-static void ssh_terminal_done(uint64_t generation,uint64_t unused,esp_err_t result)
+-{
+-    (void)unused;
+-    unsigned expected=(unsigned)generation;
+-    atomic_compare_exchange_strong(&s_ssh_result_pending,&expected,0);
+-    if(result!=ESP_OK)TS_LOGW(TAG,"SSH terminal send failed: %s",esp_err_to_name(result));
+-}
+-static bool ssh_generation_valid(uint64_t generation, uint64_t unused)
+-{
+-    (void)unused;return generation==s_ssh_generation;
+-}
+-static bool ssh_status_valid(uint64_t generation, uint64_t state)
+-{
+-    return generation==s_ssh_generation && state==s_ssh_state;
+-}
+-static esp_err_t ssh_send_status(const char *status, const char *message);
+ /* Request errors must go to the requester, never mutate an existing session. */
+ static void ssh_request_error(httpd_req_t *req, const char *message)
+ {
+@@ -224,365 +189,164 @@ static void ssh_request_error(httpd_req_t *req, const char *message)
+     free(json);
+ }
+ 
+-static void ssh_output_done(uint64_t generation,uint64_t delivery,esp_err_t result)
++static void shell_resources_close(ssh_shell_context_t *ctx)
+ {
+-    (void)delivery; /* transport already validates full peer identity */
+-    if(generation!=s_ssh_generation)return;
+-    if(result!=ESP_OK){s_ssh_output_failed=true;s_ssh_running=false;}
+-    atomic_fetch_sub(&s_ssh_output_pending,1);
+-    if(result!=ESP_OK)ssh_send_status("error","SSH output delivery incomplete; remote command result is not confirmed");
+-    ssh_terminal_flush();
++    xSemaphoreTake(ctx->io,portMAX_DELAY);
++    if(ctx->shell){ts_ssh_shell_close(ctx->shell);ctx->shell=NULL;}
++    if(ctx->session){ts_ssh_disconnect(ctx->session);ts_ssh_session_destroy(ctx->session);ctx->session=NULL;}
++    xSemaphoreGive(ctx->io);
+ }
+-static void ssh_terminal_flush(void)
++static void shell_destroy(void *data)
+ {
+-    if(s_ssh_output_pending)return;
+-    bool ready=true;
+-    if(!atomic_compare_exchange_strong(&s_ssh_terminal_ready,&ready,false))return;
+-    unsigned generation=s_ssh_generation;
+-    if(s_ssh_output_failed)ts_ws_reserved_text(&s_ssh_terminal,
+-        "{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH output delivery incomplete; remote command result is not confirmed\"}");
+-    ts_ws_reservation_t terminal=s_ssh_terminal;
+-    s_ssh_terminal=(ts_ws_reservation_t){0};
+-    esp_err_t ret=ts_ws_reserved_submit(&terminal,0,generation,SSH_TERMINAL,ssh_status_valid,ssh_terminal_done);
+-    if(ret!=ESP_OK)ssh_terminal_done(generation,SSH_TERMINAL,ret);
+-    ts_ws_reservation_release(&terminal);
++    ssh_shell_context_t *ctx=data;
++    if(!ctx)return;
++    /* Network cleanup belongs to the creator/poller, never the TX worker. */
++    assert(!ctx->session && !ctx->shell);
++    vSemaphoreDelete(ctx->io);free(ctx);
+ }
+-
+-/* 发送 SSH 输出到 WebSocket 客户端 */
+-static void ssh_send_output(const char *data, size_t len)
++static void ssh_close(ts_ws_operation_t *op,const char *status,const char *message)
+ {
+-    if(s_ssh_client_fd<0 || !s_server || !data || !len || s_ssh_state!=SSH_READY)return;
+-    esp_err_t ret=ESP_ERR_NO_MEM;
+-    char *buf=heap_caps_malloc(len+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+-    if(!buf)buf=malloc(len+1);
+-    cJSON *msg=NULL;
+-    char *json=NULL;
+-    if(buf) {
+-        memcpy(buf,data,len);buf[len]=0;
+-        msg=cJSON_CreateObject();
+-        if(msg && cJSON_AddStringToObject(msg,"type","ssh_output") && cJSON_AddStringToObject(msg,"data",buf))
+-            json=cJSON_PrintUnformatted(msg);
+-    }
+-    free(buf);cJSON_Delete(msg);
+-    if(json) {
+-        ts_ws_message_t *m=ts_ws_message_text(json,strlen(json));
+-        if(m) {
+-            atomic_fetch_add(&s_ssh_output_pending,1);
+-            ret=ts_ws_transport_submit(s_ssh_peer,m,s_ssh_generation,s_ssh_peer.connection,ssh_generation_valid,ssh_output_done);
+-            /* Rejection was never accepted and has no completion callback. */
+-            if(ret!=ESP_OK)ssh_output_done(s_ssh_generation,s_ssh_peer.connection,ret);
+-        }
+-        ts_ws_message_release(m);
+-    }
+-    free(json);
+-    if(ret!=ESP_OK) {
+-        s_ssh_output_failed=true;
+-        TS_LOGW(TAG,"SSH output rejected: %s",esp_err_to_name(ret));
+-        ssh_send_status("error","SSH output delivery failed");
+-        s_ssh_running=false;
+-    }
++    if(!ts_ws_op_close_begin(op))return;
++    cJSON *msg=cJSON_CreateObject();
++    bool ok=msg && cJSON_AddStringToObject(msg,"type","ssh_status") &&
++        cJSON_AddStringToObject(msg,"status",status) && cJSON_AddStringToObject(msg,"message",message);
++    char *json=ok?cJSON_PrintUnformatted(msg):NULL;cJSON_Delete(msg);
++    ts_ws_op_close_finish(op,json);free(json);
+ }
+-
+-/* 发送 SSH 状态消息 */
+-static esp_err_t ssh_send_status(const char *status, const char *message)
++static void ssh_send_output(ssh_shell_context_t *ctx,const char *data,size_t len)
++{
++    if(!data || !len)return;
++    ts_ws_output_ticket_t ticket;
++    if(!ts_ws_op_output_begin(ctx->op,&ticket))return;
++    char *buf=NULL,*json=NULL;cJSON *msg=NULL;
++    if(ticket.count) {
++        buf=heap_caps_malloc(len+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
++        if(!buf)buf=malloc(len+1);
++        if(buf){memcpy(buf,data,len);buf[len]=0;msg=cJSON_CreateObject();
++            if(msg && cJSON_AddStringToObject(msg,"type","ssh_output") && cJSON_AddStringToObject(msg,"data",buf))json=cJSON_PrintUnformatted(msg);}
++    }
++    free(buf);cJSON_Delete(msg);ts_ws_op_output_finish(&ticket,json);free(json);
++}
++/* Startup controls are synchronous on the HTTPD owner. Creator + poller refs
++ * pin STARTING; OPEN is published only after connected has returned successfully.
++ * They cannot be overtaken by ordinary output or an asynchronous close callback. */
++static esp_err_t ssh_start_status(ssh_shell_context_t *ctx,const char *status,const char *message)
+ {
+-    bool terminal=!strcmp(status,"error") || !strcmp(status,"closed");
+-    unsigned state=!strcmp(status,"connecting") ? SSH_STARTING : SSH_READY;
+-    unsigned generation=s_ssh_generation;
+-    if(terminal) {
+-        unsigned previous=atomic_exchange(&s_ssh_state,SSH_TERMINAL);
+-        if(previous==SSH_TERMINAL)return ESP_OK;
+-        state=SSH_TERMINAL;
+-    } else if(!ssh_status_valid(generation,state)) return ESP_ERR_INVALID_STATE;
++    if(!ts_ws_op_starting(ctx->op))return ESP_ERR_INVALID_STATE;
+     cJSON *msg=cJSON_CreateObject();
+     bool ok=msg && cJSON_AddStringToObject(msg,"type","ssh_status") &&
+-        cJSON_AddStringToObject(msg,"status",status) && (!message || cJSON_AddStringToObject(msg,"message",message));
+-    char *json=ok ? cJSON_PrintUnformatted(msg) : NULL;
+-    cJSON_Delete(msg);
++        cJSON_AddStringToObject(msg,"status",status) && cJSON_AddStringToObject(msg,"message",message);
++    char *json=ok?cJSON_PrintUnformatted(msg):NULL;cJSON_Delete(msg);
+     esp_err_t ret=ESP_ERR_NO_MEM;
+-    if(terminal) {
+-        const char *fallback="{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH status delivery failed\"}";
+-        ret=ts_ws_reserved_text(&s_ssh_terminal,json?json:fallback);
+-        if(ret!=ESP_OK) {
+-            TS_LOGW(TAG,"SSH terminal encoding failed: %s",esp_err_to_name(ret));
+-            ret=ts_ws_reserved_text(&s_ssh_terminal,fallback);
+-        }
+-        s_ssh_result_pending=generation;
+-        if(ret==ESP_OK){s_ssh_terminal_ready=true;ssh_terminal_flush();}
+-        else {ssh_terminal_done(generation,state,ret);ts_ws_reservation_release(&s_ssh_terminal);}
+-    } else if(json && ssh_status_valid(generation,state)) {
+-        httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)json,.len=strlen(json)};
+-        if(ts_ws_transport_in_context()) ret=ts_ws_transport_send(s_ssh_peer.server,s_ssh_peer.fd,&frame);
+-        else {
+-            ts_ws_message_t *m=ts_ws_message_text(json,strlen(json));
+-            if(m) {ret=ts_ws_transport_submit(s_ssh_peer,m,generation,state,ssh_status_valid,NULL);ts_ws_message_release(m);}
+-        }
+-    }
+-    free(json);
+-    if(ret!=ESP_OK)TS_LOGW(TAG,"SSH status rejected: %s",esp_err_to_name(ret));
+-    return ret;
++    if(json){ts_ws_peer_t peer=ts_ws_op_peer(ctx->op);httpd_ws_frame_t f={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)json,.len=strlen(json)};
++        ret=ts_ws_transport_send(peer.server,peer.fd,&f);}
++    free(json);return ret;
++}
++/* Poller remains the only ordinary observation producer. User disconnect is
++ * handed to that producer, preserving the disconnecting/closed wire messages. */
++static void ssh_disconnecting(ssh_shell_context_t *ctx)
++{
++    ts_ws_output_ticket_t ticket;
++    if(ts_ws_op_output_begin(ctx->op,&ticket))
++        ts_ws_op_output_finish(&ticket,"{\"type\":\"ssh_status\",\"status\":\"disconnecting\",\"message\":\"Closing SSH session...\"}");
++    ssh_close(ctx->op,"closed","SSH session closed");
+ }
+-
+-/* 前向声明 */
+-static void ssh_cleanup(void);
+-
+-/* SSH Shell 轮询任务 */
+ static void ssh_poll_task(void *arg)
+ {
++    ssh_shell_context_t *ctx=arg;ts_ws_operation_t *op=ctx->op;
+     char buf[SSH_OUTPUT_BUF_SIZE];
+-    bool need_cleanup = false;
+-    
+-    TS_LOGD(TAG, "SSH poll task started");
+-    
+-    while(s_ssh_running && s_ssh_state==SSH_STARTING) vTaskDelay(1);
+-    while (s_ssh_running && s_ssh_state==SSH_READY && s_ssh_shell) {
+-        size_t read_len = 0;
+-        esp_err_t ret = ts_ssh_shell_read(s_ssh_shell, buf, sizeof(buf) - 1, &read_len);
+-        
+-        if (ret == ESP_OK && read_len > 0) {
+-            buf[read_len] = '\0';
+-            ssh_send_output(buf, read_len);
+-        }
+-        
+-        // 检查 shell 是否还活跃
+-        if (!ts_ssh_shell_is_active(s_ssh_shell)) {
+-            TS_LOGD(TAG, "SSH shell closed by remote");
+-            ssh_send_status("closed", "SSH session closed");
+-            need_cleanup = true;  // 标记需要清理
+-            break;
+-        }
+-        
+-        vTaskDelay(pdMS_TO_TICKS(20));  // 50Hz 轮询
+-    }
+-    
+-    TS_LOGD(TAG, "SSH poll task ended");
+-    
+-    if(s_ssh_state==SSH_READY) ssh_send_status("closed","SSH session closed");
+-    if(s_ssh_state==SSH_TERMINAL)need_cleanup=true;
+-    // 如果是因为远程关闭而退出，需要清理 SSH 会话
+-    if (need_cleanup && s_ssh_session) {
+-        // 清理 shell（已经关闭，只需释放资源）
+-        if (s_ssh_shell) {
+-            ts_ssh_shell_close(s_ssh_shell);
+-            s_ssh_shell = NULL;
+-        }
+-        // 清理 session
+-        if (s_ssh_session) {
+-            ts_ssh_disconnect(s_ssh_session);
+-            ts_ssh_session_destroy(s_ssh_session);
+-            s_ssh_session = NULL;
+-        }
+-        /* Legacy UI type is changed only by the HTTPD owner. A retired SSH
+-         * worker must not change a replacement connection that reuses its fd. */
+-        s_ssh_client_fd = -1;
+-        TS_LOGD(TAG, "SSH session cleaned up after remote close");
+-    }
+-    
+-    s_ssh_poll_alive = false;
++    while(ts_ws_op_starting(op))vTaskDelay(1);
++    while(ts_ws_op_is_open(op)) {
++        if(ctx->disconnect_requested){ssh_disconnecting(ctx);break;}
++        size_t n=0;
++        xSemaphoreTake(ctx->io,portMAX_DELAY);
++        esp_err_t ret=ts_ssh_shell_read(ctx->shell,buf,sizeof(buf)-1,&n);
++        bool active=ts_ssh_shell_is_active(ctx->shell);
++        xSemaphoreGive(ctx->io);
++        if(ret==ESP_OK && n)ssh_send_output(ctx,buf,n);
++        if(!active){ssh_close(op,"closed","SSH session closed");break;}
++        vTaskDelay(pdMS_TO_TICKS(20));
++    }
++    shell_resources_close(ctx);
++    ts_ws_op_executor_done(op);
+     vTaskDelete(NULL);
+ }
+-
+-/* 清理 SSH 会话 */
+ static void ssh_cleanup(void)
+ {
+-    s_ssh_running = false;
+-    
+-    int64_t deadline = esp_timer_get_time() + 2000000;
+-    while (s_ssh_poll_alive) {
+-        if (esp_timer_get_time() >= deadline) return; /* retain resources for retry */
+-        vTaskDelay(1);
+-    }
+-    
+-    if (s_ssh_shell) {
+-        ts_ssh_shell_close(s_ssh_shell);
+-        s_ssh_shell = NULL;
+-    }
+-    
+-    if (s_ssh_session) {
+-        ts_ssh_disconnect(s_ssh_session);
+-        ts_ssh_session_destroy(s_ssh_session);
+-        s_ssh_session = NULL;
+-    }
+-    
+-    // 更新客户端类型
+-    if (s_ssh_client_fd >= 0) {
+-        for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-            if (s_clients[i].active && s_clients[i].fd == s_ssh_client_fd) {
+-                set_client_role(s_ssh_peer, WS_CLIENT_TYPE_TERMINAL, TS_LOG_NONE);
+-                break;
+-            }
+-        }
+-    }
+-    if(s_ssh_state==SSH_READY) ssh_send_status("closed","SSH session closed");
+-    s_ssh_client_fd = -1;
+-    if(!s_ssh_result_pending && !s_ssh_output_pending)ts_ws_reservation_release(&s_ssh_terminal);
+-    
+-    TS_LOGD(TAG, "SSH session cleaned up");
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_SHELL,0);
++    if(!op)return;
++    ssh_close(op,"closed","SSH session closed");
++    ts_ws_op_release(op);
+ }
+-
+-/* 处理 SSH Shell 连接请求 */
+-static void handle_ssh_connect(httpd_req_t *req, cJSON *params)
++static void handle_ssh_connect(httpd_req_t *req,cJSON *params)
+ {
+-    if (s_ssh_result_pending || s_ssh_output_pending) {
+-        ssh_request_error(req,"Previous SSH result is still pending");
+-        return;
+-    }
+-    if (s_ssh_poll_alive) {
+-        ssh_request_error(req, "Another SSH session is active");
+-        return;
+-    }
+-
+-    int fd = httpd_req_to_sockfd(req);
+-    
+-    // 检查是否已有 SSH 会话
+-    if (s_ssh_session != NULL) {
+-        ssh_request_error(req, "Another SSH session is active");
+-        return;
+-    }
+-    
+-    // 解析参数
+-    cJSON *host = cJSON_GetObjectItem(params, "host");
+-    cJSON *port = cJSON_GetObjectItem(params, "port");
+-    cJSON *user = cJSON_GetObjectItem(params, "user");
+-    cJSON *password = cJSON_GetObjectItem(params, "password");
+-    
+-    if (!host || !cJSON_IsString(host) || !user || !cJSON_IsString(user)) {
+-        ssh_request_error(req, "Missing host or user");
+-        return;
+-    }
+-    
+-    int ssh_port = (port && cJSON_IsNumber(port)) ? port->valueint : 22;
+-    const char *ssh_password = (password && cJSON_IsString(password)) ? password->valuestring : "";
+-    
+-    TS_LOGD(TAG, "SSH connect: %s@%s:%d", user->valuestring, host->valuestring, ssh_port);
+-    
+-    ts_ws_peer_t peer=*(ts_ws_peer_t *)req->sess_ctx;
+-    if(s_ssh_generation==UINT32_MAX || ts_ws_reserve(&peer,1,true,4096,&s_ssh_terminal)!=ESP_OK) {
+-        ssh_request_error(req,"SSH result delivery capacity unavailable");
+-        return;
+-    }
+-    s_ssh_output_failed=false;
+-    s_ssh_terminal_ready=false;
+-    s_ssh_generation++;
+-    s_ssh_state=SSH_STARTING;
+-    // 设置 SSH 客户端 fd
+-    s_ssh_peer = *(ts_ws_peer_t *)req->sess_ctx;
+-    s_ssh_client_fd = fd;
+-    
+-    // 更新客户端类型
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (s_clients[i].active && s_clients[i].fd == fd) {
+-            set_client_role(*(ts_ws_peer_t *)req->sess_ctx, WS_CLIENT_TYPE_SSH_SHELL, TS_LOG_NONE);
+-            break;
+-        }
+-    }
+-    
+-    // 发送连接中状态
+-    if(ssh_send_status("connecting", "Connecting to SSH server...")!=ESP_OK) {
+-        ssh_send_status("error","SSH connection status delivery failed");
+-        ssh_cleanup();return;
+-    }
+-    
+-    // 配置 SSH
+-    ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
+-    config.host = host->valuestring;
+-    config.port = ssh_port;
+-    config.username = user->valuestring;
+-    config.auth_method = TS_SSH_AUTH_PASSWORD;
+-    config.auth.password = ssh_password;
+-    config.timeout_ms = 10000;
+-    
+-    // 创建会话
+-    esp_err_t ret = ts_ssh_session_create(&config, &s_ssh_session);
+-    if (ret != ESP_OK) {
+-        ssh_send_status("error", "Failed to create SSH session");
+-        ssh_cleanup();
+-        return;
+-    }
+-    
+-    // 连接
+-    ret = ts_ssh_connect(s_ssh_session);
+-    if (ret != ESP_OK) {
+-        char err_msg[128];
+-        snprintf(err_msg, sizeof(err_msg), "Connection failed: %s", ts_ssh_get_error(s_ssh_session));
+-        ssh_send_status("error", err_msg);
+-        ssh_cleanup();
+-        return;
+-    }
+-    
+-    // 打开 Shell
+-    ts_shell_config_t shell_config = TS_SHELL_DEFAULT_CONFIG();
+-    shell_config.term_width = 80;
+-    shell_config.term_height = 24;
+-    shell_config.read_timeout_ms = 50;
+-    
+-    ret = ts_ssh_shell_open(s_ssh_session, &shell_config, &s_ssh_shell);
+-    if (ret != ESP_OK) {
+-        ssh_send_status("error", "Failed to open shell");
+-        ssh_cleanup();
+-        return;
+-    }
+-    
+-    // 启动轮询任务（栈需要足够大以容纳 libssh2 缓冲区，使用 PSRAM）
+-    s_ssh_running = true;
+-    s_ssh_poll_alive = true;
+-    if (xTaskCreateWithCaps(ssh_poll_task, "ssh_poll", 4096, NULL, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+-        s_ssh_poll_alive = false;
+-        ssh_send_status("error", "Failed to create SSH session");
+-        ssh_cleanup();
+-        return;
+-    }
+-    /* A created task alone is not readiness: the current shell must still be
+-     * active. The poller cannot emit output/closed until STARTING has ended. */
+-    if(!ts_ssh_shell_is_active(s_ssh_shell)) {
+-        ssh_send_status("error","SSH shell closed during startup");
+-        ssh_cleanup();return;
+-    }
+-    unsigned expected=SSH_STARTING;
+-    if(!atomic_compare_exchange_strong(&s_ssh_state,&expected,SSH_READY)) {
+-        ssh_cleanup();return;
+-    }
+-    esp_err_t ready=ssh_send_status("connected","SSH shell ready");
+-    if(ready!=ESP_OK && s_ssh_state==SSH_READY) {
+-        ssh_send_status("error","SSH readiness delivery failed");
+-        ssh_cleanup();
+-    }
++    cJSON *host=cJSON_GetObjectItem(params,"host"),*user=cJSON_GetObjectItem(params,"user");
++    cJSON *port=cJSON_GetObjectItem(params,"port"),*password=cJSON_GetObjectItem(params,"password");
++    if(!cJSON_IsString(host) || !cJSON_IsString(user)){ssh_request_error(req,"Missing host or user");return;}
++    ts_ws_peer_t peer=*(ts_ws_peer_t*)req->sess_ctx;
++    esp_err_t admission;
++    ts_ws_operation_t *op=ts_ws_op_create(TS_WS_OP_SHELL,peer,&admission);
++    if(!op){ssh_request_error(req,admission==ESP_ERR_NO_MEM?"SSH result delivery capacity unavailable":"Another SSH session is active");return;}
++    ssh_shell_context_t *ctx=calloc(1,sizeof(*ctx));
++    if(!ctx || !(ctx->io=xSemaphoreCreateMutex())) {
++        free(ctx);ts_ws_op_discard(op);ts_ws_op_executor_done(op);ssh_request_error(req,"Failed to create SSH session");return;
++    }
++    ctx->op=op;ts_ws_op_bind(op,ctx,shell_destroy);
++    set_client_role(peer,WS_CLIENT_TYPE_SSH_SHELL,TS_LOG_NONE);
++    const char *error="SSH connection status delivery failed";bool poller=false;
++    if(ssh_start_status(ctx,"connecting","Connecting to SSH server...")!=ESP_OK)goto failed;
++    ts_ssh_config_t config=TS_SSH_DEFAULT_CONFIG();
++    config.host=host->valuestring;config.username=user->valuestring;
++    config.port=cJSON_IsNumber(port)?port->valueint:22;
++    config.auth_method=TS_SSH_AUTH_PASSWORD;config.auth.password=cJSON_IsString(password)?password->valuestring:"";config.timeout_ms=10000;
++    error="Failed to create SSH session";
++    if(ts_ssh_session_create(&config,&ctx->session)!=ESP_OK)goto failed;
++    if(ts_ssh_connect(ctx->session)!=ESP_OK){error=ts_ssh_get_error(ctx->session);goto failed;}
++    ts_shell_config_t shell_config=TS_SHELL_DEFAULT_CONFIG();shell_config.term_width=80;shell_config.term_height=24;shell_config.read_timeout_ms=50;
++    error="Failed to open shell";
++    if(ts_ssh_shell_open(ctx->session,&shell_config,&ctx->shell)!=ESP_OK)goto failed;
++    ts_ws_op_executor_take(op);
++    if(xTaskCreateWithCaps(ssh_poll_task,"ssh_poll",4096,ctx,5,NULL,MALLOC_CAP_SPIRAM)!=pdPASS){ts_ws_op_executor_done(op);error="Failed to create SSH session";goto failed;}
++    poller=true;error="SSH shell closed during startup";
++    if(!ts_ssh_shell_is_active(ctx->shell))goto failed;
++    error="SSH readiness delivery failed";
++    if(ssh_start_status(ctx,"connected","SSH shell ready")!=ESP_OK)goto failed;
++    ts_ws_op_open(op);ts_ws_op_executor_done(op);return;
++failed:
++    ssh_close(op,"error",error?error:"SSH connection failed");
++    if(!poller)shell_resources_close(ctx);
++    set_client_role(peer,WS_CLIENT_TYPE_TERMINAL,TS_LOG_NONE);
++    ts_ws_op_executor_done(op);
+ }
+-
+-/* 处理 SSH Shell 输入 */
++/* Input borrows the original context. Cleanup takes the same resource mutex;
++ * the lifecycle lock is never held across SSH I/O. */
+ static void handle_ssh_input(const char *data)
+ {
+-    if (!s_ssh_shell || !data) return;
+-    
+-    size_t len = strlen(data);
+-    if (len == 0) return;
+-    
+-    ts_ssh_shell_write(s_ssh_shell, data, len, NULL);
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_SHELL,0);if(!op)return;
++    ssh_shell_context_t *ctx=ts_ws_op_data(op);
++    if(ctx && data){xSemaphoreTake(ctx->io,portMAX_DELAY);if(ctx->shell && ts_ws_op_is_open(op))ts_ssh_shell_write(ctx->shell,data,strlen(data),NULL);xSemaphoreGive(ctx->io);}
++    ts_ws_op_release(op);
+ }
+-
+-/* 处理 SSH Shell 断开 */
+ static void handle_ssh_disconnect(void)
+ {
+-    if (s_ssh_session) {
+-        ssh_send_status("disconnecting", "Closing SSH session...");
+-        ssh_cleanup();
+-    }
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_SHELL,0);if(!op)return;
++    ssh_shell_context_t *ctx=ts_ws_op_data(op);
++    if(ctx)ctx->disconnect_requested=true;
++    ts_ws_op_release(op);
+ }
+-
+-/* 处理 SSH Shell 信号 */
+ static void handle_ssh_signal(const char *signal)
+ {
+-    if (s_ssh_shell && signal) {
+-        ts_ssh_shell_send_signal(s_ssh_shell, signal);
+-    }
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_SHELL,0);if(!op)return;
++    ssh_shell_context_t *ctx=ts_ws_op_data(op);
++    if(ctx && signal){xSemaphoreTake(ctx->io,portMAX_DELAY);if(ctx->shell && ts_ws_op_is_open(op))ts_ssh_shell_send_signal(ctx->shell,signal);xSemaphoreGive(ctx->io);}
++    ts_ws_op_release(op);
+ }
+-
+-/* 处理 SSH Shell 窗口大小调整 */
+-static void handle_ssh_resize(int width, int height)
++static void handle_ssh_resize(int width,int height)
+ {
+-    if (s_ssh_shell && width > 0 && height > 0) {
+-        ts_ssh_shell_resize(s_ssh_shell, width, height);
+-    }
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_SHELL,0);if(!op)return;
++    ssh_shell_context_t *ctx=ts_ws_op_data(op);
++    if(ctx && width>0 && height>0){xSemaphoreTake(ctx->io,portMAX_DELAY);if(ctx->shell && ts_ws_op_is_open(op))ts_ssh_shell_resize(ctx->shell,width,height);xSemaphoreGive(ctx->io);}
++    ts_ws_op_release(op);
+ }
+ 
+ /*===========================================================================*/
+@@ -825,10 +589,6 @@ static void cleanup_disconnected_client(int fd)
+                     xSemaphoreGive(s_terminal_mutex);
+                 }
+             }
+-            // 如果是 SSH Shell 客户端，清理 SSH 会话
+-            if (s_clients[i].type == WS_CLIENT_TYPE_SSH_SHELL && s_ssh_client_fd == fd) {
+-                ssh_cleanup();
+-            }
+             // 检查是否是日志客户端
+             if (s_clients[i].type == WS_CLIENT_TYPE_LOG) {
+                 was_log_client = true;
+@@ -848,6 +608,8 @@ static void cleanup_disconnected_client(int fd)
+ static void peer_closed(ts_ws_peer_t peer)
+ {
+     ts_ws_client_disconnected(peer);
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_SHELL,0);
++    if(op){if(ts_ws_peer_equal(ts_ws_op_peer(op),peer))ssh_close(op,"closed","SSH session closed");ts_ws_op_release(op);}
+     cleanup_disconnected_client(peer.fd);
+ }
+ 
+@@ -1271,22 +1033,32 @@ esp_err_t ts_webui_ws_init(void)
+         }
+     }
+     
++    ts_ws_op_enable();
+     TS_LOGI(TAG, "WebSocket handler registered at /ws");
+     return ESP_OK;
+ }
+ 
+ esp_err_t ts_webui_ws_stop(httpd_handle_t server)
+ {
+-    if (ts_ws_transport_in_context() || ts_event_in_callback()) return ESP_ERR_INVALID_STATE;
++    if (ts_ws_transport_in_context() || ts_event_in_callback() || ts_ws_subscriptions_in_context()) return ESP_ERR_INVALID_STATE;
++    ts_ws_op_stop_admission();
++    exec_retry_timer_drain();
+     s_ws_stopping = true;
+     esp_err_t ret = ts_ws_subscriptions_pause();
+     if (ret != ESP_OK) return ret;
+     ret = ts_ws_transport_quiesce(server, 6000);
+     if (ret != ESP_OK) return ret;
+     /* The worker still sends results even when this attempt returns busy. */
+-    if (s_exec_creators || s_exec_running) return ESP_ERR_INVALID_STATE;
+     ssh_cleanup();
+-    if (s_ssh_poll_alive) return ESP_ERR_TIMEOUT;
++    ts_ws_operation_t *exec=ts_ws_op_acquire(TS_WS_OP_EXEC,0);
++    bool executing=exec && ts_ws_op_executing(exec);
++    if(exec)ts_ws_op_release(exec);
++    if(executing)return ESP_ERR_INVALID_STATE; /* never cancel the remote job to stop WebUI */
++    int64_t deadline=esp_timer_get_time()+2000000;
++    while(ts_ws_op_busy()) {
++        if(esp_timer_get_time()>=deadline)return ESP_ERR_TIMEOUT;
++        vTaskDelay(1); /* producer, callbacks, timer daemon and sender remain alive */
++    }
+     if (s_power_event_handle) {
+         ret = ts_event_unregister_sync(s_power_event_handle, 6000);
+         if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) return ret;
+@@ -1296,7 +1068,7 @@ esp_err_t ts_webui_ws_stop(httpd_handle_t server)
+     if (ret != ESP_OK) return ret;
+     ret = ts_ws_subscriptions_drain();
+     if (ret != ESP_OK) return ret;
+-    if(s_exec_result_active || s_ssh_result_pending || s_ssh_output_pending)return ESP_ERR_INVALID_STATE;
++    if(ts_ws_op_busy())return ESP_ERR_INVALID_STATE;
+     ret = ts_ws_transport_stop(server, 6000);
+     if (ret != ESP_OK) return ret;
+     return ts_ws_subscriptions_deinit();
+@@ -1451,6 +1223,15 @@ static void update_log_stream_state(void)
+ 
+ /* SSH Exec 任务参数 */
+ typedef struct {
++    ts_ws_operation_t *op;
++    ts_ssh_session_t session;
++    SemaphoreHandle_t io;
++    TimerHandle_t timer;
++    atomic_bool cancel_requested, timer_closing;
++    atomic_uint timer_phase; /* 0 none, 1 live, 2 delete, 3 barrier, 4 queued, 5 drained */
++    atomic_uint timer_retries;
++    int64_t timer_retry_at; /* maintenance worker owns pacing */
++    char *password_owned;
+     ts_ssh_config_t config;
+     char command[512];
+     uint32_t session_id;
+@@ -1475,9 +1256,6 @@ typedef struct {
+     char *extracted_value;    /* 提取的值 */
+ } ssh_exec_task_params_t;
+ 
+-/* 全局任务参数指针（用于回调访问） */
+-static ssh_exec_task_params_t *s_exec_params = NULL;
+-
+ /* 简单的正则表达式匹配（支持基本模式）*/
+ static bool simple_pattern_match(const char *text, const char *pattern, char **extracted)
+ {
+@@ -1555,49 +1333,35 @@ static bool simple_pattern_match(const char *text, const char *pattern, char **e
+     }
+ }
+ 
+-static void ssh_exec_output_done(uint64_t session,uint64_t connection,esp_err_t result)
+-{
+-    (void)connection;
+-    if(session!=s_exec_session_id)return;
+-    if(result!=ESP_OK)s_exec_output_failed=true;
+-    atomic_fetch_sub(&s_exec_output_pending,1);
+-    if(result!=ESP_OK)ssh_exec_terminal_publish(NULL,(uint32_t)session);
+-    ssh_exec_terminal_flush();
+-}
+-static void ssh_exec_stream_publish(const char *json,uint32_t session)
++static void exec_abort(ssh_exec_task_params_t *params)
+ {
+-    if(session!=s_exec_session_id || s_exec_output_failed)return;
+-    ts_ws_peer_t peers[TS_WS_CONNECTIONS];
+-    unsigned n=ts_ws_peer_snapshot(peers,TS_WS_CONNECTIONS);
+-    if(!n)return;
+-    ts_ws_message_t *m=json?ts_ws_message_text(json,strlen(json)):NULL;
+-    if(!m){s_exec_output_failed=true;ssh_exec_terminal_publish(NULL,session);return;}
+-    atomic_fetch_add(&s_exec_output_pending,n); /* register the whole fanout before any early callback */
+-    for(unsigned i=0;i<n;i++) {
+-        esp_err_t ret=ts_ws_transport_submit(peers[i],m,session,peers[i].connection,NULL,ssh_exec_output_done);
+-        if(ret!=ESP_OK)ssh_exec_output_done(session,peers[i].connection,ret);
+-    }
+-    ts_ws_message_release(m);
++    xSemaphoreTake(params->io,portMAX_DELAY);
++    if(params->session)ts_ssh_abort(params->session);
++    xSemaphoreGive(params->io);
+ }
+-
+ /* SSH Exec 输出回调 - 广播到所有 WebSocket 客户端并收集输出 */
+ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stderr, void *user_data)
+ {
+     if (!data || len == 0) return;
+     
+-    uint32_t session_id = (uint32_t)(uintptr_t)user_data;
++    ssh_exec_task_params_t *params=user_data;
++    ts_ws_op_retain(params->op); /* synchronous SSH callback borrows executor-owned params */
++    uint32_t session_id=params->session_id;
+     
+     /* 收集输出到缓冲区 */
+-    if (s_exec_params && s_exec_params->collect_output && s_exec_params->output_buffer) {
+-        size_t space = s_exec_params->output_capacity - s_exec_params->output_len - 1;
++    if (params && params->collect_output && params->output_buffer) {
++        size_t space = params->output_capacity - params->output_len - 1;
+         size_t copy_len = (len < space) ? len : space;
+         if (copy_len > 0) {
+-            memcpy(s_exec_params->output_buffer + s_exec_params->output_len, data, copy_len);
+-            s_exec_params->output_len += copy_len;
+-            s_exec_params->output_buffer[s_exec_params->output_len] = '\0';
++            memcpy(params->output_buffer + params->output_len, data, copy_len);
++            params->output_len += copy_len;
++            params->output_buffer[params->output_len] = '\0';
+         }
+     }
+     
++    ts_ws_output_ticket_t ticket;
++    if(ts_ws_op_output_begin(params->op,&ticket)) {
++    if(ticket.count) {
+     cJSON *msg=cJSON_CreateObject();
+     char *buf=heap_caps_malloc(len+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+     if(!buf)buf=malloc(len+1);
+@@ -1607,21 +1371,24 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+         cJSON_AddStringToObject(msg,"data",buf);
+     char *json=encoded?cJSON_PrintUnformatted(msg):NULL;
+     free(buf);cJSON_Delete(msg);
+-    ssh_exec_stream_publish(json,session_id);
++    ts_ws_op_output_finish(&ticket,json);
+     free(json);
+ 
++    } else ts_ws_op_output_finish(&ticket,NULL);
++    }
++
+     /* 实时模式匹配 */
+-    if (s_exec_params && s_exec_params->output_buffer) {
+-        const char *output = s_exec_params->output_buffer;
++    if (params && params->output_buffer) {
++        const char *output = params->output_buffer;
+         bool should_send_match = false;
+         bool pattern_matched = false;  /* expect/fail 模式是否匹配 */
+         bool is_first_extract = false;  /* 是否为首次提取 */
+         
+         /* 检查失败模式（仅在尚未匹配时） */
+-        if (!s_exec_params->match_found && s_exec_params->fail_pattern && s_exec_params->fail_pattern[0]) {
+-            if (simple_pattern_match(output, s_exec_params->fail_pattern, NULL)) {
+-                s_exec_params->fail_matched = true;
+-                s_exec_params->match_found = true;
++        if (!params->match_found && params->fail_pattern && params->fail_pattern[0]) {
++            if (simple_pattern_match(output, params->fail_pattern, NULL)) {
++                params->fail_matched = true;
++                params->match_found = true;
+                 should_send_match = true;
+                 pattern_matched = true;
+                 TS_LOGW(TAG, "Realtime fail pattern matched");
+@@ -1629,11 +1396,11 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+         }
+         
+         /* 检查期望模式（仅在尚未匹配时，且失败模式没有匹配） */
+-        if (!s_exec_params->match_found && !s_exec_params->fail_matched && 
+-            s_exec_params->expect_pattern && s_exec_params->expect_pattern[0]) {
+-            if (simple_pattern_match(output, s_exec_params->expect_pattern, NULL)) {
+-                s_exec_params->expect_matched = true;
+-                s_exec_params->match_found = true;
++        if (!params->match_found && !params->fail_matched &&
++            params->expect_pattern && params->expect_pattern[0]) {
++            if (simple_pattern_match(output, params->expect_pattern, NULL)) {
++                params->expect_matched = true;
++                params->match_found = true;
+                 should_send_match = true;
+                 pattern_matched = true;
+                 TS_LOGI(TAG, "Realtime expect pattern matched");
+@@ -1641,11 +1408,11 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+         }
+         
+         /* 提取值 */
+-        if (s_exec_params->extract_pattern && s_exec_params->extract_pattern[0]) {
++        if (params->extract_pattern && params->extract_pattern[0]) {
+             char *extracted = NULL;
+-            if (simple_pattern_match(output, s_exec_params->extract_pattern, &extracted)) {
++            if (simple_pattern_match(output, params->extract_pattern, &extracted)) {
+                 /* 检查是否为首次提取 */
+-                if (!s_exec_params->extracted_value) {
++                if (!params->extracted_value) {
+                     is_first_extract = true;
+                 }
+                 
+@@ -1653,16 +1420,16 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+                 bool is_new_value = false;
+                 if (is_first_extract) {
+                     is_new_value = true;
+-                } else if (extracted && strcmp(extracted, s_exec_params->extracted_value) != 0) {
++                } else if (extracted && strcmp(extracted, params->extracted_value) != 0) {
+                     is_new_value = true;
+                 }
+                 
+                 if (is_new_value) {
+                     /* 释放旧值，保存新值 */
+-                    if (s_exec_params->extracted_value) {
+-                        free(s_exec_params->extracted_value);
++                    if (params->extracted_value) {
++                        free(params->extracted_value);
+                     }
+-                    s_exec_params->extracted_value = extracted;
++                    params->extracted_value = extracted;
+                     should_send_match = true;
+                     TS_LOGI(TAG, "Realtime extract: %s (first=%d)", extracted ? extracted : "(null)", is_first_extract);
+                 } else {
+@@ -1674,7 +1441,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+         
+         /* 判断是否应该停止 */
+         bool should_stop = false;
+-        if (s_exec_params->stop_on_match) {
++        if (params->stop_on_match) {
+             /* 勾选了"匹配后停止"：expect/fail 匹配 或 首次提取成功 都应该停止 */
+             if (pattern_matched || is_first_extract) {
+                 should_stop = true;
+@@ -1683,22 +1450,28 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+         
+         /* 发送实时匹配消息 */
+         if (should_send_match) {
++            ts_ws_output_ticket_t match_ticket;
++            if(ts_ws_op_output_begin(params->op,&match_ticket)) {
++            if(match_ticket.count) {
+             cJSON *match_msg = cJSON_CreateObject();
+-            cJSON_AddStringToObject(match_msg, "type", "ssh_exec_match");
+-            cJSON_AddNumberToObject(match_msg, "session_id", session_id);
+-            cJSON_AddBoolToObject(match_msg, "expect_matched", s_exec_params->expect_matched);
+-            cJSON_AddBoolToObject(match_msg, "fail_matched", s_exec_params->fail_matched);
+-            if (s_exec_params->extracted_value) {
+-                cJSON_AddStringToObject(match_msg, "extracted", s_exec_params->extracted_value);
++            bool match_encoded=match_msg!=NULL;
++            match_encoded = (cJSON_AddStringToObject(match_msg, "type", "ssh_exec_match"))!=NULL && match_encoded;
++            match_encoded = (cJSON_AddNumberToObject(match_msg, "session_id", session_id))!=NULL && match_encoded;
++            match_encoded = (cJSON_AddBoolToObject(match_msg, "expect_matched", params->expect_matched))!=NULL && match_encoded;
++            match_encoded = (cJSON_AddBoolToObject(match_msg, "fail_matched", params->fail_matched))!=NULL && match_encoded;
++            if (params->extracted_value) {
++                match_encoded = (cJSON_AddStringToObject(match_msg, "extracted", params->extracted_value))!=NULL && match_encoded;
+             }
+             /* 标记是否为终止匹配 */
+-            cJSON_AddBoolToObject(match_msg, "is_final", should_stop);
++            match_encoded = (cJSON_AddBoolToObject(match_msg, "is_final", should_stop))!=NULL && match_encoded;
+             
+-            char *match_json = cJSON_PrintUnformatted(match_msg);
++            char *match_json = match_encoded?cJSON_PrintUnformatted(match_msg):NULL;
+             cJSON_Delete(match_msg);
+-            ssh_exec_stream_publish(match_json,session_id);
++            ts_ws_op_output_finish(&match_ticket,match_json);
+             free(match_json);
+             
++            } else ts_ws_op_output_finish(&match_ticket,NULL);
++            }
+             /* ========== 根据命令类型决定变量更新时机 ========== */
+             /* 
+              * 持续监控型：只有 extract_pattern，无 expect/fail/stop_on_match
+@@ -1707,58 +1480,58 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+              * 结果导向型：有 expect/fail 或 stop_on_match
+              *   → 等命令结束时才更新变量（在 ssh_exec_task 完成处理）
+              */
+-            bool is_continuous_mode = s_exec_params->extract_pattern && 
+-                                      !s_exec_params->expect_pattern && 
+-                                      !s_exec_params->fail_pattern && 
+-                                      !s_exec_params->stop_on_match;
++            bool is_continuous_mode = params->extract_pattern &&
++                                      !params->expect_pattern &&
++                                      !params->fail_pattern &&
++                                      !params->stop_on_match;
+             
+             TS_LOGI(TAG, "Variable update check: var_name='%s', continuous=%d, extract=%p, expect=%p, fail=%p, stop=%d",
+-                    s_exec_params->var_name,
++                    params->var_name,
+                     is_continuous_mode,
+-                    s_exec_params->extract_pattern,
+-                    s_exec_params->expect_pattern,
+-                    s_exec_params->fail_pattern,
+-                    s_exec_params->stop_on_match);
++                    params->extract_pattern,
++                    params->expect_pattern,
++                    params->fail_pattern,
++                    params->stop_on_match);
+             
+-            if (is_continuous_mode && s_exec_params->var_name[0]) {
++            if (is_continuous_mode && params->var_name[0]) {
+                 /* 持续监控模式：实时更新变量 */
+                 char full_var_name[96];
+                 ts_auto_variable_t var = {0};
+-                strncpy(var.source_id, s_exec_params->var_name, sizeof(var.source_id) - 1);
++                strncpy(var.source_id, params->var_name, sizeof(var.source_id) - 1);
+                 var.flags = 0;
+                 
+                 /* 更新 extracted 变量 */
+-                if (s_exec_params->extracted_value) {
+-                    snprintf(full_var_name, sizeof(full_var_name), "%s.extracted", s_exec_params->var_name);
++                if (params->extracted_value) {
++                    snprintf(full_var_name, sizeof(full_var_name), "%s.extracted", params->var_name);
+                     strncpy(var.name, full_var_name, sizeof(var.name) - 1);
+                     var.value.type = TS_AUTO_VAL_STRING;
+-                    strncpy(var.value.str_val, s_exec_params->extracted_value, sizeof(var.value.str_val) - 1);
++                    strncpy(var.value.str_val, params->extracted_value, sizeof(var.value.str_val) - 1);
+                     esp_err_t ret = ts_variable_upsert(&var);
+-                    TS_LOGI(TAG, "Registered %s = %s (ret=%d)", full_var_name, s_exec_params->extracted_value, ret);
++                    TS_LOGI(TAG, "Registered %s = %s (ret=%d)", full_var_name, params->extracted_value, ret);
+                 }
+                 
+                 /* 更新 status 为 running */
+-                snprintf(full_var_name, sizeof(full_var_name), "%s.status", s_exec_params->var_name);
++                snprintf(full_var_name, sizeof(full_var_name), "%s.status", params->var_name);
+                 strncpy(var.name, full_var_name, sizeof(var.name) - 1);
+                 var.value.type = TS_AUTO_VAL_STRING;
+                 strncpy(var.value.str_val, "running", sizeof(var.value.str_val) - 1);
+                 ts_variable_upsert(&var);
+                 
+                 /* 更新 host */
+-                snprintf(full_var_name, sizeof(full_var_name), "%s.host", s_exec_params->var_name);
++                snprintf(full_var_name, sizeof(full_var_name), "%s.host", params->var_name);
+                 strncpy(var.name, full_var_name, sizeof(var.name) - 1);
+                 var.value.type = TS_AUTO_VAL_STRING;
+-                strncpy(var.value.str_val, s_exec_params->config.host ? s_exec_params->config.host : "", sizeof(var.value.str_val) - 1);
++                strncpy(var.value.str_val, params->config.host ? params->config.host : "", sizeof(var.value.str_val) - 1);
+                 ts_variable_upsert(&var);
+                 
+                 /* 更新 timestamp */
+-                snprintf(full_var_name, sizeof(full_var_name), "%s.timestamp", s_exec_params->var_name);
++                snprintf(full_var_name, sizeof(full_var_name), "%s.timestamp", params->var_name);
+                 strncpy(var.name, full_var_name, sizeof(var.name) - 1);
+                 var.value.type = TS_AUTO_VAL_INT;
+                 var.value.int_val = (int32_t)(esp_timer_get_time() / 1000000);
+                 ts_variable_upsert(&var);
+                 
+-                TS_LOGD(TAG, "Continuous mode: realtime update %s", s_exec_params->var_name);
++                TS_LOGD(TAG, "Continuous mode: realtime update %s", params->var_name);
+             }
+             /* 结果导向模式：变量在命令完成时更新（见下方 ssh_exec_task 完成处理） */
+             
+@@ -1766,55 +1539,74 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+             if (should_stop) {
+                 TS_LOGI(TAG, "Aborting SSH execution (pattern=%d, first_extract=%d)",
+                         pattern_matched, is_first_extract);
+-                s_exec_cancel_requested = true;
+-                if (s_exec_session) {
+-                    ts_ssh_abort(s_exec_session);  /* 直接中断 SSH 执行 */
+-                }
++                params->cancel_requested = true;
++                exec_abort(params);
+             }
+         }
+     }
++    ts_ws_op_release(params->op);
+ }
+ 
+-/* SSH Exec 超时回调 */
+-static void ssh_exec_timeout_callback(TimerHandle_t xTimer)
++/* Timer's original context is pinned from creation through the daemon barrier.
++ * The existing WS worker retries queue admission; it never waits on the daemon. */
++static void ssh_exec_timeout_callback(TimerHandle_t timer)
+ {
+-    TS_LOGW(TAG, "SSH exec timeout triggered");
+-    s_exec_cancel_requested = true;
+-    if (s_exec_session) {
+-        ts_ssh_abort(s_exec_session);
++    ssh_exec_task_params_t *params=pvTimerGetTimerID(timer);
++    xSemaphoreTake(params->io,portMAX_DELAY);
++    if(!params->timer_closing) {
++        params->cancel_requested=true;
++        if(params->session)ts_ssh_abort(params->session);
+     }
++    xSemaphoreGive(params->io);
+ }
+-
+-/* Every accepted streamed command owns one result reservation. Ordinary output
+- * cannot consume it. Oversize/encoding failure is reported, never as success. */
+-static void ssh_exec_terminal_flush(void)
++static void exec_timer_drained(void *arg,uint32_t unused)
++{
++    (void)unused;ssh_exec_task_params_t *params=arg;
++    params->timer_phase=5;
++    ts_ws_op_release(params->op);
++}
++static bool exec_maintenance(void *data)
++{
++    ssh_exec_task_params_t *params=data;unsigned phase=params->timer_phase;
++    if(phase<2 || phase>=5)return false;
++    if(phase==4)return true;
++    if(esp_timer_get_time()<params->timer_retry_at)return true;
++    BaseType_t ret=pdFAIL;
++    if(phase==2) {
++        ret=xTimerDelete(params->timer,0);
++        if(ret==pdPASS){params->timer=NULL;params->timer_phase=3;}
++    } else {
++        params->timer_phase=4; /* callback can finish before submit returns */
++        ret=xTimerPendFunctionCall(exec_timer_drained,params,0,0);
++        if(ret!=pdPASS)params->timer_phase=3;
++    }
++    if(ret!=pdPASS)params->timer_retry_at=esp_timer_get_time()+100000;
++    if(ret!=pdPASS && ++params->timer_retries==TS_WS_QUEUE_RETRIES) {
++        params->timer_phase=phase==2?6:7;
++        TS_LOGE(TAG,"SSH timer drain retry limit; context retained until stop retry");
++        return false;
++    }
++    if(ret==pdPASS)params->timer_retries=0;
++    return params->timer_phase!=5;
++}
++static void exec_retry_timer_drain(void)
+ {
+-    if(s_exec_output_pending)return;
+-    bool ready=true;
+-    if(!atomic_compare_exchange_strong(&s_exec_terminal_ready,&ready,false))return;
+-    if(s_exec_output_failed) {
+-        char fallback[224];
+-        snprintf(fallback,sizeof(fallback),"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"SSH output delivery incomplete; remote command result is not confirmed\"}",(unsigned long)s_exec_session_id);
+-        ts_ws_reserved_text(&s_exec_terminal,fallback);
+-    }
+-    /* Completion owns the original recipient snapshot; never retarget on retry. */
+-    esp_err_t ret=ts_ws_result_publish(&s_exec_terminal,s_exec_result_peers,s_exec_result_count);
+-    if(ret!=ESP_OK)TS_LOGW(TAG,"SSH terminal result rejected: %s",esp_err_to_name(ret));
+-    ts_ws_reservation_release(&s_exec_terminal);
+-    s_exec_result_active=false;
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_EXEC,0);
++    if(!op)return;
++    ssh_exec_task_params_t *params=ts_ws_op_data(op);
++    if(params){unsigned phase=params->timer_phase;
++        if(phase>=6){params->timer_retries=0;atomic_compare_exchange_strong(&params->timer_phase,&phase,phase==6?2:3);}}
++    ts_ws_op_release(op);
+ }
+-static void ssh_exec_terminal_publish(const char *json,uint32_t session_id)
++static void exec_destroy(void *data)
+ {
+-    bool claimed=false;
+-    if(!atomic_compare_exchange_strong(&s_exec_terminal_claimed,&claimed,true))return;
+-    char fallback[192];
+-    snprintf(fallback,sizeof(fallback),"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"SSH result delivery failed; result is unknown\"}",(unsigned long)session_id);
+-    esp_err_t ret=ts_ws_reserved_text(&s_exec_terminal,json?json:fallback);
+-    if(ret!=ESP_OK)ret=ts_ws_reserved_text(&s_exec_terminal,fallback);
+-    if(ret!=ESP_OK){TS_LOGW(TAG,"SSH terminal encoding failed: %s",esp_err_to_name(ret));ts_ws_reservation_release(&s_exec_terminal);s_exec_result_active=false;return;}
+-    s_exec_result_count=ts_ws_peer_snapshot(s_exec_result_peers,TS_WS_CONNECTIONS);
+-    s_exec_terminal_ready=true;
+-    ssh_exec_terminal_flush();
++    ssh_exec_task_params_t *params=data;if(!params)return;
++    assert(!params->session && (!params->timer_phase || params->timer_phase==5));
++    free((void*)params->config.host);free((void*)params->config.username);
++    if(params->password_owned){memset(params->password_owned,0,strlen(params->password_owned));free(params->password_owned);}
++    free(params->expect_pattern);free(params->fail_pattern);free(params->extract_pattern);
++    free(params->output_buffer);free(params->extracted_value);
++    vSemaphoreDelete(params->io);free(params);
+ }
+ 
+ /* SSH Exec 任务 */
+@@ -1828,7 +1620,7 @@ static void ssh_exec_task(void *arg)
+     size_t key_len = 0;
+     
+     /* 重置取消请求标志 */
+-    s_exec_cancel_requested = false;
++    /* Initialized by the creator before exposing the original context. */
+     
+     TS_LOGI(TAG, "SSH exec task started: session_id=%lu, cmd=%s", 
+             (unsigned long)session_id, params->command);
+@@ -1845,65 +1637,82 @@ static void ssh_exec_task(void *arg)
+         } else {
+             TS_LOGE(TAG, "Failed to load key '%s': %s", params->keyid, esp_err_to_name(ret));
+             /* 发送错误消息 */
+-            cJSON *msg = cJSON_CreateObject();
+-            cJSON_AddStringToObject(msg, "type", "ssh_exec_error");
+-            cJSON_AddNumberToObject(msg, "session_id", session_id);
+-            cJSON_AddStringToObject(msg, "error", "Failed to load SSH key");
+-            char *json = cJSON_PrintUnformatted(msg);
++            if(ts_ws_op_close_begin(params->op)) {
++        cJSON *msg = cJSON_CreateObject();
++        bool encoded=msg!=NULL;
++            encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
++            encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
++            encoded = (cJSON_AddStringToObject(msg, "error", "Failed to load SSH key"))!=NULL && encoded;
++            char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
+             cJSON_Delete(msg);
+-            ssh_exec_terminal_publish(json,session_id); free(json);
++            ts_ws_op_close_finish(params->op,json); free(json);
++        }
+             goto cleanup;
+         }
+     }
+     
+     /* 创建 SSH 会话 */
+-    ret = ts_ssh_session_create(&params->config, &s_exec_session);
++    ts_ssh_session_t created=NULL;
++    ret = ts_ssh_session_create(&params->config, &created);
++    xSemaphoreTake(params->io,portMAX_DELAY);params->session=created;xSemaphoreGive(params->io);
+     if (ret != ESP_OK) {
+         TS_LOGE(TAG, "Failed to create SSH session: %s", esp_err_to_name(ret));
++        if(ts_ws_op_close_begin(params->op)) {
+         cJSON *msg = cJSON_CreateObject();
+-        cJSON_AddStringToObject(msg, "type", "ssh_exec_error");
+-        cJSON_AddNumberToObject(msg, "session_id", session_id);
+-        cJSON_AddStringToObject(msg, "error", "Failed to create SSH session");
+-        char *json = cJSON_PrintUnformatted(msg);
++        bool encoded=msg!=NULL;
++        encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
++        encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
++        encoded = (cJSON_AddStringToObject(msg, "error", "Failed to create SSH session"))!=NULL && encoded;
++        char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
+         cJSON_Delete(msg);
+-        ssh_exec_terminal_publish(json,session_id); free(json);
++        ts_ws_op_close_finish(params->op,json); free(json);
++        }
+         goto cleanup;
+     }
+     
+     /* 连接 */
+-    ret = ts_ssh_connect(s_exec_session);
++    ret = ts_ssh_connect(params->session);
+     if (ret != ESP_OK) {
+-        const char *err = ts_ssh_get_error(s_exec_session);
++        const char *err = ts_ssh_get_error(params->session);
+         TS_LOGE(TAG, "SSH connect failed: %s", err ? err : "unknown");
++        if(ts_ws_op_close_begin(params->op)) {
+         cJSON *msg = cJSON_CreateObject();
+-        cJSON_AddStringToObject(msg, "type", "ssh_exec_error");
+-        cJSON_AddNumberToObject(msg, "session_id", session_id);
+-        cJSON_AddStringToObject(msg, "error", err ? err : "Connection failed");
+-        char *json = cJSON_PrintUnformatted(msg);
++        bool encoded=msg!=NULL;
++        encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
++        encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
++        encoded = (cJSON_AddStringToObject(msg, "error", err ? err : "Connection failed"))!=NULL && encoded;
++        char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
+         cJSON_Delete(msg);
+-        ssh_exec_terminal_publish(json,session_id); free(json);
++        ts_ws_op_close_finish(params->op,json); free(json);
++        }
+         goto cleanup;
+     }
+     
+     /* 发送开始消息 */
+     {
++        ts_ws_output_ticket_t start_ticket;
++        if(ts_ws_op_output_begin(params->op,&start_ticket)) {
++        if(start_ticket.count) {
+         cJSON *msg = cJSON_CreateObject();
+-        cJSON_AddStringToObject(msg, "type", "ssh_exec_start");
+-        cJSON_AddNumberToObject(msg, "session_id", session_id);
+-        cJSON_AddStringToObject(msg, "command", params->command);
++        bool encoded=msg!=NULL;
++        encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_start"))!=NULL && encoded;
++        encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
++        encoded = (cJSON_AddStringToObject(msg, "command", params->command))!=NULL && encoded;
+         /* 添加配置信息 */
+         if (params->expect_pattern) {
+-            cJSON_AddStringToObject(msg, "expect_pattern", params->expect_pattern);
++            encoded = (cJSON_AddStringToObject(msg, "expect_pattern", params->expect_pattern))!=NULL && encoded;
+         }
+         if (params->fail_pattern) {
+-            cJSON_AddStringToObject(msg, "fail_pattern", params->fail_pattern);
++            encoded = (cJSON_AddStringToObject(msg, "fail_pattern", params->fail_pattern))!=NULL && encoded;
+         }
+         if (params->extract_pattern) {
+-            cJSON_AddStringToObject(msg, "extract_pattern", params->extract_pattern);
++            encoded = (cJSON_AddStringToObject(msg, "extract_pattern", params->extract_pattern))!=NULL && encoded;
+         }
+-        char *json = cJSON_PrintUnformatted(msg);
++        char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
+         cJSON_Delete(msg);
+-        ssh_exec_stream_publish(json,session_id); free(json);
++        ts_ws_op_output_finish(&start_ticket,json); free(json);
++        } else ts_ws_op_output_finish(&start_ticket,NULL);
++        }
+     }
+     
+     /* 判断是否需要启动超时定时器 */
+@@ -1921,40 +1730,27 @@ static void ssh_exec_task(void *arg)
+             (unsigned long)params->timeout_ms, need_timeout, params->stop_on_match);
+     
+     if (need_timeout && params->timeout_ms > 0) {
+-        /* 创建或重置超时定时器 */
+-        if (s_exec_timeout_timer == NULL) {
+-            s_exec_timeout_timer = xTimerCreate("ssh_timeout", 
+-                                                 pdMS_TO_TICKS(params->timeout_ms),
+-                                                 pdFALSE,  /* 单次触发 */
+-                                                 NULL,
+-                                                 ssh_exec_timeout_callback);
+-        } else {
+-            /* 更新超时时间 */
+-            xTimerChangePeriod(s_exec_timeout_timer, pdMS_TO_TICKS(params->timeout_ms), 0);
+-        }
+-        
+-        if (s_exec_timeout_timer) {
+-            xTimerStart(s_exec_timeout_timer, 0);
+-            TS_LOGI(TAG, "SSH exec timeout timer started: %lu ms", (unsigned long)params->timeout_ms);
+-        }
++        ts_ws_op_retain(params->op);
++        params->timer=xTimerCreate("ssh_timeout",pdMS_TO_TICKS(params->timeout_ms),pdFALSE,params,ssh_exec_timeout_callback);
++        if(params->timer){params->timer_phase=1;
++            if(xTimerStart(params->timer,0)!=pdPASS)TS_LOGW(TAG,"SSH timeout timer could not start");
++        } else ts_ws_op_release(params->op);
+     }
+-    
++
+     /* 流式执行命令 */
+-    ret = ts_ssh_exec_stream(s_exec_session, params->command, 
++    ret = ts_ssh_exec_stream(params->session, params->command,
+                               ssh_exec_output_callback, 
+-                              (void *)(uintptr_t)session_id, 
++                              params,
+                               &exit_code);
+     
+-    /* 停止超时定时器 */
+-    if (s_exec_timeout_timer) {
+-        xTimerStop(s_exec_timeout_timer, 0);
+-    }
+-    
++    xSemaphoreTake(params->io,portMAX_DELAY);params->timer_closing=true;xSemaphoreGive(params->io);
++    if(params->timer_phase==1){params->timer_phase=2;ts_ws_subscriptions_wake();}
++
+     /* 处理模式匹配和状态判断 */
+     ts_webui_ssh_status_t status = TS_WEBUI_SSH_STATUS_SUCCESS;
+     
+     /* 检查是否因超时被取消 */
+-    bool was_timeout = s_exec_cancel_requested && (ret == ESP_ERR_TIMEOUT);
++    bool was_timeout = params->cancel_requested && (ret == ESP_ERR_TIMEOUT);
+     
+     /* 优先使用实时匹配结果 */
+     bool expect_matched = params->expect_matched;
+@@ -2102,13 +1898,15 @@ static void ssh_exec_task(void *arg)
+     
+     /* 发送完成消息 */
+     {
++        if(ts_ws_op_close_begin(params->op)) {
+         cJSON *msg = cJSON_CreateObject();
+-        cJSON_AddStringToObject(msg, "type", 
+-            status == TS_WEBUI_SSH_STATUS_CANCELLED ? "ssh_exec_cancelled" : "ssh_exec_done");
+-        cJSON_AddNumberToObject(msg, "session_id", session_id);
++        bool encoded=msg!=NULL;
++        encoded = (cJSON_AddStringToObject(msg, "type",
++            status == TS_WEBUI_SSH_STATUS_CANCELLED ? "ssh_exec_cancelled" : "ssh_exec_done"))!=NULL && encoded;
++        encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
+         
+         if (status != TS_WEBUI_SSH_STATUS_CANCELLED) {
+-            cJSON_AddNumberToObject(msg, "exit_code", exit_code);
++            encoded = (cJSON_AddNumberToObject(msg, "exit_code", exit_code))!=NULL && encoded;
+             
+             /* 状态字符串 */
+             const char *status_str = "unknown";
+@@ -2120,35 +1918,36 @@ static void ssh_exec_task(void *arg)
+                 case TS_WEBUI_SSH_STATUS_MATCH_FAILED:  status_str = "match_failed"; break;
+                 default: break;
+             }
+-            cJSON_AddStringToObject(msg, "status", status_str);
++            encoded = (cJSON_AddStringToObject(msg, "status", status_str))!=NULL && encoded;
+             
+             /* 简单的成功标志 */
+             bool is_success = (status == TS_WEBUI_SSH_STATUS_SUCCESS || 
+                               status == TS_WEBUI_SSH_STATUS_MATCH_SUCCESS);
+-            cJSON_AddBoolToObject(msg, "success", is_success);
++            encoded = (cJSON_AddBoolToObject(msg, "success", is_success))!=NULL && encoded;
+             
+             /* 模式匹配结果 */
+             if (params->expect_pattern) {
+-                cJSON_AddBoolToObject(msg, "expect_matched", expect_matched);
++                encoded = (cJSON_AddBoolToObject(msg, "expect_matched", expect_matched))!=NULL && encoded;
+             }
+             if (params->fail_pattern) {
+-                cJSON_AddBoolToObject(msg, "fail_matched", fail_matched);
++                encoded = (cJSON_AddBoolToObject(msg, "fail_matched", fail_matched))!=NULL && encoded;
+             }
+             
+             /* 提取的值 */
+             if (extracted_value) {
+-                cJSON_AddStringToObject(msg, "extracted", extracted_value);
++                encoded = (cJSON_AddStringToObject(msg, "extracted", extracted_value))!=NULL && encoded;
+             }
+             
+             /* 错误信息 */
+             if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) {
+-                cJSON_AddStringToObject(msg, "error", ts_ssh_get_error(s_exec_session));
++                encoded = (cJSON_AddStringToObject(msg, "error", ts_ssh_get_error(params->session)))!=NULL && encoded;
+             }
+         }
+         
+-        char *json = cJSON_PrintUnformatted(msg);
++        char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
+         cJSON_Delete(msg);
+-        ssh_exec_terminal_publish(json,session_id); free(json);
++        ts_ws_op_close_finish(params->op,json); free(json);
++        }
+     }
+     
+     /* 释放提取的值 */
+@@ -2163,148 +1962,19 @@ cleanup:
+         free(key_buf);
+     }
+     
+-    /* 断开并销毁会话 */
+-    if (s_exec_session) {
+-        ts_ssh_disconnect(s_exec_session);
+-        ts_ssh_session_destroy(s_exec_session);
+-        s_exec_session = NULL;
+-    }
+-    
+-    /* 清理参数 */
+-    if (params) {
+-        free(params->expect_pattern);
+-        free(params->fail_pattern);
+-        free(params->extract_pattern);
+-        free(params->output_buffer);
+-        free(params);
+-    }
+-    s_exec_params = NULL;
+-    
+-    s_exec_running = false;
+-    s_exec_task = NULL;
+-    
++    xSemaphoreTake(params->io,portMAX_DELAY);
++    params->timer_closing=true;
++    if(params->session){ts_ssh_disconnect(params->session);ts_ssh_session_destroy(params->session);params->session=NULL;}
++    xSemaphoreGive(params->io);
++    if(params->timer_phase==1)params->timer_phase=2;
++    ts_ws_op_executor_done(params->op);
++
+     TS_LOGI(TAG, "SSH exec task ended: session_id=%lu", (unsigned long)session_id);
+     vTaskDelete(NULL);
+ }
+ 
+-static esp_err_t ts_webui_ssh_exec_start_impl(const char *host, uint16_t port,
+-                                   const char *user, const char *keyid,
+-                                   const char *password, const char *command,
+-                                   uint32_t *session_id)
+-{
+-    if (!host || !user || !command) {
+-        return ESP_ERR_INVALID_ARG;
+-    }
+-    
+-    /* 检查是否有正在运行的会话 */
+-    if (s_exec_running) {
+-        TS_LOGW(TAG, "SSH exec session already running");
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-    
+-    /* 分配任务参数 */
+-    ssh_exec_task_params_t *params = heap_caps_calloc(1, sizeof(ssh_exec_task_params_t), 
+-                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+-    if (!params) params = calloc(1, sizeof(ssh_exec_task_params_t));
+-    if (!params) {
+-        return ESP_ERR_NO_MEM;
+-    }
+-    
+-    /* 生成会话 ID */
+-    s_exec_session_id++;
+-    if (s_exec_session_id == 0) s_exec_session_id = 1;  /* 避免 0 */
+-    
+-    /* 配置 SSH */
+-    params->config = (ts_ssh_config_t)TS_SSH_DEFAULT_CONFIG();
+-    params->config.host = strdup(host);
+-    params->config.port = port;
+-    params->config.username = strdup(user);
+-    params->config.timeout_ms = 30000;
+-    params->session_id = s_exec_session_id;
+-    
+-    /* 存储命令 */
+-    strncpy(params->command, command, sizeof(params->command) - 1);
+-    
+-    /* 配置认证方式 */
+-    if (keyid && keyid[0]) {
+-        strncpy(params->keyid, keyid, sizeof(params->keyid) - 1);
+-        /* 实际密钥加载在任务中完成 */
+-    } else if (password && password[0]) {
+-        params->config.auth_method = TS_SSH_AUTH_PASSWORD;
+-        params->config.auth.password = strdup(password);
+-    } else {
+-        free((void *)params->config.host);
+-        free((void *)params->config.username);
+-        free(params);
+-        return ESP_ERR_INVALID_ARG;
+-    }
+-    
+-    /* 默认启用输出收集 */
+-    params->collect_output = true;
+-    params->max_output_size = 64 * 1024;  /* 默认 64KB */
+-    
+-    /* 分配输出缓冲区 */
+-    params->output_capacity = params->max_output_size;
+-    params->output_buffer = heap_caps_malloc(params->output_capacity, 
+-                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+-    if (!params->output_buffer) {
+-        params->output_buffer = malloc(params->output_capacity);
+-    }
+-    if (params->output_buffer) {
+-        params->output_buffer[0] = '\0';
+-        params->output_len = 0;
+-    }
+-    
+-    s_exec_running = true;
+-    s_exec_params = params;  /* 设置全局指针供回调访问 */
+-    
+-    /* 创建任务 - MUST use DRAM stack because keystore access requires NVS.
+-     * SPI Flash operations disable cache, and PSRAM access requires cache.
+-     */
+-    BaseType_t ret = xTaskCreate(ssh_exec_task, "ssh_exec", 8192, params, 5, &s_exec_task);
+-    if (ret != pdPASS) {
+-        TS_LOGE(TAG, "Failed to create SSH exec task");
+-        s_exec_running = false;
+-        s_exec_params = NULL;
+-        free((void *)params->config.host);
+-        free((void *)params->config.username);
+-        if (params->config.auth.password) free((void *)params->config.auth.password);
+-        free(params->output_buffer);
+-        free(params);
+-        return ESP_FAIL;
+-    }
+-    
+-    if (session_id) {
+-        *session_id = s_exec_session_id;
+-    }
+-    
+-    TS_LOGI(TAG, "SSH exec started: session_id=%lu, host=%s, cmd=%s", 
+-            (unsigned long)s_exec_session_id, host, command);
+-    
+-    return ESP_OK;
+-}
+-
+-esp_err_t ts_webui_ssh_exec_start(const char *host, uint16_t port,
+-                                   const char *user, const char *keyid,
+-                                   const char *password, const char *command,
+-                                   uint32_t *session_id)
+-{
+-    unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
+-    esp_err_t ret=ESP_ERR_INVALID_STATE;
+-    if(!creators && !s_ws_stopping && !s_exec_running && !s_exec_result_active) {
+-        ret=ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal);
+-        if(ret==ESP_OK){s_exec_result_active=true;s_exec_output_failed=false;s_exec_terminal_ready=false;s_exec_terminal_claimed=false;}
+-        if(ret==ESP_OK) {
+-            ret=ts_webui_ssh_exec_start_impl(host, port, user, keyid, password, command, session_id);
+-            if(ret!=ESP_OK){ts_ws_reservation_release(&s_exec_terminal);s_exec_result_active=false;}
+-        }
+-    }
+-    atomic_fetch_sub(&s_exec_creators, 1);
+-    return ret;
+-}
+-
+ /* 带选项的扩展版本 */
+-static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char *host, uint16_t port,
++static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const char *host, uint16_t port,
+                                       const char *user, const char *keyid,
+                                       const char *password, const char *command,
+                                       const ts_webui_ssh_options_t *options,
+@@ -2314,12 +1984,6 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char *host, uint16_t port
+         return ESP_ERR_INVALID_ARG;
+     }
+     
+-    /* 检查是否有正在运行的会话 */
+-    if (s_exec_running) {
+-        TS_LOGW(TAG, "SSH exec session already running");
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-    
+     /* 分配任务参数 */
+     ssh_exec_task_params_t *params = heap_caps_calloc(1, sizeof(ssh_exec_task_params_t), 
+                                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+@@ -2328,17 +1992,19 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char *host, uint16_t port
+         return ESP_ERR_NO_MEM;
+     }
+     
+-    /* 生成会话 ID */
+-    s_exec_session_id++;
+-    if (s_exec_session_id == 0) s_exec_session_id = 1;
+-    
++    params->op=op;params->session_id=ts_ws_op_id(op);
++    params->io=xSemaphoreCreateMutex();
++    if(!params->io){free(params);return ESP_ERR_NO_MEM;}
++    ts_ws_op_bind(op,params,exec_destroy);
++    ts_ws_op_set_maintenance(op,exec_maintenance);
++
+     /* 配置 SSH */
+     params->config = (ts_ssh_config_t)TS_SSH_DEFAULT_CONFIG();
+     params->config.host = strdup(host);
+     params->config.port = port;
+     params->config.username = strdup(user);
+     params->config.timeout_ms = (options && options->timeout_ms > 0) ? options->timeout_ms : 30000;
+-    params->session_id = s_exec_session_id;
++
+     
+     /* 存储命令 */
+     strncpy(params->command, command, sizeof(params->command) - 1);
+@@ -2348,14 +2014,14 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char *host, uint16_t port
+         strncpy(params->keyid, keyid, sizeof(params->keyid) - 1);
+     } else if (password && password[0]) {
+         params->config.auth_method = TS_SSH_AUTH_PASSWORD;
+-        params->config.auth.password = strdup(password);
++        params->password_owned=strdup(password);
++        params->config.auth.password=params->password_owned;
+     } else {
+-        free((void *)params->config.host);
+-        free((void *)params->config.username);
+-        free(params);
+-        return ESP_ERR_INVALID_ARG;
++        return ESP_ERR_INVALID_ARG; /* operation destructor owns partially built params */
+     }
+-    
++    if(!params->config.host || !params->config.username ||
++       (password && password[0] && !params->keyid[0] && !params->password_owned))return ESP_ERR_NO_MEM;
++
+     /* 配置可选参数 */
+     if (options) {
+         if (options->expect_pattern && options->expect_pattern[0]) {
+@@ -2409,8 +2075,7 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char *host, uint16_t port
+         }
+     }
+     
+-    s_exec_running = true;
+-    s_exec_params = params;
++
+     
+     /* 命令开始时初始化所有变量（重置旧值） */
+     TS_LOGI(TAG, "Checking var_name for init: '%s' (len=%d)", 
+@@ -2480,28 +2145,22 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char *host, uint16_t port
+     /* 创建任务 - MUST use DRAM stack because keystore access requires NVS.
+      * SPI Flash operations disable cache, and PSRAM access requires cache.
+      */
+-    BaseType_t ret = xTaskCreate(ssh_exec_task, "ssh_exec", 8192, params, 5, &s_exec_task);
+-    if (ret != pdPASS) {
+-        TS_LOGE(TAG, "Failed to create SSH exec task");
+-        s_exec_running = false;
+-        s_exec_params = NULL;
+-        free((void *)params->config.host);
+-        free((void *)params->config.username);
+-        if (params->config.auth.password) free((void *)params->config.auth.password);
+-        free(params->expect_pattern);
+-        free(params->fail_pattern);
+-        free(params->extract_pattern);
+-        free(params->output_buffer);
+-        free(params);
++    /* Task may finish before task-create returns: creator still owns params. */
++    ts_ws_op_executor_take(op);
++    ts_ws_op_open(op);
++    BaseType_t ret=xTaskCreate(ssh_exec_task,"ssh_exec",8192,params,5,NULL);
++    if(ret!=pdPASS){
++        ts_ws_op_executor_done(op);
++        ts_ws_op_discard(op);
+         return ESP_FAIL;
+     }
+-    
++
+     if (session_id) {
+-        *session_id = s_exec_session_id;
++        *session_id = params->session_id;
+     }
+     
+     TS_LOGI(TAG, "SSH exec started (extended): session_id=%lu, host=%s, cmd=%s, expect=%s", 
+-            (unsigned long)s_exec_session_id, host, command, 
++            (unsigned long)params->session_id, host, command,
+             params->expect_pattern ? params->expect_pattern : "(none)");
+     
+     return ESP_OK;
+@@ -2513,20 +2172,21 @@ esp_err_t ts_webui_ssh_exec_start_ex(const char *host, uint16_t port,
+                                       const ts_webui_ssh_options_t *options,
+                                       uint32_t *session_id)
+ {
+-    unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
+-    esp_err_t ret=ESP_ERR_INVALID_STATE;
+-    if(!creators && !s_ws_stopping && !s_exec_running && !s_exec_result_active) {
+-        ret=ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal);
+-        if(ret==ESP_OK){s_exec_result_active=true;s_exec_output_failed=false;s_exec_terminal_ready=false;s_exec_terminal_claimed=false;}
+-        if(ret==ESP_OK) {
+-            ret=ts_webui_ssh_exec_start_ex_impl(host, port, user, keyid, password, command, options, session_id);
+-            if(ret!=ESP_OK){ts_ws_reservation_release(&s_exec_terminal);s_exec_result_active=false;}
+-        }
+-    }
+-    atomic_fetch_sub(&s_exec_creators, 1);
++    esp_err_t admission;
++    ts_ws_operation_t *op=ts_ws_op_create(TS_WS_OP_EXEC,(ts_ws_peer_t){0},&admission);
++    if(!op)return admission;
++    esp_err_t ret=ts_webui_ssh_exec_start_ex_impl(op,host,port,user,keyid,password,command,options,session_id);
++    if(ret!=ESP_OK && ts_ws_op_starting(op))ts_ws_op_discard(op);
++    ts_ws_op_executor_done(op);
+     return ret;
+ }
+ 
++esp_err_t ts_webui_ssh_exec_start(const char *host,uint16_t port,const char *user,
++    const char *keyid,const char *password,const char *command,uint32_t *session_id)
++{
++    return ts_webui_ssh_exec_start_ex(host,port,user,keyid,password,command,NULL,session_id);
++}
++
+ /* 释放结果结构 */
+ void ts_webui_ssh_result_free(ts_webui_ssh_result_t *result)
+ {
+@@ -2539,19 +2199,19 @@ void ts_webui_ssh_result_free(ts_webui_ssh_result_t *result)
+ 
+ esp_err_t ts_webui_ssh_exec_cancel(uint32_t session_id)
+ {
+-    if (!s_exec_running || session_id != s_exec_session_id) {
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-    
+-    if (s_exec_session) {
+-        ts_ssh_abort(s_exec_session);
+-        TS_LOGI(TAG, "SSH exec cancel requested: session_id=%lu", (unsigned long)session_id);
+-    }
+-    
+-    return ESP_OK;
++    if(!session_id)return ESP_ERR_INVALID_STATE;
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_EXEC,session_id);
++    if(!op)return ESP_ERR_INVALID_STATE;
++    ssh_exec_task_params_t *params=ts_ws_op_data(op);
++    bool running=ts_ws_op_executing(op);
++    if(params && running)exec_abort(params);
++    ts_ws_op_release(op);
++    return running?ESP_OK:ESP_ERR_INVALID_STATE;
+ }
+ 
+ bool ts_webui_ssh_exec_is_running(uint32_t session_id)
+ {
+-    return s_exec_running && (session_id == 0 || session_id == s_exec_session_id);
++    ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_EXEC,session_id);
++    if(!op)return false;
++    bool running=ts_ws_op_executing(op);ts_ws_op_release(op);return running;
+ }
+diff --git a/components/ts_webui/src/ts_ws_subscriptions.c b/components/ts_webui/src/ts_ws_subscriptions.c
+index b9d9d6f..508a5d3 100644
+--- a/components/ts_webui/src/ts_ws_subscriptions.c
++++ b/components/ts_webui/src/ts_ws_subscriptions.c
+@@ -1,6 +1,7 @@
+ /** Demand-driven display telemetry. Hardware sampling/control is not scheduled here. */
+ #include "ts_ws_subscriptions.h"
+ #include "ts_ws_transport.h"
++#include "ts_ws_operation.h"
+ #include "ts_api.h"
+ #include "ts_log.h"
+ #include "esp_timer.h"
+@@ -196,6 +197,7 @@ static void collect_batch(target_t *targets, unsigned n, ts_ws_reservation_t *re
+ /* Called by the single worker; one bounded pass, no network wait under lock. */
+ static void run_batch(void)
+ {
++    ts_ws_op_poll();
+     ts_ws_transport_flush();
+     target_t targets[MAX_SUBSCRIPTIONS];
+     ts_ws_reservation_t reserved[8]={0};
+@@ -279,7 +281,7 @@ static TickType_t wait_ticks(int64_t delta)
+ static TickType_t next_wait(void)
+ {
+     if(ts_ws_transport_needs_flush()) return wait_ticks((int64_t)ts_ws_transport_retry_ms()*1000);
+-    int64_t now=esp_timer_get_time(), nearest=INT64_MAX;
++    int64_t now=esp_timer_get_time(), nearest=ts_ws_op_needs_tick()?esp_timer_get_time()+100000:INT64_MAX;
+     unsigned capacity=ts_ws_message_capacity() ? ts_ws_transport_capacity() : 0;
+     portENTER_CRITICAL(&s_lock);
+     for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) {
+@@ -489,3 +491,10 @@ void ts_ws_broadcast_to_topic(const char *topic,cJSON *data)
+     }
+     leave();
+ }
++
++bool ts_ws_subscriptions_in_context(void)
++{
++    TaskHandle_t current=xTaskGetCurrentTaskHandle();
++    portENTER_CRITICAL(&s_lock);bool owner=s_worker && s_worker==current;portEXIT_CRITICAL(&s_lock);
++    return owner;
++}
+diff --git a/components/ts_webui/src/ts_ws_transport.c b/components/ts_webui/src/ts_ws_transport.c
+index 81c4ba3..21794f3 100644
+--- a/components/ts_webui/src/ts_ws_transport.c
++++ b/components/ts_webui/src/ts_ws_transport.c
+@@ -364,6 +364,7 @@ esp_err_t ts_ws_transport_submit(ts_ws_peer_t peer, ts_ws_message_t *message,
+     /* Accepted into the local FIFO. Queue/send failures are settled through done,
+      * exactly once. The producer reference prevents early completion reuse. */
+     ts_ws_transport_flush();
++    TS_WS_TEST_POINT("B05"); /* done may have returned; producer ref still held */
+     delivery_release(d);
+     ts_ws_subscriptions_wake();
+     return ESP_OK;
+@@ -647,3 +648,11 @@ esp_err_t ts_ws_power_publish(ts_ws_reservation_t *r,const char *text)
+     }
+     return ret;
+ }
++
++esp_err_t ts_ws_reserved_target(ts_ws_reservation_t *r,unsigned index,ts_ws_peer_t peer,
++    uint64_t revision,uint64_t delivery,ts_ws_delivery_done_t done)
++{
++    if(!r || index>=r->count || r->slots[index]<0)return ESP_ERR_INVALID_ARG;
++    portENTER_CRITICAL(&s_lock);s_deliveries[r->slots[index]].peer=peer;portEXIT_CRITICAL(&s_lock);
++    return ts_ws_reserved_submit(r,index,revision,delivery,NULL,done);
++}
+diff --git a/tests/ws_subscriptions/run_f1_f2.sh b/tests/ws_subscriptions/run_f1_f2.sh
+index 564ae53..7c0b664 100644
+--- a/tests/ws_subscriptions/run_f1_f2.sh
++++ b/tests/ws_subscriptions/run_f1_f2.sh
+@@ -12,9 +12,8 @@ for name,want in json.loads(Path('docs/repair/ws-f1-f2/baseline.json').read_text
+  assert hashlib.sha256((Path(sys.argv[1])/name).read_bytes()).hexdigest()==want,name
+ print('Frozen production snapshot hashes verified')
+ HASH
+-  # Current assertions/harness against unchanged frozen production sources.
+-  cp tests/ws_subscriptions/{test_f1_f2.c,test_reviewer.c,run_f1_f2.sh} "$build/tests/ws_subscriptions/"
+-  cp tests/ws_subscriptions/stubs/platform.h "$build/tests/ws_subscriptions/stubs/"
++  # Preserve the original harness that matches the historical production ABI.
++  tar -xzf docs/repair/ws-operation/baseline.tar.gz -C "$build" tests/ws_subscriptions/test_f1_f2.c tests/ws_subscriptions/test_reviewer.c tests/ws_subscriptions/run_f1_f2.sh tests/ws_subscriptions/stubs/platform.h
+   if bash "$build/tests/ws_subscriptions/run_f1_f2.sh" > "$build/red.txt" 2>&1; then
+     cat "$build/red.txt"; echo 'Unexpected baseline PASS'; exit 1
+   fi
+@@ -27,19 +26,7 @@ HASH
+ fi
+ export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+ cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
+-python3 - "$build" <<'PY'
+-from pathlib import Path
+-import re,sys
+-script=Path('tests/ws_subscriptions/run_reviewer.sh').read_text()
+-code=script.split("<<'PY'\n",1)[1].split('\nPY',1)[0]
+-exec(compile(code,'extract-reviewer','exec'))
+-s=Path('components/ts_webui/src/ts_webui_ws.c').read_text();parts=[]
+-for name in ['power_state_to_string','power_policy_event_handler','ts_webui_broadcast','simple_pattern_match','ssh_exec_output_callback']:
+- m=re.search(r'^(?:static )?(?:const char \*|void |esp_err_t |bool )'+name+r'\([^;]*?\)\n\{',s,re.M);assert m,name
+- parts.append(s[m.start():s.index('\n}',m.start())+2])
+-Path(sys.argv[1],'power_caller.inc').write_text('\n'.join(parts))
+-PY
+-"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" -I"$build" tests/ws_subscriptions/test_f1_f2.c "$cjson/cJSON.c" -o "$build/f1f2"
++"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -Wno-macro-redefined -I"$cjson" -I"$build" tests/ws_subscriptions/test_f1_f2.c "$cjson/cJSON.c" -o "$build/f1f2"
+ failed=0
+ scenarios="f1 f2"
+ if grep -q TS_WS_POWER_SLOTS components/ts_webui/include/ts_ws_transport.h; then scenarios="$scenarios late early identity exec continuous power_retry capacity retry_limit stop timeout class power_order fair"; fi
+diff --git a/tests/ws_subscriptions/run_reviewer.sh b/tests/ws_subscriptions/run_reviewer.sh
+index 90f3a47..200a1bf 100644
+--- a/tests/ws_subscriptions/run_reviewer.sh
++++ b/tests/ws_subscriptions/run_reviewer.sh
+@@ -8,13 +8,6 @@ cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
+ python3 - "$build" <<'PY'
+ from pathlib import Path
+ import sys,re
+-s=Path('components/ts_webui/src/ts_webui_ws.c').read_text()
+-names=['ts_webui_log_stream_enable','has_log_clients','update_log_stream_state','set_client_role','ssh_terminal_done','ssh_generation_valid','ssh_status_valid','ssh_request_error','ssh_send_status','ssh_output_done','ssh_terminal_flush','ssh_send_output','ssh_poll_task','ssh_cleanup','handle_ssh_connect','start_terminal_session','ts_webui_ws_stop','ssh_exec_output_done','ssh_exec_stream_publish','ssh_exec_terminal_flush','ssh_exec_terminal_publish','ws_handler']
+-parts=[]
+-for name in names:
+- m=re.search(r'^(?:static )?(?:esp_err_t|bool|void) '+name+r'\([^;]*?\)\n\{',s,re.M);assert m,name
+- parts.append(s[m.start():s.index('\n}',m.start())+2])
+-Path(sys.argv[1],'reviewer_ws.inc').write_text('\n'.join(parts))
+ for source,names,dest in [
+  ('components/ts_net/src/ts_http_server.c',['http_handler_wrapper'],'reviewer_http.inc'),
+  ('main/ts_core_init.c',['core_release_components','core_init_rollback','ts_core_start','ts_core_stop','ts_core_deinit'],'reviewer_core.inc'),
+@@ -25,7 +18,7 @@ for source,names,dest in [
+   parts.append(s[m.start():s.index('\n}',m.start())+2])
+  Path(sys.argv[1],dest).write_text('\n'.join(parts))
+ PY
+-cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer.c "$cjson/cJSON.c" -o "$build/reviewer"
++cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -Wno-macro-redefined -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer.c "$cjson/cJSON.c" -o "$build/reviewer"
+ "$build/reviewer"
+ 
+ cc -std=gnu11 -g -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer_service.c -o "$build/service"
+diff --git a/tests/ws_subscriptions/test_f1_f2.c b/tests/ws_subscriptions/test_f1_f2.c
+index 94d83a8..2d77530 100644
+--- a/tests/ws_subscriptions/test_f1_f2.c
++++ b/tests/ws_subscriptions/test_f1_f2.c
+@@ -1,94 +1,66 @@
+-#define WS_REVIEWER_NO_MAIN
+-#include "test_reviewer.c"
+-/* Actual power callback, with only the power status input type replaced. */
+-typedef enum {TS_POWER_POLICY_STATE_NORMAL,TS_POWER_POLICY_STATE_LOW_VOLTAGE,TS_POWER_POLICY_STATE_SHUTDOWN,TS_POWER_POLICY_STATE_PROTECTED,TS_POWER_POLICY_STATE_RECOVERY}ts_power_policy_state_t;
+-enum {TS_POWER_POLICY_EVENT_STATE_CHANGED,TS_POWER_POLICY_EVENT_LOW_VOLTAGE,TS_POWER_POLICY_EVENT_COUNTDOWN_TICK,TS_POWER_POLICY_EVENT_SHUTDOWN_START,TS_POWER_POLICY_EVENT_PROTECTED,TS_POWER_POLICY_EVENT_RECOVERY_START,TS_POWER_POLICY_EVENT_RECOVERY_COMPLETE,TS_POWER_POLICY_EVENT_DEBUG_TICK};
+-typedef struct {ts_power_policy_state_t state;float current_voltage;unsigned countdown_remaining_sec,protection_count;}ts_power_policy_status_t;
+-#include <math.h>
+-#include <ctype.h>
+-static struct {bool collect_output,match_found,fail_matched,expect_matched,stop_on_match;char *output_buffer,*fail_pattern,*expect_pattern,*extract_pattern,*extracted_value;size_t output_capacity,output_len;char var_name[64];ts_ssh_config_t config;} *s_exec_params;
+-static bool s_exec_cancel_requested;
+-static void *s_exec_session;
+-typedef struct{char source_id[64],name[96];int flags;struct {int type;char str_val[256];int int_val;}value;}ts_auto_variable_t;
+-#define TS_AUTO_VAL_STRING 1
+-#define TS_AUTO_VAL_INT 2
+-static int ts_variable_upsert(ts_auto_variable_t*v){(void)v;return 0;}
+-static void ts_ssh_abort(void*s){(void)s;assert(!"network delivery must not abort remote commands");}
+-#define malloc tracked_malloc
+-#define heap_caps_malloc test_heap_malloc
+-#define free tracked_free
+-#include "power_caller.inc"
+-#undef free
+-#undef malloc
+-#undef heap_caps_malloc
+-static unsigned powers,errors;
+-#ifdef TS_WS_POWER_SLOTS
+-static unsigned outputs[32],terminals[32],logs,protection_order[64],protection_n;
+-static void observe_all(httpd_ws_frame_t*f){observe_topic(f);const char*p=(const char*)f->payload;if(strstr(p,"power_event")){powers++;if(protection_n<64){cJSON*j=cJSON_Parse(p);protection_order[protection_n++]=cJSON_GetObjectItem(j,"protection_count")->valueint;cJSON_Delete(j);}}if(strstr(p,"ssh_exec_output")||strstr(p,"ssh_output"))outputs[sent_fd]++;if(strstr(p,"ssh_exec_error")||strstr(p,"\"status\":\"error\""))errors++;if(strstr(p,"ssh_exec_done")||strstr(p,"ssh_exec_error"))terminals[sent_fd]++;if(!strcmp(p,"log"))logs++;}
+-static void exec_begin(void){s_exec_session_id++;s_exec_output_failed=false;s_exec_terminal_claimed=false;s_exec_terminal_ready=false;s_exec_result_active=true;assert(!s_exec_output_pending);assert(ts_ws_result_reserve(4096,&s_exec_terminal)==0);}
+-#endif
+-static void observe_power(httpd_ws_frame_t*f){if(strstr((char*)f->payload,"power_event"))powers++;if(strstr((char*)f->payload,"\"status\":\"error\""))errors++;}
++#define OP_ADAPTER_NO_MAIN
++#include "test_operation_adapter.c"
++static unsigned powers,errors,outputs[32],terminals[32],logs,protection_order[64],protection_n,observed_topics[8];
++static void observe_all(httpd_ws_frame_t*f){const char*p=(char*)f->payload;
++ for(unsigned i=0;i<8;i++){char match[80];snprintf(match,sizeof(match),"\"topic\":\"%s\"",topics[i].name);if(strstr(p,match))observed_topics[i]++;}
++ if(strstr(p,"power_event")){powers++;if(protection_n<64){cJSON*j=cJSON_Parse(p);protection_order[protection_n++]=cJSON_GetObjectItem(j,"protection_count")->valueint;cJSON_Delete(j);}}
++ if(strstr(p,"ssh_exec_output")||strstr(p,"ssh_output"))outputs[sent_fd]++;
++ if(strstr(p,"ssh_exec_error")||strstr(p,"\"status\":\"error\""))errors++;
++ if(strstr(p,"ssh_exec_done")||strstr(p,"ssh_exec_error"))terminals[sent_fd]++;
++ if(!strcmp(p,"log"))logs++;
++}
+ static void power_change(void){ts_power_policy_status_t s={.state=TS_POWER_POLICY_STATE_PROTECTED,.current_voltage=10.0f,.protection_count=1};ts_event_t e={.id=TS_POWER_POLICY_EVENT_PROTECTED,.data=&s,.data_size=sizeof(s)};power_policy_event_handler(&e,NULL);}
++static void shell_end(void){ssh_cleanup();shell_task.fn(shell_task.arg);drive_all();}
+ int main(int argc,char**argv){
+- assert(argc==2);cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);start();open_peer(1);sent_hook=observe_power;
+- if(!strcmp(argv[1],"f1")){
+-  connect_request(false,false);queue_fail=true;ssh_send_output("chunk",5);queue_fail=false;test_now+=100000;progress();pump();
+-  bool handled=!s_ssh_running && errors>0;
+-  printf("F1 assertion: accepted SSH output enqueue failure reaches session and error frame: %s\n",handled?"PASS":"FAIL (stream still normal / no error frame)");
+-  s_ssh_running=false;poll_exit();current=(void*)1;finish();return handled?0:1;
++ assert(argc==2);cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);setup();close_peer(2);sent_hook=observe_all;
++ if(!strcmp(argv[1],"f1") || !strcmp(argv[1],"late") || !strcmp(argv[1],"early")){
++  connect_shell();ssh_shell_context_t *ctx=shell_task.arg;
++  bool late=!strcmp(argv[1],"late"),early=!strcmp(argv[1],"early");
++  if(late){ts_ws_message_t*m=ts_ws_message_text("block",5);assert(ts_ws_transport_submit(ts_ws_op_peer(ctx->op),m,0,0,NULL,NULL)==0);ts_ws_message_release(m);}
++  immediate=early;send_fail=early;queue_fail=!late&&!early;ssh_send_output(ctx,"chunk",5);
++  if(late){sdk_one();queue_fail=true;worker_step();}
++  queue_fail=send_fail=false;immediate=false;test_now+=100000;drive_all();
++  assert(!ts_ws_op_is_open(ctx->op));if(!early)assert(errors==1);
++  shell_end();finish_ws();puts("PASS F1: actual Shell output immediate/deferred failure settles original operation; early callbacks remain safe");return 0;
+  }
+  if(!strcmp(argv[1],"f2")){
+   ts_ws_peer_t p;assert(ts_ws_peer_get((void*)11,1,&p));ts_ws_peer_log_level(p,5);
+   httpd_ws_frame_t f={.type=1,.payload=(uint8_t*)"log",.len=3};assert(ts_ws_transport_log(&f,1)==0);assert(ts_ws_transport_log(&f,1)==0);
+-  power_change();pump();bool handled=powers==1;
+-  printf("F2 assertion: protection transition survives ordinary log pool saturation: %s\n",handled?"PASS":"FAIL (no protection frame)");finish();return handled?0:1;
+- }
+-#ifdef TS_WS_POWER_SLOTS
+- sent_hook=observe_all;
+- if(!strcmp(argv[1],"late")){
+-  connect_request(false,false);
+-  ts_ws_message_t*m=ts_ws_message_text("block",5);assert(ts_ws_transport_submit(s_ssh_peer,m,0,0,NULL,NULL)==0);ts_ws_message_release(m);
+-  ssh_send_output("out",3);assert(s_ssh_output_pending==1);ssh_send_status("closed","normal close");assert(s_ssh_terminal_ready && s_ssh_result_pending);
+-  sdk_one();queue_fail=true;worker_step();assert(s_ssh_output_failed && !s_ssh_output_pending);queue_fail=false;test_now+=100000;progress();pump();
+-  assert(errors==1 && !strstr(payloads[1],"normal close"));s_ssh_running=false;poll_exit();current=(void*)1;finish();
+-  puts("PASS late SSH rejection: prior output settles before terminal; closed becomes explicit incomplete-output error");return 0;
+- }
+- if(!strcmp(argv[1],"early")){
+-  connect_request(false,false);immediate=true;uint64_t settled=s_tx_stats.settled;
+-  ssh_send_output("ok",2);assert(!s_ssh_output_pending && s_tx_stats.settled==settled+1 && outputs[1]==1);
+-  send_fail=true;ssh_send_output("fail",4);send_fail=false;immediate=false;
+-  assert(s_tx_stats.settled==settled+2 && s_ssh_output_failed && !s_ssh_running && !s_ssh_output_pending);
+-  poll_exit();current=(void*)1;finish();puts("PASS callback-before-return and actual send failure: exactly one settlement, no reference leak");return 0;
++  power_change();pump();assert(powers==1);finish_ws();puts("PASS F2: protection transition survives ordinary log saturation");return 0;
+  }
+  if(!strcmp(argv[1],"identity")){
+-  connect_request(false,false);unsigned old=s_ssh_generation;
+-  ssh_send_output("old",3);close_peer(1);open_peer(1);
+-  connect_request(false,false);assert(s_ssh_generation==old); /* retained old producer blocks replacement */
+-  pump();assert(s_ssh_output_failed && outputs[1]==0);poll_exit();current=(void*)1;
+-  connect_request(false,false);assert(s_ssh_generation>old && s_ssh_running);
+-  ssh_output_done(old,1,ESP_FAIL);assert(s_ssh_running && !s_ssh_output_failed); /* delayed old notification is fenced */
+-  s_ssh_running=false;poll_exit();current=(void*)1;pump();finish();puts("PASS old connection/generation cannot receive old output or fail replacement session");return 0;
++  connect_shell();ssh_shell_context_t *ctx=shell_task.arg;unsigned id=ts_ws_op_id(ctx->op);
++  ssh_send_output(ctx,"old",3);close_peer(1);open_peer(1);assert(!ts_ws_op_create(TS_WS_OP_SHELL,*((ts_ws_peer_t*)reqs[1].sess_ctx),NULL));
++  pump();assert(outputs[1]==0);shell_end();connect_shell();ctx=shell_task.arg;assert(ts_ws_op_id(ctx->op)>id);
++  settle_target(id,1,ESP_FAIL);assert(ts_ws_op_is_open(ctx->op));shell_end();finish_ws();puts("PASS original peer and operation identity isolation across reconnect");return 0;
+  }
+- if(!strcmp(argv[1],"exec")){
+-  open_peer(2);exec_begin();unsigned sid=s_exec_session_id;uint64_t settled_before=s_tx_stats.settled;
+-  ssh_exec_output_callback("part",4,false,(void*)(uintptr_t)sid);assert(s_exec_output_pending==2);
+-  ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\"}",sid);assert(s_exec_terminal_ready);
+-  sdk_one();assert(outputs[1]==1 && !terminals[1]);queue_fail=true;worker_step();queue_fail=false;
+-  assert(s_exec_output_failed && !s_exec_output_pending);test_now+=100000;worker_step();pump();
+-  assert(outputs[1]==1 && outputs[2]==0 && terminals[1]==1 && terminals[2]==1 && errors==2);assert(s_tx_stats.settled==settled_before+4);
+-  assert(strstr(payloads[1],"not confirmed"));finish();
+-  puts("PASS actual exec callback: partial target failure is independent; no successful output replay and no false done");return 0;
++ if(!strcmp(argv[1],"exec") || !strcmp(argv[1],"continuous")){
++  bool partial=!strcmp(argv[1],"exec");if(partial)open_peer(2);uint32_t id;
++  assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);ssh_exec_task_params_t *params=exec_task.arg;
++  if(!partial)queue_fail=true;
++  ssh_exec_output_callback("part",4,false,params);
++  if(partial){if(ts_ws_op_close_begin(params->op))ts_ws_op_close_finish(params->op,"{\"type\":\"ssh_exec_done\"}");sdk_one();queue_fail=true;worker_step();}
++  queue_fail=false;test_now+=100000;drive_all();assert(terminals[1]==1);if(partial)assert(outputs[1]==1 && outputs[2]==0 && terminals[2]==1);
++  unsigned before=frames[1];size_t collected=params->output_len;
++  ssh_exec_output_callback("later",5,false,params);drive_all();assert(frames[1]==before && params->output_len==collected+5 && !aborts);
++  assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",NULL)==ESP_ERR_INVALID_STATE);
++  exec_task.fn(exec_task.arg);finish_ws();assert(frames[1]==before);puts("PASS actual Exec callback: partial failure settles each target; observation closes while business collection continues without remote abort or replay");return 0;
+  }
+- if(!strcmp(argv[1],"continuous")){
+-  exec_begin();queue_fail=true;ssh_exec_output_callback("chunk",5,false,(void*)(uintptr_t)s_exec_session_id);queue_fail=false;
+-  test_now+=100000;progress();pump();assert(errors==1 && !s_exec_output_pending && !s_exec_result_active);
+-  unsigned frames_before=frames[1];ssh_exec_output_callback("later",5,false,(void*)(uintptr_t)s_exec_session_id);ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\"}",s_exec_session_id);pump();assert(frames[1]==frames_before && !s_exec_cancel_requested);
+-  finish();puts("PASS continuous exec: observation reports incomplete immediately; no remote abort/replay or later normal completion");return 0;
++ if(!strcmp(argv[1],"class") || !strcmp(argv[1],"stop") || !strcmp(argv[1],"timeout")){
++  connect_shell();ssh_shell_context_t *ctx=shell_task.arg;ssh_send_output(ctx,"last",4);
++  unsigned ordinary=0;for(unsigned i=TS_WS_TOPIC_TX_SLOTS;i<TS_WS_TX_SLOTS;i++)ordinary+=s_deliveries[i].refs>0;assert(ordinary==1);
++  ts_ws_transport_cancel_topics();ts_ws_op_stats_t stats;ts_ws_op_stats(TS_WS_OP_SHELL,&stats);assert(stats.unsettled==1);
++  if(strcmp(argv[1],"class")){
++   power_change();bool timeout=!strcmp(argv[1],"timeout");if(!timeout)delay_hook=progress;
++   assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);delay_hook=NULL;assert(s_worker && s_state==DRAINING);
++   for(unsigned i=0;i<12;i++)progress();assert(outputs[1]==1 && powers==1);
++  }
++  shell_end();finish_ws();puts("PASS ordinary class retained with completion; busy/timeout stop preserves output and protection progress");return 0;
+  }
+  if(!strcmp(argv[1],"power_retry")){
+   open_peer(2);queue_fail=true;power_change();assert(s_tx_stats.power_accepted==1 && !powers);
+   worker_step();queue_fail=false;test_now+=100000;worker_step();sdk_one();worker_step();sdk_one();assert(powers==2);
+-  send_fail_fd=2;power_change();pump();send_fail_fd=-1;assert(powers==3 && s_tx_stats.power_failed==1);finish();
++  send_fail_fd=2;power_change();pump();send_fail_fd=-1;assert(powers==3 && s_tx_stats.power_failed==1);finish_ws();
+   puts("PASS protection queue recovery without new messages; partial socket failure never replays successful recipient");return 0;
+  }
+  if(!strcmp(argv[1],"capacity")){
+@@ -105,25 +77,14 @@ int main(int argc,char**argv){
+   for(unsigned i=0;i<TS_WS_POWER_TRANSITIONS;i++)ts_ws_reservation_release(&r[i]);
+   ts_ws_peer_t peers[TS_WS_TOPIC_TX_SLOTS];for(unsigned i=0;i<TS_WS_TOPIC_TX_SLOTS;i++)peers[i]=p;
+   assert(reserve_kind(peers,TS_WS_TOPIC_TX_SLOTS,MSG_POWER,TS_WS_POWER_BYTES,&r[0])==0);rejected=s_tx_stats.power_rejected;power_change();assert(s_tx_stats.power_rejected==rejected+1);ts_ws_reservation_release(&r[0]);
+-  power_change();pump();assert(powers==3);finish();puts("PASS separate ordinary slot/descriptor/byte exhaustion cannot consume power quota; power overload counted without construction");return 0;
++  power_change();pump();assert(powers==3);finish_ws();puts("PASS separate ordinary slot/descriptor/byte exhaustion cannot consume power quota; power overload counted without construction");return 0;
+  }
+  if(!strcmp(argv[1],"retry_limit")){
+   queue_fail=true;power_change();for(unsigned i=1;i<TS_WS_QUEUE_RETRIES;i++){test_now+=100000;worker_step();}
+-  assert(!ts_ws_transport_needs_flush() && s_tx_stats.power_failed==1 && s_tx_stats.power_settled==1 && s_tx_stats.rejected==TS_WS_QUEUE_RETRIES && !s_tx_stats.jobs && !s_tx_stats.bytes);queue_fail=false;finish();puts("PASS persistent SDK rejection has bounded retry and observable terminal settlement");return 0;
+- }
+- if(!strcmp(argv[1],"stop")){
+-  connect_request(false,false);s_exec_running=true;ssh_send_output("last",4);power_change();delay_hook=progress;
+-  assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);delay_hook=NULL;assert(s_worker && s_state==DRAINING);
+-  for(unsigned i=0;i<10;i++)progress();assert(outputs[1]==1 && powers==1);s_exec_running=false;
+-  s_ssh_running=false;poll_exit();current=(void*)1;for(unsigned i=0;i<10;i++)progress();finish();puts("PASS busy stop retains output and protection drain; retry releases dependencies");return 0;
+- }
+- if(!strcmp(argv[1],"class")){
+-  connect_request(false,false);ssh_send_output("ordered",7);
+-  assert(s_ssh_output_pending==1);unsigned ordinary=0,topics_used=0;
+-  for(unsigned i=0;i<TS_WS_ALL_TX_SLOTS;i++)if(s_deliveries[i].state==TX_QUEUED||s_deliveries[i].state==TX_PREPARED){if(i<TS_WS_TOPIC_TX_SLOTS)topics_used++;if(i>=TS_WS_TOPIC_TX_SLOTS&&i<TS_WS_TX_SLOTS)ordinary++;}
+-  assert(ordinary==1 && topics_used==0);ts_ws_transport_cancel_topics();assert(s_ssh_output_pending==1);pump();assert(outputs[1]==1 && !s_ssh_output_pending);
+-  s_ssh_running=false;poll_exit();current=(void*)1;pump();finish();puts("PASS completion callbacks do not reclassify SSH output or subject it to telemetry cancellation");return 0;
++  assert(!ts_ws_transport_needs_flush() && s_tx_stats.power_failed==1 && s_tx_stats.power_settled==1 && s_tx_stats.rejected==TS_WS_QUEUE_RETRIES && !s_tx_stats.jobs && !s_tx_stats.bytes);queue_fail=false;finish_ws();puts("PASS persistent SDK rejection has bounded retry and observable terminal settlement");return 0;
+  }
++
++
+  if(!strcmp(argv[1],"power_order")){
+   queue_fail=true;
+   ts_power_policy_status_t status={.state=TS_POWER_POLICY_STATE_LOW_VOLTAGE,.current_voltage=11.5f};ts_event_t e={.id=TS_POWER_POLICY_EVENT_COUNTDOWN_TICK,.data=&status,.data_size=sizeof(status)};
+@@ -131,22 +92,16 @@ int main(int argc,char**argv){
+   for(unsigned i=1;i<=4;i++){status.protection_count=i;e.id=TS_POWER_POLICY_EVENT_STATE_CHANGED;power_policy_event_handler(&e,NULL);}
+   assert(s_tx_stats.power_accepted==5);status.protection_count=5;power_policy_event_handler(&e,NULL);assert(s_tx_stats.power_rejected==2);
+   queue_fail=false;test_now+=100000;worker_step();pump();assert(protection_n==5 && protection_order[0]==99);for(unsigned i=1;i<=4;i++)assert(protection_order[i]==i);
+-  finish();puts("PASS ticks cannot evict transitions; four accepted transitions retain order, fifth overload is explicit");return 0;
+- }
+- if(!strcmp(argv[1],"timeout")){
+-  connect_request(false,false);ssh_send_output("last",4);power_change();
+-  assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(s_worker && s_state==DRAINING);
+-  for(unsigned i=0;i<12;i++)progress();assert(outputs[1]==1 && powers==1);
+-  s_ssh_running=false;poll_exit();current=(void*)1;for(unsigned i=0;i<10;i++)progress();finish();puts("PASS timeout stop continues output/protection drain without new messages; retry completes");return 0;
++  finish_ws();puts("PASS ticks cannot evict transitions; four accepted transitions retain order, fifth overload is explicit");return 0;
+  }
++
+  if(!strcmp(argv[1],"fair")){
+   ts_ws_peer_t p;assert(ts_ws_peer_get((void*)11,1,&p));ts_ws_peer_log_level(p,5);for(unsigned i=0;i<8;i++)subscribe(p,topics[i].name,1000);
+   httpd_ws_frame_t f={.type=1,.payload=(uint8_t*)"log",.len=3};
+   for(unsigned i=0;i<300;i++){
+    test_now+=1000000;ts_ws_transport_log(&f,1);if(i%3==0)power_change();worker_step();sdk_one();assert(s_tx_stats.bytes<=TS_WS_TOTAL_BYTES && s_tx_stats.jobs<=TS_WS_ALL_TX_SLOTS);
+   }
+-  pump();for(unsigned i=0;i<8;i++){printf("fair %s=%u\n",topics[i].name,observed_topics[i]);assert(observed_topics[i]>0);}assert(powers>0&&logs>0);finish();puts("PASS bounded sustained log/protection/topic competition: all eligible classes progress");return 0;
++  pump();for(unsigned i=0;i<8;i++){printf("fair %s=%u\n",topics[i].name,observed_topics[i]);assert(observed_topics[i]>0);}assert(powers>0&&logs>0);finish_ws();puts("PASS bounded sustained log/protection/topic competition: all eligible classes progress");return 0;
+  }
+-#endif
+  return 2;
+ }
+diff --git a/tests/ws_subscriptions/test_init.c b/tests/ws_subscriptions/test_init.c
+index 8de18f9..de7f708 100644
+--- a/tests/ws_subscriptions/test_init.c
++++ b/tests/ws_subscriptions/test_init.c
+@@ -17,9 +17,10 @@ static ts_event_handler_handle_t s_power_event_handle;
+ static int fail_stage,mutex_calls;
+ static httpd_handle_t ts_http_server_get_handle(void){return fail_stage==1?NULL:(void*)11;}
+ static void peer_closed(ts_ws_peer_t peer){(void)peer;}
++static void ts_ws_op_enable(void){}
+ esp_err_t ts_ws_transport_start(httpd_handle_t server,ts_ws_closed_t fn){(void)server;(void)fn;return fail_stage==2?ESP_ERR_NO_MEM:ESP_OK;}
+ static int ts_ws_subscriptions_init(void){return fail_stage==3?ESP_ERR_NO_MEM:ESP_OK;}
+-static esp_err_t ts_webui_ws_stop(httpd_handle_t server);
++static esp_err_t ts_webui_ws_stop(httpd_handle_t server){(void)server;return ESP_OK;}
+ static int manager_stop_result,barrier_result,tx_stop_result,tx_stop_calls;
+ static bool owner_context,s_exec_running,s_ssh_poll_alive,cleanup_finishes;
+ static atomic_bool s_exec_result_active,s_exec_output_failed,s_exec_terminal_ready;
+@@ -56,18 +57,6 @@ static int register_event(const char*b,int id,void(*fn)(const ts_event_t*,void*)
+ #undef malloc
+ #undef heap_caps_malloc
+ #undef ts_event_register
+-#include "ws_stop.inc"
+-
+-typedef struct {int unused;} ts_webui_ssh_options_t;
+-esp_err_t ts_webui_ssh_exec_start(const char*,uint16_t,const char*,const char*,const char*,const char*,uint32_t*);
+-static int creator_calls;
+-static esp_err_t ts_webui_ssh_exec_start_impl(const char*h,uint16_t p,const char*u,const char*k,const char*w,const char*c,uint32_t*i){
+- (void)h;(void)p;(void)u;(void)k;(void)w;(void)c;(void)i;creator_calls++;
+- assert(ts_webui_ssh_exec_start("fixture",22,"u",NULL,NULL,"fixture",NULL)==ESP_ERR_INVALID_STATE);
+- return ESP_OK;
+-}
+-static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char*h,uint16_t p,const char*u,const char*k,const char*w,const char*c,const ts_webui_ssh_options_t*o,uint32_t*i){(void)o;return ts_webui_ssh_exec_start_impl(h,p,u,k,w,c,i);}
+-#include "ws_creators.inc"
+ static void reset(void){
+  if(s_terminal_mutex)vSemaphoreDelete(s_terminal_mutex);if(s_output_mutex)vSemaphoreDelete(s_output_mutex);free(s_terminal_output_buf);
+  s_terminal_mutex=s_output_mutex=NULL;s_terminal_output_buf=NULL;s_server=NULL;s_power_event_handle=NULL;mutex_calls=0;s_ws_stopping=false;
+@@ -75,16 +64,5 @@ static void reset(void){
+ int main(void){
+  for(fail_stage=1;fail_stage<=8;fail_stage++){assert(ts_webui_ws_init()!=ESP_OK);reset();}
+  fail_stage=0;assert(ts_webui_ws_init()==0);assert(ts_webui_ws_init()==0);s_ws_stopping=true;assert(ts_webui_ws_init()==ESP_ERR_INVALID_STATE);reset();
+- manager_stop_result=ESP_ERR_TIMEOUT;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(!tx_stop_calls);
+- manager_stop_result=0;barrier_result=ESP_ERR_TIMEOUT;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(!tx_stop_calls);barrier_result=0;
+- s_exec_creators=1;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);s_exec_creators=0;
+- s_exec_running=true;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);s_exec_running=false;
+- s_ssh_poll_alive=true;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(!tx_stop_calls);
+- cleanup_finishes=true;tx_stop_result=ESP_ERR_TIMEOUT;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);tx_stop_result=0;assert(ts_webui_ws_stop((void*)11)==0);
+- owner_context=true;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);
+- puts("PASS actual WebSocket stop: manager/barrier failures propagate, active SSH creation/execution retained, poller timeout retained, transport drain retry and HTTPD self-wait rejected");
+- s_ws_stopping=false;assert(ts_webui_ssh_exec_start("fixture",22,"u",NULL,NULL,"fixture",NULL)==0);assert(creator_calls==1&&!s_exec_creators);
+- s_ws_stopping=true;assert(ts_webui_ssh_exec_start("fixture",22,"u",NULL,NULL,"fixture",NULL)==ESP_ERR_INVALID_STATE);assert(creator_calls==1&&!s_exec_creators);
+- puts("PASS actual SSH creation wrappers: concurrent builder rejected and stop admission closes without invoking the remote-operation implementation");
+  puts("PASS actual WebSocket initializer: server/transport/manager/two mutexes/buffer/URI/power-handler failures are not reported as success; duplicate/retry-state guards");
+ }
+diff --git a/tests/ws_subscriptions/test_manager.c b/tests/ws_subscriptions/test_manager.c
+index a881ab9..f433995 100644
+--- a/tests/ws_subscriptions/test_manager.c
++++ b/tests/ws_subscriptions/test_manager.c
+@@ -18,6 +18,7 @@ static void test_point(const char *name);
+ #undef s_server
+ #undef s_sequence
+ #include "ts_ws_subscriptions.c"
++#include "ts_ws_operation.c"
+ #undef malloc
+ #undef free
+ static unsigned allocations, live_allocations;
+diff --git a/tests/ws_subscriptions/test_reviewer.c b/tests/ws_subscriptions/test_reviewer.c
+index a38c254..ac965e3 100644
+--- a/tests/ws_subscriptions/test_reviewer.c
++++ b/tests/ws_subscriptions/test_reviewer.c
+@@ -1,160 +1,18 @@
+-/* Compose actual manager/transport with extracted, unmodified WebUI functions. */
+-#define main existing_manager_main
+-#include "test_manager.c"
+-#undef main
+-#include <setjmp.h>
+-#include <stdatomic.h>
+-#define MAX_WS_CLIENTS TS_WS_CONNECTIONS
+-#define TS_LOG_NONE 0
+-#define TS_LOG_ERROR 1
+-#define TS_LOG_VERBOSE 5
+-#define HTTP_GET 0
+-#define HTTPD_WS_TYPE_CLOSE 8
+-#define CONFIG_TS_LOG_BUFFER_SIZE 16
+-#define SSH_OUTPUT_BUF_SIZE 4096
+-#define TS_SSH_AUTH_PASSWORD 1
+-typedef int ts_log_level_t;
+-typedef enum {WS_CLIENT_TYPE_EVENT,WS_CLIENT_TYPE_TERMINAL,WS_CLIENT_TYPE_SSH_SHELL,WS_CLIENT_TYPE_LOG} ws_client_type_t;
+-static struct {bool active;int fd;httpd_handle_t hd;ws_client_type_t type;int log_min_level;}s_clients[MAX_WS_CLIENTS];
+-static httpd_handle_t s_server=(void*)11;
+-static bool s_ws_stopping,s_exec_running;
+-static atomic_bool s_exec_terminal_claimed;
+-static atomic_uint s_exec_creators;
+-static ts_event_handler_handle_t s_power_event_handle;
+-static ts_ws_peer_t s_ssh_peer;
+-static int s_ssh_client_fd=-1,s_terminal_client_fd=-1;
+-static void *s_ssh_session,*s_ssh_shell;
+-static atomic_bool s_ssh_running,s_ssh_poll_alive;
+-enum {SSH_IDLE,SSH_STARTING,SSH_READY,SSH_TERMINAL};
+-static atomic_uint s_ssh_state,s_ssh_generation,s_ssh_result_pending;
+-static ts_ws_reservation_t s_ssh_terminal,s_exec_terminal;
+-static atomic_uint s_ssh_output_pending,s_exec_output_pending;
+-static atomic_bool s_ssh_output_failed,s_exec_output_failed,s_ssh_terminal_ready,s_exec_terminal_ready,s_exec_result_active;
+-static unsigned s_exec_session_id;
+-static ts_ws_peer_t s_exec_result_peers[TS_WS_CONNECTIONS];
+-static unsigned s_exec_result_count;
+-static void ssh_terminal_flush(void);
+-static void ssh_exec_terminal_flush(void);
+-static void ssh_exec_terminal_publish(const char*,uint32_t);
+-static bool shell_active,create_fails,close_on_create;
+-static void update_log_stream_state(void);
+-static bool has_log_clients(void);
+-static int ts_webui_log_stream_enable(bool enabled);
+-static void*s_log_callback_handle;
+-static atomic_bool s_log_streaming_enabled;
+-static int remove_log_result;
+-static const char *incoming;
+-static unsigned commands;
+-static const char*s_level_names[]={"NONE","ERROR","WARN","INFO","DEBUG","VERBOSE"};
+-typedef struct{int timestamp_ms,level;const char*tag,*message,*task_name;}ts_log_entry_t;
+-static void log_ws_callback(const ts_log_entry_t*e,void*u){(void)e;(void)u;}
+-static int ts_log_add_callback(void(*fn)(const ts_log_entry_t*,void*),int level,void*u,void**h){(void)fn;(void)level;(void)u;*h=(void*)1;return 0;}
+-static int ts_log_remove_callback(void*h){(void)h;return remove_log_result;}
+-static size_t ts_log_buffer_search(ts_log_entry_t*e,size_t n,int a,int b,void*t,void*m){(void)e;(void)n;(void)a;(void)b;(void)t;(void)m;return 0;}
+-static void*test_heap_malloc(size_t n,unsigned caps){(void)caps;return tracked_malloc(n);}
+-static int add_client(httpd_req_t*r,ws_client_type_t t){(void)r;(void)t;commands++;return 0;}
+-static int httpd_ws_recv_frame(httpd_req_t*r,httpd_ws_frame_t*f,size_t n){(void)r;f->type=HTTPD_WS_TYPE_TEXT;f->len=strlen(incoming);if(n)memcpy(f->payload,incoming,f->len);return 0;}
+-static void handle_terminal_command(httpd_req_t*r,const char*d){(void)r;(void)d;commands++;}
+-static void ts_console_request_interrupt(void){commands++;}
+-static void handle_ssh_input(const char*d){(void)d;commands++;}
+-static void handle_ssh_disconnect(void){commands++;}
+-static void handle_ssh_signal(const char*s){(void)s;commands++;}
+-static void handle_ssh_resize(int w,int h){(void)w;(void)h;commands++;}
+-static int httpd_ws_send_frame(httpd_req_t*r,httpd_ws_frame_t*f){return httpd_ws_send_frame_async(r->handle,r->fd,f);}
+-static void ts_console_clear_output_cb(void){}
+-static void terminal_output_cb(const char*d,size_t n,void*u){(void)d;(void)n;(void)u;}
+-static void ts_console_set_output_cb(void(*fn)(const char*,size_t,void*),void*u){(void)fn;(void)u;}
+-static void cleanup_disconnected_client(int fd){(void)fd;}
+-static void ssh_cleanup(void);
+-static esp_err_t ssh_send_status(const char*,const char*);
+-static void ssh_send_output(const char*d,size_t n);
+-typedef struct {const char*host,*username;int port,auth_method,timeout_ms;struct {const char*password;}auth;}ts_ssh_config_t;
+-typedef struct {int term_width,term_height,read_timeout_ms;}ts_shell_config_t;
+-#define TS_SSH_DEFAULT_CONFIG() ((ts_ssh_config_t){0})
+-#define TS_SHELL_DEFAULT_CONFIG() ((ts_shell_config_t){0})
+-static int ts_ssh_session_create(const ts_ssh_config_t*c,void**out){(void)c;*out=(void*)5;return 0;}
+-static int ts_ssh_connect(void*s){(void)s;return 0;}
+-static const char*ts_ssh_get_error(void*s){(void)s;return "fixture";}
+-static int ts_ssh_shell_open(void*s,const ts_shell_config_t*c,void**out){(void)s;(void)c;*out=(void*)6;shell_active=true;return 0;}
+-static bool ts_ssh_shell_is_active(void*s){return s && shell_active;}
+-static int ts_ssh_shell_read(void*s,char*b,size_t n,size_t*out){(void)s;(void)b;(void)n;*out=0;return 0;}
+-static void ts_ssh_shell_close(void*s){(void)s;shell_active=false;}
+-static void ts_ssh_disconnect(void*s){(void)s;}
+-static void ts_ssh_session_destroy(void*s){(void)s;}
+-static int xTaskCreateWithCaps(void(*fn)(void*),const char*n,unsigned size,void*a,unsigned prio,void*out,unsigned caps){
+- (void)fn;(void)n;(void)size;(void)a;(void)prio;(void)out;(void)caps;
+- if(close_on_create)shell_active=false;
+- return create_fails?0:pdPASS;
+-}
+-#define free tracked_free
+-#define malloc tracked_malloc
+-#define heap_caps_malloc test_heap_malloc
+-#include "reviewer_ws.inc"
+-#undef free
+-#undef malloc
+-#undef heap_caps_malloc
+-static jmp_buf worker_yield;
+-static void yield_worker(void){longjmp(worker_yield,1);}
+-static void worker_step(void){
+- wait_hook=yield_worker;current=(void*)2;
+- if(!setjmp(worker_yield))worker_fn(NULL);
+- current=(void*)1;wait_hook=NULL;
+-}
+-static void sdk_one(void){
+- if(!queued)return;
+- current=(void*)3;typeof(queue[0]) q=queue[0];memmove(queue,queue+1,--queued*sizeof(queue[0]));q.fn(q.arg);current=(void*)1;
+-}
+-static void progress(void){sdk_one();if(s_worker){if(s_state==STOPPING)worker_exit();else worker_step();}}
+-static void poll_exit(void){current=(void*)4;ssh_poll_task(NULL);current=(void*)3;}
+-static void finish(void){
+- s_exec_running=false;delay_hook=progress;assert(ts_webui_ws_stop((void*)11)==ESP_OK);delay_hook=NULL;
+- for(int i=0;i<32;i++)if(reqs[i].sess_ctx)close_peer(i);
+- ts_ws_transport_stopped((void*)11);assert(!live_allocations);
+- s_ws_stopping=false;
+-}
+-static void connect_request(bool fail,bool close_early){
+- create_fails=fail;close_on_create=close_early;
+- cJSON*params=cJSON_Parse("{\"host\":\"fixture\",\"user\":\"fixture\"}");
+- current=(void*)3;delay_hook=poll_exit;handle_ssh_connect(&reqs[1],params);delay_hook=NULL;current=(void*)1;cJSON_Delete(params);
+-}
++#define OP_ADAPTER_NO_MAIN
++#include "test_operation_adapter.c"
+ static unsigned observed_topics[8];
+-static void observe_topic(httpd_ws_frame_t*f){
+- for(unsigned i=0;i<8;i++){
+-  char match[80];snprintf(match,sizeof(match),"\"topic\":\"%s\"",topics[i].name);
+-  if(strstr((const char*)f->payload,match))observed_topics[i]++;
+- }
+-}
+-
+-#ifndef WS_REVIEWER_NO_MAIN
++static void observe_topic(httpd_ws_frame_t*f){for(unsigned i=0;i<8;i++){char match[80];snprintf(match,sizeof(match),"\"topic\":\"%s\"",topics[i].name);if(strstr((char*)f->payload,match))observed_topics[i]++;}}
+ int main(void){
+- cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);
+- start();open_peer(1);open_peer(2);s_exec_terminal_claimed=false;assert(ts_ws_result_reserve(4096,&s_exec_terminal)==0);s_exec_running=true;delay_hook=progress;
+- assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);delay_hook=NULL;
+- assert(s_worker && s_state==DRAINING);
+- reqs[1].method=1;incoming="{\"type\":\"ping\"}";current=(void*)3;
+- assert(ws_handler(&reqs[1])==0 && strstr(payloads[1],"pong"));
+- incoming="{\"type\":\"terminal_input\",\"data\":\"new-command\"}";
+- assert(ws_handler(&reqs[1])==0 && !commands && strstr(payloads[1],"stopping"));current=(void*)1;
+- unsigned a=frames[1],b=frames[2];
+- httpd_ws_frame_t result={.payload=(uint8_t*)"final-result",.len=12};
+- ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\",\"session_id\":1}",1);
+- sdk_one();assert(!queued && ts_ws_transport_needs_flush());
+- worker_step();sdk_one();assert(frames[1]==a+1 && frames[2]==b+1);
+- assert(!transport_server.outstanding);finish();
+- puts("PASS R1: busy stop retains real worker; final fanout drains with no new producer message");
+- start();open_peer(1);open_peer(2);
+- assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT && s_worker && s_state==DRAINING);
+- a=frames[1];b=frames[2];assert(ts_ws_transport_broadcast(&result)==0);
+- for(unsigned i=0;i<4;i++){sdk_one();worker_step();}
+- assert(frames[1]==a+1 && frames[2]==b+1);finish();
+- start();open_peer(1);open_peer(2);a=frames[1];b=frames[2];
+- assert(ts_ws_transport_broadcast(&result)==0);assert(ts_ws_subscriptions_pause()==0);
+- assert(ts_ws_transport_stop((void*)11,1)==ESP_ERR_TIMEOUT && s_worker);
+- sdk_one();worker_step();sdk_one();assert(frames[1]==a+1 && frames[2]==b+1);finish();
+- puts("PASS R1 timeout: handler-barrier and transport-drain failures retain worker; accepted fanout progresses before retry");
+-
+-
+- start();ts_ws_peer_t peer=open_peer(1);
++ cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);unsigned a;
++ setup();uint32_t id;assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);
++ delay_hook=progress;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);delay_hook=NULL;assert(s_worker && s_state==DRAINING);
++ reqs[1].method=1;incoming="{\"type\":\"ping\"}";current=(void*)3;assert(ws_handler(&reqs[1])==0 && strstr(payloads[1],"pong"));
++ incoming="{\"type\":\"terminal_input\",\"data\":\"new-command\"}";assert(ws_handler(&reqs[1])==0 && strstr(payloads[1],"stopping"));current=(void*)1;
++ exec_task.fn(exec_task.arg);for(unsigned i=0;i<20;i++)progress();assert(!ts_ws_op_busy());finish_ws();
++ puts("PASS R1/R4 real busy stop: existing task and full fanout continue with no new business message; retry succeeds");
++ setup();assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT && s_worker);for(unsigned i=0;i<20;i++)progress();finish_ws();
++ puts("PASS HTTPD barrier timeout retains worker and retry state");
++ setup();ts_ws_peer_t peer;assert(ts_ws_peer_get((void*)11,1,&peer));
+  s_clients[0].active=true;s_clients[0].fd=1;s_clients[0].hd=peer.server;
+  set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
+  httpd_ws_frame_t log={.payload=(uint8_t*)"old-log",.len=7};
+@@ -165,46 +23,13 @@ int main(void){
+  assert(ts_ws_transport_log(&log,3)==0);set_client_role(peer,WS_CLIENT_TYPE_EVENT,0);set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
+  a=frames[1];pump();assert(frames[1]==a); /* old generation cannot revive */
+  assert(ts_ws_transport_log(&log,3)==0);pump();assert(frames[1]==a+1);
+- finish();s_terminal_client_fd=-1;
++ finish_ws();s_terminal_client_fd=-1;
+  assert(ts_webui_log_stream_enable(true)==0);remove_log_result=ESP_ERR_INVALID_STATE;
+  assert(ts_webui_log_stream_enable(false)==ESP_ERR_INVALID_STATE && s_log_callback_handle && !s_log_streaming_enabled);
+  assert(ts_webui_log_stream_enable(true)==0 && s_log_streaming_enabled);remove_log_result=0;assert(ts_webui_log_stream_enable(false)==0);
+  puts("PASS R3: real role change drops old queued logs, including unsubscribe/resubscribe ABA");
+ 
+- start();peer=open_peer(1);s_clients[0].active=true;s_clients[0].fd=1;s_clients[0].hd=peer.server;
+- /* Occupy both ordinary buffers; a rejected startup still has its result slot. */
+- ts_ws_message_t*m1=ts_ws_message_text("one",3),*m2=ts_ws_message_text("two",3);assert(m1&&m2);
+- set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
+- connect_request(true,false);assert(s_clients[0].type!=WS_CLIENT_TYPE_LOG);assert(s_ssh_state==SSH_TERMINAL && !s_ssh_poll_alive && !s_ssh_session);
+- unsigned generation=s_ssh_generation;
+- connect_request(false,false);assert(s_ssh_generation==generation && strstr(payloads[1],"still pending"));
+- ts_ws_message_release(m1);ts_ws_message_release(m2);pump();assert(strstr(payloads[1],"Failed to create SSH session"));
+- connect_request(false,true);pump();assert(strstr(payloads[1],"closed during startup"));assert(!s_ssh_session);
+- connect_request(false,false);assert(s_ssh_state==SSH_READY && strstr(payloads[1],"connected"));
+- /* Queue a READY from a background caller, then close before it executes. */
+- assert(ssh_send_status("connected","late readiness")==0);
+- unsigned old_generation=s_ssh_generation;
+- queue_fail=true;assert(ssh_send_status("error","fixture failure")==0);
+- sdk_one();worker_step();assert(!queued && ts_ws_transport_needs_flush());queue_fail=false;
+- assert(!ssh_status_valid(old_generation,SSH_READY));
+- test_now+=100000;worker_step();pump();assert(strstr(payloads[1],"fixture failure"));
+- current=(void*)3;delay_hook=poll_exit;ssh_cleanup();delay_hook=NULL;current=(void*)1;
+- connect_request(false,false);
+- ts_ws_message_t *full1=ts_ws_message_text("full1",5),*full2=ts_ws_message_text("full2",5);assert(full1&&full2);
+- ssh_send_output("payload",7);assert(s_ssh_state==SSH_TERMINAL && !s_ssh_running);
+- poll_exit();current=(void*)1;ts_ws_message_release(full1);ts_ws_message_release(full2);pump();
+- assert(strstr(payloads[1],"SSH output delivery incomplete") && !s_ssh_session && !s_ssh_poll_alive);
+- finish();
+- puts("PASS R2: task-create failure/early close never end as connected; reserved failure survives normal pool saturation and SDK queue rejection; late READY invalid");
+-
+- start();open_peer(1);s_exec_terminal_claimed=false;assert(ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal)==0);
+- m1=ts_ws_message_text("one",3);m2=ts_ws_message_text("two",3);assert(m1&&m2);
+- open_peer(2);a=frames[1];b=frames[2];
+- ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\",\"session_id\":7}",7);
+- ts_ws_message_release(m1);ts_ws_message_release(m2);pump();assert(frames[1]==a+1&&frames[2]==b+1);finish();
+- puts("PASS R2 exec: admitted result reservation survives ordinary saturation and preserves recipients at completion");
+-
+- start();peer=open_peer(1);uint64_t serial[8];for(unsigned i=0;i<8;i++){serial[i]=s_stats.serialized[i];subscribe(peer,topics[i].name,10000);}
++ setup();assert(ts_ws_peer_get((void*)11,1,&peer));uint64_t serial[8];for(unsigned i=0;i<8;i++){serial[i]=s_stats.serialized[i];subscribe(peer,topics[i].name,10000);}
+  sent_hook=observe_topic;
+  for(unsigned cycle=0;cycle<100;cycle++) {test_now+=10000000;run_batch();pump();}
+  for(unsigned i=0;i<8;i++) {
+@@ -223,10 +48,8 @@ int main(void){
+  test_now+=10000000;before=total_reads();run_batch();assert(total_reads()==before);
+  ts_ws_reservation_release(&reserved);run_batch();pump();assert(total_reads()>before);
+  char*large=malloc(TS_WS_LEGACY_BYTES);memset(large,'x',TS_WS_LEGACY_BYTES);
+- m1=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-1);m2=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-TS_WS_POWER_BUDGET-1);assert(m1&&m2);free(large);
++ ts_ws_message_t *m1=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-1);ts_ws_message_t *m2=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-TS_WS_POWER_BUDGET-1);assert(m1&&m2);free(large);
+  test_now+=10000000;before=total_reads();run_batch();assert(total_reads()==before);
+- ts_ws_message_release(m1);ts_ws_message_release(m2);run_batch();pump();assert(total_reads()>before);finish();
++ ts_ws_message_release(m1);ts_ws_message_release(m2);run_batch();pump();assert(total_reads()>before);finish_ws();
+  puts("PASS R5: all eight topics progress under six-slot pressure; no API collection without message/descriptor/byte capacity");
+ }
+-
+-#endif
+diff --git a/components/ts_webui/include/ts_ws_operation.h b/components/ts_webui/include/ts_ws_operation.h
+new file mode 100644
+index 0000000..a971437
+--- /dev/null
++++ b/components/ts_webui/include/ts_ws_operation.h
+@@ -0,0 +1,47 @@
++#pragma once
++/* Internal lifecycle; all returned operation pointers carry a reference. */
++#include "ts_ws_transport.h"
++typedef enum { TS_WS_OP_SHELL, TS_WS_OP_EXEC, TS_WS_OP_KINDS } ts_ws_op_kind_t;
++typedef enum { OP_FREE, OP_STARTING, OP_OPEN, OP_CLOSING, OP_FINALIZING,
++               OP_TERMINAL_PENDING, OP_TERMINAL_SETTLED, OP_RECLAIMING } ts_ws_op_phase_t;
++typedef struct ts_ws_operation ts_ws_operation_t;
++typedef struct {
++    ts_ws_operation_t *op;
++    uint64_t sequence; /* single producer order within this operation */
++    ts_ws_peer_t peers[TS_WS_CONNECTIONS];
++    unsigned count;
++} ts_ws_output_ticket_t;
++typedef struct {
++    ts_ws_op_phase_t phase;
++    uint64_t identity, tickets, finished, registered, settled, finalizers, duplicates;
++    unsigned refs, executors, preparing, unsettled, terminals;
++    bool failed;
++} ts_ws_op_stats_t;
++void ts_ws_op_enable(void);
++void ts_ws_op_stop_admission(void);
++bool ts_ws_op_busy(void);
++ts_ws_operation_t *ts_ws_op_create(ts_ws_op_kind_t kind, ts_ws_peer_t peer, esp_err_t *error);
++void ts_ws_op_bind(ts_ws_operation_t *op, void *data, void (*destroy)(void *));
++void *ts_ws_op_data(ts_ws_operation_t *op); /* caller owns a reference */
++uint32_t ts_ws_op_id(ts_ws_operation_t *op);
++ts_ws_operation_t *ts_ws_op_acquire(ts_ws_op_kind_t kind, uint32_t id);
++void ts_ws_op_retain(ts_ws_operation_t *op);
++void ts_ws_op_release(ts_ws_operation_t *op);
++void ts_ws_op_executor_take(ts_ws_operation_t *op);
++void ts_ws_op_executor_done(ts_ws_operation_t *op);
++bool ts_ws_op_executing(ts_ws_operation_t *op);
++bool ts_ws_op_open(ts_ws_operation_t *op);
++bool ts_ws_op_is_open(ts_ws_operation_t *op);
++bool ts_ws_op_starting(ts_ws_operation_t *op);
++ts_ws_peer_t ts_ws_op_peer(ts_ws_operation_t *op);
++void ts_ws_op_discard(ts_ws_operation_t *op); /* unaccepted creation */
++bool ts_ws_op_output_begin(ts_ws_operation_t *op, ts_ws_output_ticket_t *ticket);
++void ts_ws_op_output_finish(ts_ws_output_ticket_t *ticket, const char *json);
++/* winner owns a close builder until close_finish, before any encoding */
++bool ts_ws_op_close_begin(ts_ws_operation_t *op);
++void ts_ws_op_close_finish(ts_ws_operation_t *op, const char *json);
++void ts_ws_op_poll(void); /* existing subscription worker, no new task */
++void ts_ws_op_stats(ts_ws_op_kind_t kind, ts_ws_op_stats_t *stats);
++
++void ts_ws_op_set_maintenance(ts_ws_operation_t *op,bool (*maintain)(void *));
++bool ts_ws_op_needs_tick(void);
+diff --git a/components/ts_webui/src/ts_ws_operation.c b/components/ts_webui/src/ts_ws_operation.c
+new file mode 100644
+index 0000000..1f8ee93
+--- /dev/null
++++ b/components/ts_webui/src/ts_ws_operation.c
+@@ -0,0 +1,217 @@
++#include "ts_ws_operation.h"
++#include "ts_ws_subscriptions.h"
++#include "freertos/FreeRTOS.h"
++#include <assert.h>
++#include <string.h>
++#include <stdio.h>
++
++#define OP_OUTPUT_TARGETS (2 * TS_WS_CONNECTIONS)
++typedef struct { uint64_t id; bool active; } op_target_t;
++struct ts_ws_operation {
++    ts_ws_op_stats_t ledger;
++    ts_ws_op_kind_t kind;
++    bool initializing, builder;
++    ts_ws_peer_t peer, terminal_peers[TS_WS_CONNECTIONS];
++    unsigned terminal_count;
++    ts_ws_reservation_t terminal;
++    op_target_t output[OP_OUTPUT_TARGETS], final[TS_WS_CONNECTIONS];
++    void *data;
++    void (*destroy)(void *);
++    bool (*maintain)(void *);
++};
++static portMUX_TYPE s_op_lock = portMUX_INITIALIZER_UNLOCKED;
++static ts_ws_operation_t s_ops[TS_WS_OP_KINDS];
++static uint64_t s_op_sequence, s_op_delivery;
++static bool s_op_accepting, s_op_tick;
++#define OP_LOCK() portENTER_CRITICAL(&s_op_lock)
++#define OP_UNLOCK() portEXIT_CRITICAL(&s_op_lock)
++
++void ts_ws_op_enable(void) { OP_LOCK(); s_op_accepting=true; OP_UNLOCK(); }
++void ts_ws_op_stop_admission(void) { OP_LOCK(); s_op_accepting=false; OP_UNLOCK(); }
++bool ts_ws_op_busy(void) {
++    OP_LOCK(); bool busy=false;
++    for(unsigned i=0;i<TS_WS_OP_KINDS;i++) busy |= s_ops[i].ledger.phase!=OP_FREE;
++    OP_UNLOCK(); return busy;
++}
++ts_ws_operation_t *ts_ws_op_create(ts_ws_op_kind_t kind, ts_ws_peer_t peer, esp_err_t *error) {
++    if(error)*error=ESP_ERR_INVALID_ARG;
++    if(kind>=TS_WS_OP_KINDS)return NULL;
++    if(error)*error=ESP_ERR_INVALID_STATE;
++    OP_LOCK(); ts_ws_operation_t *op=&s_ops[kind];
++    if(!s_op_accepting || op->ledger.phase!=OP_FREE || s_op_sequence==UINT32_MAX) { OP_UNLOCK(); return NULL; }
++    *op=(ts_ws_operation_t){.kind=kind,.peer=peer,.initializing=true,
++        .ledger={.phase=OP_STARTING,.identity=++s_op_sequence,.refs=1,.executors=1}};
++    OP_UNLOCK();
++    esp_err_t ret=kind==TS_WS_OP_SHELL ? ts_ws_reserve(&peer,1,true,4096,&op->terminal) :
++        ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&op->terminal);
++    OP_LOCK(); op->initializing=false; OP_UNLOCK();
++    if(error)*error=ret;
++    if(ret!=ESP_OK) { ts_ws_op_discard(op); ts_ws_op_executor_done(op); return NULL; }
++    return op;
++}
++void ts_ws_op_bind(ts_ws_operation_t *op,void *data,void (*destroy)(void *)) {
++    OP_LOCK(); assert(op->ledger.phase==OP_STARTING && !op->data);op->data=data;op->destroy=destroy;OP_UNLOCK();
++}
++void ts_ws_op_set_maintenance(ts_ws_operation_t *op,bool (*maintain)(void *)) {OP_LOCK();op->maintain=maintain;OP_UNLOCK();}
++bool ts_ws_op_needs_tick(void) {OP_LOCK();bool yes=s_op_tick;OP_UNLOCK();return yes;}
++void *ts_ws_op_data(ts_ws_operation_t *op) { OP_LOCK();void *p=op->data;OP_UNLOCK();return p; }
++uint32_t ts_ws_op_id(ts_ws_operation_t *op) { return (uint32_t)op->ledger.identity; }
++ts_ws_peer_t ts_ws_op_peer(ts_ws_operation_t *op) { return op->peer; }
++ts_ws_operation_t *ts_ws_op_acquire(ts_ws_op_kind_t kind,uint32_t id) {
++    OP_LOCK();ts_ws_operation_t *op=&s_ops[kind];
++    if(op->initializing || op->ledger.phase==OP_FREE || op->ledger.phase==OP_RECLAIMING || (id && op->ledger.identity!=id))op=NULL;
++    else op->ledger.refs++;
++    OP_UNLOCK();return op;
++}
++void ts_ws_op_retain(ts_ws_operation_t *op) { OP_LOCK();assert(op->ledger.refs);op->ledger.refs++;OP_UNLOCK(); }
++void ts_ws_op_release(ts_ws_operation_t *op) {
++    OP_LOCK();assert(op->ledger.refs);op->ledger.refs--;OP_UNLOCK();ts_ws_subscriptions_wake();
++}
++void ts_ws_op_executor_take(ts_ws_operation_t *op) {
++    OP_LOCK();assert(op->ledger.refs);op->ledger.refs++;op->ledger.executors++;OP_UNLOCK();
++}
++void ts_ws_op_executor_done(ts_ws_operation_t *op) {
++    OP_LOCK();assert(op->ledger.executors && op->ledger.refs);op->ledger.executors--;op->ledger.refs--;OP_UNLOCK();ts_ws_subscriptions_wake();
++}
++bool ts_ws_op_executing(ts_ws_operation_t *op) { OP_LOCK();bool yes=op->ledger.executors!=0;OP_UNLOCK();return yes; }
++bool ts_ws_op_open(ts_ws_operation_t *op) {
++    OP_LOCK();bool yes=op->ledger.phase==OP_STARTING;if(yes)op->ledger.phase=OP_OPEN;OP_UNLOCK();return yes;
++}
++bool ts_ws_op_is_open(ts_ws_operation_t *op) { OP_LOCK();bool yes=op->ledger.phase==OP_OPEN;OP_UNLOCK();return yes; }
++bool ts_ws_op_starting(ts_ws_operation_t *op) { OP_LOCK();bool yes=op->ledger.phase==OP_STARTING;OP_UNLOCK();return yes; }
++void ts_ws_op_discard(ts_ws_operation_t *op) {
++    OP_LOCK();assert((op->ledger.phase==OP_STARTING || op->ledger.phase==OP_OPEN) && !op->ledger.preparing && !op->ledger.unsettled);op->ledger.phase=OP_FINALIZING;OP_UNLOCK();
++    ts_ws_reservation_release(&op->terminal);
++    OP_LOCK();op->ledger.phase=OP_TERMINAL_SETTLED;OP_UNLOCK();
++}
++/* Caller holds a ref. The winner takes a second ref for snapshot/encoding. */
++static bool close_locked(ts_ws_operation_t *op) {
++    if(op->ledger.phase!=OP_OPEN && op->ledger.phase!=OP_STARTING)return false;
++    op->ledger.phase=OP_CLOSING;op->builder=true;op->ledger.refs++;return true;
++}
++static void close_snapshot(ts_ws_operation_t *op) {
++    if(op->kind==TS_WS_OP_SHELL){op->terminal_peers[0]=op->peer;op->terminal_count=1;}
++    else op->terminal_count=ts_ws_peer_snapshot(op->terminal_peers,TS_WS_CONNECTIONS);
++}
++bool ts_ws_op_close_begin(ts_ws_operation_t *op) {
++    OP_LOCK();bool winner=close_locked(op);OP_UNLOCK();
++    if(winner){close_snapshot(op);TS_WS_TEST_POINT("B07");}return winner;
++}
++static void fallback(ts_ws_operation_t *op,char *text,size_t size,bool failed) {
++    const char *reason=failed ? "SSH output delivery incomplete; remote command result is not confirmed" : "SSH result delivery failed; result is unknown";
++    if(op->kind==TS_WS_OP_SHELL && !failed)reason="SSH status delivery failed";
++    if(op->kind==TS_WS_OP_SHELL)snprintf(text,size,"{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"%s\"}",reason);
++    else snprintf(text,size,"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"%s\"}",(unsigned long)ts_ws_op_id(op),reason);
++}
++void ts_ws_op_close_finish(ts_ws_operation_t *op,const char *json) {
++    char text[256];fallback(op,text,sizeof(text),false);
++    if(!json || ts_ws_reserved_text(&op->terminal,json)!=ESP_OK)ts_ws_reserved_text(&op->terminal,text);
++    OP_LOCK();assert(op->builder);op->builder=false;assert(op->ledger.refs);op->ledger.refs--;OP_UNLOCK();ts_ws_subscriptions_wake();
++}
++static void fail_locked(ts_ws_operation_t *op,bool *winner) {
++    op->ledger.failed=true;*winner=close_locked(op);
++}
++static void settle_target(uint64_t identity,uint64_t token,esp_err_t result) {
++    ts_ws_operation_t *op=NULL;bool winner=false,terminal=false;
++    OP_LOCK();
++    for(unsigned i=0;i<TS_WS_OP_KINDS;i++)if(s_ops[i].ledger.identity==identity && s_ops[i].ledger.phase!=OP_FREE){op=&s_ops[i];break;}
++    op_target_t *record=NULL;
++    if(op){
++        for(unsigned i=0;i<OP_OUTPUT_TARGETS;i++)if(op->output[i].active && op->output[i].id==token){record=&op->output[i];break;}
++        if(!record)for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)if(op->final[i].active && op->final[i].id==token){record=&op->final[i];terminal=true;break;}
++    }
++    if(!record){if(op)op->ledger.duplicates++;OP_UNLOCK();return;}
++    record->active=false;
++    if(terminal){assert(op->ledger.terminals);op->ledger.terminals--;}
++    else {
++        if(result!=ESP_OK)fail_locked(op,&winner);
++        assert(op->ledger.unsettled);op->ledger.unsettled--;op->ledger.settled++;
++    }
++    /* Target ref becomes the callback ref; not dropped at counter decrement. */
++    OP_UNLOCK();
++    if(winner){close_snapshot(op);ts_ws_op_close_finish(op,NULL);}
++    TS_WS_TEST_POINT("B06");
++    ts_ws_op_release(op); /* final access: old callback cannot enter replacement */
++}
++bool ts_ws_op_output_begin(ts_ws_operation_t *op,ts_ws_output_ticket_t *t) {
++    *t=(ts_ws_output_ticket_t){0};TS_WS_TEST_POINT("B01");
++    OP_LOCK();bool ok=op->ledger.phase==OP_OPEN;
++    if(ok){op->ledger.preparing++;t->sequence=++op->ledger.tickets;op->ledger.refs++;t->op=op;}OP_UNLOCK();
++    if(!ok)return false;
++    if(op->kind==TS_WS_OP_SHELL){t->peers[0]=op->peer;t->count=1;}
++    else t->count=ts_ws_peer_snapshot(t->peers,TS_WS_CONNECTIONS);
++    TS_WS_TEST_POINT("B02");return true;
++}
++void ts_ws_op_output_finish(ts_ws_output_ticket_t *t,const char *json) {
++    if(!t->op)return;
++    ts_ws_operation_t *op=t->op;ts_ws_message_t *m=NULL;
++    if(t->count && json)m=ts_ws_message_text(json,strlen(json));
++    uint64_t tokens[TS_WS_CONNECTIONS]={0};bool winner=false,registered=false;
++    TS_WS_TEST_POINT("B03");
++    OP_LOCK();
++    unsigned available=0;for(unsigned i=0;i<OP_OUTPUT_TARGETS;i++)available+=!op->output[i].active;
++    if(t->count && (!m || available<t->count || s_op_delivery>UINT64_MAX-t->count))fail_locked(op,&winner);
++    else {
++        for(unsigned i=0,j=0;i<OP_OUTPUT_TARGETS && j<t->count;i++)if(!op->output[i].active){
++            tokens[j++]=++s_op_delivery;op->output[i]=(op_target_t){s_op_delivery,true};
++        }
++        op->ledger.unsettled+=t->count;op->ledger.registered+=t->count;op->ledger.refs+=t->count;registered=true;
++    }
++    OP_UNLOCK();
++    if(winner){close_snapshot(op);ts_ws_op_close_finish(op,NULL);}
++    TS_WS_TEST_POINT("B04");
++    if(registered)for(unsigned i=0;i<t->count;i++) {
++        esp_err_t ret=ts_ws_transport_submit(t->peers[i],m,op->ledger.identity,tokens[i],NULL,settle_target);
++        if(ret!=ESP_OK)settle_target(op->ledger.identity,tokens[i],ret);
++    }
++    ts_ws_message_release(m);
++    OP_LOCK();assert(op->ledger.preparing);op->ledger.preparing--;op->ledger.finished++;OP_UNLOCK();
++    t->op=NULL;ts_ws_op_release(op); /* entire publication, including early done */
++}
++void ts_ws_op_poll(void) {
++    bool tick=false;
++    for(unsigned k=0;k<TS_WS_OP_KINDS;k++) {
++        ts_ws_operation_t *op=&s_ops[k];ts_ws_reservation_t r={0};bool finalize=false,retire=false;
++        uint64_t tokens[TS_WS_CONNECTIONS]={0};
++        OP_LOCK();
++        bool maintain=op->maintain && op->ledger.phase>=OP_OPEN && op->ledger.phase<OP_RECLAIMING;
++        if(maintain)op->ledger.refs++;
++        OP_UNLOCK();
++        if(maintain){tick |= op->maintain(op->data);OP_LOCK();assert(op->ledger.refs);op->ledger.refs--;OP_UNLOCK();}
++        OP_LOCK();
++        if(op->ledger.phase==OP_CLOSING && !op->builder && !op->ledger.preparing && !op->ledger.unsettled) {
++            op->ledger.phase=OP_FINALIZING;op->ledger.refs++;op->ledger.finalizers++;
++            r=op->terminal;op->terminal=(ts_ws_reservation_t){0};finalize=true;
++        }
++        OP_UNLOCK();
++        if(finalize) {
++            char text[256];
++            if(op->ledger.failed){fallback(op,text,sizeof(text),true);ts_ws_reserved_text(&r,text);}
++            OP_LOCK();
++            unsigned n=op->terminal_count;
++            if(s_op_delivery>UINT64_MAX-n)n=0; /* lifetime exhaustion: no token reuse */
++            for(unsigned i=0;i<n;i++){tokens[i]=++s_op_delivery;op->final[i]=(op_target_t){tokens[i],true};}
++            op->ledger.terminals=n;op->ledger.refs+=n;op->ledger.phase=OP_TERMINAL_PENDING;
++            OP_UNLOCK();
++            for(unsigned i=0;i<n;i++) {
++                esp_err_t ret=ts_ws_reserved_target(&r,i,op->terminal_peers[i],op->ledger.identity,tokens[i],settle_target);
++                if(ret!=ESP_OK)settle_target(op->ledger.identity,tokens[i],ret);
++                TS_WS_TEST_POINT("B08");
++            }
++            ts_ws_reservation_release(&r);ts_ws_op_release(op);
++        }
++        OP_LOCK();
++        if(op->ledger.phase==OP_TERMINAL_PENDING && !op->ledger.terminals)op->ledger.phase=OP_TERMINAL_SETTLED;
++        if(op->ledger.phase==OP_TERMINAL_SETTLED && !op->ledger.refs) {
++            assert(!op->ledger.executors && !op->ledger.preparing && !op->ledger.unsettled && !op->terminal.message);
++            op->ledger.phase=OP_RECLAIMING;retire=true;
++        }
++        OP_UNLOCK();
++        if(retire) {
++            TS_WS_TEST_POINT("B10");if(op->destroy)op->destroy(op->data);
++            OP_LOCK();op->data=NULL;op->destroy=NULL;op->maintain=NULL;op->ledger.phase=OP_FREE;OP_UNLOCK();
++        }
++    }
++    OP_LOCK();s_op_tick=tick;OP_UNLOCK();
++}
++void ts_ws_op_stats(ts_ws_op_kind_t kind,ts_ws_op_stats_t *stats) {OP_LOCK();*stats=s_ops[kind].ledger;OP_UNLOCK();}
+diff --git a/tests/ws_subscriptions/baseline_operation_adapter.c b/tests/ws_subscriptions/baseline_operation_adapter.c
+new file mode 100644
+index 0000000..ce452be
+--- /dev/null
++++ b/tests/ws_subscriptions/baseline_operation_adapter.c
+@@ -0,0 +1,163 @@
++/* Compile the entire production WS unit, its actual declarations/public types,
++ * controller, manager and TX. Only external platform/business boundaries fake. */
++#define main manager_regressions
++#include "test_manager.c"
++#undef main
++#include "../../components/ts_webui/include/ts_webui.h"
++#include "../../components/ts_core/ts_log/include/ts_log.h"
++#undef TS_LOGD
++#undef TS_LOGI
++#undef TS_LOGW
++#undef TS_LOGE
++#define TS_LOGD(...) ((void)0)
++#define TS_LOGI(...) ((void)0)
++#define TS_LOGW(...) ((void)0)
++#define TS_LOGE(...) ((void)0)
++#include "ts_console.h"
++#include "ts_ssh_client.h"
++#include "ts_ssh_shell.h"
++#include "ts_variable.h"
++#define HTTP_GET 0
++#define HTTP_POST 1
++#define HTTP_PUT 2
++#define HTTP_DELETE 3
++#define HTTP_PATCH 4
++#include "ts_http_server.h"
++#include "freertos/timers.h"
++#include <setjmp.h>
++#define HTTP_GET 0
++#define HTTPD_WS_TYPE_CLOSE 8
++#define CONFIG_TS_LOG_BUFFER_SIZE 16
++#define TS_EVENT_BASE_POWER "power"
++#define TS_EVENT_ANY_ID -1
++typedef struct {const char *uri;int method;esp_err_t (*handler)(httpd_req_t *);void *user_ctx;bool is_websocket,handle_ws_control_frames;} httpd_uri_t;
++static int httpd_register_uri_handler(httpd_handle_t h,const httpd_uri_t *u){(void)h;(void)u;return 0;}
++static int httpd_ws_send_frame(httpd_req_t *r,httpd_ws_frame_t *f){return httpd_ws_send_frame_async(r->handle,r->fd,f);}
++static const char *incoming;
++static int httpd_ws_recv_frame(httpd_req_t *r,httpd_ws_frame_t *f,size_t n){(void)r;if(!incoming)return ESP_FAIL;f->type=1;f->len=strlen(incoming);if(n)memcpy(f->payload,incoming,f->len);return 0;}
++static void *host_heap_malloc(size_t n,unsigned caps){(void)caps;return tracked_malloc(n);}
++static void *host_calloc(size_t n,size_t z){void *p=tracked_malloc(n*z);if(p)memset(p,0,n*z);return p;}
++static void *host_heap_calloc(size_t n,size_t z,unsigned caps){(void)caps;return host_calloc(n,z);}
++static char *host_strdup(const char *s){size_t n=strlen(s)+1;char *p=tracked_malloc(n);if(p)memcpy(p,s,n);return p;}
++static char *host_strndup(const char *s,size_t n){char *p=tracked_malloc(n+1);if(p){memcpy(p,s,n);p[n]=0;}return p;}
++static struct {void (*fn)(void *);void *arg;} shell_task,exec_task;
++static bool task_create_fail,close_during_create,inline_exec;
++static int adapter_create(void(*fn)(void*),const char *name,unsigned stack,void *arg,unsigned priority,TaskHandle_t *out){
++ (void)stack;(void)priority;(void)out;if(task_create_fail)return 0;
++ if(!strcmp(name,"ssh_poll"))shell_task=(typeof(shell_task)){fn,arg};else exec_task=(typeof(exec_task)){fn,arg};
++ if(inline_exec && !strcmp(name,"ssh_exec"))fn(arg);
++ return pdPASS;
++}
++static int adapter_create_caps(void(*fn)(void*),const char *n,unsigned stack,void *arg,unsigned p,TaskHandle_t *out,unsigned caps);
++static BaseType_t xTimerChangePeriod(TimerHandle_t t,TickType_t period,TickType_t wait){(void)t;(void)period;(void)wait;return pdPASS;}
++static BaseType_t xTimerStop(TimerHandle_t t,TickType_t wait){(void)t;(void)wait;return pdPASS;}
++#define malloc tracked_malloc
++#define calloc host_calloc
++#define free tracked_free
++#define strdup host_strdup
++#define strndup host_strndup
++#define heap_caps_malloc host_heap_malloc
++#define heap_caps_calloc host_heap_calloc
++#define xTaskCreate adapter_create
++#define xTaskCreateWithCaps adapter_create_caps
++#include "ts_webui_ws.c"
++#undef malloc
++#undef calloc
++#undef free
++#undef strdup
++#undef strndup
++#undef heap_caps_malloc
++#undef heap_caps_calloc
++#undef xTaskCreate
++#undef xTaskCreateWithCaps
++struct ts_ssh_session_s {bool aborted;};
++struct ts_ssh_shell_s {bool active;};
++static unsigned aborts,variable_writes,session_destroys;
++static int remote_failure;
++static void (*remote_hook)(void);
++static bool remote_timeout;
++static struct host_timer {void *id;void (*fn)(TimerHandle_t);bool active;} *host_timer;
++static struct {void (*fn)(void *,uint32_t);void *arg;uint32_t value;TimerHandle_t deleted;} timer_queue[16];
++static unsigned timer_queued;static bool timer_queue_fail,timer_inline;
++TimerHandle_t xTimerCreate(const char*n,TickType_t t,BaseType_t repeat,void*id,void(*fn)(TimerHandle_t)){
++ (void)n;(void)t;(void)repeat;host_timer=calloc(1,sizeof(*host_timer));host_timer->id=id;host_timer->fn=fn;return host_timer;
++}
++void *pvTimerGetTimerID(TimerHandle_t t){return t->id;}
++BaseType_t xTimerStart(TimerHandle_t t,TickType_t wait){(void)wait;t->active=true;return pdPASS;}
++BaseType_t xTimerDelete(TimerHandle_t t,TickType_t wait){(void)wait;if(timer_queue_fail)return pdFAIL;assert(timer_queued<16);timer_queue[timer_queued++]=(typeof(timer_queue[0])){.deleted=t};return pdPASS;}
++BaseType_t xTimerPendFunctionCall(void(*fn)(void*,uint32_t),void *arg,uint32_t v,TickType_t wait){
++ (void)wait;if(timer_queue_fail)return pdFAIL;
++ if(timer_inline && !timer_queued){fn(arg,v);return pdPASS;}
++ assert(timer_queued<16);timer_queue[timer_queued++]=(typeof(timer_queue[0])){fn,arg,v,NULL};return pdPASS;
++}
++static void timer_pump(void){while(timer_queued){typeof(timer_queue[0]) q=timer_queue[0];memmove(timer_queue,timer_queue+1,--timer_queued*sizeof(*timer_queue));if(q.deleted){free(q.deleted);host_timer=NULL;}else q.fn(q.arg,q.value);}}
++esp_err_t ts_ssh_session_create(const ts_ssh_config_t*c,ts_ssh_session_t *out){(void)c;if(remote_failure==1)return ESP_FAIL;*out=host_calloc(1,sizeof(**out));return *out?ESP_OK:ESP_ERR_NO_MEM;}
++esp_err_t ts_ssh_connect(ts_ssh_session_t s){(void)s;return remote_failure==2?ESP_FAIL:ESP_OK;}
++const char *ts_ssh_get_error(ts_ssh_session_t s){(void)s;return "fake network error";}
++esp_err_t ts_ssh_disconnect(ts_ssh_session_t s){(void)s;return ESP_OK;}
++esp_err_t ts_ssh_session_destroy(ts_ssh_session_t s){session_destroys++;tracked_free(s);return ESP_OK;}
++void ts_ssh_abort(ts_ssh_session_t s){s->aborted=true;aborts++;}
++esp_err_t ts_ssh_shell_open(ts_ssh_session_t s,const ts_shell_config_t*c,ts_ssh_shell_t *out){(void)s;(void)c;if(remote_failure==3)return ESP_FAIL;*out=host_calloc(1,sizeof(**out));(*out)->active=true;return 0;}
++bool ts_ssh_shell_is_active(ts_ssh_shell_t s){return s&&s->active;}
++esp_err_t ts_ssh_shell_close(ts_ssh_shell_t s){tracked_free(s);return 0;}
++esp_err_t ts_ssh_shell_read(ts_ssh_shell_t s,char *b,size_t n,size_t *out){(void)b;(void)n;*out=0;s->active=false;return 0;}
++esp_err_t ts_ssh_shell_write(ts_ssh_shell_t s,const char *b,size_t n,size_t *out){(void)s;(void)b;(void)n;(void)out;return 0;}
++esp_err_t ts_ssh_shell_resize(ts_ssh_shell_t s,uint16_t w,uint16_t h){(void)s;(void)w;(void)h;return 0;}
++esp_err_t ts_ssh_shell_send_signal(ts_ssh_shell_t s,const char *signal){(void)s;(void)signal;return 0;}
++esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s,const char *command,ts_ssh_output_cb_t cb,void *arg,int *code){
++ (void)command;if(remote_hook)remote_hook();if(remote_timeout && host_timer)host_timer->fn(host_timer);
++ cb("value=42\n",9,false,arg);*code=0;return s->aborted?ESP_ERR_TIMEOUT:ESP_OK;
++}
++esp_err_t ts_keystore_load_private_key(const char *id,char **out,size_t *n){(void)id;(void)out;(void)n;return ESP_FAIL;}
++esp_err_t ts_variable_upsert(const ts_auto_variable_t *v){(void)v;variable_writes++;return 0;}
++esp_err_t ts_console_exec(const char *cmd,ts_cmd_result_t *result){(void)cmd;memset(result,0,sizeof(*result));return 0;}
++esp_err_t ts_console_clear_output_cb(void){return 0;}
++esp_err_t ts_console_set_output_cb(ts_console_output_cb_t cb,void *arg){(void)cb;(void)arg;return 0;}
++void ts_console_request_interrupt(void){}
++esp_err_t ts_log_add_callback(ts_log_callback_t cb,ts_log_level_t l,void *arg,ts_log_callback_handle_t *out){(void)cb;(void)l;(void)arg;*out=(void*)1;return 0;}
++static int remove_log_result;
++esp_err_t ts_log_remove_callback(ts_log_callback_handle_t h){(void)h;return remove_log_result;}
++size_t ts_log_buffer_search(ts_log_entry_t *e,size_t n,ts_log_level_t min,ts_log_level_t max,const char *tag,const char *keyword){(void)e;(void)n;(void)min;(void)max;(void)tag;(void)keyword;return 0;}
++httpd_handle_t ts_http_server_get_handle(void){return (void*)11;}
++void ts_http_server_set_stop_hooks(esp_err_t(*stop)(httpd_handle_t),void(*stopped)(httpd_handle_t)){(void)stop;(void)stopped;}
++static int adapter_create_caps(void(*fn)(void*),const char*n,unsigned stack,void*arg,unsigned p,TaskHandle_t*out,unsigned caps){(void)caps;if(close_during_create)s_ssh_shell->active=false;return adapter_create(fn,n,stack,arg,p,out);}
++static unsigned replacement,terminal_count,output_count;static bool terminal_first;
++static void observe_old(httpd_ws_frame_t *f){const char*p=(char*)f->payload;if(strstr(p,"ssh_exec_error")||strstr(p,"ssh_exec_done"))terminal_count++;if(strstr(p,"ssh_exec_output")){output_count++;if(terminal_count)terminal_first=true;}}
++static void connect_old(void){cJSON*j=cJSON_Parse("{\"host\":\"fake\",\"user\":\"fake\"}");current=(void*)3;handle_ssh_connect(&reqs[1],j);current=(void*)1;cJSON_Delete(j);}
++static void baseline_poll_exit(void){current=(void*)4;shell_task.fn(shell_task.arg);current=(void*)3;}
++static void baseline_open(int fd){current=(void*)3;reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};assert(add_client(&reqs[fd],WS_CLIENT_TYPE_EVENT)==ESP_OK);current=(void*)1;}
++static void g1_old_window(void){delay_hook=baseline_poll_exit;close_peer(1);delay_hook=NULL;assert(!s_ssh_poll_alive);baseline_open(1);connect_old();replacement=s_ssh_generation;}
++static jmp_buf baseline_yield;
++static void baseline_wait(void){longjmp(baseline_yield,1);}
++static void g2_old_window(void){
++ current=(void*)3;typeof(queue[0]) q=queue[0];memmove(queue,queue+1,--queued*sizeof(*queue));q.fn(q.arg);current=(void*)1;
++ queue_fail=true;wait_hook=baseline_wait;current=(void*)2;if(!setjmp(baseline_yield))worker_fn(NULL);current=(void*)1;wait_hook=NULL;
++ queue_fail=false;test_now+=100000;pump();assert(s_exec_output_failed && terminal_count==1);
++}
++int main(int argc,char**argv){
++ assert(argc==2);cJSON_Hooks h={tracked_malloc,tracked_free};cJSON_InitHooks(&h);start();s_server=(void*)11;transport_server.closed=peer_closed;baseline_open(1);
++ if(!strcmp(argv[1],"g1")){
++  connect_old();unsigned old=s_ssh_generation;ts_ws_message_t*m=ts_ws_message_text("block",5);
++  assert(ts_ws_transport_submit(s_ssh_peer,m,0,0,NULL,NULL)==0);ts_ws_message_release(m);
++  ssh_send_output("old",3); /* poller returns; SDK admission is deferred to worker */
++  current=(void*)3;typeof(queue[0]) q=queue[0];memmove(queue,queue+1,--queued*sizeof(*queue));q.fn(q.arg);current=(void*)1;
++  barrier_name="G1";barrier_action=g1_old_window;queue_fail=true;
++  wait_hook=baseline_wait;current=(void*)2;if(!setjmp(baseline_yield))worker_fn(NULL);current=(void*)1;wait_hook=NULL;
++  queue_fail=false;test_now+=100000;pump();bool bad=replacement>old && s_ssh_state==SSH_TERMINAL;
++  printf("G1 complete production unit: replacement=%u old=%u replacement_corrupted=%d\n",replacement,old,bad);
++  s_ssh_running=false;shell_task.fn(shell_task.arg);pump();stop();assert(!live_allocations);return bad?1:0;
++ }
++ assert(!strcmp(argv[1],"g2"));uint32_t id;
++ assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);
++ sent_hook=observe_old;
++ ts_ws_peer_t peer=*(ts_ws_peer_t*)reqs[1].sess_ctx;ts_ws_message_t *m=ts_ws_message_text("block",5);
++ assert(ts_ws_transport_submit(peer,m,0,0,NULL,NULL)==0);ts_ws_message_release(m);
++ ssh_exec_output_callback("A",1,false,(void*)(uintptr_t)id);
++ barrier_name="G2";barrier_action=g2_old_window;
++ ssh_exec_output_callback("prepared",8,false,(void*)(uintptr_t)id);pump();bool bad=terminal_first;
++ printf("G2 complete production unit: terminal_before_late_output=%d\n",bad);
++ /* Baseline's separately known credential leak: track/free only after its real
++  * task cleanup. This does not replace any lifecycle code or affect assertion. */
++ const char *host=s_exec_params->config.host,*user=s_exec_params->config.username,*password=s_exec_params->config.auth.password;
++ exec_task.fn(exec_task.arg);pump();tracked_free((void*)host);tracked_free((void*)user);tracked_free((void*)password);stop();assert(!live_allocations);return bad?1:0;
++}
+diff --git a/tests/ws_subscriptions/replay_operation_baseline.py b/tests/ws_subscriptions/replay_operation_baseline.py
+new file mode 100644
+index 0000000..b43d2c6
+--- /dev/null
++++ b/tests/ws_subscriptions/replay_operation_baseline.py
+@@ -0,0 +1,42 @@
++"""Replay frozen production translation units; only add scheduling barriers."""
++from pathlib import Path
++import hashlib, json, os, shutil, subprocess, tarfile, tempfile
++root = Path(__file__).resolve().parents[2]
++os.chdir(root)
++sdk = os.environ.get('IDF_PATH')
++if not sdk:
++    raise SystemExit('NOT RUN: set IDF_PATH to the project SDK')
++for name,want in json.loads(Path('docs/repair/ws-operation/public-headers.json').read_text()).items():
++    assert hashlib.sha256(Path(name).read_bytes()).hexdigest()==want,name
++with tempfile.TemporaryDirectory(prefix='ts-operation-baseline-') as tmp:
++    base = Path(tmp)
++    with tarfile.open('docs/repair/ws-operation/baseline.tar.gz') as archive:
++        archive.extractall(base)
++    for name, want in json.loads(Path('docs/repair/ws-operation/baseline.json').read_text())['sha256'].items():
++        assert hashlib.sha256((base/name).read_bytes()).hexdigest() == want, name
++    print('Frozen production source and original tests SHA256 verified', flush=True)
++    source = base/'components/ts_webui/src/ts_webui_ws.c'
++    code = source.read_text()
++    for old, new in [
++        ('atomic_fetch_sub(&s_ssh_output_pending,1);', 'atomic_fetch_sub(&s_ssh_output_pending,1); TS_WS_TEST_POINT("G1");'),
++        ('ts_ws_message_t *m=json?ts_ws_message_text(json,strlen(json)):NULL;', 'TS_WS_TEST_POINT("G2");\n    ts_ws_message_t *m=json?ts_ws_message_text(json,strlen(json)):NULL;')]:
++        assert code.count(old) == 1
++        code = code.replace(old, new)
++    source.write_text(code)
++    fixture = base/'tests/ws_subscriptions/baseline_operation_adapter.c'
++    shutil.copy(root/'tests/ws_subscriptions/baseline_operation_adapter.c', fixture)
++    shutil.copy(root/'tests/ws_subscriptions/stubs/esp_console.h', base/'tests/ws_subscriptions/stubs/esp_console.h')
++    shutil.copy(root/'tests/ws_subscriptions/stubs/freertos/timers.h', base/'tests/ws_subscriptions/stubs/freertos/timers.h')
++    # Public business headers are unchanged from HEAD; compile against their real declarations.
++    includes = [base/'tests/ws_subscriptions/stubs', base/'components/ts_webui/include', base/'components/ts_webui/src']
++    includes += [root/'components'/p/'include' for p in ('ts_security','ts_automation','ts_drivers','ts_console','ts_net')]
++    cjson = Path(sdk)/'components/json/cJSON'
++    cmd = [os.environ.get('CC','cc'), '-std=gnu11','-g','-Wno-deprecated-declarations','-Wno-macro-redefined','-fsanitize=address,undefined']
++    cmd += ['-I'+str(p) for p in includes+[cjson]]
++    cmd += [str(fixture), str(cjson/'cJSON.c'), '-o', str(base/'baseline')]
++    subprocess.run(cmd, check=True)
++    for case, expected in [('g1','replacement_corrupted=1'),('g2','terminal_before_late_output=1')]:
++        run = subprocess.run([str(base/'baseline'),case], capture_output=True, text=True)
++        print(run.stdout, end='', flush=True)
++        assert run.returncode == 1 and expected in run.stdout and not run.stderr, run.stderr
++    print('CONFIRMED G1/G2 are business assertion failures in the complete frozen WS unit, not compile/dependency/cleanup failures')
+diff --git a/tests/ws_subscriptions/run_operation.sh b/tests/ws_subscriptions/run_operation.sh
+new file mode 100644
+index 0000000..d1ab31b
+--- /dev/null
++++ b/tests/ws_subscriptions/run_operation.sh
+@@ -0,0 +1,9 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++: "${IDF_PATH:?NOT RUN: set IDF_PATH to the project SDK}"
++build=$(mktemp -d /tmp/ts-ws-operation.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++cjson="$IDF_PATH/components/json/cJSON"
++"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" tests/ws_subscriptions/test_operation.c "$cjson/cJSON.c" -o "$build/operation"
++"$build/operation"
+diff --git a/tests/ws_subscriptions/run_operation_adapter.sh b/tests/ws_subscriptions/run_operation_adapter.sh
+new file mode 100644
+index 0000000..e1edc6f
+--- /dev/null
++++ b/tests/ws_subscriptions/run_operation_adapter.sh
+@@ -0,0 +1,11 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++: "${IDF_PATH:?NOT RUN: set IDF_PATH to the project SDK}"
++build=$(mktemp -d /tmp/ts-ws-adapter.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++cjson="$IDF_PATH/components/json/cJSON"
++"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -Wno-macro-redefined -fsanitize=address,undefined \
++ -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -I"$cjson" \
++ tests/ws_subscriptions/test_operation_adapter.c "$cjson/cJSON.c" -o "$build/adapter"
++"$build/adapter"
+diff --git a/tests/ws_subscriptions/stubs/esp_console.h b/tests/ws_subscriptions/stubs/esp_console.h
+new file mode 100644
+index 0000000..93554c8
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/esp_console.h
+@@ -0,0 +1,2 @@
++#pragma once
++typedef int (*esp_console_cmd_func_t)(int,char **);
+diff --git a/tests/ws_subscriptions/stubs/freertos/timers.h b/tests/ws_subscriptions/stubs/freertos/timers.h
+new file mode 100644
+index 0000000..8067a3d
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/freertos/timers.h
+@@ -0,0 +1,12 @@
++#pragma once
++#include "platform.h"
++typedef struct host_timer *TimerHandle_t;
++TimerHandle_t xTimerCreate(const char *,TickType_t,BaseType_t,void *,void (*)(TimerHandle_t));
++void *pvTimerGetTimerID(TimerHandle_t);
++BaseType_t xTimerStart(TimerHandle_t,TickType_t);
++BaseType_t xTimerDelete(TimerHandle_t,TickType_t);
++BaseType_t xTimerPendFunctionCall(void (*)(void *,uint32_t),void *,uint32_t,TickType_t);
++#ifndef pdFALSE
++#define pdFALSE 0
++#define pdFAIL 0
++#endif
+diff --git a/tests/ws_subscriptions/test_operation.c b/tests/ws_subscriptions/test_operation.c
+new file mode 100644
+index 0000000..f177406
+--- /dev/null
++++ b/tests/ws_subscriptions/test_operation.c
+@@ -0,0 +1,58 @@
++#define main manager_regressions
++#include "test_manager.c"
++#undef main
++static ts_ws_operation_t *op;
++static ts_ws_op_kind_t kind;
++static unsigned destroys;
++static void destroy(void *p){(void)p;destroys++;}
++static void drive(void){for(unsigned i=0;i<8;i++){ts_ws_op_poll();pump();}}
++static void close_op(void){if(ts_ws_op_close_begin(op))ts_ws_op_close_finish(op,"{\"type\":\"done\"}");}
++static void inspect(void){
++ ts_ws_op_stats_t s;ts_ws_op_stats(kind,&s);
++ assert(s.tickets==s.finished+s.preparing);
++ assert(s.registered==s.settled+s.unsettled);
++ assert(s.finalizers<=1);
++ if(s.phase==OP_FREE)assert(!s.refs && !s.executors && !s.preparing && !s.unsettled && !s.terminals);
++}
++static void close_during_prepare(void){close_op();ts_ws_op_poll();ts_ws_op_stats_t s;ts_ws_op_stats(kind,&s);assert(s.phase==OP_CLOSING && s.preparing==1);}
++static void try_replace(void){assert(!ts_ws_op_create(kind,ts_ws_op_peer(op),NULL));inspect();}
++static void old_failure_exit(void){ts_ws_op_executor_done(op);try_replace();ts_ws_op_poll();try_replace();}
++static void deny_ticket(void){close_op();ts_ws_op_stop_admission();}
++int main(void){
++ cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);
++ const char *points[]={"B01","B02","B03","B04","B05","B06","B07","B08","B10"};
++ for(kind=0;kind<TS_WS_OP_KINDS;kind++)for(unsigned scenario=0;scenario<9;scenario++)for(unsigned early=0;early<2;early++) {
++  start();ts_ws_op_enable();ts_ws_peer_t peer=open_peer(1);if(kind==TS_WS_OP_EXEC)open_peer(2);
++  op=ts_ws_op_create(kind,peer,NULL);assert(op);ts_ws_op_bind(op,NULL,destroy);assert(ts_ws_op_open(op));
++  immediate=early;barrier_name=points[scenario];
++  barrier_action=scenario==0?deny_ticket:scenario>=1&&scenario<=3?close_during_prepare:scenario==5?old_failure_exit:try_replace;
++  ts_ws_output_ticket_t ticket;
++  bool accepted=ts_ws_op_output_begin(op,&ticket);
++  if(scenario==5)queue_fail=true;
++  if(accepted)ts_ws_op_output_finish(&ticket,"{\"type\":\"output\"}");
++  queue_fail=false;
++  if(scenario!=5)close_op();
++  drive();inspect();
++  if(scenario!=5){ /* B09: settled observation cannot release business context */
++   assert(ts_ws_op_executing(op));try_replace();ts_ws_output_ticket_t denied;assert(!ts_ws_op_output_begin(op,&denied));
++   ts_ws_op_executor_done(op);
++  }
++  drive();inspect();assert(!ts_ws_op_busy());assert(!barrier_action);
++  immediate=false;stop();assert(!live_allocations);
++ }
++ for(kind=0;kind<TS_WS_OP_KINDS;kind++)for(unsigned mode=0;mode<4;mode++)for(unsigned early=0;early<2;early++) {
++  start();ts_ws_op_enable();ts_ws_peer_t peer=open_peer(1);if(kind==TS_WS_OP_EXEC)open_peer(2);
++  op=ts_ws_op_create(kind,peer,NULL);assert(op && ts_ws_op_open(op));ts_ws_output_ticket_t t;assert(ts_ws_op_output_begin(op,&t));
++  immediate=early;queue_fail=mode==1;send_fail=mode==2;
++  if(mode==3){close_peer(1);open_peer(1);} /* fixed old peer never targets the replacement */
++  ts_ws_op_output_finish(&t,mode==0?NULL:"data");queue_fail=send_fail=false;immediate=false;
++  uint64_t identity=op->ledger.identity,token=op->output[0].id;
++  close_op();drive();inspect();uint64_t settled=op->ledger.settled;
++  settle_target(identity,token,ESP_FAIL);settle_target(identity,token,ESP_OK);
++  assert(op->ledger.settled==settled && op->ledger.duplicates>=2);inspect();
++  ts_ws_op_executor_done(op);drive();assert(!ts_ws_op_busy());stop();assert(!live_allocations);
++ }
++ puts("PASS 16 failure schedules: encode/SDK/socket/stale peer, early/deferred done, duplicate tokens do not double-settle");
++ printf("PASS production operation/TX: 36 barrier schedules, ticket/target ledgers and B09 executor retention; destroyed=%u\n",destroys);
++ return 0;
++}
+diff --git a/tests/ws_subscriptions/test_operation_adapter.c b/tests/ws_subscriptions/test_operation_adapter.c
+new file mode 100644
+index 0000000..89d428b
+--- /dev/null
++++ b/tests/ws_subscriptions/test_operation_adapter.c
+@@ -0,0 +1,284 @@
++/* Compile the entire production WS unit, its actual declarations/public types,
++ * controller, manager and TX. Only external platform/business boundaries fake. */
++#define main manager_regressions
++#include "test_manager.c"
++#undef main
++#include "../../components/ts_webui/include/ts_webui.h"
++#include "../../components/ts_core/ts_log/include/ts_log.h"
++#undef TS_LOGD
++#undef TS_LOGI
++#undef TS_LOGW
++#undef TS_LOGE
++#define TS_LOGD(...) ((void)0)
++#define TS_LOGI(...) ((void)0)
++#define TS_LOGW(...) ((void)0)
++#define TS_LOGE(...) ((void)0)
++#include "ts_console.h"
++#include "ts_ssh_client.h"
++#include "ts_ssh_shell.h"
++#include "ts_variable.h"
++#define HTTP_GET 0
++#define HTTP_POST 1
++#define HTTP_PUT 2
++#define HTTP_DELETE 3
++#define HTTP_PATCH 4
++#include "ts_http_server.h"
++#include "freertos/timers.h"
++#include <setjmp.h>
++#define HTTP_GET 0
++#define HTTPD_WS_TYPE_CLOSE 8
++#define CONFIG_TS_LOG_BUFFER_SIZE 16
++#define TS_EVENT_BASE_POWER "power"
++#define TS_EVENT_ANY_ID -1
++typedef struct {const char *uri;int method;esp_err_t (*handler)(httpd_req_t *);void *user_ctx;bool is_websocket,handle_ws_control_frames;} httpd_uri_t;
++static int httpd_register_uri_handler(httpd_handle_t h,const httpd_uri_t *u){(void)h;(void)u;return 0;}
++static int httpd_ws_send_frame(httpd_req_t *r,httpd_ws_frame_t *f){return httpd_ws_send_frame_async(r->handle,r->fd,f);}
++static const char *incoming;
++static int httpd_ws_recv_frame(httpd_req_t *r,httpd_ws_frame_t *f,size_t n){(void)r;if(!incoming)return ESP_FAIL;f->type=1;f->len=strlen(incoming);if(n)memcpy(f->payload,incoming,f->len);return 0;}
++static void *host_heap_malloc(size_t n,unsigned caps){(void)caps;return tracked_malloc(n);}
++static void *host_calloc(size_t n,size_t z){void *p=tracked_malloc(n*z);if(p)memset(p,0,n*z);return p;}
++static void *host_heap_calloc(size_t n,size_t z,unsigned caps){(void)caps;return host_calloc(n,z);}
++static char *host_strdup(const char *s){size_t n=strlen(s)+1;char *p=tracked_malloc(n);if(p)memcpy(p,s,n);return p;}
++static char *host_strndup(const char *s,size_t n){char *p=tracked_malloc(n+1);if(p){memcpy(p,s,n);p[n]=0;}return p;}
++static struct {void (*fn)(void *);void *arg;} shell_task,exec_task;
++static bool task_create_fail,close_during_create,inline_exec;
++static int adapter_create(void(*fn)(void*),const char *name,unsigned stack,void *arg,unsigned priority,TaskHandle_t *out){
++ (void)stack;(void)priority;(void)out;if(task_create_fail)return 0;
++ if(!strcmp(name,"ssh_poll"))shell_task=(typeof(shell_task)){fn,arg};else exec_task=(typeof(exec_task)){fn,arg};
++ if(inline_exec && !strcmp(name,"ssh_exec"))fn(arg);
++ return pdPASS;
++}
++static int adapter_create_caps(void(*fn)(void*),const char *n,unsigned stack,void *arg,unsigned p,TaskHandle_t *out,unsigned caps);
++#define malloc tracked_malloc
++#define calloc host_calloc
++#define free tracked_free
++#define strdup host_strdup
++#define strndup host_strndup
++#define heap_caps_malloc host_heap_malloc
++#define heap_caps_calloc host_heap_calloc
++#define xTaskCreate adapter_create
++#define xTaskCreateWithCaps adapter_create_caps
++#include "ts_webui_ws.c"
++#undef malloc
++#undef calloc
++#undef free
++#undef strdup
++#undef strndup
++#undef heap_caps_malloc
++#undef heap_caps_calloc
++#undef xTaskCreate
++#undef xTaskCreateWithCaps
++struct ts_ssh_session_s {bool aborted;};
++struct ts_ssh_shell_s {bool active;};
++static unsigned aborts,variable_writes,session_destroys;
++static int remote_failure;
++static void (*remote_hook)(void);
++static bool remote_timeout;
++static struct host_timer {void *id;void (*fn)(TimerHandle_t);bool active;} *host_timer;
++static struct {void (*fn)(void *,uint32_t);void *arg;uint32_t value;TimerHandle_t deleted;} timer_queue[16];
++static unsigned timer_queued;static bool timer_queue_fail,timer_inline,timer_create_fail,timer_start_fail;
++TimerHandle_t xTimerCreate(const char*n,TickType_t t,BaseType_t repeat,void*id,void(*fn)(TimerHandle_t)){
++ (void)n;(void)t;(void)repeat;if(timer_create_fail)return NULL;host_timer=calloc(1,sizeof(*host_timer));host_timer->id=id;host_timer->fn=fn;return host_timer;
++}
++void *pvTimerGetTimerID(TimerHandle_t t){return t->id;}
++BaseType_t xTimerStart(TimerHandle_t t,TickType_t wait){(void)wait;if(timer_start_fail)return pdFAIL;t->active=true;return pdPASS;}
++BaseType_t xTimerDelete(TimerHandle_t t,TickType_t wait){(void)wait;if(timer_queue_fail)return pdFAIL;assert(timer_queued<16);timer_queue[timer_queued++]=(typeof(timer_queue[0])){.deleted=t};return pdPASS;}
++BaseType_t xTimerPendFunctionCall(void(*fn)(void*,uint32_t),void *arg,uint32_t v,TickType_t wait){
++ (void)wait;if(timer_queue_fail)return pdFAIL;
++ if(timer_inline && !timer_queued){fn(arg,v);return pdPASS;}
++ assert(timer_queued<16);timer_queue[timer_queued++]=(typeof(timer_queue[0])){fn,arg,v,NULL};return pdPASS;
++}
++static void timer_pump(void){while(timer_queued){typeof(timer_queue[0]) q=timer_queue[0];memmove(timer_queue,timer_queue+1,--timer_queued*sizeof(*timer_queue));if(q.deleted){free(q.deleted);host_timer=NULL;}else q.fn(q.arg,q.value);}}
++esp_err_t ts_ssh_session_create(const ts_ssh_config_t*c,ts_ssh_session_t *out){(void)c;if(remote_failure==1)return ESP_FAIL;*out=host_calloc(1,sizeof(**out));return *out?ESP_OK:ESP_ERR_NO_MEM;}
++esp_err_t ts_ssh_connect(ts_ssh_session_t s){(void)s;return remote_failure==2?ESP_FAIL:ESP_OK;}
++const char *ts_ssh_get_error(ts_ssh_session_t s){(void)s;return "fake network error";}
++esp_err_t ts_ssh_disconnect(ts_ssh_session_t s){(void)s;return ESP_OK;}
++esp_err_t ts_ssh_session_destroy(ts_ssh_session_t s){session_destroys++;tracked_free(s);return ESP_OK;}
++void ts_ssh_abort(ts_ssh_session_t s){s->aborted=true;aborts++;}
++esp_err_t ts_ssh_shell_open(ts_ssh_session_t s,const ts_shell_config_t*c,ts_ssh_shell_t *out){(void)s;(void)c;if(remote_failure==3)return ESP_FAIL;*out=host_calloc(1,sizeof(**out));(*out)->active=true;return 0;}
++bool ts_ssh_shell_is_active(ts_ssh_shell_t s){return s&&s->active;}
++esp_err_t ts_ssh_shell_close(ts_ssh_shell_t s){tracked_free(s);return 0;}
++esp_err_t ts_ssh_shell_read(ts_ssh_shell_t s,char *b,size_t n,size_t *out){(void)b;(void)n;*out=0;s->active=false;return 0;}
++esp_err_t ts_ssh_shell_write(ts_ssh_shell_t s,const char *b,size_t n,size_t *out){(void)s;(void)b;(void)n;(void)out;return 0;}
++esp_err_t ts_ssh_shell_resize(ts_ssh_shell_t s,uint16_t w,uint16_t h){(void)s;(void)w;(void)h;return 0;}
++esp_err_t ts_ssh_shell_send_signal(ts_ssh_shell_t s,const char *signal){(void)s;(void)signal;return 0;}
++esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s,const char *command,ts_ssh_output_cb_t cb,void *arg,int *code){
++ (void)command;if(remote_hook)remote_hook();if(remote_timeout && host_timer)host_timer->fn(host_timer);
++ cb("value=42\n",9,false,arg);*code=0;return s->aborted?ESP_ERR_TIMEOUT:ESP_OK;
++}
++esp_err_t ts_keystore_load_private_key(const char *id,char **out,size_t *n){(void)id;(void)out;(void)n;return ESP_FAIL;}
++esp_err_t ts_variable_upsert(const ts_auto_variable_t *v){(void)v;variable_writes++;return 0;}
++esp_err_t ts_console_exec(const char *cmd,ts_cmd_result_t *result){(void)cmd;memset(result,0,sizeof(*result));return 0;}
++esp_err_t ts_console_clear_output_cb(void){return 0;}
++esp_err_t ts_console_set_output_cb(ts_console_output_cb_t cb,void *arg){(void)cb;(void)arg;return 0;}
++void ts_console_request_interrupt(void){}
++esp_err_t ts_log_add_callback(ts_log_callback_t cb,ts_log_level_t l,void *arg,ts_log_callback_handle_t *out){(void)cb;(void)l;(void)arg;*out=(void*)1;return 0;}
++static int remove_log_result;
++esp_err_t ts_log_remove_callback(ts_log_callback_handle_t h){(void)h;return remove_log_result;}
++size_t ts_log_buffer_search(ts_log_entry_t *e,size_t n,ts_log_level_t min,ts_log_level_t max,const char *tag,const char *keyword){(void)e;(void)n;(void)min;(void)max;(void)tag;(void)keyword;return 0;}
++httpd_handle_t ts_http_server_get_handle(void){return (void*)11;}
++void ts_http_server_set_stop_hooks(esp_err_t(*stop)(httpd_handle_t),void(*stopped)(httpd_handle_t)){(void)stop;(void)stopped;}
++static int adapter_create_caps(void(*fn)(void*),const char*n,unsigned stack,void*arg,unsigned p,TaskHandle_t*out,unsigned caps){(void)caps;if(close_during_create)((ssh_shell_context_t*)arg)->shell->active=false;return adapter_create(fn,n,stack,arg,p,out);}
++static void drive_all(void){for(unsigned i=0;i<12;i++){ts_ws_op_poll();pump();timer_pump();}assert(!timer_queued);}
++static void setup(void){start();memset(s_clients,0,sizeof(s_clients));s_server=(void*)11;s_ws_stopping=false;ts_ws_op_enable();transport_server.closed=peer_closed;for(int fd=1;fd<=2;fd++){reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};current=(void*)3;assert(add_client(&reqs[fd],WS_CLIENT_TYPE_EVENT)==ESP_OK);}current=(void*)1;}
++static void finish_all(void){drive_all();assert(!ts_ws_op_busy());stop();assert(!live_allocations);}
++static void connect_shell(void){cJSON *j=cJSON_Parse("{\"host\":\"fake\",\"user\":\"fake\"}");current=(void*)3;handle_ssh_connect(&reqs[1],j);current=(void*)1;cJSON_Delete(j);}
++static unsigned terminal_frames,output_frames,connected_frames,disconnecting_frames;static bool output_after_terminal;
++static void observe(httpd_ws_frame_t *f){const char *p=(char*)f->payload;if(strstr(p,"ssh_output")||strstr(p,"ssh_exec_output")){if(terminal_frames)output_after_terminal=true;output_frames++;}if(strstr(p,"ssh_exec_done")||strstr(p,"ssh_exec_error")||strstr(p,"\"status\":\"error\"")||strstr(p,"\"status\":\"closed\""))terminal_frames++;if(strstr(p,"\"status\":\"connected\""))connected_frames++;if(strstr(p,"\"status\":\"disconnecting\""))disconnecting_frames++;}
++static jmp_buf worker_yield;
++static void yield_worker(void){longjmp(worker_yield,1);}
++static void worker_step(void){wait_hook=yield_worker;current=(void*)2;if(!setjmp(worker_yield))worker_fn(NULL);current=(void*)1;wait_hook=NULL;}
++static void sdk_one(void){if(!queued)return;current=(void*)3;typeof(queue[0]) q=queue[0];memmove(queue,queue+1,--queued*sizeof(*queue));q.fn(q.arg);current=(void*)1;}
++static void progress(void){sdk_one();if(s_worker){if(s_state==STOPPING)worker_exit();else worker_step();}timer_pump();}
++static void finish_ws(void){drive_all();delay_hook=progress;assert(ts_webui_ws_stop((void*)11)==ESP_OK);delay_hook=NULL;for(int i=0;i<32;i++)if(reqs[i].sess_ctx)close_peer(i);ts_webui_ws_stopped((void*)11);assert(!live_allocations);}
++static uint32_t paused_id;
++static void g1_original_callback(void){
++    close_peer(1); /* HTTPD retires the old target while worker callback is paused */
++    shell_task.fn(shell_task.arg); /* independent poller exits */
++    drive_all();open_peer(1);connect_shell();
++    ts_ws_op_stats_t state;ts_ws_op_stats(TS_WS_OP_SHELL,&state);
++    assert(state.identity==paused_id && state.phase!=OP_FREE && state.refs);
++}
++static void g2_preparing_output(void){
++    sdk_one();queue_fail=true;worker_step();queue_fail=false;test_now+=100000;
++    drive_all();ts_ws_op_stats_t state;ts_ws_op_stats(TS_WS_OP_EXEC,&state);
++    assert(state.phase==OP_CLOSING && state.preparing==1 && !state.finalizers);
++}
++static void fail_observation_business_continues(void){
++    ssh_exec_task_params_t *params=exec_task.arg;
++    drive_all();queue_fail=true;ssh_exec_output_callback("before",6,false,params);queue_fail=false;test_now+=100000;drive_all();
++    assert(!ts_ws_op_is_open(params->op) && ts_webui_ssh_exec_is_running(params->session_id));
++}
++static void close_snapshot_joiner(void){open_peer(3);ts_ws_op_poll();}
++static void cancel_original_exec(void){ssh_exec_task_params_t *params=exec_task.arg;assert(ts_webui_ssh_exec_cancel(0)==ESP_ERR_INVALID_STATE);assert(ts_webui_ssh_exec_cancel(params->session_id)==ESP_OK);}
++static void validate_exec_frame(httpd_ws_frame_t *f){
++    const char *p=(char*)f->payload;
++    assert(strstr(p,"\"type\":") && strstr(p,"\"session_id\":"));
++    if(strstr(p,"ssh_exec_output"))assert(strstr(p,"\"data\":"));
++    if(strstr(p,"ssh_exec_error"))assert(strstr(p,"\"error\":"));
++}
++static void stop_progress_shell(void){
++ if(shell_task.fn && !ts_ws_op_starting(((ssh_shell_context_t*)shell_task.arg)->op)){
++   void (*fn)(void*)=shell_task.fn;void *arg=shell_task.arg;shell_task.fn=NULL;fn(arg);
++ }
++ progress();
++}
++static void operation_cross_tests(void){
++    uint32_t id;ts_ws_op_stats_t ledger;
++    setup();connect_shell();unsigned dc=disconnecting_frames;handle_ssh_disconnect();shell_task.fn(shell_task.arg);finish_all();assert(disconnecting_frames==dc+1);
++    setup();terminal_frames=output_frames=0;output_after_terminal=false;connect_shell();
++    ssh_shell_context_t *ctx=shell_task.arg;paused_id=ts_ws_op_id(ctx->op);
++    ts_ws_message_t *m=ts_ws_message_text("block",5);
++    assert(ts_ws_transport_submit(ts_ws_op_peer(ctx->op),m,0,0,NULL,NULL)==0);ts_ws_message_release(m);
++    ssh_send_output(ctx,"old",3); /* original producer returns before async rejection */
++    sdk_one();barrier_name="B06";barrier_action=g1_original_callback;queue_fail=true;worker_step();
++    queue_fail=false;test_now+=100000;assert(!barrier_action);drive_all();connect_shell();ctx=shell_task.arg;
++    assert(ts_ws_op_id(ctx->op)>paused_id && ts_ws_op_is_open(ctx->op));ssh_cleanup();shell_task.fn(shell_task.arg);finish_all();
++    puts("PASS G1 same observable assertion: old rejection callback cannot corrupt replacement Shell (whole production unit)");
++
++    setup();terminal_frames=output_frames=0;output_after_terminal=false;
++    assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);
++    ssh_exec_task_params_t *params=exec_task.arg;ts_ws_peer_t peer=*(ts_ws_peer_t*)reqs[1].sess_ctx;
++    m=ts_ws_message_text("block",5);assert(ts_ws_transport_submit(peer,m,0,0,NULL,NULL)==0);ts_ws_message_release(m);
++    ssh_exec_output_callback("A",1,false,params);barrier_name="B02";barrier_action=g2_preparing_output;
++    ssh_exec_output_callback("B",1,false,params);drive_all();assert(!barrier_action && !output_after_terminal && terminal_frames==2);
++    exec_task.fn(exec_task.arg);finish_all();
++    puts("PASS G2 same observable assertion: pending A fails while B prepares; B settles before terminal, no output follows terminal");
++
++    setup();terminal_frames=0;ts_webui_ssh_options_t opts={.timeout_ms=1000,.collect_output=true,.extract_pattern="value=(.*)",.var_name="fake"};
++    assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id)==0);
++    timer_queue_fail=true;exec_task.fn(exec_task.arg);drive_all();assert(ts_ws_op_busy());
++    params=exec_task.arg;assert(params->timer_phase==2 && !params->session);
++    /* A late original timer callback cannot touch freed resources or a new task. */
++    unsigned before=aborts;host_timer->fn(host_timer);assert(aborts==before);
++    delay_hook=progress;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);delay_hook=NULL;
++    timer_queue_fail=false;for(unsigned i=0;i<20;i++){test_now+=100000;progress();}
++    assert(!ts_ws_op_busy());finish_ws();
++    puts("PASS B11 timer delete/barrier retry retains original params; busy stop recovers without new business; late timer cannot abort replacement");
++
++    setup();assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id)==0);
++    timer_queue_fail=true;exec_task.fn(exec_task.arg);
++    for(unsigned i=0;i<TS_WS_QUEUE_RETRIES;i++){test_now+=100000;ts_ws_op_poll();}
++    params=exec_task.arg;assert(params->timer_phase==6);timer_queue_fail=false;
++    delay_hook=progress;esp_err_t stopped=ts_webui_ws_stop((void*)11);delay_hook=NULL;
++    assert(stopped==ESP_OK || stopped==ESP_ERR_TIMEOUT);
++    for(unsigned i=0;i<20;i++){test_now+=100000;progress();}assert(!ts_ws_op_busy());finish_ws();
++    puts("PASS bounded timer drain retry exhaustion is retained and explicitly resumed by stop retry");
++
++    setup();remote_hook=fail_observation_business_continues;unsigned writes=variable_writes;
++    assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id)==0);
++    exec_task.fn(exec_task.arg);remote_hook=NULL;assert(variable_writes>writes && !aborts);finish_all();
++    puts("PASS B09 observation failure still executes actual matching and variable updates without aborting remote command");
++
++    setup();remote_timeout=true;before=aborts;
++    assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id)==0);
++    exec_task.fn(exec_task.arg);remote_timeout=false;assert(aborts==before+1);finish_all();
++    setup();opts.stop_on_match=true;before=aborts;
++    assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id)==0);
++    exec_task.fn(exec_task.arg);assert(aborts==before+1);finish_all();
++    puts("PASS original timeout and stop-on-match business abort semantics retained");
++
++    setup();before=aborts;remote_hook=cancel_original_exec;
++    assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);
++    exec_task.fn(exec_task.arg);remote_hook=NULL;assert(aborts==before+1);finish_all();
++    setup();terminal_frames=0;
++    assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);
++    params=exec_task.arg;barrier_name="B07";barrier_action=close_snapshot_joiner;
++    if(ts_ws_op_close_begin(params->op))ts_ws_op_close_finish(params->op,"{\"type\":\"ssh_exec_done\"}");
++    drive_all();assert(!barrier_action && frames[3]==0 && terminal_frames==2);
++    exec_task.fn(exec_task.arg);finish_all();
++    puts("PASS original cancel ID contract, user disconnecting status and frozen terminal recipient snapshot");
++
++    setup();close_peer(1);close_peer(2);
++    assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);
++    params=exec_task.arg;before=allocations;ssh_exec_output_callback("none",4,false,params);assert(allocations==before);
++    exec_task.fn(exec_task.arg);finish_all();
++    puts("PASS no recipients: no observation JSON/payload allocation; business executes and tickets retire");
++
++    setup();task_create_fail=true;assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==ESP_FAIL);task_create_fail=false;finish_all();
++    for(unsigned i=0;i<16;i++) {
++        setup();fail_allocation=allocations+i+1;
++        esp_err_t ret=ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id);fail_allocation=0;
++        if(ret==ESP_OK)exec_task.fn(exec_task.arg);finish_all();
++    }
++    puts("PASS task-create and allocation failure sweep: all actual contexts, credentials, output buffers and reservations reclaimed");
++    for(unsigned i=0;i<48;i++) {
++        setup();assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);
++        sent_hook=validate_exec_frame;params=exec_task.arg;fail_allocation=allocations+i+1;
++        ssh_exec_output_callback("encoding",8,false,params);fail_allocation=0;
++        exec_task.fn(exec_task.arg);finish_all();
++    }
++    sent_hook=observe;
++    puts("PASS output encoding allocation sweep: no partial protocol objects escape, original ticket/resource ledgers drain");
++    setup();connect_shell();current=(void*)2;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);current=(void*)1;
++    delay_hook=stop_progress_shell;assert(ts_webui_ws_stop((void*)11)==ESP_OK);delay_hook=NULL;finish_ws();
++    setup();assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id)==0);
++    exec_task.fn(exec_task.arg);ts_ws_op_poll();timer_pump();timer_inline=true;ts_ws_op_poll();timer_inline=false;finish_all();
++    puts("PASS healthy stop drains original Shell within bounded wait, worker self-stop rejected, timer barrier callback-before-return remains pinned");
++    for(unsigned mode=0;mode<2;mode++) {
++        setup();timer_create_fail=mode==0;timer_start_fail=mode==1;
++        assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&id)==0);
++        exec_task.fn(exec_task.arg);timer_create_fail=timer_start_fail=false;finish_all();
++    }
++    puts("PASS timer allocation/start failure cleanup: no timer reference leak; underlying SSH deadline policy unchanged");
++    (void)ledger;
++}
++#ifndef OP_ADAPTER_NO_MAIN
++int main(void){
++ cJSON_Hooks h={tracked_malloc,tracked_free};cJSON_InitHooks(&h);sent_hook=observe;
++ setup();connect_shell();assert(shell_task.fn && connected_frames==1);
++ ssh_shell_context_t *ctx=shell_task.arg;queue_fail=true;ssh_send_output(ctx,"out",3);queue_fail=false;test_now+=100000;drive_all();assert(terminal_frames==1);shell_task.fn(shell_task.arg);finish_all();
++ setup();terminal_frames=0;output_after_terminal=false;connect_shell();ctx=shell_task.arg;
++ ssh_send_output(ctx,"out",3);ssh_cleanup();shell_task.fn(shell_task.arg);finish_all();assert(!output_after_terminal);
++ for(int f=0;f<5;f++){setup();terminal_frames=0;unsigned before=connected_frames;task_create_fail=f==0;close_during_create=f==1;remote_failure=f>=2?f-1:0;shell_task.fn=NULL;connect_shell();if(shell_task.fn)shell_task.fn(shell_task.arg);finish_all();assert(connected_frames==before);task_create_fail=close_during_create=false;remote_failure=0;}
++ setup();terminal_frames=0;output_after_terminal=false;uint32_t id;
++ ts_webui_ssh_options_t opts={.collect_output=true,.timeout_ms=1000,.extract_pattern="value=(.*)",.var_name="fake"};
++ assert(ts_webui_ssh_exec_start_ex("fake",22,"user",NULL,"password","cmd",&opts,&id)==0);
++ exec_task.fn(exec_task.arg);drive_all();assert(terminal_frames==2 && !output_after_terminal && variable_writes);finish_all();
++ setup();inline_exec=true;assert(ts_webui_ssh_exec_start("fake",22,"user",NULL,"password","cmd",&id)==0);inline_exec=false;finish_all();
++ operation_cross_tests();
++ printf("PASS complete production WS unit: Shell output failure/close/startup failure, Exec task/callback/match/variables/timer cleanup and task-before-create-return; destroyed=%u\n",session_destroys);
++ return 0;
++}
++
++#endif

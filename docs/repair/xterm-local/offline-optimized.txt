@@ -1,0 +1,10 @@
+✔ en-US: cold offline real xterm and terminal lifecycle (970.099166ms)
+✔ zh-CN: cold offline real xterm and terminal lifecycle (740.278917ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1901.623958

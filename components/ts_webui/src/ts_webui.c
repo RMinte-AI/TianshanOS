@@ -87,8 +87,10 @@ esp_err_t ts_webui_deinit(void)
 {
     if (!s_initialized) return ESP_OK;
     
-    ts_webui_stop();
-    ts_http_server_deinit();
+    esp_err_t ret = ts_webui_stop();
+    if (ret != ESP_OK) return ret;
+    ret = ts_http_server_deinit();
+    if (ret != ESP_OK) return ret;
     
     s_initialized = false;
     return ESP_OK;
@@ -96,7 +98,7 @@ esp_err_t ts_webui_deinit(void)
 
 esp_err_t ts_webui_start(void)
 {
-    if (s_running) return ESP_OK;
+    if (s_running && ts_http_server_get_handle() && !ts_http_server_is_stopping()) return ESP_OK;
     if (!s_initialized) {
         esp_err_t ret = ts_webui_init();
         if (ret != ESP_OK) return ret;
@@ -120,6 +122,8 @@ esp_err_t ts_webui_start(void)
     ret = ts_webui_ws_init();
     if (ret != ESP_OK) {
         TS_LOGW(TAG, "WebSocket init failed");
+        esp_err_t stop_ret = ts_http_server_stop();
+        return stop_ret != ESP_OK ? stop_ret : ret;
     }
 #endif
     
@@ -140,9 +144,9 @@ esp_err_t ts_webui_start(void)
 
 esp_err_t ts_webui_stop(void)
 {
-    if (!s_running) return ESP_OK;
     
-    ts_http_server_stop();
+    esp_err_t ret = ts_http_server_stop();
+    if (ret != ESP_OK) return ret;
     s_running = false;
     
     TS_LOGI(TAG, "WebUI stopped");
@@ -151,5 +155,5 @@ esp_err_t ts_webui_stop(void)
 
 bool ts_webui_is_running(void)
 {
-    return s_running;
+    return s_running && ts_http_server_get_handle() && !ts_http_server_is_stopping();
 }

@@ -37,6 +37,55 @@ function getApiUrl(endpoint) {
     return `${API_BASE}${endpoint}`;
 }
 
+// Keep REST business failures as returned envelopes. Strict consumers opt in below.
+function apiErrorReason(result) {
+    for (const value of [result?.rawMessage, result?.error, result?.message]) {
+        if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return '';
+}
+function apiErrorMessage(result, operation = '') {
+    const raw = apiErrorReason(result);
+    const reasons = {
+        'Invalid credentials': 'credentials', 'Invalid username or password': 'credentials', 'Old password is incorrect': 'oldPassword',
+        'SD card not mounted': 'sdUnavailable', 'SD card already mounted': 'sdMounted',
+        'File not found': 'fileMissing', 'Directory not found': 'directoryMissing',
+        'Source file not found': 'fileMissing', 'Cannot delete root directory': 'rootDirectory',
+        'Failed to stat file': 'fileInfo', 'Memory allocation failed': 'memory',
+        'Request timeout': 'timeout', 'Failed to fetch': 'connection'
+    };
+    const codes = ['unknownError', 'invalidInput', 'notFound', 'permission', 'busy', 'timeout',
+        'memory', 'internal', 'unsupported', 'hardware', 'connection', 'auth'];
+    const names = {INVALID_ARG:1, NOT_FOUND:2, NO_PERMISSION:3, BUSY:4, TIMEOUT:5,
+        NO_MEM:6, INTERNAL:7, NOT_SUPPORTED:8, HARDWARE:9, CONNECTION:10, AUTH:11};
+    const code = typeof result?.code === 'number' ? result.code : names[result?.code];
+    const key = result?.kind === 'timeout' ? (result.uncertain ? 'resultUnknown' : 'timeout')
+        : result?.kind === 'network' ? (result.uncertain ? 'resultUnknown' : 'connection')
+        : result?.kind === 'format' ? (result.uncertain ? 'resultUnknown' : 'invalidResponse')
+        : reasons[raw] || codes[code] || 'unknownError';
+    const message = t('promptRepair.' + key);
+    // Unknown backend text remains diagnostic detail, not the entire user explanation.
+    const detail = raw && !reasons[raw] ? '\n' + t('promptRepair.details', {detail: raw}) : '';
+    return message + detail;
+}
+class ApiOperationError extends Error {
+    constructor(result, operation = '', metadata = {}) {
+        super(apiErrorMessage({...result, ...metadata}, operation));
+        this.name = 'ApiOperationError';
+        this.code = result?.code;
+        this.rawMessage = apiErrorReason(result);
+        this.operation = operation;
+        this.httpStatus = result?.httpStatus;
+        Object.assign(this, metadata);
+    }
+}
+function requireApiSuccess(result, operation = '') {
+    if (!result || result.code !== 0 || (result.httpStatus && result.httpStatus >= 400)) {
+        throw new ApiOperationError(result, operation);
+    }
+    return result;
+}
+
 class TianShanAPI {
     constructor() {
         // 从 localStorage 恢复 token（注意 key 是 ts_token）
@@ -92,14 +141,16 @@ class TianShanAPI {
             console.debug(`API ${method} ${endpoint}: body size = ${options.body.length} bytes`);
         }
         
+        let httpStatus;
         try {
             const response = await fetch(getApiUrl(endpoint), options);
-            clearTimeout(timeoutId);
+            httpStatus = response.status;
             const text = await response.text();
             let json;
             try {
                 json = JSON.parse(text);
             } catch (parseErr) {
+                if (!response.ok) throw new ApiOperationError({error: text}, endpoint, {httpStatus: response.status});
                 // 响应可能被 WebSocket 等数据污染（如 ~{"type"...），尝试从某处解析出带 code 的 API 格式
                 if (parseErr instanceof SyntaxError && text) {
                     let idx = 0;
@@ -120,8 +171,16 @@ class TianShanAPI {
             }
             
             // 返回 JSON 响应，即使是错误码也返回（让调用者决定如何处理）
-            if (!response.ok && !json.code) {
-                throw new Error(json.message || json.error || 'Request failed');
+            if (!response.ok) throw new ApiOperationError(json, endpoint, {httpStatus: response.status});
+            const logoutResponse = endpoint === '/auth/logout' && method === 'POST';
+            if (!json || typeof json !== 'object' || Array.isArray(json) ||
+                (logoutResponse ? json.success !== true : !('code' in json))) {
+                throw new ApiOperationError({}, endpoint, {kind: 'format', uncertain: method !== 'GET', httpStatus: response.status});
+            }
+            json.httpStatus = response.status;
+            if (!logoutResponse && json.code !== 0) {
+                json.rawMessage = apiErrorReason(json);
+                json.message = apiErrorMessage(json, endpoint);
             }
 
             const isAuthEndpoint = endpoint === '/auth/login' || endpoint === '/auth/logout';
@@ -136,13 +195,11 @@ class TianShanAPI {
             
             return json;
         } catch (error) {
+            if (error instanceof ApiOperationError) throw error;
+            const kind = controller.signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'format' : 'network';
+            throw new ApiOperationError({message: error.message}, endpoint, {kind, uncertain: method !== 'GET', httpStatus});
+        } finally {
             clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                console.error(`API Timeout: ${endpoint} (>${timeout}ms)`);
-                throw new Error('Request timeout');
-            }
-            console.error(`API Error: ${endpoint}`, error);
-            throw error;
         }
     }
 
@@ -186,7 +243,10 @@ class TianShanAPI {
     
     async login(username, password) {
         const result = await this.call('auth.login', { username, password }, 'POST');
-        if ((result.success || result.code === 0 || result.code === 'OK') && result.data?.token) {
+        if (result.code === 0 && (typeof result.data?.token !== 'string' || !result.data.token)) {
+            throw new ApiOperationError({}, 'auth.login', {kind: 'format'});
+        }
+        if (result.code === 0 && result.data?.token) {
             this.token = result.data.token;
             this.username = result.data.username;
             this.level = result.data.level;
@@ -200,15 +260,20 @@ class TianShanAPI {
     }
     
     async logout() {
+        // request() captures Authorization before local credentials are cleared.
+        const pending = this.token ? this.call('auth.logout', {token: this.token}, 'POST') : null;
+        this.clearAuth();
         try {
-            if (this.token) {
-                await this.call('auth.logout', { token: this.token }, 'POST');
+            if (pending) {
+                await pending;
+                return {localCleared: true, serverConfirmed: true};
             }
-        } finally {
-            this.clearAuth();
+            return {localCleared: true, serverConfirmed: false};
+        } catch (error) {
+            return {localCleared: true, serverConfirmed: false, error};
         }
     }
-    
+
     async checkAuthStatus() {
         if (!this.token) return { valid: false };
         const result = await this.call('auth.status', { token: this.token }, 'POST');
@@ -467,7 +532,7 @@ class TianShanAPI {
         });
         if (!response.ok) {
             const error = await response.json().catch(() => ({ message: 'Download failed' }));
-            throw new Error(error.message);
+            throw new ApiOperationError(error, 'file.download', {httpStatus: response.status});
         }
         return response.blob();
     }
@@ -486,8 +551,8 @@ class TianShanAPI {
             body: content
         });
         const json = await response.json();
-        if (!response.ok) {
-            throw new Error(json.message || 'Upload failed');
+        if (!response.ok || json.status !== 'uploaded' || (json.code !== undefined && json.code !== 0)) {
+            throw new ApiOperationError(json, 'file.upload', {httpStatus: response.status});
         }
         return json;
     }
@@ -512,7 +577,8 @@ class TianShanAPI {
             params.keyid = auth.keyid;
         }
         // 主机指纹验证参数
-        params.trust_new = options.trust_new ?? true;      // 新主机自动信任（默认 true）
+        params.trust_new = options.trust_new ?? false;      // 新主机必须明确确认指纹
+        params.confirmed_fingerprint = options.confirmed_fingerprint;
         params.accept_changed = options.accept_changed ?? false; // 指纹变化是否接受（默认 false）
         return this.call('ssh.test', params, 'POST'); 
     }
@@ -529,7 +595,8 @@ class TianShanAPI {
             params.keyid = auth.keyid;
         }
         // 主机指纹验证参数
-        params.trust_new = options.trust_new ?? true;
+        params.trust_new = options.trust_new ?? false;
+        params.confirmed_fingerprint = options.confirmed_fingerprint;
         params.accept_changed = options.accept_changed ?? false;
         return this.call('ssh.exec', params, 'POST'); 
     }
@@ -538,7 +605,8 @@ class TianShanAPI {
     async sshCopyid(host, user, password, keyid, port = 22, verify = true, options = {}) { 
         return this.call('ssh.copyid', { 
             host, user, password, keyid, port, verify,
-            trust_new: options.trust_new ?? true,
+            trust_new: options.trust_new ?? false,
+            confirmed_fingerprint: options.confirmed_fingerprint,
             accept_changed: options.accept_changed ?? false
         }, 'POST'); 
     }
@@ -547,7 +615,8 @@ class TianShanAPI {
     async sshRevoke(host, user, password, keyid, port = 22, options = {}) { 
         return this.call('ssh.revoke', { 
             host, user, password, keyid, port,
-            trust_new: options.trust_new ?? true,
+            trust_new: options.trust_new ?? false,
+            confirmed_fingerprint: options.confirmed_fingerprint,
             accept_changed: options.accept_changed ?? false
         }, 'POST'); 
     }

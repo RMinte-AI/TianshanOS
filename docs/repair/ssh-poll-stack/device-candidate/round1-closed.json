@@ -1,0 +1,222 @@
+{
+  "stage": "round1_closed_local_help",
+  "time": "2026-09-28T18:15:15.752403",
+  "tasks": {
+    "code": 0,
+    "data": {
+      "tasks": [
+        {
+          "name": "httpd",
+          "priority": 5,
+          "stack_hwm": 1108,
+          "core": 1,
+          "state": "running"
+        },
+        {
+          "name": "IDLE0",
+          "priority": 0,
+          "stack_hwm": 688,
+          "core": 0,
+          "state": "ready"
+        },
+        {
+          "name": "IDLE1",
+          "priority": 0,
+          "stack_hwm": 696,
+          "core": 1,
+          "state": "ready"
+        },
+        {
+          "name": "sio_agx-info",
+          "priority": 5,
+          "stack_hwm": 1792,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "ts_auto",
+          "priority": 5,
+          "stack_hwm": 2032,
+          "core": 1,
+          "state": "blocked"
+        },
+        {
+          "name": "tiT",
+          "priority": 18,
+          "stack_hwm": 1596,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "action_exec",
+          "priority": 5,
+          "stack_hwm": 13008,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "power_policy",
+          "priority": 5,
+          "stack_hwm": 908,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "websocket_task",
+          "priority": 5,
+          "stack_hwm": 1336,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "w5500_tsk",
+          "priority": 15,
+          "stack_hwm": 2792,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "https_coord",
+          "priority": 5,
+          "stack_hwm": 5432,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "main",
+          "priority": 1,
+          "stack_hwm": 392,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "power_monitor",
+          "priority": 5,
+          "stack_hwm": 1956,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "httpd",
+          "priority": 5,
+          "stack_hwm": 15124,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "ts_console",
+          "priority": 5,
+          "stack_hwm": 1964,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "ipc1",
+          "priority": 24,
+          "stack_hwm": 496,
+          "core": 1,
+          "state": "suspended"
+        },
+        {
+          "name": "ws_telemetry",
+          "priority": 2,
+          "stack_hwm": 2160,
+          "core": 1,
+          "state": "suspended"
+        },
+        {
+          "name": "dhcp_evt",
+          "priority": 5,
+          "stack_hwm": 900,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "ts_event",
+          "priority": 5,
+          "stack_hwm": 904,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "esp_timer",
+          "priority": 22,
+          "stack_hwm": 2680,
+          "core": 0,
+          "state": "suspended"
+        },
+        {
+          "name": "led_render",
+          "priority": 5,
+          "stack_hwm": 1364,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "sys_evt",
+          "priority": 20,
+          "stack_hwm": 1684,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "ipc0",
+          "priority": 24,
+          "stack_hwm": 392,
+          "core": 0,
+          "state": "suspended"
+        },
+        {
+          "name": "Tmr Svc",
+          "priority": 1,
+          "stack_hwm": 800,
+          "core": 2147483647,
+          "state": "blocked"
+        }
+      ],
+      "count": 24
+    }
+  },
+  "memory": {
+    "code": 0,
+    "data": {
+      "free_heap": 7672364,
+      "min_free_heap": 7550256,
+      "internal": {
+        "total": 308083,
+        "free": 73443,
+        "allocated": 234640,
+        "largest_block": 31744
+      },
+      "psram": {
+        "total": 8370332,
+        "free": 7614416,
+        "allocated": 755916,
+        "largest_block": 7471104
+      }
+    }
+  },
+  "info": {
+    "code": 0,
+    "data": {
+      "app": {
+        "name": "TianShanOS",
+        "version": "0.5.2+3a19128d.09281801",
+        "idf_version": "v5.5.2",
+        "compile_time": "18:01:50",
+        "compile_date": "Sep 28 2026"
+      },
+      "chip": {
+        "model": "ESP32-S3",
+        "cores": 2,
+        "revision": 2,
+        "features": [
+          "WiFi",
+          "BLE"
+        ]
+      },
+      "flash_size": 16777216,
+      "uptime_ms": 319336
+    }
+  }
+}

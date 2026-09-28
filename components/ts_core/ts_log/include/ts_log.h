@@ -115,6 +115,8 @@ typedef struct {
     size_t buffer_capacity;         /**< 缓冲区容量 */
     size_t buffer_count;            /**< 当前缓冲区中的日志数 */
     uint32_t total_captured;        /**< 总捕获日志数（含溢出覆盖的）*/
+    uint32_t capture_dropped;
+    uint32_t capture_truncated;
     uint32_t dropped;               /**< 丢弃的日志数 */
     bool esp_log_capture_enabled;   /**< ESP_LOG 捕获是否启用 */
 } ts_log_stats_t;

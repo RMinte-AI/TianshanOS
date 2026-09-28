@@ -40,6 +40,8 @@
 #include "ts_device_ctrl.h"
 #include "ts_config_file.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "ts_https_retry.h"
 
 static const char *TAG = "ts_services";
 
@@ -550,17 +552,17 @@ static esp_err_t security_service_start(ts_service_handle_t handle, void *user_d
     ts_cert_pki_status_t cert_status;
     esp_err_t ret = ts_cert_get_status(&cert_status);
     
-    if (ret == ESP_OK && cert_status.status != TS_CERT_STATUS_ACTIVATED) {
-        /* 没有有效证书，启动自动注册 */
+    if (ret == ESP_OK && (!cert_status.has_certificate || cert_status.cert_info.validity == TS_CERT_VALIDITY_EXPIRED)) {
+        /* 缺证书或确实过期才自动注册；待校时/尚未生效不触发替换。 */
         ESP_LOGI(TAG, "No valid certificate, starting auto-enrollment...");
         ret = ts_pki_client_start_auto_enroll(pki_enroll_callback, NULL);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Failed to start auto-enrollment: %s", esp_err_to_name(ret));
         }
     } else if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Certificate status: %s (valid for %d days)",
+        ESP_LOGI(TAG, "Certificate status: %s, time validity: %s",
                  ts_cert_status_to_str(cert_status.status),
-                 cert_status.cert_info.days_until_expiry);
+                 ts_cert_validity_to_str(cert_status.cert_info.validity));
     }
     
     /* 证书已就绪，现在加载加密的配置文件 (.tscfg) */
@@ -652,166 +654,163 @@ static bool api_service_health(ts_service_handle_t handle, void *user_data)
  * HTTPS 服务回调 (mTLS) - 事件驱动方式
  * ========================================================================== */
 
-/* HTTPS 服务状态 */
+/* TLS lifecycle has exactly one owner. Events only wake it; no event stack TLS work. */
 static struct {
-    bool pending_init;          /* 等待时间同步后初始化 */
-    ts_service_handle_t handle; /* 服务句柄 */
-} s_https_state = {0};
+    TaskHandle_t task;
+    ts_event_handler_handle_t time_handler, material_handler;
+    bool desired;
+    uint32_t control, completed;
+    esp_err_t stop_result;
+} s_https_state;
+static portMUX_TYPE s_https_control_lock = portMUX_INITIALIZER_UNLOCKED;
 
-/* 时间同步事件处理器 - 当时间同步完成后初始化 HTTPS */
-static void https_time_sync_handler(const ts_event_t *event, void *user_data)
+static void https_conditions_changed(const ts_event_t *event, void *user_data)
 {
-    (void)user_data;
-    
-    if (!s_https_state.pending_init) {
-        return;
+    (void)event; (void)user_data;
+    portENTER_CRITICAL(&s_https_control_lock);
+    TaskHandle_t task = s_https_state.task;
+    portEXIT_CRITICAL(&s_https_control_lock);
+    if (task) xTaskNotifyGive(task);
+}
+
+static esp_err_t https_cleanup(void)
+{
+    esp_err_t ret = ts_https_stop();
+    if (ret == ESP_OK) ts_https_deinit();
+    return ret;
+}
+
+static void https_coordinator(void *arg)
+{
+    (void)arg;
+    ts_https_retry_t retry = {0};
+    for (;;) {
+        bool desired;
+        uint32_t control, completed;
+        portENTER_CRITICAL(&s_https_control_lock);
+        desired = s_https_state.desired;
+        control = s_https_state.control;
+        completed = s_https_state.completed;
+        portEXIT_CRITICAL(&s_https_control_lock);
+        if (!desired) {
+            if (completed != control) {
+                esp_err_t ret = https_cleanup();
+                portENTER_CRITICAL(&s_https_control_lock);
+                s_https_state.stop_result = ret;
+                s_https_state.completed = control;
+                portEXIT_CRITICAL(&s_https_control_lock);
+            }
+        } else if (!ts_https_is_running()) {
+            ts_cert_pki_status_t status = {0};
+            ts_https_config_t config = TS_HTTPS_CONFIG_DEFAULT();
+            esp_err_t ret = ts_cert_get_status(&status);
+            bool ready = ret == ESP_OK && ts_cert_prerequisites(&status, config.require_client_cert);
+            int64_t now = esp_timer_get_time() / 1000;
+            if (ts_https_retry_due(&retry, status.generation, control, true, ready, now)) {
+                const char *stage = "cleanup";
+                ret = https_cleanup();
+                if (ret == ESP_OK) { stage = "init"; ret = ts_https_init(&config); }
+                if (ret == ESP_OK) { stage = "default_endpoints"; ret = ts_https_register_default_api(); }
+                /* Stop intent supersedes this attempt before starting the listener. */
+                portENTER_CRITICAL(&s_https_control_lock);
+                bool current = s_https_state.desired && control == s_https_state.control;
+                portEXIT_CRITICAL(&s_https_control_lock);
+                if (ret == ESP_OK && current) { stage = "start"; ret = ts_https_start(); }
+                if (ret != ESP_OK || !current) {
+                    esp_err_t cleanup = https_cleanup();
+                    if (cleanup != ESP_OK) { stage = "cleanup"; ret = cleanup; }
+                    if (ret != ESP_OK) {
+                        ts_https_record_error(stage, ret);
+                        ts_https_retry_failed(&retry, esp_timer_get_time() / 1000);
+                    }
+                }
+                /* A stop arriving inside TLS start is serviced before its acknowledgement. */
+                portENTER_CRITICAL(&s_https_control_lock);
+                current = s_https_state.desired && control == s_https_state.control;
+                portEXIT_CRITICAL(&s_https_control_lock);
+                if (!current) continue;
+            }
+        }
+        uint32_t wait_ms = 5000;
+        int64_t remaining = retry.due_ms - esp_timer_get_time() / 1000;
+        if (desired && retry.failures > 0 && retry.failures < 4 && remaining > 0 && remaining < wait_ms)
+            wait_ms = (uint32_t)remaining;
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
     }
-    
-    ESP_LOGI(TAG, "Time synced, now initializing HTTPS with valid time...");
-    
-    /* 刷新 PKI 状态（使用正确的系统时间） */
-    ts_cert_refresh_status();
-    
-    /* 检查 PKI 状态 */
-    ts_cert_pki_status_t pki_status;
-    esp_err_t ret = ts_cert_get_status(&pki_status);
-    if (ret != ESP_OK || pki_status.status != TS_CERT_STATUS_ACTIVATED) {
-        ESP_LOGW(TAG, "PKI not activated after time sync, HTTPS disabled");
-        s_https_state.pending_init = false;
-        return;
-    }
-    
-    /* 初始化 HTTPS 服务器 */
-    ts_https_config_t config = TS_HTTPS_CONFIG_DEFAULT();
-    ret = ts_https_init(&config);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init HTTPS: %s", esp_err_to_name(ret));
-        s_https_state.pending_init = false;
-        return;
-    }
-    
-    /* 注册默认 API 端点 */
-    ret = ts_https_register_default_api();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register default API: %s", esp_err_to_name(ret));
-        s_https_state.pending_init = false;
-        return;
-    }
-    
-    /* 启动 HTTPS 服务器 */
-    ret = ts_https_start();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "HTTPS server started on port 443 (mTLS enabled) [delayed start]");
-    } else {
-        ESP_LOGE(TAG, "Failed to start HTTPS: %s", esp_err_to_name(ret));
-    }
-    
-    s_https_state.pending_init = false;
+}
+
+static void https_unregister(ts_event_handler_handle_t *handler)
+{
+    if (!*handler) return;
+    esp_err_t ret = ts_event_unregister(*handler);
+    if (ret == ESP_OK) *handler = NULL;
+    else ESP_LOGW(TAG, "HTTPS subscription cleanup: %s", esp_err_to_name(ret));
 }
 
 static esp_err_t https_service_init(ts_service_handle_t handle, void *user_data)
 {
-    (void)user_data;
-    
-    ESP_LOGI(TAG, "Initializing HTTPS service...");
-    s_https_state.handle = handle;
-    
-    /* 检查系统时间是否有效（年份 >= 2025） */
-    if (ts_time_sync_needs_sync()) {
-        /* 时间无效，注册事件等待时间同步后再初始化 */
-        ESP_LOGI(TAG, "System time invalid (< 2025), waiting for time sync event...");
-        s_https_state.pending_init = true;
-        
-        /* 注册时间同步事件处理器 */
-        ts_event_register(TS_EVENT_BASE_TIME, TS_EVENT_TIME_SYNCED, 
-                         https_time_sync_handler, NULL, NULL);
-        
-        ESP_LOGI(TAG, "HTTPS init deferred until time sync completes");
-        return ESP_OK;  /* 非阻塞返回，不影响其他服务 */
+    (void)handle; (void)user_data;
+    if (s_https_state.task) return ESP_OK;
+    esp_err_t ret = ESP_OK;
+    if (!s_https_state.time_handler)
+        ret = ts_event_register(TS_EVENT_BASE_TIME, TS_EVENT_TIME_SYNCED,
+                https_conditions_changed, NULL, &s_https_state.time_handler);
+    if (ret != ESP_OK) return ret;
+    if (!s_https_state.material_handler)
+        ret = ts_event_register(TS_EVENT_BASE_PKI, TS_EVENT_PKI_MATERIAL_CHANGED,
+                https_conditions_changed, NULL, &s_https_state.material_handler);
+    if (ret == ESP_OK) {
+        /* Internal stack: TLS and material reads may touch Flash. Not a PSRAM stack. */
+        TaskHandle_t task;
+        if (xTaskCreate(https_coordinator, "https_coord", 8192, NULL, 5, &task) == pdPASS) {
+            portENTER_CRITICAL(&s_https_control_lock);
+            s_https_state.task = task;
+            portEXIT_CRITICAL(&s_https_control_lock);
+            return ESP_OK;
+        }
+        ret = ESP_ERR_NO_MEM;
     }
-    
-    /* 时间有效，直接初始化 */
-    ESP_LOGI(TAG, "System time valid, initializing HTTPS immediately...");
-    
-    /* 刷新 PKI 状态 */
-    ts_cert_refresh_status();
-    
-    /* 检查 PKI 状态 */
-    ts_cert_pki_status_t pki_status;
-    esp_err_t ret = ts_cert_get_status(&pki_status);
-    if (ret != ESP_OK || pki_status.status != TS_CERT_STATUS_ACTIVATED) {
-        ESP_LOGW(TAG, "PKI not activated, HTTPS server will not start");
-        ESP_LOGW(TAG, "Use 'pki' command to generate and install certificates");
-        return ESP_OK;  /* 不是致命错误，继续 */
-    }
-    
-    /* 初始化 HTTPS 服务器 */
-    ts_https_config_t config = TS_HTTPS_CONFIG_DEFAULT();
-    ret = ts_https_init(&config);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to init HTTPS: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    /* 注册默认 API 端点 */
-    ret = ts_https_register_default_api();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register default API: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    return ESP_OK;
+    https_unregister(&s_https_state.material_handler);
+    https_unregister(&s_https_state.time_handler);
+    return ret;
 }
 
 static esp_err_t https_service_start(ts_service_handle_t handle, void *user_data)
 {
-    (void)handle;
-    (void)user_data;
-    
-    ESP_LOGI(TAG, "Starting HTTPS service...");
-    
-    /* 如果正在等待时间同步，跳过启动（会在事件回调中启动） */
-    if (s_https_state.pending_init) {
-        ESP_LOGI(TAG, "HTTPS start deferred (waiting for time sync)");
-        return ESP_OK;
-    }
-    
-    /* 检查是否已初始化 */
-    ts_cert_pki_status_t pki_status;
-    esp_err_t ret = ts_cert_get_status(&pki_status);
-    if (ret != ESP_OK || pki_status.status != TS_CERT_STATUS_ACTIVATED) {
-        ESP_LOGW(TAG, "HTTPS server not starting (PKI not activated)");
-        return ESP_OK;
-    }
-    
-    ret = ts_https_start();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start HTTPS: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    ESP_LOGI(TAG, "HTTPS server started on port 443 (mTLS enabled)");
-    return ESP_OK;
+    (void)handle; (void)user_data;
+    if (!s_https_state.task) return ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s_https_control_lock);
+    s_https_state.desired = true;
+    ++s_https_state.control;
+    portEXIT_CRITICAL(&s_https_control_lock);
+    xTaskNotifyGive(s_https_state.task);
+    return ESP_OK; /* Scheduled; actual listening is reported by ts_https_get_runtime(). */
 }
 
 static esp_err_t https_service_stop(ts_service_handle_t handle, void *user_data)
 {
-    (void)handle;
-    (void)user_data;
-    
-    ESP_LOGI(TAG, "Stopping HTTPS service...");
-    
-    ts_https_stop();
-    ts_https_deinit();
-    
-    return ESP_OK;
+    (void)handle; (void)user_data;
+    if (!s_https_state.task) return ESP_OK;
+    portENTER_CRITICAL(&s_https_control_lock);
+    s_https_state.desired = false;
+    uint32_t control = ++s_https_state.control;
+    portEXIT_CRITICAL(&s_https_control_lock);
+    xTaskNotifyGive(s_https_state.task);
+    for (unsigned i = 0; i < 300; ++i) {
+        portENTER_CRITICAL(&s_https_control_lock);
+        bool done = s_https_state.completed == control;
+        esp_err_t ret = s_https_state.stop_result;
+        portEXIT_CRITICAL(&s_https_control_lock);
+        if (done) return ret;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    ts_https_record_error("stop_timeout", ESP_ERR_TIMEOUT);
+    return ESP_ERR_TIMEOUT;
 }
 
 static bool https_service_health(ts_service_handle_t handle, void *user_data)
 {
-    (void)handle;
-    (void)user_data;
-    
+    (void)handle; (void)user_data;
     return ts_https_is_running();
 }
 

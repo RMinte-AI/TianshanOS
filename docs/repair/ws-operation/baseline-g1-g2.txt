@@ -1,0 +1,4 @@
+Frozen production source and original tests SHA256 verified
+G1 complete production unit: replacement=2 old=1 replacement_corrupted=1
+G2 complete production unit: terminal_before_late_output=1
+CONFIRMED G1/G2 are business assertion failures in the complete frozen WS unit, not compile/dependency/cleanup failures

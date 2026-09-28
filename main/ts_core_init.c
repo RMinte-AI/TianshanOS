@@ -21,6 +21,26 @@ static const char *TAG = "ts_core";
 
 static bool s_core_initialized = false;
 static bool s_core_started = false;
+static bool s_core_cleanup_pending;
+static bool s_core_stopping;
+
+static esp_err_t core_release_components(void)
+{
+    esp_err_t ret;
+    if (ts_service_is_initialized() && (ret = ts_service_deinit()) != ESP_OK) return ret;
+    if (ts_event_is_initialized() && (ret = ts_event_deinit()) != ESP_OK) return ret;
+    if (ts_log_is_initialized() && (ret = ts_log_deinit()) != ESP_OK) return ret;
+    if (ts_config_is_initialized() && (ret = ts_config_deinit()) != ESP_OK) return ret;
+    return ESP_OK;
+}
+static esp_err_t core_init_rollback(esp_err_t original)
+{
+    s_core_cleanup_pending=true;
+    esp_err_t ret=core_release_components();
+    if(ret!=ESP_OK)return ret;
+    s_core_cleanup_pending=false;
+    return original;
+}
 
 /* ============================================================================
  * cJSON PSRAM 内存钩子 - 减少 DRAM 碎片
@@ -61,7 +81,7 @@ esp_err_t ts_core_init(void)
 {
     esp_err_t ret;
 
-    if (s_core_initialized) {
+    if (s_core_initialized || s_core_cleanup_pending) {
         ESP_LOGW(TAG, "Core already initialized");
         return ESP_ERR_INVALID_STATE;
     }
@@ -112,8 +132,7 @@ esp_err_t ts_core_init(void)
     ret = ts_log_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize log: %s", esp_err_to_name(ret));
-        ts_config_deinit();
-        return ret;
+        return core_init_rollback(ret);
     }
 
     // 3. 初始化事件系统
@@ -121,9 +140,7 @@ esp_err_t ts_core_init(void)
     ret = ts_event_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize event: %s", esp_err_to_name(ret));
-        ts_log_deinit();
-        ts_config_deinit();
-        return ret;
+        return core_init_rollback(ret);
     }
 
     // 3.1 注册 config_file 事件监听器（依赖事件系统）
@@ -145,10 +162,7 @@ esp_err_t ts_core_init(void)
     ret = ts_service_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize service: %s", esp_err_to_name(ret));
-        ts_event_deinit();
-        ts_log_deinit();
-        ts_config_deinit();
-        return ret;
+        return core_init_rollback(ret);
     }
 
     s_core_initialized = true;
@@ -159,26 +173,15 @@ esp_err_t ts_core_init(void)
 
 esp_err_t ts_core_deinit(void)
 {
-    if (!s_core_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    ESP_LOGI(TAG, "Deinitializing TianShanOS Core...");
-
-    // 如果已启动，先停止
-    if (s_core_started) {
-        ts_core_stop();
-    }
-
-    // 按相反顺序反初始化
-    ts_service_deinit();
-    ts_event_deinit();
-    ts_log_deinit();
-    ts_config_deinit();
-
-    s_core_initialized = false;
-    ESP_LOGI(TAG, "TianShanOS Core deinitialized");
-
+    if (!s_core_initialized && !s_core_cleanup_pending) return ESP_ERR_INVALID_STATE;
+    s_core_cleanup_pending=true;
+    esp_err_t ret = ts_core_stop();
+    if (ret != ESP_OK) return ret;
+    /* Earlier stages may already have completed on a previous attempt. */
+    ret=core_release_components();
+    if(ret!=ESP_OK)return ret;
+    s_core_initialized=false;
+    s_core_cleanup_pending=false;
     return ESP_OK;
 }
 
@@ -189,6 +192,7 @@ bool ts_core_is_initialized(void)
 
 esp_err_t ts_core_start(void)
 {
+    if(s_core_stopping || s_core_cleanup_pending) return ESP_ERR_INVALID_STATE;
     if (!s_core_initialized) {
         ESP_LOGE(TAG, "Core not initialized");
         return ESP_ERR_INVALID_STATE;
@@ -232,17 +236,24 @@ esp_err_t ts_core_stop(void)
     }
 
     ESP_LOGI(TAG, "Stopping TianShanOS...");
-
-    // 发送系统关闭事件
-    ts_event_post_sync(TS_EVENT_BASE_SYSTEM, TS_EVENT_SYSTEM_SHUTDOWN, NULL, 0);
+    esp_err_t ret;
+    /* A retry continues the same stop intent; do not replay shutdown handlers. */
+    if(!s_core_stopping) {
+        s_core_stopping=true;
+        ret=ts_event_post_sync(TS_EVENT_BASE_SYSTEM,TS_EVENT_SYSTEM_SHUTDOWN,NULL,0);
+        if(ret!=ESP_OK){s_core_stopping=false;return ret;}
+    }
 
     // 停止所有服务
-    ts_service_stop_all();
+    ret = ts_service_stop_all();
+    if (ret != ESP_OK) return ret;
 
     // 保存配置
-    ts_config_save();
+    ret = ts_config_save();
+    if (ret != ESP_OK) return ret;
 
     s_core_started = false;
+    s_core_stopping=false;
     ESP_LOGI(TAG, "TianShanOS stopped");
 
     return ESP_OK;

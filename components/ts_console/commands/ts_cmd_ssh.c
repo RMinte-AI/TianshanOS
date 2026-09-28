@@ -253,6 +253,11 @@ static esp_err_t verify_host_key(ts_ssh_session_t session, bool verbose)
     
     return ret;
 }
+static esp_err_t cli_verify_before_auth(ts_ssh_session_t session, void *unused)
+{
+    return verify_host_key(session, false);
+}
+
 
 /*===========================================================================*/
 /*                          Ctrl+C 检测任务                                   */
@@ -407,6 +412,7 @@ static const char *shell_input_callback(size_t *out_len, void *user_data)
         } else if (ch == 0x1C) {  /* Ctrl+\ - 退出 Shell */
             ts_console_printf("\n^\\  (Exit shell)\n");
             ts_console_request_interrupt();
+            ts_ssh_shell_request_close(shell);
             return NULL;
         }
         
@@ -454,7 +460,7 @@ static int do_ssh_shell(const char *host, int port, const char *user,
     }
     
     /* 连接 */
-    ret = ts_ssh_connect(session);
+    ret = ts_ssh_connect_with_verifier(session, cli_verify_before_auth, NULL);
     if (ret != ESP_OK) {
         ts_console_printf("Error: %s\n", ts_ssh_get_error(session));
         ts_ssh_session_destroy(session);
@@ -563,7 +569,7 @@ static int do_ssh_forward(const char *host, int port, const char *user,
     }
     
     /* 连接 */
-    ret = ts_ssh_connect(session);
+    ret = ts_ssh_connect_with_verifier(session, cli_verify_before_auth, NULL);
     if (ret != ESP_OK) {
         ts_console_printf("Error: %s\n", ts_ssh_get_error(session));
         ts_ssh_session_destroy(session);
@@ -864,7 +870,7 @@ static int do_ssh_copy_id(const char *host, int port, const char *user,
         return 1;
     }
     
-    ret = ts_ssh_connect(session);
+    ret = ts_ssh_connect_with_verifier(session, cli_verify_before_auth, NULL);
     if (ret != ESP_OK) {
         ts_console_printf("FAILED\n");
         ts_console_printf("  Error: %s\n", ts_ssh_get_error(session));
@@ -988,7 +994,7 @@ static int do_ssh_copy_id(const char *host, int port, const char *user,
         return 1;
     }
     
-    ret = ts_ssh_connect(session);
+    ret = ts_ssh_connect_with_verifier(session, cli_verify_before_auth, NULL);
     
     if (ret != ESP_OK) {
         const char *error_msg = ts_ssh_get_error(session);
@@ -1196,7 +1202,7 @@ static int do_ssh_revoke(const char *host, int port, const char *user,
     }
     
     /* 连接 */
-    ret = ts_ssh_connect(session);
+    ret = ts_ssh_connect_with_verifier(session, cli_verify_before_auth, NULL);
     if (ret != ESP_OK) {
         ts_console_printf("FAILED\n");
         ts_console_printf("Error: %s\n", ts_ssh_get_error(session));

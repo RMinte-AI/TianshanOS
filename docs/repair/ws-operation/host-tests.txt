@@ -1,0 +1,23 @@
+PASS T01 T02 T05 T06 T07 T08: demand, independent intervals, targeted fanout
+PASS T09 T12 T16: shared batch, old revision cannot send or update new state
+PASS T11 T14: standalone info, queued delivery cannot cross fd reuse
+PASS T13: cancellation during API skips remaining metrics
+PASS T17 T19 T20: queue failure backoff, completion-before-return ownership
+PASS T23: ordered operation events own borrowed data
+PASS T10 T34: interval validation and nonzero capped monotonic waits
+PASS T15 T27 T28: no second HTTP owner, reused handle epoch isolation, stop timeout retains live resources and retries
+PASS T27 T30: stop during API rejects new instance; worker/HTTPD self-wait refused
+PASS T21 T22: allocation failure sweep across production JSON/TX paths; per-call results freed; allocation baseline restored
+PASS T24 T25: bounded non-NUL event parse, retained paced events, original global recipient set
+PASS T23: bounded event FIFO full is counted, accepted results remain ordered
+PASS T26: task and partial handler registration rollback permit retry
+PASS T29 T33: repeated lifecycle and notification at wait boundary
+PASS T18 T19 T20: bounded slots/bytes, reserved global capacity, delayed completion cadence, separate queue/send counters
+PASS T09 T14 T16: snapshot-before-collection and send-before-completion barriers with resubscribe/fd reuse
+PASS T17 T28: HTTP handler barrier publication, timeout retention, single retry and callback-before-return
+PASS T04 T20 T21: business-error results freed; send failure shuts down only the pinned session and invalidates demand
+PASS cross matrix: 4 barriers x 5 mutations (cancel, resubscribe, disconnect, fd reuse, stop/restart exclusion); restart succeeds after every drain
+PASS T18 configured 32-service escaped-name fixture: 9991 bytes within 32768-byte frame budget
+PASS T32: self unregister, selected-node retirement, in-flight synchronous drain, unrelated handler retained
+PASS actual HTTP/WebUI stop/deinit: hook timeout, HTTPD failure, self-stop rejection, truthful state, retained ownership and retry
+PASS actual WebSocket initializer: server/transport/manager/two mutexes/buffer/URI/power-handler failures are not reported as success; duplicate/retry-state guards

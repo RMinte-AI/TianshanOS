@@ -1,0 +1,339 @@
+{
+  "requests": [
+    {
+      "url": "http://10.10.99.97/",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/css/style.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/fonts/remixicon.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-48.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/api.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/router.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/terminal.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/dragSort.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/app.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/js/lang/zh-CN.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/fonts/remixicon.woff2",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/config/get?key=system.language",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ota/version",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/auth/login",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/xterm.css?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/xterm.min.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/vendor/xterm/fit.min.js?v=20260928-local-xterm",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/time/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/memory",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/network/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/protection/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/fan/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/service/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/led/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/usb/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ui/widgets/get",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/time/info",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/system/memory",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/network/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/power/protection/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/fan/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/service/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/led/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/usb/status",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ui/widgets/get",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/status?device=agx",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ssh/hosts/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/ssh/commands/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/list",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3.6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3.6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3-Embedding-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3-Embedding-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3-Reranker-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3-Reranker-0.6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=drop",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=drop",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/rules/get?id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/actions/get?id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Embedding-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Reranker-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Embedding-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Reranker-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_6-35B-A3B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Embedding-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3-Reranker-0_6B",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/services/status?command_id=Qwen3_8_27B_Quark_INT4_MTP3",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/automation/variables/list?include_meta=false",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/api/v1/device/ping",
+      "origin": "http://10.10.99.97"
+    },
+    {
+      "url": "http://10.10.99.97/images/tslogo-32.png",
+      "origin": "http://10.10.99.97"
+    }
+  ],
+  "errors": [],
+  "externalRequests": 0,
+  "freshContext": true,
+  "serviceWorkers": "block",
+  "originAllowlist": [
+    "http://10.10.99.97"
+  ]
+}

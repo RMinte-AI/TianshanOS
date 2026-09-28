@@ -12,12 +12,30 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
+#include <stdatomic.h>
+#include "freertos/task.h"
 
 #define TAG "ts_http"
 #define MAX_ROUTES 64
 
 static httpd_handle_t s_server = NULL;
 static bool s_initialized = false;
+static _Atomic(TaskHandle_t) s_http_task;
+static atomic_flag s_stop_busy = ATOMIC_FLAG_INIT;
+static atomic_bool s_stopping;
+bool ts_http_server_is_stopping(void) { return s_stopping; }
+static esp_err_t session_open(httpd_handle_t server, int fd)
+{
+    (void)server; (void)fd;
+    s_http_task = xTaskGetCurrentTaskHandle();
+    return ESP_OK;
+}
+static esp_err_t (*s_before_stop)(httpd_handle_t);
+static void (*s_after_stop)(httpd_handle_t);
+void ts_http_server_set_stop_hooks(esp_err_t (*before)(httpd_handle_t), void (*after)(httpd_handle_t))
+{
+    s_before_stop = before; s_after_stop = after;
+}
 
 // 路由注册表（用于同步到 HTTPS）
 typedef struct {
@@ -26,6 +44,7 @@ typedef struct {
     ts_http_handler_t handler;
     void *user_data;         // 原始 user_data
     bool requires_auth;      // 认证要求
+    ts_http_route_t *owned_copy; /* HTTPD borrows user_ctx; it does not free it. */
 } registered_route_t;
 
 static registered_route_t s_registered_routes[MAX_ROUTES];
@@ -46,19 +65,22 @@ esp_err_t ts_http_server_init(void)
 
 esp_err_t ts_http_server_deinit(void)
 {
-    ts_http_server_stop();
+    esp_err_t ret = ts_http_server_stop();
+    if (ret != ESP_OK) return ret;
     s_initialized = false;
     return ESP_OK;
 }
 
 esp_err_t ts_http_server_start(void)
 {
+    if (s_stopping) return ESP_ERR_INVALID_STATE;
     if (s_server) return ESP_OK;
     
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 #ifdef CONFIG_TS_NET_HTTP_PORT
     config.server_port = CONFIG_TS_NET_HTTP_PORT;
 #endif
+    config.open_fn = session_open;
     config.max_uri_handlers = MAX_ROUTES;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.global_user_ctx = NULL;
@@ -81,16 +103,35 @@ esp_err_t ts_http_server_start(void)
 
 esp_err_t ts_http_server_stop(void)
 {
-    if (!s_server) return ESP_OK;
-    
-    httpd_stop(s_server);
+    if (s_http_task && s_http_task == xTaskGetCurrentTaskHandle()) return ESP_ERR_INVALID_STATE;
+    if (atomic_flag_test_and_set(&s_stop_busy)) return ESP_ERR_INVALID_STATE;
+    esp_err_t ret = ESP_OK;
+    if (!s_server) goto done;
+    s_stopping = true;
+    ret = s_before_stop ? s_before_stop(s_server) : ESP_OK;
+    if (ret != ESP_OK) goto done;
+    httpd_handle_t stopped = s_server;
+    ret = httpd_stop(stopped);
+    if (ret != ESP_OK) goto done;
+    if (s_after_stop) s_after_stop(stopped);
     s_server = NULL;
+    s_http_task = NULL;
+    s_stopping = false;
+    for (int i = 0; i < s_route_count; ++i) free(s_registered_routes[i].owned_copy);
+    memset(s_registered_routes, 0, sizeof(s_registered_routes));
+    s_route_count = 0;
     TS_LOGI(TAG, "HTTP server stopped");
-    return ESP_OK;
+done:
+    atomic_flag_clear(&s_stop_busy);
+    return ret;
 }
 
 static esp_err_t http_handler_wrapper(httpd_req_t *req)
 {
+    if(s_stopping && req->method!=HTTP_GET) {
+        httpd_resp_set_status(req,"503 Service Unavailable");
+        return httpd_resp_sendstr(req,"Service is stopping");
+    }
     ts_http_route_t *route = (ts_http_route_t *)req->user_ctx;
     if (!route || !route->handler) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No handler");
@@ -145,7 +186,8 @@ static esp_err_t http_handler_wrapper(httpd_req_t *req)
 
 esp_err_t ts_http_server_register_route(const ts_http_route_t *route)
 {
-    if (!s_server || !route) return ESP_ERR_INVALID_STATE;
+    if (!s_server || !route || s_stopping) return ESP_ERR_INVALID_STATE;
+    if (s_route_count >= MAX_ROUTES) return ESP_ERR_NO_MEM;
     
     // Allocate persistent copy of route (prefer PSRAM)
     ts_http_route_t *route_copy = TS_MALLOC_PSRAM(sizeof(ts_http_route_t));
@@ -173,6 +215,7 @@ esp_err_t ts_http_server_register_route(const ts_http_route_t *route)
         s_registered_routes[s_route_count].method = route->method;
         s_registered_routes[s_route_count].handler = route->handler;
         s_registered_routes[s_route_count].user_data = route->user_data;  // 保存 user_data
+        s_registered_routes[s_route_count].owned_copy = route_copy;
         s_registered_routes[s_route_count].requires_auth = route->requires_auth;  // 保存认证要求
         s_route_count++;
     }

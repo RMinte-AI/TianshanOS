@@ -1,0 +1,88 @@
+{
+  "recovered": false,
+  "next": {
+    "type": "terminal_input",
+    "data": "x"
+  },
+  "state": {
+    "state": 2,
+    "writes": 0,
+    "live": 18,
+    "channels": 1,
+    "refs": 1,
+    "preparing": 0,
+    "unsettled": 0
+  },
+  "records": [
+    {
+      "frame": {
+        "type": "connected",
+        "message": "Terminal session started",
+        "prompt": "tianshan> "
+      },
+      "fd": 1
+    },
+    {
+      "state": 0,
+      "writes": 0,
+      "live": 8,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connecting",
+        "message": "Connecting to SSH server..."
+      },
+      "fd": 1
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connected",
+        "message": "SSH shell ready"
+      },
+      "fd": 1
+    },
+    {
+      "state": 2,
+      "writes": 0,
+      "live": 26,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "error",
+        "message": "SSH control could not be completed for this session"
+      },
+      "fd": 1
+    },
+    {
+      "state": 2,
+      "writes": 0,
+      "live": 18,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "closed",
+        "message": "SSH session closed"
+      },
+      "fd": 1
+    },
+    {
+      "finished": true
+    }
+  ]
+}

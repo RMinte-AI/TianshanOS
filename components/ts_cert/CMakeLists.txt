@@ -3,6 +3,7 @@
 idf_component_register(
     SRCS
         "src/ts_cert.c"
+        "src/ts_cert_time.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

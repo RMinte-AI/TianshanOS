@@ -1,0 +1,9 @@
+file:///private/tmp/tianshan-ssh-stack-diagnostic/rounds.mjs:14
+ async function wait(fn,ms=15000){const end=Date.now()+ms;while(!fn()){if(err)throw err;if(Date.now()>end)throw Error('Stage timed out; no command retry');await sleep(50);}}
+                                                                                                                ^
+
+Error: Stage timed out; no command retry
+    at wait (file:///private/tmp/tianshan-ssh-stack-diagnostic/rounds.mjs:14:113)
+    at async file:///private/tmp/tianshan-ssh-stack-diagnostic/rounds.mjs:23:3
+
+Node.js v24.10.0

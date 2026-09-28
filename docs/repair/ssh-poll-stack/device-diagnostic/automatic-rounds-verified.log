@@ -1,0 +1,10 @@
+{"round":2,"minimumObservedHwm":3984,"free_heap":7617308,"psram_free":7595964,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":3,"minimumObservedHwm":3996,"free_heap":7616864,"psram_free":7595524,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":4,"minimumObservedHwm":3984,"free_heap":7616384,"psram_free":7595044,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":5,"minimumObservedHwm":3984,"free_heap":7614940,"psram_free":7593732,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":6,"minimumObservedHwm":3644,"free_heap":7612656,"psram_free":7587612,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":7,"minimumObservedHwm":3984,"free_heap":7615172,"psram_free":7593832,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":8,"minimumObservedHwm":3984,"free_heap":7615952,"psram_free":7594616,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":9,"minimumObservedHwm":3996,"free_heap":7615960,"psram_free":7594620,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+{"round":10,"minimumObservedHwm":3984,"free_heap":7616184,"psram_free":7594840,"statuses":["connecting","connected","disconnecting","closed"],"echoVerified":true,"pollerGone":true}
+NINE_AUTOMATIC_ROUNDS_COMPLETE

@@ -51,6 +51,9 @@ typedef struct {
         } key;
     } auth;
     uint32_t timeout_ms;            /**< Connection timeout in ms */
+    bool (*cancelled)(void *context); /**< Optional owner cancellation callback */
+    void *cancel_context;
+    size_t max_output_bytes; /**< Per-stream bound, default 64 KiB */
     bool verify_host_key;           /**< Verify server host key */
 } ts_ssh_config_t;
 
@@ -62,7 +65,7 @@ typedef struct {
     .auth_method = TS_SSH_AUTH_PASSWORD, \
     .auth.password = NULL, \
     .timeout_ms = 10000, \
-    .verify_host_key = false \
+    .verify_host_key = true \
 }
 
 /** Command execution result */
@@ -114,6 +117,11 @@ esp_err_t ts_ssh_session_destroy(ts_ssh_session_t session);
  * @param session Session handle
  * @return esp_err_t ESP_OK on success
  */
+#define TS_SSH_ERR_HOST_UNKNOWN (ESP_ERR_INVALID_STATE + 0x400)
+#define TS_SSH_ERR_HOST_CHANGED (ESP_ERR_INVALID_STATE + 0x401)
+typedef esp_err_t (*ts_ssh_verify_cb_t)(ts_ssh_session_t session, void *context);
+/* Callback is invoked after handshake and BEFORE any user authentication. */
+esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t session, ts_ssh_verify_cb_t verify, void *context);
 esp_err_t ts_ssh_connect(ts_ssh_session_t session);
 
 /**

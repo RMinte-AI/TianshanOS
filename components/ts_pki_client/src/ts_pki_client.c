@@ -11,6 +11,7 @@
  * @copyright Copyright (c) 2026 TianShanOS Project
  */
 
+#include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -39,8 +40,9 @@ static struct {
     char device_id[TS_CERT_DEVICE_ID_MAX_LEN];
     int request_id;  // CSR 提交后返回的请求 ID
     TaskHandle_t enroll_task;
+    _Atomic bool enroll_running;
     SemaphoreHandle_t mutex;
-    bool stop_requested;
+    _Atomic bool stop_requested;
     ts_pki_enroll_callback_t callback;
     void *callback_data;
 } s_client = {0};
@@ -144,6 +146,8 @@ void ts_pki_client_deinit(void)
     // 停止后台任务
     ts_pki_client_stop_auto_enroll();
     
+    if (s_client.enroll_running) { ESP_LOGW(TAG, "Enrollment still exiting; retaining resources"); return; }
+
     // 释放资源
     if (s_client.mutex) {
         vSemaphoreDelete(s_client.mutex);
@@ -207,8 +211,9 @@ esp_err_t ts_pki_client_submit_csr(void)
     // 检查是否已有有效证书
     ts_cert_pki_status_t cert_status;
     esp_err_t ret = ts_cert_get_status(&cert_status);
-    if (ret == ESP_OK && cert_status.status == TS_CERT_STATUS_ACTIVATED) {
-        ESP_LOGI(TAG, "Already have valid certificate");
+    if (ret == ESP_OK && (cert_status.has_certificate && cert_status.has_private_key &&
+        cert_status.cert_info.validity != TS_CERT_VALIDITY_EXPIRED)) {
+        ESP_LOGI(TAG, "Stored certificate retained; no automatic replacement");
         return ESP_ERR_INVALID_STATE;
     }
     
@@ -295,11 +300,17 @@ esp_err_t ts_pki_client_submit_csr(void)
                 ESP_LOGI(TAG, "Certificate auto-issued!");
                 cJSON *ca_chain = cJSON_GetObjectItem(resp, "ca_chain");
                 // 安装证书 (mbedtls 需要包含 null 终止符)
-                ts_cert_install_certificate(cert->valuestring, strlen(cert->valuestring) + 1);
+                ret = ts_cert_install_certificate(cert->valuestring, strlen(cert->valuestring) + 1);
                 // 安装 CA 链
-                if (ca_chain && cJSON_IsString(ca_chain)) {
-                    ts_cert_install_ca_chain(ca_chain->valuestring, strlen(ca_chain->valuestring) + 1);
+                if (ret == ESP_OK && ca_chain && cJSON_IsString(ca_chain)) {
+                    ret = ts_cert_install_ca_chain(ca_chain->valuestring, strlen(ca_chain->valuestring) + 1);
                 }
+                if (ret == ESP_OK) {
+                    ts_cert_pki_status_t installed;
+                    ret = ts_cert_get_status(&installed);
+                    if (ret == ESP_OK && (!installed.has_ca_chain || !installed.ca_valid)) ret = ESP_ERR_INVALID_STATE;
+                }
+                if (ret != ESP_OK) { cJSON_Delete(resp); return ret; }
             }
             cJSON_Delete(resp);
         }
@@ -443,11 +454,15 @@ esp_err_t ts_pki_client_install_certificate(void)
     // 安装 CA 链
     if (ca_chain_str) {
         ret = ts_cert_install_ca_chain(ca_chain_str, strlen(ca_chain_str) + 1);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "CA chain installed");
+        if (ret != ESP_OK) { cJSON_Delete(root); return ret; }
+    } else {
+        ts_cert_pki_status_t installed;
+        ret = ts_cert_get_status(&installed);
+        if (ret != ESP_OK || (!installed.has_ca_chain || !installed.ca_valid)) {
+            cJSON_Delete(root); return ESP_ERR_INVALID_STATE;
         }
     }
-    
+
     cJSON_Delete(root);
     
     ESP_LOGI(TAG, "Device certificate installed successfully");
@@ -522,7 +537,8 @@ esp_err_t ts_pki_client_start_auto_enroll(ts_pki_enroll_callback_t callback,
         return ESP_ERR_INVALID_STATE;
     }
     
-    if (s_client.enroll_task) {
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&s_client.enroll_running, &expected, true)) {
         ESP_LOGW(TAG, "Auto-enroll already running");
         return ESP_OK;
     }
@@ -537,6 +553,7 @@ esp_err_t ts_pki_client_start_auto_enroll(ts_pki_enroll_callback_t callback,
     BaseType_t ret = xTaskCreate(auto_enroll_task, "pki_enroll", 8192,
                                   NULL, 5, &s_client.enroll_task);
     if (ret != pdPASS) {
+        s_client.enroll_running = false;
         ESP_LOGE(TAG, "Failed to create enroll task");
         return ESP_ERR_NO_MEM;
     }
@@ -547,20 +564,19 @@ esp_err_t ts_pki_client_start_auto_enroll(ts_pki_enroll_callback_t callback,
 
 void ts_pki_client_stop_auto_enroll(void)
 {
-    if (!s_client.enroll_task) return;
+    if (!s_client.enroll_running) return;
     
     s_client.stop_requested = true;
     
     // 等待任务退出
     for (int i = 0; i < 50; i++) {
-        if (!s_client.enroll_task) break;
+        if (!s_client.enroll_running) break;
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     
-    if (s_client.enroll_task) {
-        ESP_LOGW(TAG, "Force deleting enroll task");
-        vTaskDelete(s_client.enroll_task);
-        s_client.enroll_task = NULL;
+    if (s_client.enroll_running) {
+        ESP_LOGW(TAG, "Enrollment cancellation pending; task retains its resources");
+        return;
     }
     
     ESP_LOGI(TAG, "Auto-enrollment stopped");
@@ -568,7 +584,7 @@ void ts_pki_client_stop_auto_enroll(void)
 
 bool ts_pki_client_is_enrolling(void)
 {
-    return s_client.enroll_task != NULL;
+    return s_client.enroll_running;
 }
 
 /*===========================================================================*/
@@ -694,23 +710,35 @@ static esp_err_t do_http_request(const char *url, esp_http_client_method_t metho
     return ret;
 }
 
+static void enroll_wait(uint32_t ms)
+{
+    while (ms && !s_client.stop_requested) {
+        uint32_t step = ms < 100 ? ms : 100;
+        vTaskDelay(pdMS_TO_TICKS(step)); ms -= step;
+    }
+}
+
 static void auto_enroll_task(void *arg)
 {
     ESP_LOGI(TAG, "Auto-enrollment task started");
     
     // 等待网络就绪
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    enroll_wait(5000);
     
+    if (s_client.stop_requested) goto done;
+
     // 检查是否已有有效证书
     ts_cert_pki_status_t cert_status;
     if (ts_cert_get_status(&cert_status) == ESP_OK && 
-        cert_status.status == TS_CERT_STATUS_ACTIVATED) {
-        ESP_LOGI(TAG, "Already have valid certificate, exiting");
+        (cert_status.has_certificate && cert_status.has_private_key &&
+        cert_status.cert_info.validity != TS_CERT_VALIDITY_EXPIRED)) {
+        ESP_LOGI(TAG, "Stored certificate retained; checking readiness");
         if (s_client.callback) {
-            s_client.callback(TS_PKI_ENROLL_APPROVED, "Already enrolled", 
+            s_client.callback(ts_cert_prerequisites(&cert_status, true) ? TS_PKI_ENROLL_APPROVED : TS_PKI_ENROLL_PENDING,
+                              "Credentials already stored; check time and CA readiness",
                               s_client.callback_data);
         }
-        s_client.enroll_task = NULL;
+        s_client.enroll_running = false;
         vTaskDelete(NULL);
         return;
     }
@@ -723,12 +751,12 @@ static void auto_enroll_task(void *arg)
             break;
         }
         ESP_LOGW(TAG, "PKI server not reachable, retrying...");
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        enroll_wait(10000);
         retry++;
     }
     
     if (s_client.stop_requested) {
-        s_client.enroll_task = NULL;
+        s_client.enroll_running = false;
         vTaskDelete(NULL);
         return;
     }
@@ -742,7 +770,7 @@ static void auto_enroll_task(void *arg)
                               s_client.callback_data);
         }
         // 重试
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        enroll_wait(60000);
     }
     
     if (s_client.callback) {
@@ -765,8 +793,9 @@ static void auto_enroll_task(void *arg)
             break;
         }
         
-        vTaskDelay(pdMS_TO_TICKS(s_client.config.poll_interval_sec * 1000));
+        enroll_wait(s_client.config.poll_interval_sec * 1000);
         
+        if (s_client.stop_requested) break;
         ret = ts_pki_client_check_status(&status);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Failed to check status, retrying...");
@@ -823,6 +852,6 @@ static void auto_enroll_task(void *arg)
     
 done:
     ESP_LOGI(TAG, "Auto-enrollment task finished");
-    s_client.enroll_task = NULL;
+    s_client.enroll_running = false;
     vTaskDelete(NULL);
 }

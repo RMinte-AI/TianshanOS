@@ -1,0 +1,1830 @@
+--- a/components/ts_core/ts_service/src/ts_service.c
++++ b/components/ts_core/ts_service/src/ts_service.c
+@@ -143,7 +143,8 @@
+     ESP_LOGI(TAG, "Deinitializing service management...");
+ 
+     // 停止所有服务
+-    ts_service_stop_all();
++    esp_err_t ret = ts_service_stop_all();
++    if (ret != ESP_OK) return ret;
+ 
+     xSemaphoreTake(s_svc_ctx.mutex, portMAX_DELAY);
+ 
+@@ -380,7 +381,8 @@
+             if (service->def.phase == phase && 
+                 service->state == TS_SERVICE_STATE_RUNNING) {
+                 xSemaphoreGive(s_svc_ctx.mutex);
+-                ts_service_stop(service);
++                esp_err_t ret = ts_service_stop(service);
++                if (ret != ESP_OK) return ret; /* keep dependencies and registry for retry */
+                 xSemaphoreTake(s_svc_ctx.mutex, portMAX_DELAY);
+             }
+             service = service->next;
+--- a/components/ts_net/src/ts_http_server.c
++++ b/components/ts_net/src/ts_http_server.c
+@@ -128,6 +128,10 @@
+ 
+ static esp_err_t http_handler_wrapper(httpd_req_t *req)
+ {
++    if(s_stopping && req->method!=HTTP_GET) {
++        httpd_resp_set_status(req,"503 Service Unavailable");
++        return httpd_resp_sendstr(req,"Service is stopping");
++    }
+     ts_http_route_t *route = (ts_http_route_t *)req->user_ctx;
+     if (!route || !route->handler) {
+         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No handler");
+--- a/components/ts_webui/include/ts_ws_subscriptions.h
++++ b/components/ts_webui/include/ts_ws_subscriptions.h
+@@ -29,6 +29,8 @@
+  * @brief 反初始化订阅管理器
+  */
+ esp_err_t ts_ws_subscriptions_deinit(void);
++esp_err_t ts_ws_subscriptions_pause(void);
++esp_err_t ts_ws_subscriptions_drain(void);
+ 
+ /**
+  * @brief 处理订阅请求
+--- a/components/ts_webui/include/ts_ws_transport.h
++++ b/components/ts_webui/include/ts_ws_transport.h
+@@ -7,6 +7,8 @@
+ #define TS_WS_TOPIC_TX_SLOTS 32
+ #define TS_WS_TX_SLOTS (TS_WS_TOPIC_TX_SLOTS + TS_WS_CONNECTIONS)
+ #define TS_WS_MESSAGE_SLOTS 8
++#define TS_WS_ALL_MESSAGE_SLOTS (TS_WS_MESSAGE_SLOTS + 2)
++#define TS_WS_ALL_TX_SLOTS (TS_WS_TX_SLOTS + 2 * TS_WS_CONNECTIONS)
+ #define TS_WS_FRAME_BYTES 32768
+ #define TS_WS_LEGACY_BYTES (512 * 1024)
+ #define TS_WS_TOTAL_BYTES (1024 * 1024)
+@@ -82,3 +84,26 @@
+ void ts_ws_transport_flush(void);
+ bool ts_ws_transport_needs_flush(void);
+ void ts_ws_transport_cancel_topics(void);
++
++/* A bounded reservation owns actual payload bytes and destination descriptors.
++ * No API collection / accepted result producer may start before it succeeds. */
++#define TS_WS_RESERVATION_TARGETS ((TS_WS_CONNECTIONS > TS_WS_TOPIC_TX_SLOTS) ? TS_WS_CONNECTIONS : TS_WS_TOPIC_TX_SLOTS)
++typedef struct {
++    ts_ws_message_t *message;
++    unsigned count;
++    int slots[TS_WS_RESERVATION_TARGETS];
++} ts_ws_reservation_t;
++esp_err_t ts_ws_reserve(const ts_ws_peer_t *peers, unsigned count, bool result,
++                        size_t bytes, ts_ws_reservation_t *reservation);
++bool ts_ws_reserved_json(ts_ws_reservation_t *r, const char *topic, const cJSON *data, int64_t timestamp);
++esp_err_t ts_ws_reserved_text(ts_ws_reservation_t *r, const char *text);
++esp_err_t ts_ws_reserved_submit(ts_ws_reservation_t *r, unsigned index,
++    uint64_t revision, uint64_t delivery, ts_ws_delivery_check_t check, ts_ws_delivery_done_t done);
++void ts_ws_reservation_release(ts_ws_reservation_t *r);
++unsigned ts_ws_peer_snapshot(ts_ws_peer_t *peers, unsigned capacity);
++
++/* Preserve global result recipients at completion, with capacity owned at admission. */
++esp_err_t ts_ws_result_reserve(size_t bytes, ts_ws_reservation_t *r);
++esp_err_t ts_ws_result_broadcast(ts_ws_reservation_t *r, const char *text);
++
++uint32_t ts_ws_transport_retry_ms(void);
+--- a/components/ts_webui/src/ts_webui_ws.c
++++ b/components/ts_webui/src/ts_webui_ws.c
+@@ -80,6 +80,10 @@
+ static atomic_int s_ssh_client_fd = -1;
+ static atomic_bool s_ssh_running = false;
+ static atomic_bool s_ssh_poll_alive;
++enum { SSH_IDLE, SSH_STARTING, SSH_READY, SSH_TERMINAL };
++static atomic_uint s_ssh_state, s_ssh_generation, s_ssh_result_pending;
++static ts_ws_reservation_t s_ssh_terminal;
++static ts_ws_reservation_t s_exec_terminal;
+ 
+ /* SSH Exec 流式执行状态 */
+ static ts_ssh_session_t s_exec_session = NULL;
+@@ -95,16 +99,32 @@
+ 
+ /* 日志回调句柄 */
+ static ts_log_callback_handle_t s_log_callback_handle = NULL;
+-static volatile bool s_log_streaming_enabled = false;
++static atomic_bool s_log_streaming_enabled = false;
+ 
+ /* 日志级别名称映射 */
+ static const char *s_level_names[] = {"NONE", "ERROR", "WARN", "INFO", "DEBUG", "VERBOSE"};
+ 
+ /* 前向声明 */
+ static void update_log_stream_state(void);
++esp_err_t ts_webui_log_stream_enable(bool enable);
+ esp_err_t ts_webui_ws_stop(httpd_handle_t server);
+ void ts_webui_ws_stopped(httpd_handle_t server);
+ static bool has_log_clients(void);
++
++/* HTTPD owner updates role and log generation together. Old queued logs cannot
++ * regain eligibility after a later subscribe on the same connection. */
++static void set_client_role(ts_ws_peer_t peer, ws_client_type_t type, ts_log_level_t level)
++{
++    ts_ws_peer_t current;
++    if (!ts_ws_peer_get(peer.server, peer.fd, &current) || !ts_ws_peer_equal(peer,current)) return;
++    for (int i=0;i<MAX_WS_CLIENTS;i++) if(s_clients[i].active && s_clients[i].fd==peer.fd) {
++        s_clients[i].type=type;
++        s_clients[i].log_min_level=level;
++        ts_ws_peer_log_level(peer,type==WS_CLIENT_TYPE_LOG ? (int)level : -1);
++        break;
++    }
++    update_log_stream_state();
++}
+ 
+ /* 电压保护状态字符串 */
+ static const char *power_state_to_string(ts_power_policy_state_t state)
+@@ -162,71 +182,106 @@
+ /*                          SSH Shell Functions                               */
+ /*===========================================================================*/
+ 
++static void ssh_terminal_done(uint64_t generation,uint64_t unused,esp_err_t result)
++{
++    (void)unused;
++    unsigned expected=(unsigned)generation;
++    atomic_compare_exchange_strong(&s_ssh_result_pending,&expected,0);
++    if(result!=ESP_OK)TS_LOGW(TAG,"SSH terminal send failed: %s",esp_err_to_name(result));
++}
++static bool ssh_generation_valid(uint64_t generation, uint64_t unused)
++{
++    (void)unused;return generation==s_ssh_generation;
++}
++static bool ssh_status_valid(uint64_t generation, uint64_t state)
++{
++    return generation==s_ssh_generation && state==s_ssh_state;
++}
++static esp_err_t ssh_send_status(const char *status, const char *message);
++/* Request errors must go to the requester, never mutate an existing session. */
++static void ssh_request_error(httpd_req_t *req, const char *message)
++{
++    cJSON *msg=cJSON_CreateObject();
++    bool ok=msg && cJSON_AddStringToObject(msg,"type","ssh_status") &&
++        cJSON_AddStringToObject(msg,"status","error") && cJSON_AddStringToObject(msg,"message",message);
++    char *json=ok?cJSON_PrintUnformatted(msg):NULL;cJSON_Delete(msg);
++    const char *text=json?json:"{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH request rejected\"}";
++    httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)text,.len=strlen(text)};
++    esp_err_t ret=httpd_ws_send_frame(req,&frame);
++    if(ret!=ESP_OK)TS_LOGW(TAG,"SSH request error could not be sent: %s",esp_err_to_name(ret));
++    free(json);
++}
++
+ /* 发送 SSH 输出到 WebSocket 客户端 */
+ static void ssh_send_output(const char *data, size_t len)
+ {
+-    if (s_ssh_client_fd < 0 || !s_server || !data || len == 0) return;
+-    
+-    // 构造消息（base64 可以处理二进制，但这里假设是文本）
+-    cJSON *msg = cJSON_CreateObject();
+-    cJSON_AddStringToObject(msg, "type", "ssh_output");
+-    
+-    // 复制数据并确保 null 结尾 (PSRAM first)
+-    char *buf = heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+-    if (!buf) buf = malloc(len + 1);
+-    if (buf) {
+-        memcpy(buf, data, len);
+-        buf[len] = '\0';
+-        cJSON_AddStringToObject(msg, "data", buf);
+-        free(buf);
+-    }
+-    
+-    char *json = cJSON_PrintUnformatted(msg);
++    if(s_ssh_client_fd<0 || !s_server || !data || !len)return;
++    esp_err_t ret=ESP_ERR_NO_MEM;
++    char *buf=heap_caps_malloc(len+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
++    if(!buf)buf=malloc(len+1);
++    cJSON *msg=NULL;
++    char *json=NULL;
++    if(buf) {
++        memcpy(buf,data,len);buf[len]=0;
++        msg=cJSON_CreateObject();
++        if(msg && cJSON_AddStringToObject(msg,"type","ssh_output") && cJSON_AddStringToObject(msg,"data",buf))
++            json=cJSON_PrintUnformatted(msg);
++    }
++    free(buf);cJSON_Delete(msg);
++    if(json) {
++        ts_ws_message_t *m=ts_ws_message_text(json,strlen(json));
++        if(m)ret=ts_ws_transport_submit(s_ssh_peer,m,s_ssh_generation,0,ssh_generation_valid,NULL);
++        ts_ws_message_release(m);
++    }
++    free(json);
++    if(ret!=ESP_OK) {
++        TS_LOGW(TAG,"SSH output rejected: %s",esp_err_to_name(ret));
++        ssh_send_status("error","SSH output delivery failed");
++        s_ssh_running=false;
++    }
++}
++
++/* 发送 SSH 状态消息 */
++static esp_err_t ssh_send_status(const char *status, const char *message)
++{
++    bool terminal=!strcmp(status,"error") || !strcmp(status,"closed");
++    unsigned state=!strcmp(status,"connecting") ? SSH_STARTING : SSH_READY;
++    unsigned generation=s_ssh_generation;
++    if(terminal) {
++        unsigned previous=atomic_exchange(&s_ssh_state,SSH_TERMINAL);
++        if(previous==SSH_TERMINAL)return ESP_OK;
++        state=SSH_TERMINAL;
++    } else if(!ssh_status_valid(generation,state)) return ESP_ERR_INVALID_STATE;
++    cJSON *msg=cJSON_CreateObject();
++    bool ok=msg && cJSON_AddStringToObject(msg,"type","ssh_status") &&
++        cJSON_AddStringToObject(msg,"status",status) && (!message || cJSON_AddStringToObject(msg,"message",message));
++    char *json=ok ? cJSON_PrintUnformatted(msg) : NULL;
+     cJSON_Delete(msg);
+-    
+-    if (json) {
+-        httpd_ws_frame_t ws_pkt = {
+-            .type = HTTPD_WS_TYPE_TEXT,
+-            .payload = (uint8_t *)json,
+-            .len = strlen(json)
+-        };
+-        ts_ws_message_t *owned = ts_ws_message_text((const char *)ws_pkt.payload, ws_pkt.len);
+-        if (owned) {
+-            ts_ws_transport_submit(s_ssh_peer, owned, 0, 0, NULL, NULL);
+-            ts_ws_message_release(owned);
+-        }
+-        free(json);
+-    }
+-}
+-
+-/* 发送 SSH 状态消息 */
+-static void ssh_send_status(const char *status, const char *message)
+-{
+-    if (s_ssh_client_fd < 0 || !s_server) return;
+-
+-    cJSON *msg = cJSON_CreateObject();
+-    cJSON_AddStringToObject(msg, "type", "ssh_status");
+-    cJSON_AddStringToObject(msg, "status", status);
+-    if (message) {
+-        cJSON_AddStringToObject(msg, "message", message);
+-    }
+-    
+-    char *json = cJSON_PrintUnformatted(msg);
+-    cJSON_Delete(msg);
+-    
+-    if (json) {
+-        httpd_ws_frame_t ws_pkt = {
+-            .type = HTTPD_WS_TYPE_TEXT,
+-            .payload = (uint8_t *)json,
+-            .len = strlen(json)
+-        };
+-        ts_ws_message_t *owned = ts_ws_message_text((const char *)ws_pkt.payload, ws_pkt.len);
+-        if (owned) {
+-            ts_ws_transport_submit(s_ssh_peer, owned, 0, 0, NULL, NULL);
+-            ts_ws_message_release(owned);
+-        }
+-        free(json);
+-    }
++    esp_err_t ret=ESP_ERR_NO_MEM;
++    if(terminal) {
++        const char *fallback="{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH status delivery failed\"}";
++        ret=ts_ws_reserved_text(&s_ssh_terminal,json?json:fallback);
++        if(ret!=ESP_OK) {
++            TS_LOGW(TAG,"SSH terminal encoding failed: %s",esp_err_to_name(ret));
++            ret=ts_ws_reserved_text(&s_ssh_terminal,fallback);
++        }
++        if(ret==ESP_OK) {
++            s_ssh_result_pending=generation;
++            ret=ts_ws_reserved_submit(&s_ssh_terminal,0,generation,state,ssh_status_valid,ssh_terminal_done);
++            if(ret!=ESP_OK)ssh_terminal_done(generation,state,ret);
++        }
++        ts_ws_reservation_release(&s_ssh_terminal);
++    } else if(json && ssh_status_valid(generation,state)) {
++        httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)json,.len=strlen(json)};
++        if(ts_ws_transport_in_context()) ret=ts_ws_transport_send(s_ssh_peer.server,s_ssh_peer.fd,&frame);
++        else {
++            ts_ws_message_t *m=ts_ws_message_text(json,strlen(json));
++            if(m) {ret=ts_ws_transport_submit(s_ssh_peer,m,generation,state,ssh_status_valid,NULL);ts_ws_message_release(m);}
++        }
++    }
++    free(json);
++    if(ret!=ESP_OK)TS_LOGW(TAG,"SSH status rejected: %s",esp_err_to_name(ret));
++    return ret;
+ }
+ 
+ /* 前向声明 */
+@@ -240,7 +295,8 @@
+     
+     TS_LOGD(TAG, "SSH poll task started");
+     
+-    while (s_ssh_running && s_ssh_shell) {
++    while(s_ssh_running && s_ssh_state==SSH_STARTING) vTaskDelay(1);
++    while (s_ssh_running && s_ssh_state==SSH_READY && s_ssh_shell) {
+         size_t read_len = 0;
+         esp_err_t ret = ts_ssh_shell_read(s_ssh_shell, buf, sizeof(buf) - 1, &read_len);
+         
+@@ -262,6 +318,8 @@
+     
+     TS_LOGD(TAG, "SSH poll task ended");
+     
++    if(s_ssh_state==SSH_READY) ssh_send_status("closed","SSH session closed");
++    if(s_ssh_state==SSH_TERMINAL)need_cleanup=true;
+     // 如果是因为远程关闭而退出，需要清理 SSH 会话
+     if (need_cleanup && s_ssh_session) {
+         // 清理 shell（已经关闭，只需释放资源）
+@@ -311,12 +369,14 @@
+     if (s_ssh_client_fd >= 0) {
+         for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+             if (s_clients[i].active && s_clients[i].fd == s_ssh_client_fd) {
+-                s_clients[i].type = WS_CLIENT_TYPE_TERMINAL;
++                set_client_role(s_ssh_peer, WS_CLIENT_TYPE_TERMINAL, TS_LOG_NONE);
+                 break;
+             }
+         }
+     }
++    if(s_ssh_state==SSH_READY) ssh_send_status("closed","SSH session closed");
+     s_ssh_client_fd = -1;
++    ts_ws_reservation_release(&s_ssh_terminal);
+     
+     TS_LOGD(TAG, "SSH session cleaned up");
+ }
+@@ -324,8 +384,12 @@
+ /* 处理 SSH Shell 连接请求 */
+ static void handle_ssh_connect(httpd_req_t *req, cJSON *params)
+ {
++    if (s_ssh_result_pending) {
++        ssh_request_error(req,"Previous SSH result is still pending");
++        return;
++    }
+     if (s_ssh_poll_alive) {
+-        ssh_send_status("error", "Another SSH session is active");
++        ssh_request_error(req, "Another SSH session is active");
+         return;
+     }
+ 
+@@ -333,7 +397,7 @@
+     
+     // 检查是否已有 SSH 会话
+     if (s_ssh_session != NULL) {
+-        ssh_send_status("error", "Another SSH session is active");
++        ssh_request_error(req, "Another SSH session is active");
+         return;
+     }
+     
+@@ -344,7 +408,7 @@
+     cJSON *password = cJSON_GetObjectItem(params, "password");
+     
+     if (!host || !cJSON_IsString(host) || !user || !cJSON_IsString(user)) {
+-        ssh_send_status("error", "Missing host or user");
++        ssh_request_error(req, "Missing host or user");
+         return;
+     }
+     
+@@ -353,6 +417,13 @@
+     
+     TS_LOGD(TAG, "SSH connect: %s@%s:%d", user->valuestring, host->valuestring, ssh_port);
+     
++    ts_ws_peer_t peer=*(ts_ws_peer_t *)req->sess_ctx;
++    if(s_ssh_generation==UINT32_MAX || ts_ws_reserve(&peer,1,true,4096,&s_ssh_terminal)!=ESP_OK) {
++        ssh_request_error(req,"SSH result delivery capacity unavailable");
++        return;
++    }
++    s_ssh_generation++;
++    s_ssh_state=SSH_STARTING;
+     // 设置 SSH 客户端 fd
+     s_ssh_peer = *(ts_ws_peer_t *)req->sess_ctx;
+     s_ssh_client_fd = fd;
+@@ -360,13 +431,16 @@
+     // 更新客户端类型
+     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+         if (s_clients[i].active && s_clients[i].fd == fd) {
+-            s_clients[i].type = WS_CLIENT_TYPE_SSH_SHELL;
++            set_client_role(*(ts_ws_peer_t *)req->sess_ctx, WS_CLIENT_TYPE_SSH_SHELL, TS_LOG_NONE);
+             break;
+         }
+     }
+     
+     // 发送连接中状态
+-    ssh_send_status("connecting", "Connecting to SSH server...");
++    if(ssh_send_status("connecting", "Connecting to SSH server...")!=ESP_OK) {
++        ssh_send_status("error","SSH connection status delivery failed");
++        ssh_cleanup();return;
++    }
+     
+     // 配置 SSH
+     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
+@@ -408,15 +482,28 @@
+         return;
+     }
+     
+-    // 发送连接成功状态
+-    ssh_send_status("connected", "SSH shell ready");
+-    
+     // 启动轮询任务（栈需要足够大以容纳 libssh2 缓冲区，使用 PSRAM）
+     s_ssh_running = true;
+     s_ssh_poll_alive = true;
+     if (xTaskCreateWithCaps(ssh_poll_task, "ssh_poll", 4096, NULL, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
+         s_ssh_poll_alive = false;
+         ssh_send_status("error", "Failed to create SSH session");
++        ssh_cleanup();
++        return;
++    }
++    /* A created task alone is not readiness: the current shell must still be
++     * active. The poller cannot emit output/closed until STARTING has ended. */
++    if(!ts_ssh_shell_is_active(s_ssh_shell)) {
++        ssh_send_status("error","SSH shell closed during startup");
++        ssh_cleanup();return;
++    }
++    unsigned expected=SSH_STARTING;
++    if(!atomic_compare_exchange_strong(&s_ssh_state,&expected,SSH_READY)) {
++        ssh_cleanup();return;
++    }
++    esp_err_t ready=ssh_send_status("connected","SSH shell ready");
++    if(ready!=ESP_OK && s_ssh_state==SSH_READY) {
++        ssh_send_status("error","SSH readiness delivery failed");
+         ssh_cleanup();
+     }
+ }
+@@ -645,7 +732,7 @@
+     // 设置为终端客户端
+     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+         if (s_clients[i].active && s_clients[i].fd == fd) {
+-            s_clients[i].type = WS_CLIENT_TYPE_TERMINAL;
++            set_client_role(*(ts_ws_peer_t *)req->sess_ctx, WS_CLIENT_TYPE_TERMINAL, TS_LOG_NONE);
+             break;
+         }
+     }
+@@ -725,7 +812,6 @@
+ 
+ static esp_err_t ws_handler(httpd_req_t *req)
+ {
+-    if (s_ws_stopping) return ESP_ERR_INVALID_STATE;
+     if (req->method == HTTP_GET) {
+         TS_LOGD(TAG, "WebSocket handshake");
+         // 初次连接时添加为事件客户端
+@@ -787,6 +873,17 @@
+     if (msg) {
+         cJSON *type = cJSON_GetObjectItem(msg, "type");
+         if (type && cJSON_IsString(type)) {
++            /* Keep existing connections (and heartbeat) alive while results drain.
++             * Reject new work with a protocol error, not an HTTPD session error. */
++            if(s_ws_stopping && strcmp(type->valuestring,"ping") &&
++               strcmp(type->valuestring,"unsubscribe")) {
++                const char *error="{\"type\":\"error\",\"message\":\"Service is stopping\"}";
++                httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)error,.len=strlen(error)};
++                esp_err_t result=httpd_ws_send_frame(req,&frame);
++                cJSON_Delete(msg);
++                return result;
++            }
++
+             TS_LOGD(TAG, "WS msg type=%s from fd=%d", type->valuestring, httpd_req_to_sockfd(req));
+             
+             if (strcmp(type->valuestring, "ping") == 0) {
+@@ -879,8 +976,7 @@
+                     // 恢复为普通事件客户端
+                     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+                         if (s_clients[i].active && s_clients[i].fd == fd) {
+-                            s_clients[i].type = WS_CLIENT_TYPE_EVENT;
+-                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, -1);
++                            set_client_role(*(ts_ws_peer_t *)req->sess_ctx, WS_CLIENT_TYPE_EVENT, TS_LOG_NONE);
+                             break;
+                         }
+                     }
+@@ -931,9 +1027,7 @@
+                 bool client_found = false;
+                 for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+                     if (s_clients[i].active && s_clients[i].fd == fd) {
+-                        s_clients[i].type = WS_CLIENT_TYPE_LOG;
+-                        s_clients[i].log_min_level = min_level;
+-                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, min_level);
++                        set_client_role(*(ts_ws_peer_t *)req->sess_ctx, WS_CLIENT_TYPE_LOG, min_level);
+                         client_found = true;
+                         TS_LOGI(TAG, "Client %d subscribed to logs (minLevel=%d)", i, min_level);
+                         break;
+@@ -965,8 +1059,7 @@
+                 int fd = httpd_req_to_sockfd(req);
+                 for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+                     if (s_clients[i].active && s_clients[i].fd == fd) {
+-                        s_clients[i].type = WS_CLIENT_TYPE_EVENT;
+-                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, -1);
++                        set_client_role(*(ts_ws_peer_t *)req->sess_ctx, WS_CLIENT_TYPE_EVENT, TS_LOG_NONE);
+                         break;
+                     }
+                 }
+@@ -981,8 +1074,7 @@
+                     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+                         if (s_clients[i].active && s_clients[i].fd == fd && 
+                             s_clients[i].type == WS_CLIENT_TYPE_LOG) {
+-                            s_clients[i].log_min_level = (ts_log_level_t)level->valueint;
+-                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, level->valueint);
++                            set_client_role(*(ts_ws_peer_t *)req->sess_ctx, WS_CLIENT_TYPE_LOG, (ts_log_level_t)level->valueint);
+                             break;
+                         }
+                     }
+@@ -1146,21 +1238,26 @@
+ {
+     if (ts_ws_transport_in_context() || ts_event_in_callback()) return ESP_ERR_INVALID_STATE;
+     s_ws_stopping = true;
+-    esp_err_t ret = ts_ws_subscriptions_deinit();
++    esp_err_t ret = ts_ws_subscriptions_pause();
+     if (ret != ESP_OK) return ret;
+     ret = ts_ws_transport_quiesce(server, 6000);
+     if (ret != ESP_OK) return ret;
++    /* The worker still sends results even when this attempt returns busy. */
++    if (s_exec_creators || s_exec_running) return ESP_ERR_INVALID_STATE;
++    ssh_cleanup();
++    if (s_ssh_poll_alive) return ESP_ERR_TIMEOUT;
+     if (s_power_event_handle) {
+         ret = ts_event_unregister_sync(s_power_event_handle, 6000);
+         if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) return ret;
+         s_power_event_handle = NULL;
+     }
+-    /* Do not destroy a running remote operation or replay it. Keep HTTPD alive
+-     * and return busy; the control caller can retry after its normal completion. */
+-    if (s_exec_creators || s_exec_running) return ESP_ERR_INVALID_STATE;
+-    ssh_cleanup();
+-    if (s_ssh_poll_alive) return ESP_ERR_TIMEOUT;
+-    return ts_ws_transport_stop(server, 6000);
++    ret = ts_webui_log_stream_enable(false);
++    if (ret != ESP_OK) return ret;
++    ret = ts_ws_subscriptions_drain();
++    if (ret != ESP_OK) return ret;
++    ret = ts_ws_transport_stop(server, 6000);
++    if (ret != ESP_OK) return ret;
++    return ts_ws_subscriptions_deinit();
+ }
+ 
+ void ts_webui_ws_stopped(httpd_handle_t server)
+@@ -1262,21 +1359,20 @@
+  */
+ esp_err_t ts_webui_log_stream_enable(bool enable)
+ {
+-    if (enable && !s_log_callback_handle) {
+-        // 注册日志回调 (min_level=TS_LOG_VERBOSE, 接收所有级别)
+-        esp_err_t ret = ts_log_add_callback(log_ws_callback, TS_LOG_VERBOSE, NULL, &s_log_callback_handle);
+-        if (ret != ESP_OK) {
+-            TS_LOGE(TAG, "Failed to register log callback: %s", esp_err_to_name(ret));
+-            return ret;
+-        }
+-        s_log_streaming_enabled = true;
+-        TS_LOGI(TAG, "Log streaming enabled (receiving all levels)");
+-    } else if (!enable && s_log_callback_handle) {
+-        // 移除日志回调
+-        s_log_streaming_enabled = false;
+-        ts_log_remove_callback(s_log_callback_handle);
+-        s_log_callback_handle = NULL;
+-        TS_LOGI(TAG, "Log streaming disabled");
++    if(enable) {
++        if(!s_log_callback_handle) {
++            esp_err_t ret=ts_log_add_callback(log_ws_callback,TS_LOG_VERBOSE,NULL,&s_log_callback_handle);
++            if(ret!=ESP_OK)return ret;
++        }
++        /* A failed remove retains the handle; resubscribe reuses it. */
++        s_log_streaming_enabled=true;
++    } else {
++        s_log_streaming_enabled=false;
++        if(s_log_callback_handle) {
++            esp_err_t ret=ts_log_remove_callback(s_log_callback_handle);
++            if(ret!=ESP_OK)return ret;
++            s_log_callback_handle=NULL;
++        }
+     }
+     return ESP_OK;
+ }
+@@ -1636,6 +1732,18 @@
+     }
+ }
+ 
++/* Every accepted streamed command owns one result reservation. Ordinary output
++ * cannot consume it. Oversize/encoding failure is reported, never as success. */
++static void ssh_exec_terminal_publish(const char *json,uint32_t session_id)
++{
++    char fallback[192];
++    snprintf(fallback,sizeof(fallback),"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"SSH result delivery failed; result is unknown\"}",(unsigned long)session_id);
++    esp_err_t ret=ts_ws_result_broadcast(&s_exec_terminal,json?json:fallback);
++    if(ret==ESP_ERR_INVALID_SIZE)ret=ts_ws_result_broadcast(&s_exec_terminal,fallback);
++    if(ret!=ESP_OK)TS_LOGW(TAG,"SSH terminal result rejected: %s",esp_err_to_name(ret));
++    ts_ws_reservation_release(&s_exec_terminal);
++}
++
+ /* SSH Exec 任务 */
+ static void ssh_exec_task(void *arg)
+ {
+@@ -1670,7 +1778,7 @@
+             cJSON_AddStringToObject(msg, "error", "Failed to load SSH key");
+             char *json = cJSON_PrintUnformatted(msg);
+             cJSON_Delete(msg);
+-            if (json) { ts_webui_broadcast(json); free(json); }
++            ssh_exec_terminal_publish(json,session_id); free(json);
+             goto cleanup;
+         }
+     }
+@@ -1685,7 +1793,7 @@
+         cJSON_AddStringToObject(msg, "error", "Failed to create SSH session");
+         char *json = cJSON_PrintUnformatted(msg);
+         cJSON_Delete(msg);
+-        if (json) { ts_webui_broadcast(json); free(json); }
++        ssh_exec_terminal_publish(json,session_id); free(json);
+         goto cleanup;
+     }
+     
+@@ -1700,7 +1808,7 @@
+         cJSON_AddStringToObject(msg, "error", err ? err : "Connection failed");
+         char *json = cJSON_PrintUnformatted(msg);
+         cJSON_Delete(msg);
+-        if (json) { ts_webui_broadcast(json); free(json); }
++        ssh_exec_terminal_publish(json,session_id); free(json);
+         goto cleanup;
+     }
+     
+@@ -1967,7 +2075,7 @@
+         
+         char *json = cJSON_PrintUnformatted(msg);
+         cJSON_Delete(msg);
+-        if (json) { ts_webui_broadcast(json); free(json); }
++        ssh_exec_terminal_publish(json,session_id); free(json);
+     }
+     
+     /* 释放提取的值 */
+@@ -2109,7 +2217,14 @@
+                                    uint32_t *session_id)
+ {
+     unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
+-    esp_err_t ret = (creators || s_ws_stopping) ? ESP_ERR_INVALID_STATE : ts_webui_ssh_exec_start_impl(host, port, user, keyid, password, command, session_id);
++    esp_err_t ret=ESP_ERR_INVALID_STATE;
++    if(!creators && !s_ws_stopping && !s_exec_running) {
++        ret=ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal);
++        if(ret==ESP_OK) {
++            ret=ts_webui_ssh_exec_start_impl(host, port, user, keyid, password, command, session_id);
++            if(ret!=ESP_OK)ts_ws_reservation_release(&s_exec_terminal);
++        }
++    }
+     atomic_fetch_sub(&s_exec_creators, 1);
+     return ret;
+ }
+@@ -2325,7 +2440,14 @@
+                                       uint32_t *session_id)
+ {
+     unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
+-    esp_err_t ret = (creators || s_ws_stopping) ? ESP_ERR_INVALID_STATE : ts_webui_ssh_exec_start_ex_impl(host, port, user, keyid, password, command, options, session_id);
++    esp_err_t ret=ESP_ERR_INVALID_STATE;
++    if(!creators && !s_ws_stopping && !s_exec_running) {
++        ret=ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal);
++        if(ret==ESP_OK) {
++            ret=ts_webui_ssh_exec_start_ex_impl(host, port, user, keyid, password, command, options, session_id);
++            if(ret!=ESP_OK)ts_ws_reservation_release(&s_exec_terminal);
++        }
++    }
+     atomic_fetch_sub(&s_exec_creators, 1);
+     return ret;
+ }
+--- a/components/ts_webui/src/ts_ws_subscriptions.c
++++ b/components/ts_webui/src/ts_ws_subscriptions.c
+@@ -27,7 +27,7 @@
+ static const char *metrics[] = {"system.cpu","system.memory","system.info",
+     "network.status","power.status","fan.status","service.list"};
+ static const char *fields[] = {"cpu","memory","info","network","power","fan","services"};
+-typedef enum { OFF, STARTING, RUNNING, STOPPING } lifecycle_t;
++typedef enum { OFF, STARTING, RUNNING, DRAINING, STOPPING } lifecycle_t;
+ typedef struct {
+     ts_ws_peer_t peer;
+     uint64_t revision, pending;
+@@ -55,6 +55,8 @@
+ static TaskHandle_t s_worker;
+ static unsigned s_entries, s_outstanding;
+ static uint64_t s_sequence;
++static unsigned s_topic_cursor, s_subscription_cursor;
++static int64_t s_allocation_retry_at;
+ static subscription_t s_subs[MAX_SUBSCRIPTIONS];
+ static event_item_t s_events[EVENT_SLOTS];
+ static ts_event_handler_handle_t s_handlers[3];
+@@ -79,10 +81,10 @@
+     if (name) for (unsigned i=0;i<TOPIC_COUNT;i++) if (!strcmp(name,topics[i].name)) return i;
+     return -1;
+ }
+-static bool enter(void)
+-{
+-    portENTER_CRITICAL(&s_lock);
+-    bool ok = s_state == RUNNING;
++static bool enter(bool result_producer)
++{
++    portENTER_CRITICAL(&s_lock);
++    bool ok = s_state == RUNNING || (result_producer && s_state == DRAINING);
+     if (ok) s_entries++;
+     portEXIT_CRITICAL(&s_lock);
+     return ok;
+@@ -101,7 +103,7 @@
+ {
+     portENTER_CRITICAL(&s_lock);
+     subscription_t *s = find_revision(revision);
+-    bool ok = s_state == RUNNING && s && s->pending == delivery;
++    bool ok = (s_state == RUNNING || s_state == DRAINING) && s && s->pending == delivery;
+     portEXIT_CRITICAL(&s_lock);
+     return ok;
+ }
+@@ -144,7 +146,7 @@
+         topics[targets[i].topic].metric == (int)metric) && delivery_valid(targets[i].revision,targets[i].delivery)) return true;
+     return false;
+ }
+-static void collect_batch(target_t *targets, unsigned n)
++static void collect_batch(target_t *targets, unsigned n, ts_ws_reservation_t *reserved)
+ {
+     cJSON *data[7] = {0};
+     for (unsigned i=0;i<7;i++) {
+@@ -171,13 +173,22 @@
+                 }
+                 if(ok && any) payload=dashboard;
+             } else payload=data[topics[topic].metric];
+-            if(payload) m=ts_ws_message_json(topics[topic].name,payload,esp_timer_get_time()/1000000);
++            if(payload && ts_ws_reserved_json(&reserved[topic],topics[topic].name,payload,esp_timer_get_time()/1000000)) m=reserved[topic].message;
+             portENTER_CRITICAL(&s_lock);
+             s_stats.batches[topic]++; if(m) s_stats.serialized[topic]++;
+             portEXIT_CRITICAL(&s_lock);
+         }
+-        for(unsigned i=0;i<n;i++) if(targets[i].topic==topic) submit(targets[i],m);
+-        ts_ws_message_release(m);
++        unsigned destination=0;
++        for(unsigned i=0;i<n;i++) if(targets[i].topic==topic) {
++            target_t t=targets[i];
++            esp_err_t ret=ESP_ERR_INVALID_STATE;
++            if(m && delivery_valid(t.revision,t.delivery))
++                ret=ts_ws_reserved_submit(&reserved[topic],destination,t.revision,t.delivery,delivery_valid,delivery_done);
++            if(ret!=ESP_OK && t.delivery)delivery_done(t.revision,t.delivery,ret);
++            else if(ret==ESP_OK){portENTER_CRITICAL(&s_lock);s_stats.queued++;portEXIT_CRITICAL(&s_lock);}
++            destination++;
++        }
++        ts_ws_reservation_release(&reserved[topic]);
+         cJSON_Delete(dashboard);
+     }
+     for(unsigned i=0;i<7;i++) cJSON_Delete(data[i]);
+@@ -187,15 +198,45 @@
+ {
+     ts_ws_transport_flush();
+     target_t targets[MAX_SUBSCRIPTIONS];
+-    unsigned n=0, capacity=ts_ws_message_capacity() ? ts_ws_transport_capacity() : 0;
++    ts_ws_reservation_t reserved[8]={0};
++    unsigned n=0,capacity;
+     int64_t now=esp_timer_get_time();
+-    portENTER_CRITICAL(&s_lock);
+-    if(s_state==RUNNING) for(unsigned i=0;i<MAX_SUBSCRIPTIONS && n<capacity;i++) {
+-        subscription_t *s=&s_subs[i];
+-        if(s->active && s->topic<8 && !s->pending && now>=s->next_attempt && reserve(s,&targets[n])) n++;
+-    }
+-    portEXIT_CRITICAL(&s_lock);
+-    if(n) { TS_WS_TEST_POINT("snapshot"); collect_batch(targets,n); }
++    unsigned first=s_topic_cursor;
++    for(unsigned turn=0;turn<8;turn++) {
++        unsigned topic=(first+turn)%8;
++        ts_ws_peer_t peers[TS_WS_CONNECTIONS];
++        unsigned slots[TS_WS_CONNECTIONS], count=0;
++        uint64_t revisions[TS_WS_CONNECTIONS];
++        capacity=ts_ws_transport_capacity();
++        portENTER_CRITICAL(&s_lock);
++        if(s_state==RUNNING) for(unsigned j=0;j<MAX_SUBSCRIPTIONS && count<capacity && count<TS_WS_CONNECTIONS;j++) {
++            unsigned i=(s_subscription_cursor+j)%MAX_SUBSCRIPTIONS;
++            subscription_t *sub=&s_subs[i];
++            if(sub->active && sub->topic==topic && !sub->pending && now>=sub->next_attempt) {
++                peers[count]=sub->peer;slots[count]=i;revisions[count++]=sub->revision;
++            }
++        }
++        portEXIT_CRITICAL(&s_lock);
++        if(!count || now<s_allocation_retry_at)continue;
++        esp_err_t reserved_result=ts_ws_reserve(peers,count,false,TS_WS_FRAME_BYTES,&reserved[topic]);
++        if(reserved_result!=ESP_OK) {
++            /* A heap failure with available slots must not spin at tick rate. */
++            if(reserved_result==ESP_ERR_NO_MEM && ts_ws_message_capacity())s_allocation_retry_at=after_ms(now,100);
++            continue;
++        }
++        /* Resources are owned before pending/API work. Admission and revisions
++         * may have changed during allocation; such targets retire normally. */
++        portENTER_CRITICAL(&s_lock);
++        for(unsigned j=0;j<count;j++) {
++            subscription_t *sub=&s_subs[slots[j]];
++            if(s_state==RUNNING && sub->active && sub->revision==revisions[j] && !sub->pending && reserve(sub,&targets[n])) n++;
++            else targets[n++]=(target_t){.topic=topic};
++        }
++        s_subscription_cursor=(slots[count-1]+1)%MAX_SUBSCRIPTIONS;
++        portEXIT_CRITICAL(&s_lock);
++        s_topic_cursor=(topic+1)%8;
++    }
++    if(n) { TS_WS_TEST_POINT("snapshot"); collect_batch(targets,n,reserved); }
+     /* Event FIFO per subscription. A slow target does not hold up other targets.
+      * Different operation results never overwrite each other. */
+     for(unsigned slot=0;slot<EVENT_SLOTS;slot++) {
+@@ -206,7 +247,7 @@
+         if(e->ready) {
+             for(unsigned j=0;j<MAX_SUBSCRIPTIONS;j++) if(e->targets[j]) {
+                 subscription_t *s=find_revision(e->targets[j]);
+-                if(!s || s_state!=RUNNING) {e->targets[j]=0;continue;}
++                if(!s || (s_state!=RUNNING && s_state!=DRAINING)) {e->targets[j]=0;continue;}
+                 bool earlier=false;
+                 for(unsigned k=0;k<EVENT_SLOTS;k++) if(s_events[k].used && s_events[k].order<e->order)
+                     for(unsigned l=0;l<MAX_SUBSCRIPTIONS;l++) if(s_events[k].targets[l]==s->revision) earlier=true;
+@@ -237,7 +278,7 @@
+ }
+ static TickType_t next_wait(void)
+ {
+-    if(ts_ws_transport_needs_flush()) return 1;
++    if(ts_ws_transport_needs_flush()) return wait_ticks((int64_t)ts_ws_transport_retry_ms()*1000);
+     int64_t now=esp_timer_get_time(), nearest=INT64_MAX;
+     unsigned capacity=ts_ws_message_capacity() ? ts_ws_transport_capacity() : 0;
+     portENTER_CRITICAL(&s_lock);
+@@ -252,6 +293,7 @@
+     if(nearest==INT64_MAX) s_stats.idle_wait++;
+     if(!capacity && nearest!=INT64_MAX) {nearest=after_ms(now,1000);s_stats.capacity_wait++;}
+     portEXIT_CRITICAL(&s_lock);
++    if(nearest!=INT64_MAX && nearest<s_allocation_retry_at)nearest=s_allocation_retry_at;
+     return nearest==INT64_MAX ? portMAX_DELAY : wait_ticks(nearest-now);
+ }
+ static void telemetry_worker(void *arg)
+@@ -260,7 +302,7 @@
+     for(;;) {
+         portENTER_CRITICAL(&s_lock); lifecycle_t state=s_state; portEXIT_CRITICAL(&s_lock);
+         if(state==STOPPING) break;
+-        if(state==RUNNING) run_batch();
++        if(state==RUNNING || state==DRAINING) run_batch();
+         uint32_t water=uxTaskGetStackHighWaterMark(NULL);
+         portENTER_CRITICAL(&s_lock);s_stats.stack_low_water=water;portEXIT_CRITICAL(&s_lock);
+         /* Notification arriving between deadline calculation and wait is retained. */
+@@ -303,6 +345,41 @@
+     portENTER_CRITICAL(&s_lock);s_state=ret==ESP_OK?RUNNING:STOPPING;wake_locked();portEXIT_CRITICAL(&s_lock);
+     if(ret!=ESP_OK) {esp_err_t cleanup=ts_ws_subscriptions_deinit();if(cleanup!=ESP_OK)return cleanup;}
+     return ret;
++}
++/* Stop telemetry/new subscriptions, but keep result subscriptions and the shared
++ * sender alive until their producers have finished. Safe to retry. */
++esp_err_t ts_ws_subscriptions_pause(void)
++{
++    portENTER_CRITICAL(&s_lock);
++    esp_err_t ret=ESP_OK;
++    if(s_state==RUNNING) {
++        s_state=DRAINING;
++        for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) if(s_subs[i].topic<8) s_subs[i].active=false;
++        wake_locked();
++    } else if(s_state!=DRAINING && s_state!=OFF) ret=ESP_ERR_INVALID_STATE;
++    portEXIT_CRITICAL(&s_lock);
++    return ret;
++}
++/* The owner has closed business admission and waited for result producers. */
++esp_err_t ts_ws_subscriptions_drain(void)
++{
++    if(ts_event_in_callback() || ts_ws_transport_in_context()) return ESP_ERR_INVALID_STATE;
++    for(unsigned i=0;i<3;i++) if(s_handlers[i]) {
++        esp_err_t ret=ts_event_unregister_sync(s_handlers[i],STOP_TIMEOUT_MS);
++        if(ret!=ESP_OK && ret!=ESP_ERR_NOT_FOUND) return ret;
++        s_handlers[i]=NULL;
++    }
++    int64_t deadline=after_ms(esp_timer_get_time(),STOP_TIMEOUT_MS);
++    for(;;) {
++        portENTER_CRITICAL(&s_lock);
++        bool busy=s_entries || s_outstanding;
++        for(unsigned i=0;i<EVENT_SLOTS;i++) busy |= s_events[i].used;
++        wake_locked();
++        portEXIT_CRITICAL(&s_lock);
++        if(!busy) return ESP_OK;
++        if(esp_timer_get_time()>=deadline) return ESP_ERR_TIMEOUT;
++        vTaskDelay(1);
++    }
+ }
+ esp_err_t ts_ws_subscriptions_deinit(void)
+ {
+@@ -350,7 +427,7 @@
+     }
+     ts_ws_peer_t current;
+     if(!ts_ws_peer_get(peer.server,peer.fd,&current)||!ts_ws_peer_equal(peer,current))return ESP_ERR_INVALID_STATE;
+-    if(!enter()) return ESP_ERR_INVALID_STATE;
++    if(!enter(false)) return ESP_ERR_INVALID_STATE;
+     int64_t now=esp_timer_get_time();
+     esp_err_t ret=ESP_ERR_NO_MEM;
+     portENTER_CRITICAL(&s_lock);
+@@ -374,7 +451,7 @@
+ esp_err_t ts_ws_unsubscribe(ts_ws_peer_t peer,const char *topic)
+ {
+     int id=topic_id(topic);if(id<0)return ESP_ERR_NOT_FOUND;
+-    if(!enter())return ESP_ERR_INVALID_STATE;
++    if(!enter(true))return ESP_ERR_INVALID_STATE;
+     esp_err_t ret=ESP_ERR_NOT_FOUND;
+     portENTER_CRITICAL(&s_lock);
+     for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) if(s_subs[i].active && s_subs[i].topic==(unsigned)id && ts_ws_peer_equal(s_subs[i].peer,peer)) {
+@@ -391,7 +468,7 @@
+ void ts_ws_broadcast_to_topic(const char *topic,cJSON *data)
+ {
+     int id=topic_id(topic);
+-    if(id<0 || !data || !enter())return;
++    if(id<0 || !data || !enter(true))return;
+     event_item_t *e=NULL;
+     portENTER_CRITICAL(&s_lock);
+     if(s_sequence!=UINT64_MAX) for(unsigned i=0;i<EVENT_SLOTS;i++) if(!s_events[i].used) {e=&s_events[i];break;}
+--- a/components/ts_webui/src/ts_ws_transport.c
++++ b/components/ts_webui/src/ts_ws_transport.c
+@@ -15,15 +15,17 @@
+     uint64_t epoch;
+     bool stopping, barrier_requested, quiesced, work_busy;
+     unsigned outstanding;
++    int64_t retry_at;
+     TaskHandle_t owner;
+     ts_ws_closed_t closed;
+ } s_server;
+ static ts_ws_peer_t s_peers[TS_WS_CONNECTIONS];
+ static int s_log_levels[TS_WS_CONNECTIONS];
++static uint64_t s_log_revisions[TS_WS_CONNECTIONS];
+ struct ts_ws_message { unsigned refs; char *text; size_t len, capacity; };
+ static ts_ws_transport_stats_t s_tx_stats;
+-static ts_ws_message_t s_messages[TS_WS_MESSAGE_SLOTS];
+-typedef enum {TX_FREE, TX_PREPARED, TX_QUEUED, TX_EXECUTING, TX_DONE, TX_CANCELED} tx_state_t;
++static ts_ws_message_t s_messages[TS_WS_ALL_MESSAGE_SLOTS];
++typedef enum {TX_FREE, TX_RESERVED, TX_PREPARED, TX_QUEUED, TX_EXECUTING, TX_DONE, TX_CANCELED} tx_state_t;
+ typedef struct {
+     unsigned refs;
+     tx_state_t state;
+@@ -34,7 +36,7 @@
+     ts_ws_delivery_check_t check;
+     ts_ws_delivery_done_t done;
+ } delivery_t;
+-static delivery_t s_deliveries[TS_WS_TX_SLOTS];
++static delivery_t s_deliveries[TS_WS_ALL_TX_SLOTS];
+ static uint64_t s_delivery_order;
+ extern void ts_ws_subscriptions_wake(void);
+ 
+@@ -45,7 +47,7 @@
+ }
+ static bool peer_valid(ts_ws_peer_t peer)
+ {
+-    if (s_server.stopping || s_server.handle != peer.server || s_server.epoch != peer.epoch)
++    if (s_server.handle != peer.server || s_server.epoch != peer.epoch)
+         return false;
+     for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i)
+         if (s_peers[i].connection && ts_ws_peer_equal(s_peers[i], peer)) return true;
+@@ -78,7 +80,7 @@
+     bool found = false;
+     portENTER_CRITICAL(&s_lock);
+     for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i) {
+-        if (!s_server.stopping && s_peers[i].connection && s_peers[i].server == server && s_peers[i].fd == fd) {
++        if (s_peers[i].connection && s_peers[i].server == server && s_peers[i].fd == fd) {
+             *peer = s_peers[i]; found = true; break;
+         }
+     }
+@@ -117,7 +119,7 @@
+     if (!s_server.stopping && req->handle == s_server.handle && s_sequence != UINT64_MAX) {
+         for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i) if (!s_peers[i].connection) {
+             *ctx = (ts_ws_peer_t){req->handle, s_server.epoch, ++s_sequence, httpd_req_to_sockfd(req)};
+-            s_peers[i] = *ctx; s_log_levels[i] = -1; *peer = *ctx; ret = ESP_OK; break;
++            s_peers[i] = *ctx; s_log_levels[i] = -1; s_log_revisions[i] = 0; *peer = *ctx; ret = ESP_OK; break;
+         }
+     }
+     portEXIT_CRITICAL(&s_lock);
+@@ -126,12 +128,13 @@
+     req->free_ctx = session_free; /* RST, LRU and httpd_stop also release this. */
+     return ESP_OK;
+ }
+-static ts_ws_message_t *message_alloc(size_t capacity, bool telemetry)
++static ts_ws_message_t *message_alloc(size_t capacity, unsigned kind)
+ {
+     ts_ws_message_t *m = NULL;
+     portENTER_CRITICAL(&s_lock);
+-    for (unsigned i = telemetry ? 0 : TS_WS_MESSAGE_SLOTS - 2; capacity <= TS_WS_TOTAL_BYTES - s_tx_stats.bytes &&
+-         i < TS_WS_MESSAGE_SLOTS - (telemetry ? 2 : 0); ++i) if (!s_messages[i].refs) {
++    unsigned begin=kind==2 ? TS_WS_MESSAGE_SLOTS : kind==1 ? 0 : TS_WS_MESSAGE_SLOTS-2;
++    unsigned end=kind==2 ? TS_WS_ALL_MESSAGE_SLOTS : kind==1 ? TS_WS_MESSAGE_SLOTS-2 : TS_WS_MESSAGE_SLOTS;
++    for (unsigned i=begin; capacity <= TS_WS_TOTAL_BYTES-s_tx_stats.bytes && i<end; ++i) if (!s_messages[i].refs) {
+         m = &s_messages[i]; m->refs = 1; m->capacity = capacity;
+         s_tx_stats.bytes += capacity;
+         if(s_tx_stats.bytes > s_tx_stats.bytes_high) s_tx_stats.bytes_high=s_tx_stats.bytes;
+@@ -140,7 +143,12 @@
+     portEXIT_CRITICAL(&s_lock);
+     if (m) {
+         m->text = malloc(capacity);
+-        if (!m->text) { ts_ws_message_release(m); return NULL; }
++        if (!m->text) {
++            portENTER_CRITICAL(&s_lock);s_tx_stats.rejected++;portEXIT_CRITICAL(&s_lock);
++            ts_ws_message_release(m);return NULL;
++        }
++    } else {
++        portENTER_CRITICAL(&s_lock);s_tx_stats.rejected++;portEXIT_CRITICAL(&s_lock);
+     }
+     return m;
+ }
+@@ -260,12 +268,19 @@
+ {
+     esp_err_t ret=httpd_queue_work(d->peer.server,deliver,d);
+     portENTER_CRITICAL(&s_lock);
+-    if(ret==ESP_OK)s_tx_stats.queued++;
+-    else {s_tx_stats.rejected++;s_server.work_busy=false;d->state=TX_CANCELED;}
++    bool retry=ret!=ESP_OK && d>=&s_deliveries[TS_WS_TX_SLOTS];
++    if(ret==ESP_OK){s_tx_stats.queued++;s_server.retry_at=0;}
++    else {
++        s_tx_stats.rejected++;s_server.work_busy=false;
++        d->state=retry?TX_PREPARED:TX_CANCELED;
++        if(retry)s_server.retry_at=esp_timer_get_time()+100000;
++    }
+     portEXIT_CRITICAL(&s_lock);
+     if(ret!=ESP_OK){
+-        if(d->done)d->done(d->revision,d->delivery,ret);
+-        delivery_release(d); /* work reference */
++        if(!retry) {
++            if(d->done)d->done(d->revision,d->delivery,ret);
++            delivery_release(d); /* failed ordinary work reference */
++        }
+         ts_ws_subscriptions_wake();
+     }
+     delivery_release(d); /* publication reference, may outlive the callback */
+@@ -275,8 +290,8 @@
+ {
+     delivery_t *next=NULL;
+     portENTER_CRITICAL(&s_lock);
+-    if(!s_server.stopping && !s_server.work_busy) {
+-        for(unsigned i=0;i<TS_WS_TX_SLOTS;i++)
++    if(s_server.handle && !s_server.work_busy && esp_timer_get_time()>=s_server.retry_at) {
++        for(unsigned i=0;i<TS_WS_ALL_TX_SLOTS;i++)
+             if(s_deliveries[i].state==TX_PREPARED && (!next || s_deliveries[i].order<next->order))next=&s_deliveries[i];
+         if(next){next->state=TX_QUEUED;next->refs++;s_server.work_busy=true;}
+     }
+@@ -287,17 +302,17 @@
+ {
+     bool ready=false;
+     portENTER_CRITICAL(&s_lock);
+-    if(!s_server.stopping && !s_server.work_busy)
+-        for(unsigned i=0;i<TS_WS_TX_SLOTS;i++)if(s_deliveries[i].state==TX_PREPARED)ready=true;
++    if(s_server.handle && !s_server.work_busy)
++        for(unsigned i=0;i<TS_WS_ALL_TX_SLOTS;i++)if(s_deliveries[i].state==TX_PREPARED)ready=true;
+     portEXIT_CRITICAL(&s_lock);
+     return ready;
+ }
+ static void cancel_ready(bool topics_only)
+ {
+-    for(unsigned i=0;i<TS_WS_TX_SLOTS;i++){
++    for(unsigned i=0;i<TS_WS_ALL_TX_SLOTS;i++){
+         delivery_t *d=&s_deliveries[i];
+         portENTER_CRITICAL(&s_lock);
+-        bool cancel=d->state==TX_PREPARED && (!topics_only || d->done);
++        bool cancel=d->state==TX_PREPARED && (!topics_only || i<TS_WS_TOPIC_TX_SLOTS);
+         if(cancel){d->state=TX_CANCELED;s_tx_stats.stale++;} /* take its existing work reference */
+         portEXIT_CRITICAL(&s_lock);
+         if(cancel){if(d->done)d->done(d->revision,d->delivery,ESP_ERR_INVALID_STATE);delivery_release(d);}
+@@ -310,7 +325,7 @@
+     if(!message)return ESP_ERR_INVALID_ARG;
+     delivery_t *d=NULL;
+     portENTER_CRITICAL(&s_lock);
+-    if(peer_valid(peer) && s_delivery_order!=UINT64_MAX)
++    if(!s_server.stopping && peer_valid(peer) && s_delivery_order!=UINT64_MAX)
+         for(unsigned i=done?0:TS_WS_TOPIC_TX_SLOTS;i<(done?TS_WS_TOPIC_TX_SLOTS:TS_WS_TX_SLOTS);i++)if(!s_deliveries[i].refs){
+             d=&s_deliveries[i];
+             *d=(delivery_t){.refs=2,.state=TX_PREPARED,.order=++s_delivery_order,.peer=peer,
+@@ -355,7 +370,7 @@
+         if (server != s_server.handle) { portEXIT_CRITICAL(&s_lock); return ESP_ERR_INVALID_ARG; }
+         s_server.stopping = true;
+         portEXIT_CRITICAL(&s_lock);
+-        cancel_ready(false);
++        ts_ws_transport_flush(); /* drain accepted results; never cancel them on normal stop */
+         portENTER_CRITICAL(&s_lock);
+         unsigned outstanding=s_server.outstanding;
+         portEXIT_CRITICAL(&s_lock);
+@@ -375,29 +390,30 @@
+     portEXIT_CRITICAL(&s_lock);
+ }
+ 
+-static bool log_allowed(uint64_t connection, uint64_t level)
++static bool log_allowed(uint64_t revision, uint64_t level)
+ {
+     bool allowed=false;
+     portENTER_CRITICAL(&s_lock);
+     for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)
+-        if(s_peers[i].connection==connection && s_log_levels[i]>=0 && level<=(unsigned)s_log_levels[i]) allowed=true;
++        if(s_peers[i].connection && s_log_revisions[i]==revision && s_log_levels[i]>=0 && level<=(unsigned)s_log_levels[i]) allowed=true;
+     portEXIT_CRITICAL(&s_lock);
+     return allowed;
+ }
+ static esp_err_t broadcast_filtered(const httpd_ws_frame_t *frame, int level)
+ {
+     ts_ws_peer_t peers[TS_WS_CONNECTIONS];
++    uint64_t revisions[TS_WS_CONNECTIONS];
+     unsigned n=0;
+     portENTER_CRITICAL(&s_lock);
+     if(!s_server.stopping) for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)
+-        if(s_peers[i].connection && (level < 0 || level <= s_log_levels[i])) peers[n++]=s_peers[i];
++        if(s_peers[i].connection && (level < 0 || level <= s_log_levels[i])) {revisions[n]=s_log_revisions[i];peers[n++]=s_peers[i];}
+     portEXIT_CRITICAL(&s_lock);
+     if(!n) return ESP_OK;
+     ts_ws_message_t *m=ts_ws_message_text((const char*)frame->payload,frame->len);
+     if(!m) return ESP_ERR_NO_MEM;
+     esp_err_t ret=ESP_OK;
+     for(unsigned i=0;i<n;i++) {
+-        esp_err_t result=ts_ws_transport_submit(peers[i],m,peers[i].connection,level,level<0?NULL:log_allowed,NULL);
++        esp_err_t result=ts_ws_transport_submit(peers[i],m,revisions[i],level,level<0?NULL:log_allowed,NULL);
+         if(result!=ESP_OK)ret=result;
+     }
+     ts_ws_message_release(m);
+@@ -408,7 +424,10 @@
+ {
+     portENTER_CRITICAL(&s_lock);
+     for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)
+-        if(s_peers[i].connection && ts_ws_peer_equal(s_peers[i],peer)) s_log_levels[i]=level;
++        if(s_peers[i].connection && ts_ws_peer_equal(s_peers[i],peer)) {
++            s_log_levels[i]=s_sequence==UINT64_MAX ? -1 : level;
++            s_log_revisions[i]=s_sequence==UINT64_MAX ? 0 : ++s_sequence;
++        }
+     portEXIT_CRITICAL(&s_lock);
+ }
+ esp_err_t ts_ws_transport_broadcast(const httpd_ws_frame_t *frame) {return broadcast_filtered(frame,-1);}
+@@ -464,3 +483,109 @@
+         vTaskDelay(1);
+     }
+ }
++
++unsigned ts_ws_peer_snapshot(ts_ws_peer_t *peers, unsigned capacity)
++{
++    unsigned n=0;
++    portENTER_CRITICAL(&s_lock);
++    if(!s_server.stopping) for(unsigned i=0;i<TS_WS_CONNECTIONS && n<capacity;i++)
++        if(s_peers[i].connection) peers[n++]=s_peers[i];
++    portEXIT_CRITICAL(&s_lock);
++    return n;
++}
++esp_err_t ts_ws_reserve(const ts_ws_peer_t *peers, unsigned count, bool result,
++                        size_t bytes, ts_ws_reservation_t *r)
++{
++    if(!r || (!peers && !result) || !count || count>TS_WS_RESERVATION_TARGETS || !bytes || bytes>TS_WS_LEGACY_BYTES) return ESP_ERR_INVALID_ARG;
++    *r=(ts_ws_reservation_t){0};
++    ts_ws_message_t *m=message_alloc(bytes,result?2:1);
++    if(!m) return ESP_ERR_NO_MEM;
++    unsigned begin=result?TS_WS_TX_SLOTS:0, end=result?TS_WS_ALL_TX_SLOTS:TS_WS_TOPIC_TX_SLOTS;
++    portENTER_CRITICAL(&s_lock);
++    bool valid=!s_server.stopping && s_server.handle;
++    for(unsigned i=0;peers && i<count;i++) if(!peer_valid(peers[i])) valid=false;
++    unsigned available=0;
++    for(unsigned i=begin;i<end;i++) if(!s_deliveries[i].refs) available++;
++    if(valid && available>=count) {
++        for(unsigned i=begin,j=0;i<end && j<count;i++) if(!s_deliveries[i].refs) {
++            s_deliveries[i]=(delivery_t){.refs=1,.state=TX_RESERVED,.peer=peers?peers[j]:(ts_ws_peer_t){0},.message=m};
++            r->slots[j++]=i;m->refs++;s_server.outstanding++;s_tx_stats.jobs++;
++        }
++        r->count=count;r->message=m;
++        if(s_tx_stats.jobs>s_tx_stats.jobs_high)s_tx_stats.jobs_high=s_tx_stats.jobs;
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if(!r->message){ts_ws_message_release(m);return valid?ESP_ERR_NO_MEM:ESP_ERR_INVALID_STATE;}
++    return ESP_OK;
++}
++void ts_ws_reservation_release(ts_ws_reservation_t *r)
++{
++    if(!r || !r->message)return;
++    for(unsigned i=0;i<r->count;i++)if(r->slots[i]>=0) delivery_release(&s_deliveries[r->slots[i]]);
++    ts_ws_message_release(r->message);
++    *r=(ts_ws_reservation_t){0};
++    ts_ws_subscriptions_wake();
++}
++bool ts_ws_reserved_json(ts_ws_reservation_t *r,const char *topic,const cJSON *data,int64_t timestamp)
++{
++    if(!r->message)return false;
++    cJSON *root=cJSON_CreateObject();
++    bool ok=root && cJSON_AddStringToObject(root,"type","data") && cJSON_AddStringToObject(root,"topic",topic) &&
++        cJSON_AddNumberToObject(root,"timestamp",timestamp) && ts_ws_json_reference(root,"data",data) &&
++        cJSON_PrintPreallocated(root,r->message->text,r->message->capacity,false);
++    cJSON_Delete(root);
++    if(ok)r->message->len=strlen(r->message->text);
++    return ok;
++}
++esp_err_t ts_ws_reserved_text(ts_ws_reservation_t *r,const char *text)
++{
++    if(!r || !r->message || !text)return ESP_ERR_INVALID_ARG;
++    size_t n=strlen(text);
++    if(n>=r->message->capacity)return ESP_ERR_INVALID_SIZE;
++    memcpy(r->message->text,text,n+1);r->message->len=n;
++    return ESP_OK;
++}
++esp_err_t ts_ws_reserved_submit(ts_ws_reservation_t *r,unsigned index,uint64_t revision,
++    uint64_t delivery,ts_ws_delivery_check_t check,ts_ws_delivery_done_t done)
++{
++    if(!r || !r->message || index>=r->count || r->slots[index]<0)return ESP_ERR_INVALID_ARG;
++    delivery_t *d=&s_deliveries[r->slots[index]];
++    portENTER_CRITICAL(&s_lock);
++    bool valid=!s_server.stopping && peer_valid(d->peer) && s_delivery_order!=UINT64_MAX;
++    if(valid) {
++        d->revision=revision;d->delivery=delivery;d->check=check;d->done=done;
++        d->order=++s_delivery_order;d->state=TX_PREPARED;d->refs++; /* work + reservation */
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if(!valid)return ESP_ERR_INVALID_STATE;
++    r->slots[index]=-1;
++    ts_ws_transport_flush();delivery_release(d);ts_ws_subscriptions_wake();
++    return ESP_OK;
++}
++
++esp_err_t ts_ws_result_reserve(size_t bytes,ts_ws_reservation_t *r)
++{
++    return ts_ws_reserve(NULL,TS_WS_CONNECTIONS,true,bytes,r);
++}
++esp_err_t ts_ws_result_broadcast(ts_ws_reservation_t *r,const char *text)
++{
++    esp_err_t ret=ts_ws_reserved_text(r,text);
++    if(ret!=ESP_OK)return ret;
++    ts_ws_peer_t peers[TS_WS_CONNECTIONS];
++    unsigned n=ts_ws_peer_snapshot(peers,TS_WS_CONNECTIONS);
++    for(unsigned i=0;i<n;i++) {
++        if(i>=r->count || r->slots[i]<0)return ESP_ERR_INVALID_STATE;
++        portENTER_CRITICAL(&s_lock);s_deliveries[r->slots[i]].peer=peers[i];portEXIT_CRITICAL(&s_lock);
++        esp_err_t result=ts_ws_reserved_submit(r,i,0,0,NULL,NULL);
++        if(result!=ESP_OK)ret=result;
++    }
++    return ret;
++}
++
++uint32_t ts_ws_transport_retry_ms(void)
++{
++    portENTER_CRITICAL(&s_lock);
++    int64_t delta=s_server.retry_at-esp_timer_get_time();
++    portEXIT_CRITICAL(&s_lock);
++    return delta>0 ? (uint32_t)((delta+999)/1000) : 0;
++}
+--- a/main/ts_core_init.c
++++ b/main/ts_core_init.c
+@@ -21,6 +21,26 @@
+ 
+ static bool s_core_initialized = false;
+ static bool s_core_started = false;
++static bool s_core_cleanup_pending;
++static bool s_core_stopping;
++
++static esp_err_t core_release_components(void)
++{
++    esp_err_t ret;
++    if (ts_service_is_initialized() && (ret = ts_service_deinit()) != ESP_OK) return ret;
++    if (ts_event_is_initialized() && (ret = ts_event_deinit()) != ESP_OK) return ret;
++    if (ts_log_is_initialized() && (ret = ts_log_deinit()) != ESP_OK) return ret;
++    if (ts_config_is_initialized() && (ret = ts_config_deinit()) != ESP_OK) return ret;
++    return ESP_OK;
++}
++static esp_err_t core_init_rollback(esp_err_t original)
++{
++    s_core_cleanup_pending=true;
++    esp_err_t ret=core_release_components();
++    if(ret!=ESP_OK)return ret;
++    s_core_cleanup_pending=false;
++    return original;
++}
+ 
+ /* ============================================================================
+  * cJSON PSRAM 内存钩子 - 减少 DRAM 碎片
+@@ -61,7 +81,7 @@
+ {
+     esp_err_t ret;
+ 
+-    if (s_core_initialized) {
++    if (s_core_initialized || s_core_cleanup_pending) {
+         ESP_LOGW(TAG, "Core already initialized");
+         return ESP_ERR_INVALID_STATE;
+     }
+@@ -112,8 +132,7 @@
+     ret = ts_log_init();
+     if (ret != ESP_OK) {
+         ESP_LOGE(TAG, "Failed to initialize log: %s", esp_err_to_name(ret));
+-        ts_config_deinit();
+-        return ret;
++        return core_init_rollback(ret);
+     }
+ 
+     // 3. 初始化事件系统
+@@ -121,9 +140,7 @@
+     ret = ts_event_init();
+     if (ret != ESP_OK) {
+         ESP_LOGE(TAG, "Failed to initialize event: %s", esp_err_to_name(ret));
+-        ts_log_deinit();
+-        ts_config_deinit();
+-        return ret;
++        return core_init_rollback(ret);
+     }
+ 
+     // 3.1 注册 config_file 事件监听器（依赖事件系统）
+@@ -145,10 +162,7 @@
+     ret = ts_service_init();
+     if (ret != ESP_OK) {
+         ESP_LOGE(TAG, "Failed to initialize service: %s", esp_err_to_name(ret));
+-        ts_event_deinit();
+-        ts_log_deinit();
+-        ts_config_deinit();
+-        return ret;
++        return core_init_rollback(ret);
+     }
+ 
+     s_core_initialized = true;
+@@ -159,26 +173,15 @@
+ 
+ esp_err_t ts_core_deinit(void)
+ {
+-    if (!s_core_initialized) {
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-
+-    ESP_LOGI(TAG, "Deinitializing TianShanOS Core...");
+-
+-    // 如果已启动，先停止
+-    if (s_core_started) {
+-        ts_core_stop();
+-    }
+-
+-    // 按相反顺序反初始化
+-    ts_service_deinit();
+-    ts_event_deinit();
+-    ts_log_deinit();
+-    ts_config_deinit();
+-
+-    s_core_initialized = false;
+-    ESP_LOGI(TAG, "TianShanOS Core deinitialized");
+-
++    if (!s_core_initialized && !s_core_cleanup_pending) return ESP_ERR_INVALID_STATE;
++    s_core_cleanup_pending=true;
++    esp_err_t ret = ts_core_stop();
++    if (ret != ESP_OK) return ret;
++    /* Earlier stages may already have completed on a previous attempt. */
++    ret=core_release_components();
++    if(ret!=ESP_OK)return ret;
++    s_core_initialized=false;
++    s_core_cleanup_pending=false;
+     return ESP_OK;
+ }
+ 
+@@ -189,6 +192,7 @@
+ 
+ esp_err_t ts_core_start(void)
+ {
++    if(s_core_stopping || s_core_cleanup_pending) return ESP_ERR_INVALID_STATE;
+     if (!s_core_initialized) {
+         ESP_LOGE(TAG, "Core not initialized");
+         return ESP_ERR_INVALID_STATE;
+@@ -232,17 +236,24 @@
+     }
+ 
+     ESP_LOGI(TAG, "Stopping TianShanOS...");
+-
+-    // 发送系统关闭事件
+-    ts_event_post_sync(TS_EVENT_BASE_SYSTEM, TS_EVENT_SYSTEM_SHUTDOWN, NULL, 0);
++    esp_err_t ret;
++    /* A retry continues the same stop intent; do not replay shutdown handlers. */
++    if(!s_core_stopping) {
++        s_core_stopping=true;
++        ret=ts_event_post_sync(TS_EVENT_BASE_SYSTEM,TS_EVENT_SYSTEM_SHUTDOWN,NULL,0);
++        if(ret!=ESP_OK){s_core_stopping=false;return ret;}
++    }
+ 
+     // 停止所有服务
+-    ts_service_stop_all();
++    ret = ts_service_stop_all();
++    if (ret != ESP_OK) return ret;
+ 
+     // 保存配置
+-    ts_config_save();
++    ret = ts_config_save();
++    if (ret != ESP_OK) return ret;
+ 
+     s_core_started = false;
++    s_core_stopping=false;
+     ESP_LOGI(TAG, "TianShanOS stopped");
+ 
+     return ESP_OK;
+--- a/tests/ws_subscriptions/README.md
++++ b/tests/ws_subscriptions/README.md
+@@ -17,3 +17,10 @@
+ - The 32-service escaped-name payload is a size stress fixture for the production serializer, not a replacement implementation of the service API. The 512 KiB legacy-frame boundary and total bytes / descriptor ceilings are tested separately.
+ 
+ Mock success of `httpd_ws_send_frame_async` means only success at that API boundary. It is not proof of browser delivery, TCP timing, device heap, CPU utilization, or stack high-water on ESP32-S3. See `docs/repair/ws-subscriptions/README.md` for the acceptance matrix and device checklist.
++
++
++## R1—R5 Reviewer 修复回归
++
++- `bash tests/ws_subscriptions/run_reviewer_baseline.sh`：使用归档和 SHA-256 复现五项未修复行为，退出 0 表示反例成立。
++- `bash tests/ws_subscriptions/run_reviewer.sh`：完整生产 manager/transport/event C + 自动提取的当前 WebUI/HTTP/服务/核心函数，验证暂停/排空、会话就绪、日志代次、聚合停止重试、主题公平性和联合资源预算。SSH/设备/SDK 是模拟，未执行远端操作。
++- 修复记录：`docs/repair/ws-subscriptions/reviewer-fixes/README.md`。
+--- /dev/null
++++ b/tests/ws_subscriptions/run_reviewer.sh
+@@ -0,0 +1,37 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++build=$(mktemp -d /tmp/ts-ws-reviewer.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++export DEVELOPER_DIR=/Library/Developer/CommandLineTools
++cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
++python3 - "$build" <<'PY'
++from pathlib import Path
++import sys,re
++s=Path('components/ts_webui/src/ts_webui_ws.c').read_text()
++names=['ts_webui_log_stream_enable','has_log_clients','update_log_stream_state','set_client_role','ssh_terminal_done','ssh_generation_valid','ssh_status_valid','ssh_request_error','ssh_send_status','ssh_send_output','ssh_poll_task','ssh_cleanup','handle_ssh_connect','start_terminal_session','ts_webui_ws_stop','ssh_exec_terminal_publish','ws_handler']
++parts=[]
++for name in names:
++ m=re.search(r'^(?:static )?(?:esp_err_t|bool|void) '+name+r'\([^;]*?\)\n\{',s,re.M);assert m,name
++ parts.append(s[m.start():s.index('\n}',m.start())+2])
++Path(sys.argv[1],'reviewer_ws.inc').write_text('\n'.join(parts))
++for source,names,dest in [
++ ('components/ts_net/src/ts_http_server.c',['http_handler_wrapper'],'reviewer_http.inc'),
++ ('main/ts_core_init.c',['core_release_components','core_init_rollback','ts_core_start','ts_core_stop','ts_core_deinit'],'reviewer_core.inc'),
++ ('components/ts_core/ts_service/src/ts_service.c',['stop_service_internal','ts_service_stop','ts_service_stop_all','ts_service_deinit'],'reviewer_service.inc')]:
++ s=Path(source).read_text();parts=[]
++ for name in names:
++  m=re.search(r'^(?:static )?esp_err_t '+name+r'\([^;]*?\)\n\{',s,re.M);assert m,name
++  parts.append(s[m.start():s.index('\n}',m.start())+2])
++ Path(sys.argv[1],dest).write_text('\n'.join(parts))
++PY
++cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer.c "$cjson/cJSON.c" -o "$build/reviewer"
++"$build/reviewer"
++
++cc -std=gnu11 -g -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer_service.c -o "$build/service"
++"$build/service"
++cc -std=gnu11 -g -fsanitize=address,undefined -Wno-deprecated-declarations -Icomponents/ts_core/ts_event/include -Itests/ws_subscriptions/stubs -Icomponents/ts_core/ts_event/src -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer_core.c -o "$build/core"
++"$build/core"
++
++cc -std=gnu11 -g -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer_http.c -o "$build/http"
++"$build/http"
+--- /dev/null
++++ b/tests/ws_subscriptions/run_reviewer_baseline.sh
+@@ -0,0 +1,27 @@
++#!/bin/bash
++# Reproduce the five defects against the frozen uncommitted pre-fix source, not HEAD.
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++root=$PWD
++fixture=docs/repair/ws-subscriptions/reviewer-fixes
++build=$(mktemp -d /tmp/ts-ws-pre-fix.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++tar -xzf "$fixture/pre-fix-source.tar.gz" -C "$build"
++python3 - "$build" "$fixture" <<'PY'
++from pathlib import Path
++import json,hashlib,sys
++base=Path(sys.argv[1]);fixture=Path(sys.argv[2])
++for name,digest in json.loads((fixture/'baseline.json').read_text())['sha256'].items():
++ assert hashlib.sha256((base/name).read_bytes()).hexdigest()==digest,name
++for origin,dest in [('ts-review-ws/review.c','r1_r3.c'),('ts-review-ws-round2/starvation.c','r5.c'),('ts-review-ws-round2/core_stop.c','r4_core.c'),('ts-review-ws-round2/service_stop.c','r4_service.c')]:
++ s=(fixture/origin).read_text().replace('/Users/massif/TianshanOS/tests/ws_subscriptions/test_manager.c','test_manager.c')
++ (base/dest).write_text(s)
++PY
++export DEVELOPER_DIR=/Library/Developer/CommandLineTools
++cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
++for case in r1_r3 r5 r4_core r4_service; do
++ extra=()
++ if [[ "$case" == r4_core ]]; then extra=(-I"$build/components/ts_core/ts_event/include"); fi
++ cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined "${extra[@]}" -I"$build/tests/ws_subscriptions" -I"$build/tests/ws_subscriptions/stubs" -I"$build/components/ts_webui/include" -I"$build/components/ts_webui/src" -I"$build/components/ts_core/ts_event/include" -I"$build/components/ts_core/ts_event/src" -I"$cjson" "$build/$case.c" "$cjson/cJSON.c" -o "$build/$case"
++ "$build/$case"
++done
+--- a/tests/ws_subscriptions/stubs/platform.h
++++ b/tests/ws_subscriptions/stubs/platform.h
+@@ -93,7 +93,7 @@
+ static inline int ts_event_unregister_sync(void*h,unsigned t) {(void)h;(void)t;return 0;}
+ #endif
+ typedef void *httpd_handle_t;
+-typedef struct {httpd_handle_t handle;void*sess_ctx;void(*free_ctx)(void*);int fd;} httpd_req_t;
++typedef struct {httpd_handle_t handle;void*sess_ctx;void(*free_ctx)(void*);int fd;int method;void*user_ctx;const char*uri;size_t content_len;} httpd_req_t;
+ typedef struct {int type;uint8_t*payload;size_t len;} httpd_ws_frame_t;
+ #define HTTPD_WS_TYPE_TEXT 1
+ #define HTTPD_WS_CLIENT_WEBSOCKET 2
+--- a/tests/ws_subscriptions/test_init.c
++++ b/tests/ws_subscriptions/test_init.c
+@@ -25,6 +25,12 @@
+ static atomic_uint s_exec_creators;
+ bool ts_ws_transport_in_context(void){return owner_context;}
+ static esp_err_t ts_ws_subscriptions_deinit(void){return manager_stop_result;}
++static esp_err_t ts_ws_subscriptions_pause(void){return manager_stop_result;}
++static esp_err_t ts_ws_subscriptions_drain(void){return manager_stop_result;}
++static esp_err_t ts_webui_log_stream_enable(bool enable){(void)enable;return ESP_OK;}
++static ts_ws_reservation_t s_exec_terminal;
++esp_err_t ts_ws_result_reserve(size_t bytes,ts_ws_reservation_t*r){(void)bytes;(void)r;return 0;}
++void ts_ws_reservation_release(ts_ws_reservation_t*r){(void)r;}
+ esp_err_t ts_ws_transport_quiesce(httpd_handle_t server,uint32_t timeout){(void)server;(void)timeout;return barrier_result;}
+ esp_err_t ts_ws_transport_stop(httpd_handle_t server,uint32_t timeout){(void)server;(void)timeout;tx_stop_calls++;return tx_stop_result;}
+ static void ssh_cleanup(void){if(cleanup_finishes)s_ssh_poll_alive=false;}
+--- a/tests/ws_subscriptions/test_manager.c
++++ b/tests/ws_subscriptions/test_manager.c
+@@ -41,6 +41,7 @@
+ static void(*barrier_action)(void);
+ static void test_point(const char *name) {if(barrier_action && !strcmp(name,barrier_name)){void(*fn)(void)=barrier_action;barrier_action=NULL;fn();}}
+ static unsigned reads[7], frames[32], notifications, queued;
++static void (*sent_hook)(httpd_ws_frame_t*);
+ static char payloads[64][TS_WS_FRAME_BYTES];
+ static struct {void(*fn)(void*);void*arg;} queue[64];
+ TaskHandle_t xTaskGetCurrentTaskHandle(void) {return current;}
+@@ -50,7 +51,7 @@
+ void vTaskDelete(TaskHandle_t t) {(void)t;}
+ void vTaskDelay(TickType_t t) {test_now+=(int64_t)t*1000;if(delay_hook)delay_hook();}
+ int httpd_ws_get_fd_info(httpd_handle_t h,int fd) {(void)h;(void)fd;return HTTPD_WS_CLIENT_WEBSOCKET;}
+-int httpd_ws_send_frame_async(httpd_handle_t h,int fd,httpd_ws_frame_t*f) {(void)h;assert(fd>=0&&fd<32);frames[fd]++;memcpy(payloads[fd],f->payload,f->len);payloads[fd][f->len]=0;return send_fail?ESP_FAIL:0;}
++int httpd_ws_send_frame_async(httpd_handle_t h,int fd,httpd_ws_frame_t*f) {(void)h;assert(fd>=0&&fd<32);frames[fd]++;if(sent_hook && !send_fail)sent_hook(f);memcpy(payloads[fd],f->payload,f->len);payloads[fd][f->len]=0;return send_fail?ESP_FAIL:0;}
+ int httpd_queue_work(httpd_handle_t h,void(*fn)(void*),void*a) {(void)h;if(queue_fail)return ESP_FAIL;if(immediate) {TaskHandle_t saved=current;current=(void*)3;fn(a);current=saved;}else{assert(queued<64);queue[queued++]=(typeof(queue[0])){fn,a};}return 0;}
+ int ts_api_call(const char*method,const cJSON*p,ts_api_result_t*r) {(void)p;for(int i=0;i<7;i++)if(!strcmp(metrics[i],method))reads[i]++;if(api_hook)api_hook();r->data=cJSON_CreateObject();r->message=malloc(8);r->code=api_business_error?1:0;return 0;}
+ static void pump(void) {
+--- /dev/null
++++ b/tests/ws_subscriptions/test_reviewer.c
+@@ -0,0 +1,219 @@
++/* Compose actual manager/transport with extracted, unmodified WebUI functions. */
++#define main existing_manager_main
++#include "test_manager.c"
++#undef main
++#include <setjmp.h>
++#include <stdatomic.h>
++#define MAX_WS_CLIENTS TS_WS_CONNECTIONS
++#define TS_LOG_NONE 0
++#define TS_LOG_ERROR 1
++#define TS_LOG_VERBOSE 5
++#define HTTP_GET 0
++#define HTTPD_WS_TYPE_CLOSE 8
++#define CONFIG_TS_LOG_BUFFER_SIZE 16
++#define SSH_OUTPUT_BUF_SIZE 4096
++#define TS_SSH_AUTH_PASSWORD 1
++typedef int ts_log_level_t;
++typedef enum {WS_CLIENT_TYPE_EVENT,WS_CLIENT_TYPE_TERMINAL,WS_CLIENT_TYPE_SSH_SHELL,WS_CLIENT_TYPE_LOG} ws_client_type_t;
++static struct {bool active;int fd;httpd_handle_t hd;ws_client_type_t type;int log_min_level;}s_clients[MAX_WS_CLIENTS];
++static httpd_handle_t s_server=(void*)11;
++static bool s_ws_stopping,s_exec_running;
++static atomic_uint s_exec_creators;
++static ts_event_handler_handle_t s_power_event_handle;
++static ts_ws_peer_t s_ssh_peer;
++static int s_ssh_client_fd=-1,s_terminal_client_fd=-1;
++static void *s_ssh_session,*s_ssh_shell;
++static atomic_bool s_ssh_running,s_ssh_poll_alive;
++enum {SSH_IDLE,SSH_STARTING,SSH_READY,SSH_TERMINAL};
++static atomic_uint s_ssh_state,s_ssh_generation,s_ssh_result_pending;
++static ts_ws_reservation_t s_ssh_terminal,s_exec_terminal;
++static bool shell_active,create_fails,close_on_create;
++static void update_log_stream_state(void);
++static bool has_log_clients(void);
++static int ts_webui_log_stream_enable(bool enabled);
++static void*s_log_callback_handle;
++static atomic_bool s_log_streaming_enabled;
++static int remove_log_result;
++static const char *incoming;
++static unsigned commands;
++static const char*s_level_names[]={"NONE","ERROR","WARN","INFO","DEBUG","VERBOSE"};
++typedef struct{int timestamp_ms,level;const char*tag,*message,*task_name;}ts_log_entry_t;
++static void log_ws_callback(const ts_log_entry_t*e,void*u){(void)e;(void)u;}
++static int ts_log_add_callback(void(*fn)(const ts_log_entry_t*,void*),int level,void*u,void**h){(void)fn;(void)level;(void)u;*h=(void*)1;return 0;}
++static int ts_log_remove_callback(void*h){(void)h;return remove_log_result;}
++static size_t ts_log_buffer_search(ts_log_entry_t*e,size_t n,int a,int b,void*t,void*m){(void)e;(void)n;(void)a;(void)b;(void)t;(void)m;return 0;}
++static void*test_heap_malloc(size_t n,unsigned caps){(void)caps;return tracked_malloc(n);}
++static int add_client(httpd_req_t*r,ws_client_type_t t){(void)r;(void)t;commands++;return 0;}
++static int httpd_ws_recv_frame(httpd_req_t*r,httpd_ws_frame_t*f,size_t n){(void)r;f->type=HTTPD_WS_TYPE_TEXT;f->len=strlen(incoming);if(n)memcpy(f->payload,incoming,f->len);return 0;}
++static void handle_terminal_command(httpd_req_t*r,const char*d){(void)r;(void)d;commands++;}
++static void ts_console_request_interrupt(void){commands++;}
++static void handle_ssh_input(const char*d){(void)d;commands++;}
++static void handle_ssh_disconnect(void){commands++;}
++static void handle_ssh_signal(const char*s){(void)s;commands++;}
++static void handle_ssh_resize(int w,int h){(void)w;(void)h;commands++;}
++static int httpd_ws_send_frame(httpd_req_t*r,httpd_ws_frame_t*f){return httpd_ws_send_frame_async(r->handle,r->fd,f);}
++static void ts_console_clear_output_cb(void){}
++static void terminal_output_cb(const char*d,size_t n,void*u){(void)d;(void)n;(void)u;}
++static void ts_console_set_output_cb(void(*fn)(const char*,size_t,void*),void*u){(void)fn;(void)u;}
++static void cleanup_disconnected_client(int fd){(void)fd;}
++static void ssh_cleanup(void);
++static esp_err_t ssh_send_status(const char*,const char*);
++static void ssh_send_output(const char*d,size_t n);
++typedef struct {const char*host,*username;int port,auth_method,timeout_ms;struct {const char*password;}auth;}ts_ssh_config_t;
++typedef struct {int term_width,term_height,read_timeout_ms;}ts_shell_config_t;
++#define TS_SSH_DEFAULT_CONFIG() ((ts_ssh_config_t){0})
++#define TS_SHELL_DEFAULT_CONFIG() ((ts_shell_config_t){0})
++static int ts_ssh_session_create(const ts_ssh_config_t*c,void**out){(void)c;*out=(void*)5;return 0;}
++static int ts_ssh_connect(void*s){(void)s;return 0;}
++static const char*ts_ssh_get_error(void*s){(void)s;return "fixture";}
++static int ts_ssh_shell_open(void*s,const ts_shell_config_t*c,void**out){(void)s;(void)c;*out=(void*)6;shell_active=true;return 0;}
++static bool ts_ssh_shell_is_active(void*s){return s && shell_active;}
++static int ts_ssh_shell_read(void*s,char*b,size_t n,size_t*out){(void)s;(void)b;(void)n;*out=0;return 0;}
++static void ts_ssh_shell_close(void*s){(void)s;shell_active=false;}
++static void ts_ssh_disconnect(void*s){(void)s;}
++static void ts_ssh_session_destroy(void*s){(void)s;}
++static int xTaskCreateWithCaps(void(*fn)(void*),const char*n,unsigned size,void*a,unsigned prio,void*out,unsigned caps){
++ (void)fn;(void)n;(void)size;(void)a;(void)prio;(void)out;(void)caps;
++ if(close_on_create)shell_active=false;
++ return create_fails?0:pdPASS;
++}
++#define free tracked_free
++#define malloc tracked_malloc
++#define heap_caps_malloc test_heap_malloc
++#include "reviewer_ws.inc"
++#undef free
++#undef malloc
++#undef heap_caps_malloc
++static jmp_buf worker_yield;
++static void yield_worker(void){longjmp(worker_yield,1);}
++static void worker_step(void){
++ wait_hook=yield_worker;current=(void*)2;
++ if(!setjmp(worker_yield))worker_fn(NULL);
++ current=(void*)1;wait_hook=NULL;
++}
++static void sdk_one(void){
++ if(!queued)return;
++ current=(void*)3;typeof(queue[0]) q=queue[0];memmove(queue,queue+1,--queued*sizeof(queue[0]));q.fn(q.arg);current=(void*)1;
++}
++static void progress(void){sdk_one();if(s_worker){if(s_state==STOPPING)worker_exit();else worker_step();}}
++static void poll_exit(void){current=(void*)4;ssh_poll_task(NULL);current=(void*)3;}
++static void finish(void){
++ s_exec_running=false;delay_hook=progress;assert(ts_webui_ws_stop((void*)11)==ESP_OK);delay_hook=NULL;
++ for(int i=0;i<32;i++)if(reqs[i].sess_ctx)close_peer(i);
++ ts_ws_transport_stopped((void*)11);assert(!live_allocations);
++ s_ws_stopping=false;
++}
++static void connect_request(bool fail,bool close_early){
++ create_fails=fail;close_on_create=close_early;
++ cJSON*params=cJSON_Parse("{\"host\":\"fixture\",\"user\":\"fixture\"}");
++ current=(void*)3;delay_hook=poll_exit;handle_ssh_connect(&reqs[1],params);delay_hook=NULL;current=(void*)1;cJSON_Delete(params);
++}
++static unsigned observed_topics[8];
++static void observe_topic(httpd_ws_frame_t*f){
++ for(unsigned i=0;i<8;i++){
++  char match[80];snprintf(match,sizeof(match),"\"topic\":\"%s\"",topics[i].name);
++  if(strstr((const char*)f->payload,match))observed_topics[i]++;
++ }
++}
++int main(void){
++ cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);
++ start();open_peer(1);open_peer(2);assert(ts_ws_result_reserve(4096,&s_exec_terminal)==0);s_exec_running=true;delay_hook=progress;
++ assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);delay_hook=NULL;
++ assert(s_worker && s_state==DRAINING);
++ reqs[1].method=1;incoming="{\"type\":\"ping\"}";current=(void*)3;
++ assert(ws_handler(&reqs[1])==0 && strstr(payloads[1],"pong"));
++ incoming="{\"type\":\"terminal_input\",\"data\":\"new-command\"}";
++ assert(ws_handler(&reqs[1])==0 && !commands && strstr(payloads[1],"stopping"));current=(void*)1;
++ unsigned a=frames[1],b=frames[2];
++ httpd_ws_frame_t result={.payload=(uint8_t*)"final-result",.len=12};
++ ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\",\"session_id\":1}",1);
++ sdk_one();assert(!queued && ts_ws_transport_needs_flush());
++ worker_step();sdk_one();assert(frames[1]==a+1 && frames[2]==b+1);
++ assert(!transport_server.outstanding);finish();
++ puts("PASS R1: busy stop retains real worker; final fanout drains with no new producer message");
++ start();open_peer(1);open_peer(2);
++ assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT && s_worker && s_state==DRAINING);
++ a=frames[1];b=frames[2];assert(ts_ws_transport_broadcast(&result)==0);
++ for(unsigned i=0;i<4;i++){sdk_one();worker_step();}
++ assert(frames[1]==a+1 && frames[2]==b+1);finish();
++ start();open_peer(1);open_peer(2);a=frames[1];b=frames[2];
++ assert(ts_ws_transport_broadcast(&result)==0);assert(ts_ws_subscriptions_pause()==0);
++ assert(ts_ws_transport_stop((void*)11,1)==ESP_ERR_TIMEOUT && s_worker);
++ sdk_one();worker_step();sdk_one();assert(frames[1]==a+1 && frames[2]==b+1);finish();
++ puts("PASS R1 timeout: handler-barrier and transport-drain failures retain worker; accepted fanout progresses before retry");
++
++
++ start();ts_ws_peer_t peer=open_peer(1);
++ s_clients[0].active=true;s_clients[0].fd=1;s_clients[0].hd=peer.server;
++ set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
++ httpd_ws_frame_t log={.payload=(uint8_t*)"old-log",.len=7};
++ a=frames[1];assert(ts_ws_transport_log(&log,3)==0);
++ current=(void*)3;start_terminal_session(&reqs[1]);current=(void*)1;
++ assert(s_clients[0].type==WS_CLIENT_TYPE_TERMINAL);pump();assert(frames[1]==a+1); /* welcome only */
++ set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
++ assert(ts_ws_transport_log(&log,3)==0);set_client_role(peer,WS_CLIENT_TYPE_EVENT,0);set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
++ a=frames[1];pump();assert(frames[1]==a); /* old generation cannot revive */
++ assert(ts_ws_transport_log(&log,3)==0);pump();assert(frames[1]==a+1);
++ finish();s_terminal_client_fd=-1;
++ assert(ts_webui_log_stream_enable(true)==0);remove_log_result=ESP_ERR_INVALID_STATE;
++ assert(ts_webui_log_stream_enable(false)==ESP_ERR_INVALID_STATE && s_log_callback_handle && !s_log_streaming_enabled);
++ assert(ts_webui_log_stream_enable(true)==0 && s_log_streaming_enabled);remove_log_result=0;assert(ts_webui_log_stream_enable(false)==0);
++ puts("PASS R3: real role change drops old queued logs, including unsubscribe/resubscribe ABA");
++
++ start();peer=open_peer(1);s_clients[0].active=true;s_clients[0].fd=1;s_clients[0].hd=peer.server;
++ /* Occupy both ordinary buffers; a rejected startup still has its result slot. */
++ ts_ws_message_t*m1=ts_ws_message_text("one",3),*m2=ts_ws_message_text("two",3);assert(m1&&m2);
++ set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
++ connect_request(true,false);assert(s_clients[0].type!=WS_CLIENT_TYPE_LOG);assert(s_ssh_state==SSH_TERMINAL && !s_ssh_poll_alive && !s_ssh_session);
++ unsigned generation=s_ssh_generation;
++ connect_request(false,false);assert(s_ssh_generation==generation && strstr(payloads[1],"still pending"));
++ ts_ws_message_release(m1);ts_ws_message_release(m2);pump();assert(strstr(payloads[1],"Failed to create SSH session"));
++ connect_request(false,true);pump();assert(strstr(payloads[1],"closed during startup"));assert(!s_ssh_session);
++ connect_request(false,false);assert(s_ssh_state==SSH_READY && strstr(payloads[1],"connected"));
++ /* Queue a READY from a background caller, then close before it executes. */
++ assert(ssh_send_status("connected","late readiness")==0);
++ unsigned old_generation=s_ssh_generation;
++ queue_fail=true;assert(ssh_send_status("error","fixture failure")==0);
++ sdk_one();worker_step();assert(!queued && ts_ws_transport_needs_flush());queue_fail=false;
++ assert(!ssh_status_valid(old_generation,SSH_READY));
++ test_now+=100000;worker_step();pump();assert(strstr(payloads[1],"fixture failure"));
++ current=(void*)3;delay_hook=poll_exit;ssh_cleanup();delay_hook=NULL;current=(void*)1;
++ connect_request(false,false);
++ ts_ws_message_t *full1=ts_ws_message_text("full1",5),*full2=ts_ws_message_text("full2",5);assert(full1&&full2);
++ ssh_send_output("payload",7);assert(s_ssh_state==SSH_TERMINAL && !s_ssh_running);
++ poll_exit();current=(void*)1;ts_ws_message_release(full1);ts_ws_message_release(full2);pump();
++ assert(strstr(payloads[1],"SSH output delivery failed") && !s_ssh_session && !s_ssh_poll_alive);
++ finish();
++ puts("PASS R2: task-create failure/early close never end as connected; reserved failure survives normal pool saturation and SDK queue rejection; late READY invalid");
++
++ start();open_peer(1);assert(ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal)==0);
++ m1=ts_ws_message_text("one",3);m2=ts_ws_message_text("two",3);assert(m1&&m2);
++ open_peer(2);a=frames[1];b=frames[2];
++ ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\",\"session_id\":7}",7);
++ ts_ws_message_release(m1);ts_ws_message_release(m2);pump();assert(frames[1]==a+1&&frames[2]==b+1);finish();
++ puts("PASS R2 exec: admitted result reservation survives ordinary saturation and preserves recipients at completion");
++
++ start();peer=open_peer(1);uint64_t serial[8];for(unsigned i=0;i<8;i++){serial[i]=s_stats.serialized[i];subscribe(peer,topics[i].name,10000);}
++ sent_hook=observe_topic;
++ for(unsigned cycle=0;cycle<100;cycle++) {test_now+=10000000;run_batch();pump();}
++ for(unsigned i=0;i<8;i++) {
++  assert(observed_topics[i]>50 && observed_topics[i]==s_stats.serialized[i]-serial[i]);
++  printf("R5 observed %s: %u delivered frames\n",topics[i].name,observed_topics[i]);
++ }
++ /* Freeing capacity services still-due targets without waiting their next interval. */
++ for(unsigned i=0;i<8;i++)serial[i]=s_stats.serialized[i];
++ unsigned improved=0;run_batch();pump();for(unsigned i=0;i<8;i++)improved+=s_stats.serialized[i]>serial[i];assert(improved>=2);
++ ts_ws_message_t*held[6];cJSON*j=cJSON_CreateObject();for(unsigned i=0;i<6;i++){held[i]=ts_ws_message_json("held",j,0);assert(held[i]);}
++ test_now+=10000000;unsigned before=total_reads();run_batch();assert(total_reads()==before);
++ for(unsigned i=0;i<6;i++)ts_ws_message_release(held[i]);cJSON_Delete(j);
++ run_batch();pump();assert(total_reads()>before);
++ ts_ws_peer_t pinned[TS_WS_TOPIC_TX_SLOTS];for(unsigned i=0;i<TS_WS_TOPIC_TX_SLOTS;i++)pinned[i]=peer;
++ ts_ws_reservation_t reserved;assert(ts_ws_reserve(pinned,TS_WS_TOPIC_TX_SLOTS,false,TS_WS_FRAME_BYTES,&reserved)==0);
++ test_now+=10000000;before=total_reads();run_batch();assert(total_reads()==before);
++ ts_ws_reservation_release(&reserved);run_batch();pump();assert(total_reads()>before);
++ char*large=malloc(TS_WS_LEGACY_BYTES);memset(large,'x',TS_WS_LEGACY_BYTES);
++ m1=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-1);m2=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-1);assert(m1&&m2);free(large);
++ test_now+=10000000;before=total_reads();run_batch();assert(total_reads()==before);
++ ts_ws_message_release(m1);ts_ws_message_release(m2);run_batch();pump();assert(total_reads()>before);finish();
++ puts("PASS R5: all eight topics progress under six-slot pressure; no API collection without message/descriptor/byte capacity");
++}
+--- /dev/null
++++ b/tests/ws_subscriptions/test_reviewer_core.c
+@@ -0,0 +1,51 @@
++#define TEST_REAL_EVENT
++#include "platform.h"
++#include <stdatomic.h>
++#include "ts_event.c"
++int64_t test_now;
++TaskHandle_t xTaskGetCurrentTaskHandle(void){return (void*)pthread_self();}
++int xTaskCreate(void(*fn)(void*),const char*n,unsigned s,void*a,unsigned p,TaskHandle_t*out){(void)fn;(void)n;(void)s;(void)a;(void)p;*out=(void*)1;return pdPASS;}
++void vTaskDelete(TaskHandle_t t){(void)t;}
++void vTaskDelay(TickType_t t){test_now+=(int64_t)t*1000;}
++static pthread_mutex_t barrier=PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t cv=PTHREAD_COND_INITIALIZER;
++static bool entered,release_callback;
++static void blocked(const ts_event_t*e,void*u){(void)e;(void)u;pthread_mutex_lock(&barrier);entered=true;pthread_cond_broadcast(&cv);while(!release_callback)pthread_cond_wait(&cv,&barrier);pthread_mutex_unlock(&barrier);}
++static void*post(void*p){(void)p;ts_event_post_sync("test",1,NULL,0);return NULL;}
++
++static bool s_core_cleanup_pending,s_core_stopping;
++static int ts_service_start_all(void){return 0;}
++static bool s_core_initialized=true,s_core_started=true,service_live=true,log_live=true,config_live=true;
++static int service_stop_result,save_result,log_result,config_result;
++static unsigned save_calls;
++static bool ts_service_is_initialized(void){return service_live;}
++static bool ts_log_is_initialized(void){return log_live;}
++static bool ts_config_is_initialized(void){return config_live;}
++static int ts_service_stop_all(void){return service_stop_result;}
++static int ts_config_save(void){save_calls++;return save_result;}
++static int ts_service_deinit(void){service_live=false;return 0;}
++static int ts_log_deinit(void){if(!log_result)log_live=false;return log_result;}
++static int ts_config_deinit(void){if(!config_result)config_live=false;return config_result;}
++#include "reviewer_core.inc"
++static unsigned shutdown_calls;
++static void shutdown_event(const ts_event_t*e,void*u){(void)e;(void)u;shutdown_calls++;}
++int main(void){
++ s_event_ctx.initialized=true;s_event_ctx.running=true;s_event_ctx.mutex=xSemaphoreCreateMutex();s_event_ctx.event_queue=xQueueCreate(4,1);
++ ts_event_handler_handle_t shutdown_handle;assert(ts_event_register(TS_EVENT_BASE_SYSTEM,TS_EVENT_SYSTEM_SHUTDOWN,shutdown_event,NULL,&shutdown_handle)==0);
++ service_stop_result=ESP_ERR_TIMEOUT;assert(ts_core_stop()==ESP_ERR_TIMEOUT && s_core_started && save_calls==0);
++ assert(ts_core_start()==ESP_ERR_INVALID_STATE);
++ service_stop_result=0;save_result=ESP_FAIL;assert(ts_core_stop()==ESP_FAIL && s_core_started);
++ save_result=0;assert(ts_core_stop()==0 && !s_core_started && shutdown_calls==1);
++ ts_event_handler_handle_t h;assert(ts_event_register("test",1,blocked,NULL,&h)==0);
++ pthread_t thread;pthread_create(&thread,NULL,post,NULL);
++ pthread_mutex_lock(&barrier);while(!entered)pthread_cond_wait(&cv,&barrier);pthread_mutex_unlock(&barrier);
++ assert(ts_core_deinit()==ESP_ERR_TIMEOUT && s_core_initialized && log_live && config_live && s_event_ctx.initialized && s_dispatch_scopes);
++ pthread_mutex_lock(&barrier);release_callback=true;pthread_cond_broadcast(&cv);pthread_mutex_unlock(&barrier);pthread_join(thread,NULL);
++ log_result=ESP_FAIL;assert(ts_core_deinit()==ESP_FAIL && s_core_initialized && config_live && !s_event_ctx.initialized);
++ log_result=0;config_result=ESP_FAIL;assert(ts_core_deinit()==ESP_FAIL && s_core_initialized && !log_live);
++ config_result=0;assert(ts_core_deinit()==0 && !s_core_initialized && !config_live);
++ s_core_cleanup_pending=false;log_live=true;config_live=true;log_result=ESP_FAIL;
++ assert(core_init_rollback(ESP_ERR_NO_MEM)==ESP_FAIL && s_core_cleanup_pending && config_live);
++ log_result=0;assert(ts_core_deinit()==0 && !s_core_cleanup_pending && !config_live);
++ puts("PASS R4 core: real event drain timeout retains downstream resources; service/config/log errors propagate; partial deinit retries succeed");
++}
+--- /dev/null
++++ b/tests/ws_subscriptions/test_reviewer_http.c
+@@ -0,0 +1,23 @@
++#include "platform.h"
++#define HTTP_GET 0
++#define HTTPD_500_INTERNAL_SERVER_ERROR 500
++#define HTTPD_SOCK_ERR_TIMEOUT -3
++#define TS_MALLOC_PSRAM malloc
++static bool s_stopping;
++static const char *status;
++static unsigned called,read_body;
++typedef struct{httpd_req_t*req;const char*uri;int method;char*body;size_t body_len;}ts_http_request_t;
++typedef struct{int(*handler)(ts_http_request_t*,void*);void*user_data;}ts_http_route_t;
++static int httpd_resp_set_status(httpd_req_t*r,const char*s){(void)r;status=s;return 0;}
++static int httpd_resp_sendstr(httpd_req_t*r,const char*s){(void)r;(void)s;return 0;}
++static int httpd_resp_send_err(httpd_req_t*r,int e,const char*s){(void)r;(void)e;(void)s;return 0;}
++static int httpd_req_recv(httpd_req_t*r,char*b,size_t n){(void)r;(void)b;(void)n;read_body++;return -1;}
++static int operation(ts_http_request_t*r,void*u){(void)r;(void)u;called++;return 0;}
++#include "reviewer_http.inc"
++int main(void){
++ ts_http_route_t route={.handler=operation};httpd_req_t req={.method=1,.user_ctx=&route,.content_len=20};
++ s_stopping=true;assert(http_handler_wrapper(&req)==0 && !strcmp(status,"503 Service Unavailable") && !called && !read_body);
++ req.method=HTTP_GET;req.content_len=0;assert(http_handler_wrapper(&req)==0 && called==1);
++ s_stopping=false;req.method=1;assert(http_handler_wrapper(&req)==0 && called==2);
++ puts("PASS R1 HTTP admission: stopping rejects writes before body/handler execution; reads and resumed admission remain valid");
++}
+--- /dev/null
++++ b/tests/ws_subscriptions/test_reviewer_service.c
+@@ -0,0 +1,30 @@
++#include "platform.h"
++#define ESP_LOGI(...) ((void)0)
++#define ESP_LOGW(...) ((void)0)
++#define TS_SERVICE_PHASE_MAX 2
++#define TS_EVENT_BASE_SERVICE "service"
++#define TS_EVENT_SERVICE_STOPPED 1
++typedef enum {TS_SERVICE_STATE_REGISTERED,TS_SERVICE_STATE_RUNNING,TS_SERVICE_STATE_STOPPING,TS_SERVICE_STATE_STOPPED} ts_service_state_t;
++typedef struct svc {struct{const char*name;int phase;int(*stop)(void*,void*);void*user_data;}def;ts_service_state_t state;SemaphoreHandle_t state_sem;struct svc*next;} ts_service_instance_t;
++typedef void* ts_service_handle_t;
++typedef struct{const char*service_name;ts_service_state_t old_state,new_state;int error_code;} ts_service_event_data_t;
++static struct{bool initialized,startup_complete;SemaphoreHandle_t mutex;ts_service_instance_t*services;unsigned service_count;}s_svc_ctx;
++static void set_service_state(ts_service_instance_t*s,ts_service_state_t state){s->state=state;}
++static int stop_service_internal(ts_service_instance_t*);
++int ts_service_stop(ts_service_handle_t);
++int ts_service_stop_all(void);
++#include "reviewer_service.inc"
++static unsigned ui_calls,net_calls;
++static int ui_result=ESP_ERR_TIMEOUT;
++static int busy_ui(void*h,void*u){(void)h;(void)u;ui_calls++;return ui_result;}
++static int stop_net(void*h,void*u){(void)h;(void)u;net_calls++;return ESP_OK;}
++int main(void){
++ ts_service_instance_t*ui=calloc(1,sizeof(*ui)),*net=calloc(1,sizeof(*net));
++ ui->def.name="webui";ui->def.phase=1;ui->def.stop=busy_ui;ui->state=TS_SERVICE_STATE_RUNNING;ui->next=net;
++ net->def.name="network";net->def.phase=0;net->def.stop=stop_net;net->state=TS_SERVICE_STATE_RUNNING;
++ s_svc_ctx.initialized=true;s_svc_ctx.startup_complete=true;s_svc_ctx.mutex=xSemaphoreCreateMutex();s_svc_ctx.services=ui;s_svc_ctx.service_count=2;
++ assert(ts_service_stop_all()==ESP_ERR_TIMEOUT);assert(ui->state==TS_SERVICE_STATE_RUNNING && net_calls==0);
++ assert(ts_service_deinit()==ESP_ERR_TIMEOUT && s_svc_ctx.initialized && s_svc_ctx.services==ui);
++ ui_result=ESP_OK;assert(ts_service_deinit()==ESP_OK && !s_svc_ctx.initialized && !s_svc_ctx.services && net_calls==1);
++ puts("PASS R4 service: stop errors retain registry/dependencies; retry drains then releases ownership");
++}

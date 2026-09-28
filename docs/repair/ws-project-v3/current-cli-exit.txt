@@ -1,0 +1,1 @@
+CLI exit: active=0 interrupt=1

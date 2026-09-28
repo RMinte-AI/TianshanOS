@@ -1,0 +1,10 @@
+{
+  "sdk": "ESP-IDF v5.5.2",
+  "target": "esp32s3",
+  "directory": "/tmp/tianshan-op-build/build",
+  "sha256": {
+    "/tmp/tianshan-op-build/build/TianShanOS.bin": "d131d46f4bfdf839bd1e8ea28a6b68b257563adc1726a7de28915f2a141daf6a",
+    "/tmp/tianshan-op-build/build/www.bin": "6c486bb7bc27d448cf0d9f351c98ab2d764e315fe82561122ccc4583391bfaad",
+    "/tmp/tianshan-op-build/sdkconfig": "1340e033b5865e39dd6b8c3516dffb27d01da5aff41127c69b583cbfb99acef0"
+  }
+}

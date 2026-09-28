@@ -1,0 +1,2 @@
+PASS J1 C power event -> actual JS -> original SSH input -> normal exit and channel cleanup
+PASS Chrome zh-CN: actual C frames + JS dispatcher + next C requests; recoverable/fatal/start/EOF/owner/encoding/socket paths; C resources zero

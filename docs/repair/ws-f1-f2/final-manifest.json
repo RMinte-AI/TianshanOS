@@ -1,0 +1,41 @@
+{
+  "created_at": "2026-09-25T04:47:06.036356+08:00",
+  "head": "bb0958c902d37ddc2b2deb36291b5439c0964160",
+  "branch": "fix/v0.5.2-reliability-and-prompts",
+  "patch_scope": "Code and tests relative to bb0958c; report and evidence stored separately.",
+  "source_sha256": {
+    "components/ts_webui/include/ts_ws_transport.h": "dc7917b1d09c2569ce0d49f024f6a0db27924f81b1d58cdf0a7a7c51afeebdd6",
+    "components/ts_webui/src/ts_webui_ws.c": "ea02c3ca56a37f8a4c850467c204246d774f80eb8386a970ab82a1ec24f8095c",
+    "components/ts_webui/src/ts_ws_transport.c": "954540760b95964947bfbd3d2c5165aec8322c4e962ad48a806ff849475adabd",
+    "tests/ws_subscriptions/README.md": "e2a186d0cc38c5a2df86207cde9f371365b95e678908b15943a7556fe57e5ada",
+    "tests/ws_subscriptions/run_reviewer.sh": "17ea374c62bdbe2f8314423fe8538f864f0c9678405f13f1feb23e4ac22462d9",
+    "tests/ws_subscriptions/stubs/platform.h": "de005401b26f9dce9028db4bbc656ea72e55730535769be4ddf31ccec072c2dc",
+    "tests/ws_subscriptions/test_init.c": "c79aca85e117cb6fc34f3f493dc6d6d6083a0eb1488ba00abfcbeff903a96870",
+    "tests/ws_subscriptions/test_manager.c": "bc51e67c9c51c66780a8e980f5cbb93d7773fe5b9abce038d206f6d65ab0a23d",
+    "tests/ws_subscriptions/test_reviewer.c": "baedff8fca5d4ee62ccbf8d11dd4277d218b974ecacc9a6b55c2bf76f945653b",
+    "tests/ws_subscriptions/run_f1_f2.sh": "b07f3e0e40267a244515524f560b72276e8a23567ca96ec467787594cf4e4b3e",
+    "tests/ws_subscriptions/test_f1_f2.c": "bda86a05b53a88441d653d0374d2d19b3d5ef24528e7b9f9577ae4bd4b03ce21"
+  },
+  "evidence_sha256": {
+    "prompts.txt": "253d906e036eab1f2ae5af7a7284f75f6f1f23012808b463aa9f03da6a56f29b",
+    "changes.patch": "d2b59a98e9d602b442c36a38a5b95f9002a9eeed88269759a3d4f8f4ffb7ab63",
+    "before.txt": "3beada5c6bb83d79e253bc8051c74a718fa472ebfc7a2250b1d92dca38898dca",
+    "runtime.txt": "f300e6d09f01acebc6d725ea5377e878f60d09db17464819d9306a0156817e96",
+    "after.txt": "2bd288d785066c1064363e5425e65d449113070a8e51b020c15ae7e85cb3cf7e",
+    "build.txt": "54bfa36fbefd1205856011dd2934ed6581e1a46756bcd397187af40ac5a8518d",
+    "host.txt": "fde8084a35208ab61ec026c7c1bc29578b75b5b92584c5b70f7a430bd1a9a907",
+    "certificate.txt": "d3e446956791a6ec5d2a6b2235eaffcc0c45cb6ed4f2cd32eae130bb57f7dd21",
+    "README.md": "4a75b822edf869245629eb5d0f05c32d796a404a1e69919d61f7fcff6d546855",
+    "browser.txt": "e685cd2c0801baa441fa5ca304f3a68d23d2fed4a7a4d2c0ea0cd1f87b5320de",
+    "reviewer.txt": "e1a7c52fb704d7010a8efd00488f46738f22ea275cd26cb59d49c8d0b316c60c",
+    "baseline.json": "b8c2f4ab4249bb0153a8560d4714c6fcbbc326861fd9d56c8d3d240949e30b41",
+    "pre-fix-source.tar.gz": "640e6527ecda3c892f2eb42aeb34c1dd1285f6ddc1b93ae68fd27eda840f3ba0",
+    "diff-check.txt": "2d0582f56d02ef3b69ef68368f867be3298b1bf7ee9ffb8ae2d05378c7cd097d",
+    "resources.txt": "8e01df723dd6673c4b48afa11fcc6ad831e222177130b7f3bcd1bc38031cbfdc"
+  },
+  "build_binaries": {
+    "/tmp/tianshan-ws-build/build/TianShanOS.bin": "b5c7317017d6ae3de811af4278221f505496d15a6da17a7e513fc1bbfc8a5f6c",
+    "/tmp/tianshan-ws-build/build/www.bin": "cdce507bebb727bd65136aa8d3687d9d09651c1f1ea2286fb3fe2e87fa4f30c5",
+    "/tmp/tianshan-ws-build/build/ota_data_initial.bin": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+  }
+}

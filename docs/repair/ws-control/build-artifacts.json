@@ -1,0 +1,10 @@
+{
+  "sdk": "ESP-IDF v5.5.2",
+  "target": "ESP32-S3",
+  "directory": "/tmp/tianshan-control-build/build",
+  "sha256": {
+    "/tmp/tianshan-control-build/build/TianShanOS.bin": "d1d2e2bb77bb55fa26f86a5ca5b26177d63cb30f5f6c21e342f9364eed73acec",
+    "/tmp/tianshan-control-build/build/www.bin": "375affb87ac595088afa21c5b93dae736a449b56d12d2a080504ed331251e81b",
+    "/tmp/tianshan-control-build/sdkconfig": "1340e033b5865e39dd6b8c3516dffb27d01da5aff41127c69b583cbfb99acef0"
+  }
+}

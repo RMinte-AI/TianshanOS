@@ -1,0 +1,1012 @@
+diff --git a/components/ts_webui/include/ts_ws_transport.h b/components/ts_webui/include/ts_ws_transport.h
+index f92fc32..bbd37ee 100644
+--- a/components/ts_webui/include/ts_ws_transport.h
++++ b/components/ts_webui/include/ts_ws_transport.h
+@@ -7,8 +7,14 @@
+ #define TS_WS_TOPIC_TX_SLOTS 32
+ #define TS_WS_TX_SLOTS (TS_WS_TOPIC_TX_SLOTS + TS_WS_CONNECTIONS)
+ #define TS_WS_MESSAGE_SLOTS 8
+-#define TS_WS_ALL_MESSAGE_SLOTS (TS_WS_MESSAGE_SLOTS + 2)
+-#define TS_WS_ALL_TX_SLOTS (TS_WS_TX_SLOTS + 2 * TS_WS_CONNECTIONS)
++#define TS_WS_POWER_TRANSITIONS 4
++#define TS_WS_POWER_SLOTS (TS_WS_POWER_TRANSITIONS + 1)
++#define TS_WS_POWER_BYTES 1024
++#define TS_WS_POWER_BUDGET (TS_WS_POWER_SLOTS * TS_WS_POWER_BYTES)
++#define TS_WS_QUEUE_RETRIES 300 /* 100 ms backoff, bounded SDK admission retries */
++#define TS_WS_ALL_MESSAGE_SLOTS (TS_WS_MESSAGE_SLOTS + 2 + TS_WS_POWER_SLOTS)
++#define TS_WS_RESULT_TX_END (TS_WS_TX_SLOTS + 2 * TS_WS_CONNECTIONS)
++#define TS_WS_ALL_TX_SLOTS (TS_WS_RESULT_TX_END + TS_WS_POWER_SLOTS * TS_WS_CONNECTIONS)
+ #define TS_WS_FRAME_BYTES 32768
+ #define TS_WS_LEGACY_BYTES (512 * 1024)
+ #define TS_WS_TOTAL_BYTES (1024 * 1024)
+@@ -39,6 +45,9 @@ unsigned ts_ws_transport_capacity(void);
+ ts_ws_message_t *ts_ws_message_json(const char *topic, const cJSON *data, int64_t timestamp);
+ ts_ws_message_t *ts_ws_message_text(const char *text, size_t len);
+ void ts_ws_message_release(ts_ws_message_t *message);
++/* ESP_OK means local acceptance. Each accepted target settles once via done,
++ * including later queue failure, stale/canceled target and socket failure.
++ * A synchronous rejection never calls done. Message origin selects its pool. */
+ esp_err_t ts_ws_transport_submit(ts_ws_peer_t peer, ts_ws_message_t *message,
+     uint64_t revision, uint64_t delivery, ts_ws_delivery_check_t check, ts_ws_delivery_done_t done);
+ /* Compatibility bridge for existing global/stream senders; never coalesces. */
+@@ -69,6 +78,7 @@ static inline bool ts_ws_json_reference(cJSON *object, const char *key, const cJ
+ 
+ typedef struct {
+     uint64_t queued, attempts, success, failed, stale, rejected;
++    uint64_t settled, power_accepted, power_rejected, power_settled, power_failed;
+     uint32_t bytes, bytes_high, jobs, jobs_high;
+     int64_t max_send_us;
+ } ts_ws_transport_stats_t;
+@@ -107,3 +117,11 @@ esp_err_t ts_ws_result_reserve(size_t bytes, ts_ws_reservation_t *r);
+ esp_err_t ts_ws_result_broadcast(ts_ws_reservation_t *r, const char *text);
+ 
+ uint32_t ts_ws_transport_retry_ms(void);
++
++/* Fixed power payloads and exclusive descriptors/byte budget. Tick traffic has
++ * its own slot; neither ticks nor ordinary logs consume transition capacity.
++ * Snapshot recipients at admission; no coalescing or re-broadcast on retry. */
++esp_err_t ts_ws_power_reserve(bool tick, ts_ws_reservation_t *r);
++esp_err_t ts_ws_power_publish(ts_ws_reservation_t *r, const char *text);
++
++esp_err_t ts_ws_result_publish(ts_ws_reservation_t *r,const ts_ws_peer_t *peers,unsigned count);
+diff --git a/components/ts_webui/src/ts_webui_ws.c b/components/ts_webui/src/ts_webui_ws.c
+index 9d10d30..6d0f56c 100644
+--- a/components/ts_webui/src/ts_webui_ws.c
++++ b/components/ts_webui/src/ts_webui_ws.c
+@@ -28,6 +28,7 @@
+ #include <ctype.h>
+ #include <sys/socket.h>
+ #include <errno.h>
++#include <math.h>
+ 
+ #define TAG "webui_ws"
+ 
+@@ -84,6 +85,17 @@ enum { SSH_IDLE, SSH_STARTING, SSH_READY, SSH_TERMINAL };
+ static atomic_uint s_ssh_state, s_ssh_generation, s_ssh_result_pending;
+ static ts_ws_reservation_t s_ssh_terminal;
+ static ts_ws_reservation_t s_exec_terminal;
++/* One producer per stream. Pending includes each accepted destination, including
++ * publication callbacks that can run before submit returns. Terminal buffers
++ * are not published/released until all earlier output has settled. */
++static atomic_uint s_ssh_output_pending, s_exec_output_pending;
++static atomic_bool s_ssh_output_failed, s_exec_output_failed;
++static atomic_bool s_ssh_terminal_ready, s_exec_terminal_ready, s_exec_result_active, s_exec_terminal_claimed;
++static ts_ws_peer_t s_exec_result_peers[TS_WS_CONNECTIONS];
++static unsigned s_exec_result_count;
++static void ssh_terminal_flush(void);
++static void ssh_exec_terminal_flush(void);
++static void ssh_exec_terminal_publish(const char *json,uint32_t session_id);
+ 
+ /* SSH Exec 流式执行状态 */
+ static ts_ssh_session_t s_exec_session = NULL;
+@@ -146,36 +158,36 @@ static void power_policy_event_handler(const ts_event_t *event, void *user_data)
+     
+     ts_power_policy_status_t *status = (ts_power_policy_status_t *)event->data;
+     
+-    // 构造事件消息
+-    cJSON *msg = cJSON_CreateObject();
+-    cJSON_AddStringToObject(msg, "type", "power_event");
+-    cJSON_AddStringToObject(msg, "state", power_state_to_string(status->state));
+-    cJSON_AddNumberToObject(msg, "voltage", status->current_voltage);
+-    cJSON_AddNumberToObject(msg, "countdown", status->countdown_remaining_sec);
+-    cJSON_AddNumberToObject(msg, "protection_count", status->protection_count);
+-    
+-    // 根据事件 ID 添加具体事件类型（使用 ts_power_policy_event_t 枚举值）
+-    const char *event_name = "unknown";
+-    switch (event->id) {
+-        case TS_POWER_POLICY_EVENT_STATE_CHANGED:    event_name = "state_changed"; break;
+-        case TS_POWER_POLICY_EVENT_LOW_VOLTAGE:      event_name = "low_voltage"; break;
+-        case TS_POWER_POLICY_EVENT_COUNTDOWN_TICK:   event_name = "countdown_tick"; break;
+-        case TS_POWER_POLICY_EVENT_SHUTDOWN_START:   event_name = "shutdown_start"; break;
+-        case TS_POWER_POLICY_EVENT_PROTECTED:        event_name = "protected"; break;
+-        case TS_POWER_POLICY_EVENT_RECOVERY_START:   event_name = "recovery_start"; break;
+-        case TS_POWER_POLICY_EVENT_RECOVERY_COMPLETE: event_name = "recovery_complete"; break;
+-        case TS_POWER_POLICY_EVENT_DEBUG_TICK:       event_name = "debug_tick"; break;
+-    }
+-    cJSON_AddStringToObject(msg, "event", event_name);
+-    
+-    char *json = cJSON_PrintUnformatted(msg);
+-    cJSON_Delete(msg);
+-    
+-    if (json) {
+-        // 广播给所有连接的客户端
+-        ts_webui_broadcast(json);
+-        free(json);
+-    }
++    bool tick=event->id==TS_POWER_POLICY_EVENT_COUNTDOWN_TICK || event->id==TS_POWER_POLICY_EVENT_DEBUG_TICK;
++    ts_ws_reservation_t reservation;
++    esp_err_t ret=ts_ws_power_reserve(tick,&reservation);
++    if(ret!=ESP_OK) {
++        TS_LOGW(TAG,"Power notification admission failed: event=%ld result=%d",(long)event->id,ret);
++        return; /* bounded overload; never wait on protection's event callback */
++    }
++    if(!reservation.message)return;
++    const char *event_name="unknown";
++    switch(event->id) {
++        case TS_POWER_POLICY_EVENT_STATE_CHANGED:event_name="state_changed";break;
++        case TS_POWER_POLICY_EVENT_LOW_VOLTAGE:event_name="low_voltage";break;
++        case TS_POWER_POLICY_EVENT_COUNTDOWN_TICK:event_name="countdown_tick";break;
++        case TS_POWER_POLICY_EVENT_SHUTDOWN_START:event_name="shutdown_start";break;
++        case TS_POWER_POLICY_EVENT_PROTECTED:event_name="protected";break;
++        case TS_POWER_POLICY_EVENT_RECOVERY_START:event_name="recovery_start";break;
++        case TS_POWER_POLICY_EVENT_RECOVERY_COMPLETE:event_name="recovery_complete";break;
++        case TS_POWER_POLICY_EVENT_DEBUG_TICK:event_name="debug_tick";break;
++    }
++    /* Fixed schema, numeric values and constant strings; no heap JSON needed.
++     * Preserve cJSON's non-finite-number encoding as null. */
++    char voltage[32],json[512];
++    if(isfinite(status->current_voltage))snprintf(voltage,sizeof(voltage),"%.17g",(double)status->current_voltage);
++    else strcpy(voltage,"null");
++    int n=snprintf(json,sizeof(json),"{\"type\":\"power_event\",\"state\":\"%s\",\"voltage\":%s,\"countdown\":%lu,\"protection_count\":%lu,\"event\":\"%s\"}",
++        power_state_to_string(status->state),voltage,(unsigned long)status->countdown_remaining_sec,(unsigned long)status->protection_count,event_name);
++    ret=n<0 || n>=(int)sizeof(json)?ESP_ERR_INVALID_SIZE:ts_ws_power_publish(&reservation,json);
++    ts_ws_reservation_release(&reservation);
++    if(ret!=ESP_OK)TS_LOGW(TAG,"Power notification submission failed: event=%ld result=%d",(long)event->id,ret);
++
+ }
+ 
+ /*===========================================================================*/
+@@ -212,10 +224,34 @@ static void ssh_request_error(httpd_req_t *req, const char *message)
+     free(json);
+ }
+ 
++static void ssh_output_done(uint64_t generation,uint64_t delivery,esp_err_t result)
++{
++    (void)delivery; /* transport already validates full peer identity */
++    if(generation!=s_ssh_generation)return;
++    if(result!=ESP_OK){s_ssh_output_failed=true;s_ssh_running=false;}
++    atomic_fetch_sub(&s_ssh_output_pending,1);
++    if(result!=ESP_OK)ssh_send_status("error","SSH output delivery incomplete; remote command result is not confirmed");
++    ssh_terminal_flush();
++}
++static void ssh_terminal_flush(void)
++{
++    if(s_ssh_output_pending)return;
++    bool ready=true;
++    if(!atomic_compare_exchange_strong(&s_ssh_terminal_ready,&ready,false))return;
++    unsigned generation=s_ssh_generation;
++    if(s_ssh_output_failed)ts_ws_reserved_text(&s_ssh_terminal,
++        "{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH output delivery incomplete; remote command result is not confirmed\"}");
++    ts_ws_reservation_t terminal=s_ssh_terminal;
++    s_ssh_terminal=(ts_ws_reservation_t){0};
++    esp_err_t ret=ts_ws_reserved_submit(&terminal,0,generation,SSH_TERMINAL,ssh_status_valid,ssh_terminal_done);
++    if(ret!=ESP_OK)ssh_terminal_done(generation,SSH_TERMINAL,ret);
++    ts_ws_reservation_release(&terminal);
++}
++
+ /* 发送 SSH 输出到 WebSocket 客户端 */
+ static void ssh_send_output(const char *data, size_t len)
+ {
+-    if(s_ssh_client_fd<0 || !s_server || !data || !len)return;
++    if(s_ssh_client_fd<0 || !s_server || !data || !len || s_ssh_state!=SSH_READY)return;
+     esp_err_t ret=ESP_ERR_NO_MEM;
+     char *buf=heap_caps_malloc(len+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+     if(!buf)buf=malloc(len+1);
+@@ -230,11 +266,17 @@ static void ssh_send_output(const char *data, size_t len)
+     free(buf);cJSON_Delete(msg);
+     if(json) {
+         ts_ws_message_t *m=ts_ws_message_text(json,strlen(json));
+-        if(m)ret=ts_ws_transport_submit(s_ssh_peer,m,s_ssh_generation,0,ssh_generation_valid,NULL);
++        if(m) {
++            atomic_fetch_add(&s_ssh_output_pending,1);
++            ret=ts_ws_transport_submit(s_ssh_peer,m,s_ssh_generation,s_ssh_peer.connection,ssh_generation_valid,ssh_output_done);
++            /* Rejection was never accepted and has no completion callback. */
++            if(ret!=ESP_OK)ssh_output_done(s_ssh_generation,s_ssh_peer.connection,ret);
++        }
+         ts_ws_message_release(m);
+     }
+     free(json);
+     if(ret!=ESP_OK) {
++        s_ssh_output_failed=true;
+         TS_LOGW(TAG,"SSH output rejected: %s",esp_err_to_name(ret));
+         ssh_send_status("error","SSH output delivery failed");
+         s_ssh_running=false;
+@@ -265,12 +307,9 @@ static esp_err_t ssh_send_status(const char *status, const char *message)
+             TS_LOGW(TAG,"SSH terminal encoding failed: %s",esp_err_to_name(ret));
+             ret=ts_ws_reserved_text(&s_ssh_terminal,fallback);
+         }
+-        if(ret==ESP_OK) {
+-            s_ssh_result_pending=generation;
+-            ret=ts_ws_reserved_submit(&s_ssh_terminal,0,generation,state,ssh_status_valid,ssh_terminal_done);
+-            if(ret!=ESP_OK)ssh_terminal_done(generation,state,ret);
+-        }
+-        ts_ws_reservation_release(&s_ssh_terminal);
++        s_ssh_result_pending=generation;
++        if(ret==ESP_OK){s_ssh_terminal_ready=true;ssh_terminal_flush();}
++        else {ssh_terminal_done(generation,state,ret);ts_ws_reservation_release(&s_ssh_terminal);}
+     } else if(json && ssh_status_valid(generation,state)) {
+         httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)json,.len=strlen(json)};
+         if(ts_ws_transport_in_context()) ret=ts_ws_transport_send(s_ssh_peer.server,s_ssh_peer.fd,&frame);
+@@ -376,7 +415,7 @@ static void ssh_cleanup(void)
+     }
+     if(s_ssh_state==SSH_READY) ssh_send_status("closed","SSH session closed");
+     s_ssh_client_fd = -1;
+-    ts_ws_reservation_release(&s_ssh_terminal);
++    if(!s_ssh_result_pending && !s_ssh_output_pending)ts_ws_reservation_release(&s_ssh_terminal);
+     
+     TS_LOGD(TAG, "SSH session cleaned up");
+ }
+@@ -384,7 +423,7 @@ static void ssh_cleanup(void)
+ /* 处理 SSH Shell 连接请求 */
+ static void handle_ssh_connect(httpd_req_t *req, cJSON *params)
+ {
+-    if (s_ssh_result_pending) {
++    if (s_ssh_result_pending || s_ssh_output_pending) {
+         ssh_request_error(req,"Previous SSH result is still pending");
+         return;
+     }
+@@ -422,6 +461,8 @@ static void handle_ssh_connect(httpd_req_t *req, cJSON *params)
+         ssh_request_error(req,"SSH result delivery capacity unavailable");
+         return;
+     }
++    s_ssh_output_failed=false;
++    s_ssh_terminal_ready=false;
+     s_ssh_generation++;
+     s_ssh_state=SSH_STARTING;
+     // 设置 SSH 客户端 fd
+@@ -1255,6 +1296,7 @@ esp_err_t ts_webui_ws_stop(httpd_handle_t server)
+     if (ret != ESP_OK) return ret;
+     ret = ts_ws_subscriptions_drain();
+     if (ret != ESP_OK) return ret;
++    if(s_exec_result_active || s_ssh_result_pending || s_ssh_output_pending)return ESP_ERR_INVALID_STATE;
+     ret = ts_ws_transport_stop(server, 6000);
+     if (ret != ESP_OK) return ret;
+     return ts_ws_subscriptions_deinit();
+@@ -1513,6 +1555,31 @@ static bool simple_pattern_match(const char *text, const char *pattern, char **e
+     }
+ }
+ 
++static void ssh_exec_output_done(uint64_t session,uint64_t connection,esp_err_t result)
++{
++    (void)connection;
++    if(session!=s_exec_session_id)return;
++    if(result!=ESP_OK)s_exec_output_failed=true;
++    atomic_fetch_sub(&s_exec_output_pending,1);
++    if(result!=ESP_OK)ssh_exec_terminal_publish(NULL,(uint32_t)session);
++    ssh_exec_terminal_flush();
++}
++static void ssh_exec_stream_publish(const char *json,uint32_t session)
++{
++    if(session!=s_exec_session_id || s_exec_output_failed)return;
++    ts_ws_peer_t peers[TS_WS_CONNECTIONS];
++    unsigned n=ts_ws_peer_snapshot(peers,TS_WS_CONNECTIONS);
++    if(!n)return;
++    ts_ws_message_t *m=json?ts_ws_message_text(json,strlen(json)):NULL;
++    if(!m){s_exec_output_failed=true;ssh_exec_terminal_publish(NULL,session);return;}
++    atomic_fetch_add(&s_exec_output_pending,n); /* register the whole fanout before any early callback */
++    for(unsigned i=0;i<n;i++) {
++        esp_err_t ret=ts_ws_transport_submit(peers[i],m,session,peers[i].connection,NULL,ssh_exec_output_done);
++        if(ret!=ESP_OK)ssh_exec_output_done(session,peers[i].connection,ret);
++    }
++    ts_ws_message_release(m);
++}
++
+ /* SSH Exec 输出回调 - 广播到所有 WebSocket 客户端并收集输出 */
+ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stderr, void *user_data)
+ {
+@@ -1531,30 +1598,18 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+         }
+     }
+     
+-    /* 构造消息 */
+-    cJSON *msg = cJSON_CreateObject();
+-    cJSON_AddStringToObject(msg, "type", "ssh_exec_output");
+-    cJSON_AddNumberToObject(msg, "session_id", session_id);
+-    cJSON_AddBoolToObject(msg, "is_stderr", is_stderr);
+-    
+-    /* 复制数据并确保 null 结尾 */
+-    char *buf = heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+-    if (!buf) buf = malloc(len + 1);
+-    if (buf) {
+-        memcpy(buf, data, len);
+-        buf[len] = '\0';
+-        cJSON_AddStringToObject(msg, "data", buf);
+-        free(buf);
+-    }
+-    
+-    char *json = cJSON_PrintUnformatted(msg);
+-    cJSON_Delete(msg);
+-    
+-    if (json) {
+-        ts_webui_broadcast(json);
+-        free(json);
+-    }
+-    
++    cJSON *msg=cJSON_CreateObject();
++    char *buf=heap_caps_malloc(len+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
++    if(!buf)buf=malloc(len+1);
++    if(buf){memcpy(buf,data,len);buf[len]=0;}
++    bool encoded=buf && msg && cJSON_AddStringToObject(msg,"type","ssh_exec_output") &&
++        cJSON_AddNumberToObject(msg,"session_id",session_id) && cJSON_AddBoolToObject(msg,"is_stderr",is_stderr) &&
++        cJSON_AddStringToObject(msg,"data",buf);
++    char *json=encoded?cJSON_PrintUnformatted(msg):NULL;
++    free(buf);cJSON_Delete(msg);
++    ssh_exec_stream_publish(json,session_id);
++    free(json);
++
+     /* 实时模式匹配 */
+     if (s_exec_params && s_exec_params->output_buffer) {
+         const char *output = s_exec_params->output_buffer;
+@@ -1641,10 +1696,8 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
+             
+             char *match_json = cJSON_PrintUnformatted(match_msg);
+             cJSON_Delete(match_msg);
+-            if (match_json) {
+-                ts_webui_broadcast(match_json);
+-                free(match_json);
+-            }
++            ssh_exec_stream_publish(match_json,session_id);
++            free(match_json);
+             
+             /* ========== 根据命令类型决定变量更新时机 ========== */
+             /* 
+@@ -1734,14 +1787,34 @@ static void ssh_exec_timeout_callback(TimerHandle_t xTimer)
+ 
+ /* Every accepted streamed command owns one result reservation. Ordinary output
+  * cannot consume it. Oversize/encoding failure is reported, never as success. */
++static void ssh_exec_terminal_flush(void)
++{
++    if(s_exec_output_pending)return;
++    bool ready=true;
++    if(!atomic_compare_exchange_strong(&s_exec_terminal_ready,&ready,false))return;
++    if(s_exec_output_failed) {
++        char fallback[224];
++        snprintf(fallback,sizeof(fallback),"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"SSH output delivery incomplete; remote command result is not confirmed\"}",(unsigned long)s_exec_session_id);
++        ts_ws_reserved_text(&s_exec_terminal,fallback);
++    }
++    /* Completion owns the original recipient snapshot; never retarget on retry. */
++    esp_err_t ret=ts_ws_result_publish(&s_exec_terminal,s_exec_result_peers,s_exec_result_count);
++    if(ret!=ESP_OK)TS_LOGW(TAG,"SSH terminal result rejected: %s",esp_err_to_name(ret));
++    ts_ws_reservation_release(&s_exec_terminal);
++    s_exec_result_active=false;
++}
+ static void ssh_exec_terminal_publish(const char *json,uint32_t session_id)
+ {
++    bool claimed=false;
++    if(!atomic_compare_exchange_strong(&s_exec_terminal_claimed,&claimed,true))return;
+     char fallback[192];
+     snprintf(fallback,sizeof(fallback),"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"SSH result delivery failed; result is unknown\"}",(unsigned long)session_id);
+-    esp_err_t ret=ts_ws_result_broadcast(&s_exec_terminal,json?json:fallback);
+-    if(ret==ESP_ERR_INVALID_SIZE)ret=ts_ws_result_broadcast(&s_exec_terminal,fallback);
+-    if(ret!=ESP_OK)TS_LOGW(TAG,"SSH terminal result rejected: %s",esp_err_to_name(ret));
+-    ts_ws_reservation_release(&s_exec_terminal);
++    esp_err_t ret=ts_ws_reserved_text(&s_exec_terminal,json?json:fallback);
++    if(ret!=ESP_OK)ret=ts_ws_reserved_text(&s_exec_terminal,fallback);
++    if(ret!=ESP_OK){TS_LOGW(TAG,"SSH terminal encoding failed: %s",esp_err_to_name(ret));ts_ws_reservation_release(&s_exec_terminal);s_exec_result_active=false;return;}
++    s_exec_result_count=ts_ws_peer_snapshot(s_exec_result_peers,TS_WS_CONNECTIONS);
++    s_exec_terminal_ready=true;
++    ssh_exec_terminal_flush();
+ }
+ 
+ /* SSH Exec 任务 */
+@@ -1830,7 +1903,7 @@ static void ssh_exec_task(void *arg)
+         }
+         char *json = cJSON_PrintUnformatted(msg);
+         cJSON_Delete(msg);
+-        if (json) { ts_webui_broadcast(json); free(json); }
++        ssh_exec_stream_publish(json,session_id); free(json);
+     }
+     
+     /* 判断是否需要启动超时定时器 */
+@@ -2218,11 +2291,12 @@ esp_err_t ts_webui_ssh_exec_start(const char *host, uint16_t port,
+ {
+     unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
+     esp_err_t ret=ESP_ERR_INVALID_STATE;
+-    if(!creators && !s_ws_stopping && !s_exec_running) {
++    if(!creators && !s_ws_stopping && !s_exec_running && !s_exec_result_active) {
+         ret=ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal);
++        if(ret==ESP_OK){s_exec_result_active=true;s_exec_output_failed=false;s_exec_terminal_ready=false;s_exec_terminal_claimed=false;}
+         if(ret==ESP_OK) {
+             ret=ts_webui_ssh_exec_start_impl(host, port, user, keyid, password, command, session_id);
+-            if(ret!=ESP_OK)ts_ws_reservation_release(&s_exec_terminal);
++            if(ret!=ESP_OK){ts_ws_reservation_release(&s_exec_terminal);s_exec_result_active=false;}
+         }
+     }
+     atomic_fetch_sub(&s_exec_creators, 1);
+@@ -2441,11 +2515,12 @@ esp_err_t ts_webui_ssh_exec_start_ex(const char *host, uint16_t port,
+ {
+     unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
+     esp_err_t ret=ESP_ERR_INVALID_STATE;
+-    if(!creators && !s_ws_stopping && !s_exec_running) {
++    if(!creators && !s_ws_stopping && !s_exec_running && !s_exec_result_active) {
+         ret=ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal);
++        if(ret==ESP_OK){s_exec_result_active=true;s_exec_output_failed=false;s_exec_terminal_ready=false;s_exec_terminal_claimed=false;}
+         if(ret==ESP_OK) {
+             ret=ts_webui_ssh_exec_start_ex_impl(host, port, user, keyid, password, command, options, session_id);
+-            if(ret!=ESP_OK)ts_ws_reservation_release(&s_exec_terminal);
++            if(ret!=ESP_OK){ts_ws_reservation_release(&s_exec_terminal);s_exec_result_active=false;}
+         }
+     }
+     atomic_fetch_sub(&s_exec_creators, 1);
+diff --git a/components/ts_webui/src/ts_ws_transport.c b/components/ts_webui/src/ts_ws_transport.c
+index f08d9da..81c4ba3 100644
+--- a/components/ts_webui/src/ts_ws_transport.c
++++ b/components/ts_webui/src/ts_ws_transport.c
+@@ -1,5 +1,6 @@
+ #include "ts_ws_transport.h"
+ #include "esp_timer.h"
++#include "esp_log.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
+ #include <stdlib.h>
+@@ -22,12 +23,15 @@ static struct {
+ static ts_ws_peer_t s_peers[TS_WS_CONNECTIONS];
+ static int s_log_levels[TS_WS_CONNECTIONS];
+ static uint64_t s_log_revisions[TS_WS_CONNECTIONS];
+-struct ts_ws_message { unsigned refs; char *text; size_t len, capacity; };
++typedef enum {MSG_ORDINARY, MSG_TOPIC, MSG_RESULT, MSG_POWER, MSG_POWER_TICK} message_kind_t;
++struct ts_ws_message { unsigned refs; char *text; size_t len, capacity; message_kind_t kind; };
++static char s_power_payloads[TS_WS_POWER_SLOTS][TS_WS_POWER_BYTES];
++static unsigned s_power_bytes;
+ static ts_ws_transport_stats_t s_tx_stats;
+ static ts_ws_message_t s_messages[TS_WS_ALL_MESSAGE_SLOTS];
+ typedef enum {TX_FREE, TX_RESERVED, TX_PREPARED, TX_QUEUED, TX_EXECUTING, TX_DONE, TX_CANCELED} tx_state_t;
+ typedef struct {
+-    unsigned refs;
++    unsigned refs, retries;
+     tx_state_t state;
+     uint64_t order;
+     ts_ws_peer_t peer;
+@@ -128,21 +132,25 @@ esp_err_t ts_ws_peer_open(httpd_req_t *req, ts_ws_peer_t *peer)
+     req->free_ctx = session_free; /* RST, LRU and httpd_stop also release this. */
+     return ESP_OK;
+ }
+-static ts_ws_message_t *message_alloc(size_t capacity, unsigned kind)
++static ts_ws_message_t *message_alloc(size_t capacity, message_kind_t kind)
+ {
++    if(kind>=MSG_POWER && capacity>TS_WS_POWER_BYTES)return NULL;
+     ts_ws_message_t *m = NULL;
+     portENTER_CRITICAL(&s_lock);
+-    unsigned begin=kind==2 ? TS_WS_MESSAGE_SLOTS : kind==1 ? 0 : TS_WS_MESSAGE_SLOTS-2;
+-    unsigned end=kind==2 ? TS_WS_ALL_MESSAGE_SLOTS : kind==1 ? TS_WS_MESSAGE_SLOTS-2 : TS_WS_MESSAGE_SLOTS;
+-    for (unsigned i=begin; capacity <= TS_WS_TOTAL_BYTES-s_tx_stats.bytes && i<end; ++i) if (!s_messages[i].refs) {
+-        m = &s_messages[i]; m->refs = 1; m->capacity = capacity;
++    unsigned begin=kind>=MSG_POWER ? TS_WS_MESSAGE_SLOTS+2+(kind==MSG_POWER_TICK?TS_WS_POWER_TRANSITIONS:0) : kind==MSG_RESULT ? TS_WS_MESSAGE_SLOTS : kind==MSG_TOPIC ? 0 : TS_WS_MESSAGE_SLOTS-2;
++    unsigned end=kind==MSG_POWER_TICK ? TS_WS_ALL_MESSAGE_SLOTS : kind==MSG_POWER ? TS_WS_ALL_MESSAGE_SLOTS-1 : kind==MSG_RESULT ? TS_WS_MESSAGE_SLOTS+2 : kind==MSG_TOPIC ? TS_WS_MESSAGE_SLOTS-2 : TS_WS_MESSAGE_SLOTS;
++    size_t used=kind>=MSG_POWER ? s_power_bytes : s_tx_stats.bytes-s_power_bytes;
++    size_t limit=kind>=MSG_POWER ? TS_WS_POWER_BUDGET : TS_WS_TOTAL_BYTES-TS_WS_POWER_BUDGET;
++    for (unsigned i=begin; capacity <= limit-used && i<end; ++i) if (!s_messages[i].refs) {
++        m = &s_messages[i]; m->refs = 1; m->capacity = capacity; m->kind=kind;
++        if(kind>=MSG_POWER)s_power_bytes+=capacity;
+         s_tx_stats.bytes += capacity;
+         if(s_tx_stats.bytes > s_tx_stats.bytes_high) s_tx_stats.bytes_high=s_tx_stats.bytes;
+         break;
+     }
+     portEXIT_CRITICAL(&s_lock);
+     if (m) {
+-        m->text = malloc(capacity);
++        m->text = kind>=MSG_POWER ? s_power_payloads[m-s_messages-TS_WS_MESSAGE_SLOTS-2] : malloc(capacity);
+         if (!m->text) {
+             portENTER_CRITICAL(&s_lock);s_tx_stats.rejected++;portEXIT_CRITICAL(&s_lock);
+             ts_ws_message_release(m);return NULL;
+@@ -166,8 +174,9 @@ void ts_ws_message_release(ts_ws_message_t *m)
+     }
+     portEXIT_CRITICAL(&s_lock);
+     if (!reclaim) return;
+-    free(text);
++    if(m->kind<MSG_POWER)free(text);
+     portENTER_CRITICAL(&s_lock);
++    if(m->kind>=MSG_POWER)s_power_bytes-=m->capacity;
+     m->text = NULL;
+     m->len = 0;
+     s_tx_stats.bytes -= m->capacity;
+@@ -220,6 +229,18 @@ static void delivery_release(delivery_t *d)
+     portEXIT_CRITICAL(&s_lock);
+     ts_ws_message_release(m);
+ }
++/* Exactly one settlement for every accepted work reference, including stale
++ * targets and queue rejection. Class is owned by the message, never by done. */
++static void settle(delivery_t *d, esp_err_t result)
++{
++    portENTER_CRITICAL(&s_lock);
++    s_tx_stats.settled++;
++    bool power=d->message->kind>=MSG_POWER;
++    if(power){s_tx_stats.power_settled++;if(result!=ESP_OK)s_tx_stats.power_failed++;}
++    portEXIT_CRITICAL(&s_lock);
++    if(d->message->kind>=MSG_RESULT && result!=ESP_OK)ESP_LOGW("ws_tx","Critical notification target failed: class=%d fd=%d result=%d",d->message->kind,d->peer.fd,result);
++    if(d->done)d->done(d->revision,d->delivery,result);
++}
+ static void deliver(void *arg)
+ {
+     delivery_t *d = arg;
+@@ -253,7 +274,7 @@ static void deliver(void *arg)
+         portENTER_CRITICAL(&s_lock); s_tx_stats.stale++; portEXIT_CRITICAL(&s_lock);
+     }
+     TS_WS_TEST_POINT("sent");
+-    if (d->done) d->done(d->revision, d->delivery, ret);
++    settle(d,ret);
+     portENTER_CRITICAL(&s_lock);
+     d->state=TX_DONE;
+     s_server.work_busy=false;
+@@ -268,19 +289,22 @@ static esp_err_t publish_delivery(delivery_t *d)
+ {
+     esp_err_t ret=httpd_queue_work(d->peer.server,deliver,d);
+     portENTER_CRITICAL(&s_lock);
+-    bool retry=ret!=ESP_OK && d>=&s_deliveries[TS_WS_TX_SLOTS];
++    bool retry=ret!=ESP_OK && d->message->kind>=MSG_RESULT && ++d->retries<TS_WS_QUEUE_RETRIES;
+     if(ret==ESP_OK){s_tx_stats.queued++;s_server.retry_at=0;}
+     else {
+-        s_tx_stats.rejected++;s_server.work_busy=false;
++        s_tx_stats.rejected++;
+         d->state=retry?TX_PREPARED:TX_CANCELED;
+         if(retry)s_server.retry_at=esp_timer_get_time()+100000;
+     }
+     portEXIT_CRITICAL(&s_lock);
+     if(ret!=ESP_OK){
+         if(!retry) {
+-            if(d->done)d->done(d->revision,d->delivery,ret);
++            settle(d,ret);
+             delivery_release(d); /* failed ordinary work reference */
+         }
++        /* A failure callback may enqueue its reserved terminal. Keep the
++         * executor busy until settlement ends to avoid recursive queue failures. */
++        portENTER_CRITICAL(&s_lock);s_server.work_busy=false;portEXIT_CRITICAL(&s_lock);
+         ts_ws_subscriptions_wake();
+     }
+     delivery_release(d); /* publication reference, may outlive the callback */
+@@ -315,18 +339,18 @@ static void cancel_ready(bool topics_only)
+         bool cancel=d->state==TX_PREPARED && (!topics_only || i<TS_WS_TOPIC_TX_SLOTS);
+         if(cancel){d->state=TX_CANCELED;s_tx_stats.stale++;} /* take its existing work reference */
+         portEXIT_CRITICAL(&s_lock);
+-        if(cancel){if(d->done)d->done(d->revision,d->delivery,ESP_ERR_INVALID_STATE);delivery_release(d);}
++        if(cancel){settle(d,ESP_ERR_INVALID_STATE);delivery_release(d);}
+     }
+ }
+ void ts_ws_transport_cancel_topics(void){cancel_ready(true);}
+ esp_err_t ts_ws_transport_submit(ts_ws_peer_t peer, ts_ws_message_t *message,
+     uint64_t revision, uint64_t delivery, ts_ws_delivery_check_t check, ts_ws_delivery_done_t done)
+ {
+-    if(!message)return ESP_ERR_INVALID_ARG;
++    if(!message || message->kind>MSG_TOPIC)return ESP_ERR_INVALID_ARG;
+     delivery_t *d=NULL;
+     portENTER_CRITICAL(&s_lock);
+     if(!s_server.stopping && peer_valid(peer) && s_delivery_order!=UINT64_MAX)
+-        for(unsigned i=done?0:TS_WS_TOPIC_TX_SLOTS;i<(done?TS_WS_TOPIC_TX_SLOTS:TS_WS_TX_SLOTS);i++)if(!s_deliveries[i].refs){
++        for(unsigned i=message->kind==MSG_TOPIC?0:TS_WS_TOPIC_TX_SLOTS;i<(message->kind==MSG_TOPIC?TS_WS_TOPIC_TX_SLOTS:TS_WS_TX_SLOTS);i++)if(!s_deliveries[i].refs){
+             d=&s_deliveries[i];
+             *d=(delivery_t){.refs=2,.state=TX_PREPARED,.order=++s_delivery_order,.peer=peer,
+                 .message=message,.revision=revision,.delivery=delivery,.check=check,.done=done};
+@@ -436,7 +460,7 @@ unsigned ts_ws_message_capacity(void)
+ {
+     unsigned n=0;
+     portENTER_CRITICAL(&s_lock);
+-    if(s_tx_stats.bytes <= TS_WS_TOTAL_BYTES - TS_WS_FRAME_BYTES)
++    if(s_tx_stats.bytes-s_power_bytes <= TS_WS_TOTAL_BYTES-TS_WS_POWER_BUDGET-TS_WS_FRAME_BYTES)
+         for(unsigned i=0;i<TS_WS_MESSAGE_SLOTS-2;i++) n+=!s_messages[i].refs;
+     portEXIT_CRITICAL(&s_lock);
+     return n;
+@@ -493,14 +517,15 @@ unsigned ts_ws_peer_snapshot(ts_ws_peer_t *peers, unsigned capacity)
+     portEXIT_CRITICAL(&s_lock);
+     return n;
+ }
+-esp_err_t ts_ws_reserve(const ts_ws_peer_t *peers, unsigned count, bool result,
++static esp_err_t reserve_kind(const ts_ws_peer_t *peers, unsigned count, message_kind_t kind,
+                         size_t bytes, ts_ws_reservation_t *r)
+ {
+-    if(!r || (!peers && !result) || !count || count>TS_WS_RESERVATION_TARGETS || !bytes || bytes>TS_WS_LEGACY_BYTES) return ESP_ERR_INVALID_ARG;
++    if(!r || (!peers && kind!=MSG_RESULT) || !count || count>TS_WS_RESERVATION_TARGETS || !bytes || bytes>TS_WS_LEGACY_BYTES) return ESP_ERR_INVALID_ARG;
+     *r=(ts_ws_reservation_t){0};
+-    ts_ws_message_t *m=message_alloc(bytes,result?2:1);
++    ts_ws_message_t *m=message_alloc(bytes,kind);
+     if(!m) return ESP_ERR_NO_MEM;
+-    unsigned begin=result?TS_WS_TX_SLOTS:0, end=result?TS_WS_ALL_TX_SLOTS:TS_WS_TOPIC_TX_SLOTS;
++    unsigned begin=kind>=MSG_POWER ? TS_WS_RESULT_TX_END+(kind==MSG_POWER_TICK?TS_WS_POWER_TRANSITIONS*TS_WS_CONNECTIONS:0) : kind==MSG_RESULT?TS_WS_TX_SLOTS:0;
++    unsigned end=kind==MSG_POWER_TICK?TS_WS_ALL_TX_SLOTS:kind==MSG_POWER?TS_WS_ALL_TX_SLOTS-TS_WS_CONNECTIONS:kind==MSG_RESULT?TS_WS_RESULT_TX_END:TS_WS_TOPIC_TX_SLOTS;
+     portENTER_CRITICAL(&s_lock);
+     bool valid=!s_server.stopping && s_server.handle;
+     for(unsigned i=0;peers && i<count;i++) if(!peer_valid(peers[i])) valid=false;
+@@ -518,6 +543,10 @@ esp_err_t ts_ws_reserve(const ts_ws_peer_t *peers, unsigned count, bool result,
+     if(!r->message){ts_ws_message_release(m);return valid?ESP_ERR_NO_MEM:ESP_ERR_INVALID_STATE;}
+     return ESP_OK;
+ }
++esp_err_t ts_ws_reserve(const ts_ws_peer_t *peers,unsigned count,bool result,size_t bytes,ts_ws_reservation_t *r)
++{
++    return reserve_kind(peers,count,result?MSG_RESULT:MSG_TOPIC,bytes,r);
++}
+ void ts_ws_reservation_release(ts_ws_reservation_t *r)
+ {
+     if(!r || !r->message)return;
+@@ -573,6 +602,11 @@ esp_err_t ts_ws_result_broadcast(ts_ws_reservation_t *r,const char *text)
+     if(ret!=ESP_OK)return ret;
+     ts_ws_peer_t peers[TS_WS_CONNECTIONS];
+     unsigned n=ts_ws_peer_snapshot(peers,TS_WS_CONNECTIONS);
++    return ts_ws_result_publish(r,peers,n);
++}
++esp_err_t ts_ws_result_publish(ts_ws_reservation_t *r,const ts_ws_peer_t *peers,unsigned n)
++{
++    esp_err_t ret=ESP_OK;
+     for(unsigned i=0;i<n;i++) {
+         if(i>=r->count || r->slots[i]<0)return ESP_ERR_INVALID_STATE;
+         portENTER_CRITICAL(&s_lock);s_deliveries[r->slots[i]].peer=peers[i];portEXIT_CRITICAL(&s_lock);
+@@ -589,3 +623,27 @@ uint32_t ts_ws_transport_retry_ms(void)
+     portEXIT_CRITICAL(&s_lock);
+     return delta>0 ? (uint32_t)((delta+999)/1000) : 0;
+ }
++
++esp_err_t ts_ws_power_reserve(bool tick,ts_ws_reservation_t *r)
++{
++    *r=(ts_ws_reservation_t){0};
++    ts_ws_peer_t peers[TS_WS_CONNECTIONS];
++    unsigned n=ts_ws_peer_snapshot(peers,TS_WS_CONNECTIONS);
++    if(!n)return ESP_OK;
++    esp_err_t ret=reserve_kind(peers,n,tick?MSG_POWER_TICK:MSG_POWER,TS_WS_POWER_BYTES,r);
++    portENTER_CRITICAL(&s_lock);
++    if(ret==ESP_OK)s_tx_stats.power_accepted++;else s_tx_stats.power_rejected++;
++    portEXIT_CRITICAL(&s_lock);
++    return ret;
++}
++esp_err_t ts_ws_power_publish(ts_ws_reservation_t *r,const char *text)
++{
++    if(!r->message)return ESP_OK; /* no recipients at admission */
++    esp_err_t ret=ts_ws_reserved_text(r,text);
++    if(ret!=ESP_OK)return ret;
++    for(unsigned i=0;i<r->count;i++) {
++        esp_err_t result=ts_ws_reserved_submit(r,i,0,0,NULL,NULL);
++        if(result!=ESP_OK){ret=result;portENTER_CRITICAL(&s_lock);s_tx_stats.power_failed++;portEXIT_CRITICAL(&s_lock);}
++    }
++    return ret;
++}
+diff --git a/tests/ws_subscriptions/README.md b/tests/ws_subscriptions/README.md
+index 55a2244..60fcbfb 100644
+--- a/tests/ws_subscriptions/README.md
++++ b/tests/ws_subscriptions/README.md
+@@ -24,3 +24,14 @@ Mock success of `httpd_ws_send_frame_async` means only success at that API bound
+ - `bash tests/ws_subscriptions/run_reviewer_baseline.sh`：使用归档和 SHA-256 复现五项未修复行为，退出 0 表示反例成立。
+ - `bash tests/ws_subscriptions/run_reviewer.sh`：完整生产 manager/transport/event C + 自动提取的当前 WebUI/HTTP/服务/核心函数，验证暂停/排空、会话就绪、日志代次、聚合停止重试、主题公平性和联合资源预算。SSH/设备/SDK 是模拟，未执行远端操作。
+ - 修复记录：`docs/repair/ws-subscriptions/reviewer-fixes/README.md`。
++
++## F1/F2 后续修复
++
++```sh
++bash tests/ws_subscriptions/run_f1_f2.sh --baseline
++bash tests/ws_subscriptions/run_f1_f2.sh
++```
++
++第一条校验本轮冻结的真实工作区源码，并用相同 F1/F2 断言确认旧行为失败；成功退出只表示反例成立。第二条执行当前完整 transport/manager 与提取的真实 Shell、exec 输出/终态和保护事件调用方，覆盖入队/发送失败、迟到结算、身份隔离、部分失败、独立容量、停止交错和持续竞争。两者均不连接设备。SDK cJSON 可用 `IDF_PATH` 指定，编译器可由标准 `CC` 环境变量指定。
++
++后续 CI 可在已有 ESP-IDF 源码准备好后安装 C 编译器和 ASan/UBSan，设置 `IDF_PATH`，依次执行 `run_host.sh`、`run_reviewer.sh` 和 `run_f1_f2.sh`。基线重放可作为单独的证据任务。本轮未修改 CI 工作流。详见 `docs/repair/ws-f1-f2/README.md`。
+diff --git a/tests/ws_subscriptions/run_reviewer.sh b/tests/ws_subscriptions/run_reviewer.sh
+index fce67fb..90f3a47 100644
+--- a/tests/ws_subscriptions/run_reviewer.sh
++++ b/tests/ws_subscriptions/run_reviewer.sh
+@@ -9,7 +9,7 @@ python3 - "$build" <<'PY'
+ from pathlib import Path
+ import sys,re
+ s=Path('components/ts_webui/src/ts_webui_ws.c').read_text()
+-names=['ts_webui_log_stream_enable','has_log_clients','update_log_stream_state','set_client_role','ssh_terminal_done','ssh_generation_valid','ssh_status_valid','ssh_request_error','ssh_send_status','ssh_send_output','ssh_poll_task','ssh_cleanup','handle_ssh_connect','start_terminal_session','ts_webui_ws_stop','ssh_exec_terminal_publish','ws_handler']
++names=['ts_webui_log_stream_enable','has_log_clients','update_log_stream_state','set_client_role','ssh_terminal_done','ssh_generation_valid','ssh_status_valid','ssh_request_error','ssh_send_status','ssh_output_done','ssh_terminal_flush','ssh_send_output','ssh_poll_task','ssh_cleanup','handle_ssh_connect','start_terminal_session','ts_webui_ws_stop','ssh_exec_output_done','ssh_exec_stream_publish','ssh_exec_terminal_flush','ssh_exec_terminal_publish','ws_handler']
+ parts=[]
+ for name in names:
+  m=re.search(r'^(?:static )?(?:esp_err_t|bool|void) '+name+r'\([^;]*?\)\n\{',s,re.M);assert m,name
+diff --git a/tests/ws_subscriptions/stubs/platform.h b/tests/ws_subscriptions/stubs/platform.h
+index 5292501..08732ef 100644
+--- a/tests/ws_subscriptions/stubs/platform.h
++++ b/tests/ws_subscriptions/stubs/platform.h
+@@ -52,7 +52,7 @@ static inline bool esp_timer_is_active(esp_timer_handle_t p) {return p->active;}
+ #ifndef TEST_REAL_EVENT
+ typedef const char *ts_event_base_t;
+ typedef void *ts_event_handler_handle_t;
+-typedef struct {void*data;size_t data_size;} ts_event_t;
++typedef struct {void*data;size_t data_size;int id;} ts_event_t;
+ #define TS_EVENT_BASE_SYSTEM "system"
+ #define TS_EVENT_BASE_DEVICE_MON "device"
+ #define TS_EVENT_BASE_OTA "ota"
+diff --git a/tests/ws_subscriptions/test_init.c b/tests/ws_subscriptions/test_init.c
+index b8784f7..8de18f9 100644
+--- a/tests/ws_subscriptions/test_init.c
++++ b/tests/ws_subscriptions/test_init.c
+@@ -22,6 +22,9 @@ static int ts_ws_subscriptions_init(void){return fail_stage==3?ESP_ERR_NO_MEM:ES
+ static esp_err_t ts_webui_ws_stop(httpd_handle_t server);
+ static int manager_stop_result,barrier_result,tx_stop_result,tx_stop_calls;
+ static bool owner_context,s_exec_running,s_ssh_poll_alive,cleanup_finishes;
++static atomic_bool s_exec_result_active,s_exec_output_failed,s_exec_terminal_ready;
++static atomic_uint s_ssh_output_pending,s_ssh_result_pending;
++static atomic_bool s_exec_terminal_claimed;
+ static atomic_uint s_exec_creators;
+ bool ts_ws_transport_in_context(void){return owner_context;}
+ static esp_err_t ts_ws_subscriptions_deinit(void){return manager_stop_result;}
+diff --git a/tests/ws_subscriptions/test_manager.c b/tests/ws_subscriptions/test_manager.c
+index 389b8e7..a881ab9 100644
+--- a/tests/ws_subscriptions/test_manager.c
++++ b/tests/ws_subscriptions/test_manager.c
+@@ -35,6 +35,7 @@ static void(*delay_hook)(void);
+ static void(*api_hook)(void);
+ static bool queue_fail, immediate, send_fail, task_fail, api_business_error;
+ static unsigned shutdowns;
++static int sent_fd,send_fail_fd=-1;
+ int test_shutdown(int fd,int how){(void)how;assert(fd>0);shutdowns++;return 0;}
+ static void(*wait_hook)(void);
+ static const char *barrier_name;
+@@ -51,7 +52,7 @@ unsigned ulTaskNotifyTake(int clear,TickType_t ticks) {(void)clear;(void)ticks;a
+ void vTaskDelete(TaskHandle_t t) {(void)t;}
+ void vTaskDelay(TickType_t t) {test_now+=(int64_t)t*1000;if(delay_hook)delay_hook();}
+ int httpd_ws_get_fd_info(httpd_handle_t h,int fd) {(void)h;(void)fd;return HTTPD_WS_CLIENT_WEBSOCKET;}
+-int httpd_ws_send_frame_async(httpd_handle_t h,int fd,httpd_ws_frame_t*f) {(void)h;assert(fd>=0&&fd<32);frames[fd]++;if(sent_hook && !send_fail)sent_hook(f);memcpy(payloads[fd],f->payload,f->len);payloads[fd][f->len]=0;return send_fail?ESP_FAIL:0;}
++int httpd_ws_send_frame_async(httpd_handle_t h,int fd,httpd_ws_frame_t*f) {(void)h;assert(fd>=0&&fd<32);frames[fd]++;sent_fd=fd;if(sent_hook && !send_fail && send_fail_fd!=fd)sent_hook(f);memcpy(payloads[fd],f->payload,f->len);payloads[fd][f->len]=0;return send_fail || send_fail_fd==fd?ESP_FAIL:0;}
+ int httpd_queue_work(httpd_handle_t h,void(*fn)(void*),void*a) {(void)h;if(queue_fail)return ESP_FAIL;if(immediate) {TaskHandle_t saved=current;current=(void*)3;fn(a);current=saved;}else{assert(queued<64);queue[queued++]=(typeof(queue[0])){fn,a};}return 0;}
+ int ts_api_call(const char*method,const cJSON*p,ts_api_result_t*r) {(void)p;for(int i=0;i<7;i++)if(!strcmp(metrics[i],method))reads[i]++;if(api_hook)api_hook();r->data=cJSON_CreateObject();r->message=malloc(8);r->code=api_business_error?1:0;return 0;}
+ static void pump(void) {
+@@ -160,7 +161,9 @@ int main(void) {
+  char *big=malloc(TS_WS_LEGACY_BYTES);memset(big,'x',TS_WS_LEGACY_BYTES);
+  ts_ws_message_t *large=ts_ws_message_text(big,TS_WS_LEGACY_BYTES-1);assert(large);assert(!ts_ws_message_text(big,TS_WS_LEGACY_BYTES));ts_ws_message_release(large);free(big);
+  ts_ws_message_t *one=ts_ws_message_text("{}",2);assert(one);
+- for(int i=0;i<TS_WS_TOPIC_TX_SLOTS;i++)assert(ts_ws_transport_submit(a,one,0,0,NULL,capacity_done)==0);
++ j=cJSON_CreateObject();ts_ws_message_t *topic_message=ts_ws_message_json("capacity",j,0);cJSON_Delete(j);assert(topic_message);
++ for(int i=0;i<TS_WS_TOPIC_TX_SLOTS;i++)assert(ts_ws_transport_submit(a,topic_message,0,0,NULL,capacity_done)==0);
++ ts_ws_message_release(topic_message);
+  for(int i=0;i<TS_WS_CONNECTIONS;i++)assert(ts_ws_transport_submit(a,one,0,0,NULL,NULL)==0);
+  assert(ts_ws_transport_submit(a,one,0,0,NULL,NULL)==ESP_ERR_NO_MEM);
+  ts_ws_message_release(one);pump();
+diff --git a/tests/ws_subscriptions/test_reviewer.c b/tests/ws_subscriptions/test_reviewer.c
+index 12d8571..a38c254 100644
+--- a/tests/ws_subscriptions/test_reviewer.c
++++ b/tests/ws_subscriptions/test_reviewer.c
+@@ -18,6 +18,7 @@ typedef enum {WS_CLIENT_TYPE_EVENT,WS_CLIENT_TYPE_TERMINAL,WS_CLIENT_TYPE_SSH_SH
+ static struct {bool active;int fd;httpd_handle_t hd;ws_client_type_t type;int log_min_level;}s_clients[MAX_WS_CLIENTS];
+ static httpd_handle_t s_server=(void*)11;
+ static bool s_ws_stopping,s_exec_running;
++static atomic_bool s_exec_terminal_claimed;
+ static atomic_uint s_exec_creators;
+ static ts_event_handler_handle_t s_power_event_handle;
+ static ts_ws_peer_t s_ssh_peer;
+@@ -27,6 +28,14 @@ static atomic_bool s_ssh_running,s_ssh_poll_alive;
+ enum {SSH_IDLE,SSH_STARTING,SSH_READY,SSH_TERMINAL};
+ static atomic_uint s_ssh_state,s_ssh_generation,s_ssh_result_pending;
+ static ts_ws_reservation_t s_ssh_terminal,s_exec_terminal;
++static atomic_uint s_ssh_output_pending,s_exec_output_pending;
++static atomic_bool s_ssh_output_failed,s_exec_output_failed,s_ssh_terminal_ready,s_exec_terminal_ready,s_exec_result_active;
++static unsigned s_exec_session_id;
++static ts_ws_peer_t s_exec_result_peers[TS_WS_CONNECTIONS];
++static unsigned s_exec_result_count;
++static void ssh_terminal_flush(void);
++static void ssh_exec_terminal_flush(void);
++static void ssh_exec_terminal_publish(const char*,uint32_t);
+ static bool shell_active,create_fails,close_on_create;
+ static void update_log_stream_state(void);
+ static bool has_log_clients(void);
+@@ -115,9 +124,11 @@ static void observe_topic(httpd_ws_frame_t*f){
+   if(strstr((const char*)f->payload,match))observed_topics[i]++;
+  }
+ }
++
++#ifndef WS_REVIEWER_NO_MAIN
+ int main(void){
+  cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);
+- start();open_peer(1);open_peer(2);assert(ts_ws_result_reserve(4096,&s_exec_terminal)==0);s_exec_running=true;delay_hook=progress;
++ start();open_peer(1);open_peer(2);s_exec_terminal_claimed=false;assert(ts_ws_result_reserve(4096,&s_exec_terminal)==0);s_exec_running=true;delay_hook=progress;
+  assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);delay_hook=NULL;
+  assert(s_worker && s_state==DRAINING);
+  reqs[1].method=1;incoming="{\"type\":\"ping\"}";current=(void*)3;
+@@ -182,11 +193,11 @@ int main(void){
+  ts_ws_message_t *full1=ts_ws_message_text("full1",5),*full2=ts_ws_message_text("full2",5);assert(full1&&full2);
+  ssh_send_output("payload",7);assert(s_ssh_state==SSH_TERMINAL && !s_ssh_running);
+  poll_exit();current=(void*)1;ts_ws_message_release(full1);ts_ws_message_release(full2);pump();
+- assert(strstr(payloads[1],"SSH output delivery failed") && !s_ssh_session && !s_ssh_poll_alive);
++ assert(strstr(payloads[1],"SSH output delivery incomplete") && !s_ssh_session && !s_ssh_poll_alive);
+  finish();
+  puts("PASS R2: task-create failure/early close never end as connected; reserved failure survives normal pool saturation and SDK queue rejection; late READY invalid");
+ 
+- start();open_peer(1);assert(ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal)==0);
++ start();open_peer(1);s_exec_terminal_claimed=false;assert(ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&s_exec_terminal)==0);
+  m1=ts_ws_message_text("one",3);m2=ts_ws_message_text("two",3);assert(m1&&m2);
+  open_peer(2);a=frames[1];b=frames[2];
+  ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\",\"session_id\":7}",7);
+@@ -212,8 +223,10 @@ int main(void){
+  test_now+=10000000;before=total_reads();run_batch();assert(total_reads()==before);
+  ts_ws_reservation_release(&reserved);run_batch();pump();assert(total_reads()>before);
+  char*large=malloc(TS_WS_LEGACY_BYTES);memset(large,'x',TS_WS_LEGACY_BYTES);
+- m1=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-1);m2=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-1);assert(m1&&m2);free(large);
++ m1=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-1);m2=ts_ws_message_text(large,TS_WS_LEGACY_BYTES-TS_WS_POWER_BUDGET-1);assert(m1&&m2);free(large);
+  test_now+=10000000;before=total_reads();run_batch();assert(total_reads()==before);
+  ts_ws_message_release(m1);ts_ws_message_release(m2);run_batch();pump();assert(total_reads()>before);finish();
+  puts("PASS R5: all eight topics progress under six-slot pressure; no API collection without message/descriptor/byte capacity");
+ }
++
++#endif
+--- /dev/null
++++ b/tests/ws_subscriptions/run_f1_f2.sh
+@@ -0,0 +1,49 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++build=$(mktemp -d /tmp/ts-ws-f1-f2.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++if [[ "${1:-}" == "--baseline" ]]; then
++  tar -xzf docs/repair/ws-f1-f2/pre-fix-source.tar.gz -C "$build"
++  python3 - "$build" <<'HASH'
++import json,hashlib,sys
++from pathlib import Path
++for name,want in json.loads(Path('docs/repair/ws-f1-f2/baseline.json').read_text())['sha256'].items():
++ assert hashlib.sha256((Path(sys.argv[1])/name).read_bytes()).hexdigest()==want,name
++print('Frozen production snapshot hashes verified')
++HASH
++  # Current assertions/harness against unchanged frozen production sources.
++  cp tests/ws_subscriptions/{test_f1_f2.c,test_reviewer.c,run_f1_f2.sh} "$build/tests/ws_subscriptions/"
++  cp tests/ws_subscriptions/stubs/platform.h "$build/tests/ws_subscriptions/stubs/"
++  if bash "$build/tests/ws_subscriptions/run_f1_f2.sh" > "$build/red.txt" 2>&1; then
++    cat "$build/red.txt"; echo 'Unexpected baseline PASS'; exit 1
++  fi
++  cat "$build/red.txt"
++  grep -q 'F1 assertion:.*FAIL' "$build/red.txt"
++  grep -q 'F2 assertion:.*FAIL' "$build/red.txt"
++  if grep -Eq 'error:|Assertion failed|Sanitizer' "$build/red.txt"; then exit 1; fi
++  echo 'CONFIRMED: both failures are behavioral assertions, not compilation or cleanup failures'
++  exit 0
++fi
++export DEVELOPER_DIR=/Library/Developer/CommandLineTools
++cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
++python3 - "$build" <<'PY'
++from pathlib import Path
++import re,sys
++script=Path('tests/ws_subscriptions/run_reviewer.sh').read_text()
++code=script.split("<<'PY'\n",1)[1].split('\nPY',1)[0]
++exec(compile(code,'extract-reviewer','exec'))
++s=Path('components/ts_webui/src/ts_webui_ws.c').read_text();parts=[]
++for name in ['power_state_to_string','power_policy_event_handler','ts_webui_broadcast','simple_pattern_match','ssh_exec_output_callback']:
++ m=re.search(r'^(?:static )?(?:const char \*|void |esp_err_t |bool )'+name+r'\([^;]*?\)\n\{',s,re.M);assert m,name
++ parts.append(s[m.start():s.index('\n}',m.start())+2])
++Path(sys.argv[1],'power_caller.inc').write_text('\n'.join(parts))
++PY
++"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" -I"$build" tests/ws_subscriptions/test_f1_f2.c "$cjson/cJSON.c" -o "$build/f1f2"
++failed=0
++scenarios="f1 f2"
++if grep -q TS_WS_POWER_SLOTS components/ts_webui/include/ts_ws_transport.h; then scenarios="$scenarios late early identity exec continuous power_retry capacity retry_limit stop timeout class power_order fair"; fi
++for scenario in $scenarios; do
++ if ! "$build/f1f2" "$scenario"; then failed=1; fi
++done
++exit "$failed"
+--- /dev/null
++++ b/tests/ws_subscriptions/test_f1_f2.c
+@@ -0,0 +1,152 @@
++#define WS_REVIEWER_NO_MAIN
++#include "test_reviewer.c"
++/* Actual power callback, with only the power status input type replaced. */
++typedef enum {TS_POWER_POLICY_STATE_NORMAL,TS_POWER_POLICY_STATE_LOW_VOLTAGE,TS_POWER_POLICY_STATE_SHUTDOWN,TS_POWER_POLICY_STATE_PROTECTED,TS_POWER_POLICY_STATE_RECOVERY}ts_power_policy_state_t;
++enum {TS_POWER_POLICY_EVENT_STATE_CHANGED,TS_POWER_POLICY_EVENT_LOW_VOLTAGE,TS_POWER_POLICY_EVENT_COUNTDOWN_TICK,TS_POWER_POLICY_EVENT_SHUTDOWN_START,TS_POWER_POLICY_EVENT_PROTECTED,TS_POWER_POLICY_EVENT_RECOVERY_START,TS_POWER_POLICY_EVENT_RECOVERY_COMPLETE,TS_POWER_POLICY_EVENT_DEBUG_TICK};
++typedef struct {ts_power_policy_state_t state;float current_voltage;unsigned countdown_remaining_sec,protection_count;}ts_power_policy_status_t;
++#include <math.h>
++#include <ctype.h>
++static struct {bool collect_output,match_found,fail_matched,expect_matched,stop_on_match;char *output_buffer,*fail_pattern,*expect_pattern,*extract_pattern,*extracted_value;size_t output_capacity,output_len;char var_name[64];ts_ssh_config_t config;} *s_exec_params;
++static bool s_exec_cancel_requested;
++static void *s_exec_session;
++typedef struct{char source_id[64],name[96];int flags;struct {int type;char str_val[256];int int_val;}value;}ts_auto_variable_t;
++#define TS_AUTO_VAL_STRING 1
++#define TS_AUTO_VAL_INT 2
++static int ts_variable_upsert(ts_auto_variable_t*v){(void)v;return 0;}
++static void ts_ssh_abort(void*s){(void)s;assert(!"network delivery must not abort remote commands");}
++#define malloc tracked_malloc
++#define heap_caps_malloc test_heap_malloc
++#define free tracked_free
++#include "power_caller.inc"
++#undef free
++#undef malloc
++#undef heap_caps_malloc
++static unsigned powers,errors;
++#ifdef TS_WS_POWER_SLOTS
++static unsigned outputs[32],terminals[32],logs,protection_order[64],protection_n;
++static void observe_all(httpd_ws_frame_t*f){observe_topic(f);const char*p=(const char*)f->payload;if(strstr(p,"power_event")){powers++;if(protection_n<64){cJSON*j=cJSON_Parse(p);protection_order[protection_n++]=cJSON_GetObjectItem(j,"protection_count")->valueint;cJSON_Delete(j);}}if(strstr(p,"ssh_exec_output")||strstr(p,"ssh_output"))outputs[sent_fd]++;if(strstr(p,"ssh_exec_error")||strstr(p,"\"status\":\"error\""))errors++;if(strstr(p,"ssh_exec_done")||strstr(p,"ssh_exec_error"))terminals[sent_fd]++;if(!strcmp(p,"log"))logs++;}
++static void exec_begin(void){s_exec_session_id++;s_exec_output_failed=false;s_exec_terminal_claimed=false;s_exec_terminal_ready=false;s_exec_result_active=true;assert(!s_exec_output_pending);assert(ts_ws_result_reserve(4096,&s_exec_terminal)==0);}
++#endif
++static void observe_power(httpd_ws_frame_t*f){if(strstr((char*)f->payload,"power_event"))powers++;if(strstr((char*)f->payload,"\"status\":\"error\""))errors++;}
++static void power_change(void){ts_power_policy_status_t s={.state=TS_POWER_POLICY_STATE_PROTECTED,.current_voltage=10.0f,.protection_count=1};ts_event_t e={.id=TS_POWER_POLICY_EVENT_PROTECTED,.data=&s,.data_size=sizeof(s)};power_policy_event_handler(&e,NULL);}
++int main(int argc,char**argv){
++ assert(argc==2);cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);start();open_peer(1);sent_hook=observe_power;
++ if(!strcmp(argv[1],"f1")){
++  connect_request(false,false);queue_fail=true;ssh_send_output("chunk",5);queue_fail=false;test_now+=100000;progress();pump();
++  bool handled=!s_ssh_running && errors>0;
++  printf("F1 assertion: accepted SSH output enqueue failure reaches session and error frame: %s\n",handled?"PASS":"FAIL (stream still normal / no error frame)");
++  s_ssh_running=false;poll_exit();current=(void*)1;finish();return handled?0:1;
++ }
++ if(!strcmp(argv[1],"f2")){
++  ts_ws_peer_t p;assert(ts_ws_peer_get((void*)11,1,&p));ts_ws_peer_log_level(p,5);
++  httpd_ws_frame_t f={.type=1,.payload=(uint8_t*)"log",.len=3};assert(ts_ws_transport_log(&f,1)==0);assert(ts_ws_transport_log(&f,1)==0);
++  power_change();pump();bool handled=powers==1;
++  printf("F2 assertion: protection transition survives ordinary log pool saturation: %s\n",handled?"PASS":"FAIL (no protection frame)");finish();return handled?0:1;
++ }
++#ifdef TS_WS_POWER_SLOTS
++ sent_hook=observe_all;
++ if(!strcmp(argv[1],"late")){
++  connect_request(false,false);
++  ts_ws_message_t*m=ts_ws_message_text("block",5);assert(ts_ws_transport_submit(s_ssh_peer,m,0,0,NULL,NULL)==0);ts_ws_message_release(m);
++  ssh_send_output("out",3);assert(s_ssh_output_pending==1);ssh_send_status("closed","normal close");assert(s_ssh_terminal_ready && s_ssh_result_pending);
++  sdk_one();queue_fail=true;worker_step();assert(s_ssh_output_failed && !s_ssh_output_pending);queue_fail=false;test_now+=100000;progress();pump();
++  assert(errors==1 && !strstr(payloads[1],"normal close"));s_ssh_running=false;poll_exit();current=(void*)1;finish();
++  puts("PASS late SSH rejection: prior output settles before terminal; closed becomes explicit incomplete-output error");return 0;
++ }
++ if(!strcmp(argv[1],"early")){
++  connect_request(false,false);immediate=true;uint64_t settled=s_tx_stats.settled;
++  ssh_send_output("ok",2);assert(!s_ssh_output_pending && s_tx_stats.settled==settled+1 && outputs[1]==1);
++  send_fail=true;ssh_send_output("fail",4);send_fail=false;immediate=false;
++  assert(s_tx_stats.settled==settled+2 && s_ssh_output_failed && !s_ssh_running && !s_ssh_output_pending);
++  poll_exit();current=(void*)1;finish();puts("PASS callback-before-return and actual send failure: exactly one settlement, no reference leak");return 0;
++ }
++ if(!strcmp(argv[1],"identity")){
++  connect_request(false,false);unsigned old=s_ssh_generation;
++  ssh_send_output("old",3);close_peer(1);open_peer(1);
++  connect_request(false,false);assert(s_ssh_generation==old); /* retained old producer blocks replacement */
++  pump();assert(s_ssh_output_failed && outputs[1]==0);poll_exit();current=(void*)1;
++  connect_request(false,false);assert(s_ssh_generation>old && s_ssh_running);
++  ssh_output_done(old,1,ESP_FAIL);assert(s_ssh_running && !s_ssh_output_failed); /* delayed old notification is fenced */
++  s_ssh_running=false;poll_exit();current=(void*)1;pump();finish();puts("PASS old connection/generation cannot receive old output or fail replacement session");return 0;
++ }
++ if(!strcmp(argv[1],"exec")){
++  open_peer(2);exec_begin();unsigned sid=s_exec_session_id;uint64_t settled_before=s_tx_stats.settled;
++  ssh_exec_output_callback("part",4,false,(void*)(uintptr_t)sid);assert(s_exec_output_pending==2);
++  ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\"}",sid);assert(s_exec_terminal_ready);
++  sdk_one();assert(outputs[1]==1 && !terminals[1]);queue_fail=true;worker_step();queue_fail=false;
++  assert(s_exec_output_failed && !s_exec_output_pending);test_now+=100000;worker_step();pump();
++  assert(outputs[1]==1 && outputs[2]==0 && terminals[1]==1 && terminals[2]==1 && errors==2);assert(s_tx_stats.settled==settled_before+4);
++  assert(strstr(payloads[1],"not confirmed"));finish();
++  puts("PASS actual exec callback: partial target failure is independent; no successful output replay and no false done");return 0;
++ }
++ if(!strcmp(argv[1],"continuous")){
++  exec_begin();queue_fail=true;ssh_exec_output_callback("chunk",5,false,(void*)(uintptr_t)s_exec_session_id);queue_fail=false;
++  test_now+=100000;progress();pump();assert(errors==1 && !s_exec_output_pending && !s_exec_result_active);
++  unsigned frames_before=frames[1];ssh_exec_output_callback("later",5,false,(void*)(uintptr_t)s_exec_session_id);ssh_exec_terminal_publish("{\"type\":\"ssh_exec_done\"}",s_exec_session_id);pump();assert(frames[1]==frames_before && !s_exec_cancel_requested);
++  finish();puts("PASS continuous exec: observation reports incomplete immediately; no remote abort/replay or later normal completion");return 0;
++ }
++ if(!strcmp(argv[1],"power_retry")){
++  open_peer(2);queue_fail=true;power_change();assert(s_tx_stats.power_accepted==1 && !powers);
++  worker_step();queue_fail=false;test_now+=100000;worker_step();sdk_one();worker_step();sdk_one();assert(powers==2);
++  send_fail_fd=2;power_change();pump();send_fail_fd=-1;assert(powers==3 && s_tx_stats.power_failed==1);finish();
++  puts("PASS protection queue recovery without new messages; partial socket failure never replays successful recipient");return 0;
++ }
++ if(!strcmp(argv[1],"capacity")){
++  ts_ws_peer_t p;assert(ts_ws_peer_get((void*)11,1,&p));
++  ts_ws_message_t*m=ts_ws_message_text("log",3);for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)assert(ts_ws_transport_submit(p,m,0,0,NULL,NULL)==0);
++  ts_ws_message_t*m2=ts_ws_message_text("two",3);assert(m2);
++  unsigned before=allocations;fail_allocation=allocations+1;power_change();assert(allocations==before);fail_allocation=0;
++  ts_ws_message_release(m);ts_ws_message_release(m2);pump();assert(powers==1);
++  char*big=malloc(TS_WS_LEGACY_BYTES);memset(big,'x',TS_WS_LEGACY_BYTES);m=ts_ws_message_text(big,TS_WS_LEGACY_BYTES-1);m2=ts_ws_message_text(big,TS_WS_LEGACY_BYTES-TS_WS_POWER_BUDGET-1);free(big);assert(m&&m2);
++  power_change();pump();assert(powers==2 && s_tx_stats.bytes<=TS_WS_TOTAL_BYTES);ts_ws_message_release(m);ts_ws_message_release(m2);
++  ts_ws_reservation_t r[TS_WS_POWER_TRANSITIONS];for(unsigned i=0;i<TS_WS_POWER_TRANSITIONS;i++)assert(ts_ws_power_reserve(false,&r[i])==0);
++  before=allocations;uint64_t rejected=s_tx_stats.power_rejected;power_change();assert(s_tx_stats.power_rejected==rejected+1 && allocations==before);
++  ts_ws_reservation_t tick;assert(ts_ws_power_reserve(true,&tick)==0);ts_ws_reservation_release(&tick);
++  for(unsigned i=0;i<TS_WS_POWER_TRANSITIONS;i++)ts_ws_reservation_release(&r[i]);
++  ts_ws_peer_t peers[TS_WS_TOPIC_TX_SLOTS];for(unsigned i=0;i<TS_WS_TOPIC_TX_SLOTS;i++)peers[i]=p;
++  assert(reserve_kind(peers,TS_WS_TOPIC_TX_SLOTS,MSG_POWER,TS_WS_POWER_BYTES,&r[0])==0);rejected=s_tx_stats.power_rejected;power_change();assert(s_tx_stats.power_rejected==rejected+1);ts_ws_reservation_release(&r[0]);
++  power_change();pump();assert(powers==3);finish();puts("PASS separate ordinary slot/descriptor/byte exhaustion cannot consume power quota; power overload counted without construction");return 0;
++ }
++ if(!strcmp(argv[1],"retry_limit")){
++  queue_fail=true;power_change();for(unsigned i=1;i<TS_WS_QUEUE_RETRIES;i++){test_now+=100000;worker_step();}
++  assert(!ts_ws_transport_needs_flush() && s_tx_stats.power_failed==1 && s_tx_stats.power_settled==1 && s_tx_stats.rejected==TS_WS_QUEUE_RETRIES && !s_tx_stats.jobs && !s_tx_stats.bytes);queue_fail=false;finish();puts("PASS persistent SDK rejection has bounded retry and observable terminal settlement");return 0;
++ }
++ if(!strcmp(argv[1],"stop")){
++  connect_request(false,false);s_exec_running=true;ssh_send_output("last",4);power_change();delay_hook=progress;
++  assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);delay_hook=NULL;assert(s_worker && s_state==DRAINING);
++  for(unsigned i=0;i<10;i++)progress();assert(outputs[1]==1 && powers==1);s_exec_running=false;
++  s_ssh_running=false;poll_exit();current=(void*)1;for(unsigned i=0;i<10;i++)progress();finish();puts("PASS busy stop retains output and protection drain; retry releases dependencies");return 0;
++ }
++ if(!strcmp(argv[1],"class")){
++  connect_request(false,false);ssh_send_output("ordered",7);
++  assert(s_ssh_output_pending==1);unsigned ordinary=0,topics_used=0;
++  for(unsigned i=0;i<TS_WS_ALL_TX_SLOTS;i++)if(s_deliveries[i].state==TX_QUEUED||s_deliveries[i].state==TX_PREPARED){if(i<TS_WS_TOPIC_TX_SLOTS)topics_used++;if(i>=TS_WS_TOPIC_TX_SLOTS&&i<TS_WS_TX_SLOTS)ordinary++;}
++  assert(ordinary==1 && topics_used==0);ts_ws_transport_cancel_topics();assert(s_ssh_output_pending==1);pump();assert(outputs[1]==1 && !s_ssh_output_pending);
++  s_ssh_running=false;poll_exit();current=(void*)1;pump();finish();puts("PASS completion callbacks do not reclassify SSH output or subject it to telemetry cancellation");return 0;
++ }
++ if(!strcmp(argv[1],"power_order")){
++  queue_fail=true;
++  ts_power_policy_status_t status={.state=TS_POWER_POLICY_STATE_LOW_VOLTAGE,.current_voltage=11.5f};ts_event_t e={.id=TS_POWER_POLICY_EVENT_COUNTDOWN_TICK,.data=&status,.data_size=sizeof(status)};
++  status.protection_count=99;power_policy_event_handler(&e,NULL);power_policy_event_handler(&e,NULL);assert(s_tx_stats.power_rejected==1);
++  for(unsigned i=1;i<=4;i++){status.protection_count=i;e.id=TS_POWER_POLICY_EVENT_STATE_CHANGED;power_policy_event_handler(&e,NULL);}
++  assert(s_tx_stats.power_accepted==5);status.protection_count=5;power_policy_event_handler(&e,NULL);assert(s_tx_stats.power_rejected==2);
++  queue_fail=false;test_now+=100000;worker_step();pump();assert(protection_n==5 && protection_order[0]==99);for(unsigned i=1;i<=4;i++)assert(protection_order[i]==i);
++  finish();puts("PASS ticks cannot evict transitions; four accepted transitions retain order, fifth overload is explicit");return 0;
++ }
++ if(!strcmp(argv[1],"timeout")){
++  connect_request(false,false);ssh_send_output("last",4);power_change();
++  assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(s_worker && s_state==DRAINING);
++  for(unsigned i=0;i<12;i++)progress();assert(outputs[1]==1 && powers==1);
++  s_ssh_running=false;poll_exit();current=(void*)1;for(unsigned i=0;i<10;i++)progress();finish();puts("PASS timeout stop continues output/protection drain without new messages; retry completes");return 0;
++ }
++ if(!strcmp(argv[1],"fair")){
++  ts_ws_peer_t p;assert(ts_ws_peer_get((void*)11,1,&p));ts_ws_peer_log_level(p,5);for(unsigned i=0;i<8;i++)subscribe(p,topics[i].name,1000);
++  httpd_ws_frame_t f={.type=1,.payload=(uint8_t*)"log",.len=3};
++  for(unsigned i=0;i<300;i++){
++   test_now+=1000000;ts_ws_transport_log(&f,1);if(i%3==0)power_change();worker_step();sdk_one();assert(s_tx_stats.bytes<=TS_WS_TOTAL_BYTES && s_tx_stats.jobs<=TS_WS_ALL_TX_SLOTS);
++  }
++  pump();for(unsigned i=0;i<8;i++){printf("fair %s=%u\n",topics[i].name,observed_topics[i]);assert(observed_topics[i]>0);}assert(powers>0&&logs>0);finish();puts("PASS bounded sustained log/protection/topic competition: all eligible classes progress");return 0;
++ }
++#endif
++ return 2;
++}

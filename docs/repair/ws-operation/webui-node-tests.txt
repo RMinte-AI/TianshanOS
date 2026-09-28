@@ -1,0 +1,51 @@
+
+> test
+> cd ../.. && node --test tests/prompts/static.test.cjs tests/prompts/regression.test.cjs
+
+✔ zh-CN: actual inline translator, cold language, missing/objects/parameters and confirmations (16.332375ms)
+✔ zh-CN: REST business failure remains returned; strict operation rejects with original metadata (6.440833ms)
+✔ zh-CN: timeout covers response body; result stays unknown for POST (7.731916ms)
+✔ zh-CN: toast timer replacement, priority, safe multiline text (5.914334ms)
+✔ zh-CN: actual mutations do not report success or close dialogs on business failures (5.687666ms)
+✔ zh-CN: batch deletion all / partial / no success with business errors (5.38425ms)
+✔ zh-CN: downloads propagate actual initiation failures and retain batch details (5.67325ms)
+✔ zh-CN: file names are text; upload/verification/apply remain separate (5.972833ms)
+✔ zh-CN: SSH actual event handler honors terminal states and diagnoses conflicts (5.889375ms)
+✔ zh-CN: background command timeout is unconfirmed and never resubmitted (5.1595ms)
+✔ zh-CN: terminal restoration waits for acknowledgement; timeout/failure stay distinct (5.126ms)
+✔ zh-CN: ping results are reachability only; failed probe is unknown and no pulse replay (4.759334ms)
+✔ zh-CN: websocket label matches color across language changes and power warnings persist (4.89ms)
+✔ en-US: actual inline translator, cold language, missing/objects/parameters and confirmations (5.649041ms)
+✔ en-US: REST business failure remains returned; strict operation rejects with original metadata (4.921583ms)
+✔ en-US: timeout covers response body; result stays unknown for POST (6.677458ms)
+✔ en-US: toast timer replacement, priority, safe multiline text (5.605542ms)
+✔ en-US: actual mutations do not report success or close dialogs on business failures (5.707541ms)
+✔ en-US: batch deletion all / partial / no success with business errors (5.931792ms)
+✔ en-US: downloads propagate actual initiation failures and retain batch details (5.72525ms)
+✔ en-US: file names are text; upload/verification/apply remain separate (5.762583ms)
+✔ en-US: SSH actual event handler honors terminal states and diagnoses conflicts (8.599458ms)
+✔ en-US: background command timeout is unconfirmed and never resubmitted (4.5585ms)
+✔ en-US: terminal restoration waits for acknowledgement; timeout/failure stay distinct (4.531958ms)
+✔ en-US: ping results are reachability only; failed probe is unknown and no pulse replay (4.986333ms)
+✔ en-US: websocket label matches color across language changes and power warnings persist (4.34275ms)
+✔ zh-CN: upload and download aggregates cover all success and all failure (5.486833ms)
+✔ zh-CN: key deployment requires successful business code and distinguishes verification (6.551667ms)
+✔ zh-CN: real LED/status renderers localize finite built-in identifiers (5.069083ms)
+✔ en-US: upload and download aggregates cover all success and all failure (4.762625ms)
+✔ en-US: key deployment requires successful business code and distinguishes verification (5.380167ms)
+✔ en-US: real LED/status renderers localize finite built-in identifiers (4.737167ms)
+✔ zh-CN: widget dynamic families render real labels and literal braces in names remain valid (4.581917ms)
+✔ zh-CN: unknown stop result never escalates to forced termination (5.998458ms)
+✔ en-US: widget dynamic families render real labels and literal braces in names remain valid (4.881417ms)
+✔ en-US: unknown stop result never escalates to forced termination (4.388208ms)
+Checked 3066 references including conditional and finite dynamic families.
+✔ actual UI literal/conditional and finite dynamic keys exist in both languages with matching contracts (6.262375ms)
+✔ production i18n is the inline entry; no second translator script is loaded (0.118292ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 258.231833

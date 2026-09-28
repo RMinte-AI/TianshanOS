@@ -1,0 +1,8 @@
+[1/7] Copying web assets to build directory
+TianShanOS.bin binary size 0x20ead0 bytes. Smallest app partition is 0x300000 bytes. 0xf1530 bytes (31%) free.
+Bootloader binary size 0x57e0 bytes. 0x2820 bytes (31%) free.
+[6/7] Minifying + gzipping web resources
+Minifying web resources in /Users/massif/TianshanOS/build/esp-idf/ts_webui/web_optimized...
+[7/7] cd /Users/massif/TianshanOS/build/esp-idf/ts_webui && /Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/spiffs/spiffsgen.py 0x300000 /Users/massif/TianshanOS/build/esp-idf/ts_webui/web_optimized /Users/massif/TianshanOS/build/www.bin --page-size=256 --obj-name-len=32 --meta-len=4 --use-magic --use-magic-len
+Project build complete. To flash, run:
+✅ 当前固件版本: 0.5.1+d6ed947d.09240429

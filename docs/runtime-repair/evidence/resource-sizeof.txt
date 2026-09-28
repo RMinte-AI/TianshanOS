@@ -1,0 +1,16 @@
+Xtensa ESP32-S3 ELF DWARF sizeof (bytes), SDK 5.5.2
+s_capture: 1624
+watch slots: 768
+service_t: 240
+ts_auto_rule_t: 240
+ts_auto_action_t: 992
+ts_action_queue_entry_t: 1032
+rule context: 160
+rule meta array: 96
+StaticSemaphore_t: 92
+action_completion_t: 288
+action_binding_t: 2368
+ts_auto_condition_t: 144
+rule_payload_t: 16
+watch config: 616
+Baseline HEAD same target compiler: rule=224, action=984 bytes

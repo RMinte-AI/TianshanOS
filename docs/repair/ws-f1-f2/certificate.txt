@@ -1,0 +1,9 @@
+PASS UTC/serial bounds and bounded retry/control policy
+PASS material: real SDK mbedTLS, mocked NVS/allocation/events, state/time/concurrent snapshots
+PASS UI: error typing, bilingual/fallback, text output, uncertain POST, button recovery, refresh separation
+PASS actual HTTPS lifecycle: init/start/URI/stop failures, retained ownership, duplicate start, loaded generation, optional CA
+PASS actual coordinator with simulated scheduler: fallback, duplicate events, bounded retries, stop intent, explicit restart, stage errors
+PASS actual cert API handlers: JSON validation, PEM installation, business errors, additive status, active/stored separation
+PASS actual time notifications/UTC readiness and cooperative enrollment stop (syscalls/tasks mocked)
+REPRODUCED manager stop bug: callback failure becomes success/stopped
+PASS manager stop/restart: failed stop retained, restart aborted, successful/duplicate stop unchanged

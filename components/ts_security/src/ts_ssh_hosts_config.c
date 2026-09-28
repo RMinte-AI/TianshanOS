@@ -1,3 +1,4 @@
+#include "ts_ssh_service.h"
 /**
  * @file ts_ssh_hosts_config.c
  * @brief SSH Host Configuration Storage Implementation
@@ -85,6 +86,7 @@ static bool s_hosts_pending_export = false;
 
 /** 正在从 SD 卡加载中（禁止触发同步） */
 static bool s_loading_from_sdcard = false;
+static TaskHandle_t initial_loader;
 
 /**
  * @brief 延迟加载/导出任务 - 在独立任务中处理 SD 卡操作（避免 main 任务栈溢出）
@@ -94,9 +96,11 @@ static bool s_loading_from_sdcard = false;
 static void hosts_deferred_export_task(void *arg)
 {
     (void)arg;
+    initial_loader = xTaskGetCurrentTaskHandle();
     vTaskDelay(pdMS_TO_TICKS(2500));  /* 等待系统稳定，错开 commands 加载 */
     
     if (!s_state.initialized) {
+        initial_loader = NULL;
         vTaskDelete(NULL);
         return;
     }
@@ -131,8 +135,14 @@ static void hosts_deferred_export_task(void *arg)
     if (sdcard_has_config) {
         /* SD 卡有配置，清空 NVS 后导入（SD 卡为权威来源） */
         ESP_LOGI(TAG, "SD card has config, clearing NVS and importing...");
-        ts_ssh_hosts_config_clear();
-        
+        esp_err_t cleared = ts_ssh_hosts_config_clear();
+        if (cleared != ESP_OK) {
+            s_loading_from_sdcard = false;
+            initial_loader = NULL;
+            vTaskDelete(NULL);
+            return;
+        }
+
         esp_err_t import_ret = ts_ssh_hosts_config_import_from_sdcard(false);
         size_t count = ts_ssh_hosts_config_count();
         
@@ -152,6 +162,7 @@ static void hosts_deferred_export_task(void *arg)
     }
     
     s_hosts_pending_export = false;
+    initial_loader = NULL;
     vTaskDelete(NULL);
 }
 
@@ -217,8 +228,7 @@ bool ts_ssh_hosts_config_is_initialized(void)
 /*                          CRUD Operations                                   */
 /*===========================================================================*/
 
-esp_err_t ts_ssh_hosts_config_add(const ts_ssh_host_config_t *config)
-{
+static esp_err_t host_add_impl(const ts_ssh_host_config_t *config) {
     if (!s_state.initialized || !config || !config->id[0] || !config->host[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -289,8 +299,7 @@ esp_err_t ts_ssh_hosts_config_add(const ts_ssh_host_config_t *config)
     return ret;
 }
 
-esp_err_t ts_ssh_hosts_config_remove(const char *id)
-{
+static esp_err_t host_remove_impl(const char *id) {
     if (!s_state.initialized || !id || !id[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -505,8 +514,7 @@ esp_err_t ts_ssh_hosts_config_touch(const char *id)
     return ret;
 }
 
-esp_err_t ts_ssh_hosts_config_clear(void)
-{
+static esp_err_t host_clear_impl(void) {
     if (!s_state.initialized) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1046,7 +1054,11 @@ esp_err_t ts_ssh_hosts_config_import_from_sdcard(bool merge)
     
     /* 如果不是合并模式，先清空现有配置 */
     if (!merge) {
-        ts_ssh_hosts_config_clear();
+        esp_err_t cleared = ts_ssh_hosts_config_clear();
+        if (cleared != ESP_OK) {
+            s_loading_from_sdcard = false;
+            return cleared;
+        }
     }
     
     /* 只从目录加载独立文件（.tscfg 优先于 .json） */
@@ -1079,4 +1091,39 @@ void ts_ssh_hosts_config_sync_to_sdcard(void)
     /* 异步执行 SD 卡同步（避免在 API 处理任务中执行导致栈溢出/超时）
      * 必须使用 DRAM 栈，因为内部会访问 NVS */
     xTaskCreate(hosts_async_sync_task, "ssh_host_sync", 8192, NULL, 2, NULL);
+}
+
+esp_err_t ts_ssh_hosts_config_add(const ts_ssh_host_config_t *cfg) {
+    if (!cfg)
+        return ESP_ERR_INVALID_ARG;
+    ts_ssh_binding_lock();
+    ts_ssh_host_config_t old;
+    esp_err_t got = ts_ssh_hosts_config_get(cfg->id, &old);
+    bool changed =
+        got == ESP_OK && (strcmp(old.host, cfg->host) || old.port != cfg->port ||
+                          strcmp(old.username, cfg->username) || strcmp(old.keyid, cfg->keyid) ||
+                          old.auth_type != cfg->auth_type);
+    esp_err_t ret = (changed || got == ESP_ERR_NOT_FOUND) && ts_ssh_service_host_protected(cfg->id) ? ESP_ERR_INVALID_STATE
+                                                                      : host_add_impl(cfg);
+    ts_ssh_binding_unlock();
+    return ret;
+}
+esp_err_t ts_ssh_hosts_config_remove(const char *id) {
+    if (!id)
+        return ESP_ERR_INVALID_ARG;
+    ts_ssh_binding_lock();
+    esp_err_t ret =
+        ts_ssh_service_host_protected(id) ? ESP_ERR_INVALID_STATE : host_remove_impl(id);
+    ts_ssh_binding_unlock();
+    return ret;
+}
+esp_err_t ts_ssh_hosts_config_clear(void) {
+    ts_ssh_binding_lock();
+    esp_err_t ret =
+        (xTaskGetCurrentTaskHandle() == initial_loader ? ts_ssh_service_any_in_use()
+                                                       : ts_ssh_service_host_protected(NULL))
+            ? ESP_ERR_INVALID_STATE
+            : host_clear_impl();
+    ts_ssh_binding_unlock();
+    return ret;
 }

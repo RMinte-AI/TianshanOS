@@ -41,9 +41,9 @@
     .modal-content{background:var(--bg-card);border-radius:var(--radius-lg);max-width:600px;width:95%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
     </style>
     <!-- 主 CSS 异步加载（非阻塞渲染） -->
-    <link rel="preload" href="/css/style.css?v=20260611-ota-path" as="style" onload="this.onload=null;this.rel='stylesheet'">
-    <noscript><link rel="stylesheet" href="/css/style.css?v=20260611-ota-path"></noscript>
-    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260611-ota-path">
+    <link rel="preload" href="/css/style.css?v=20260928-local-xterm" as="style" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link rel="stylesheet" href="/css/style.css?v=20260928-local-xterm"></noscript>
+    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260928-local-xterm">
     <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="any">
     <link rel="icon" type="image/png" sizes="32x32" href="/images/tslogo-32.png">
     <link rel="icon" type="image/png" sizes="48x48" href="/images/tslogo-48.png">
@@ -77,7 +77,7 @@
                 <a href="#/security" class="nav-link" data-i18n="nav.security">安全</a>
             </nav>
             <div class="user-menu">
-                <div class="ws-status" id="ws-status" data-i18n-title="network.connected"></div>
+                <div class="ws-status" id="ws-status" data-i18n-title="network.disconnected" role="status"></div>
                 <span id="user-name" data-i18n="ui.notLoggedIn">未登录</span>
                 <button id="login-btn" class="btn btn-service-style" data-i18n="security.login">登录</button>
             </div>
@@ -247,38 +247,46 @@
     <!-- i18n 国际化（内联避免 ERR_CONNECTION_RESET 导致 i18n 未定义） -->
     <script>
     (function(){
-    window.TS_ASSET_VERSION = '20260611-ota-path';
+    window.TS_ASSET_VERSION = '20260928-local-xterm';
     var i18n = (function() {
         var currentLang = 'zh-CN';
         var languages = {};
         var supportedLanguages = { 'zh-CN': { name: '简体中文', flag: '' }, 'en-US': { name: 'English', flag: '' } };
         function registerLanguage(code, translations) { languages[code] = translations; }
-        function setLanguage(lang) {
+        function setLanguage(lang, initial) {
             if (languages[lang]) {
                 currentLang = lang;
-                try { localStorage.setItem('ts_language', lang); } catch(e) {}
+                if (!initial) { try { localStorage.setItem('ts_language', lang); } catch(e) {} }
                 document.documentElement.lang = lang;
                 /* 同步到设备端 system.language（供终端 help 等 i18n 使用） */
-                if (window.api && typeof window.api.configSet === 'function') {
+                if (!initial && window.api && typeof window.api.configSet === 'function') {
                     var deviceLang = lang === 'zh-CN' ? 1 : 0;
                     window.api.configSet('system.language', deviceLang, true).catch(function(){});
                 }
-                window.dispatchEvent(new CustomEvent('languageChanged', { detail: { language: lang } }));
+                window.dispatchEvent(new CustomEvent('languageChanged', { detail: { language: lang, initial: !!initial } }));
                 return true;
             }
             return false;
         }
         function getLanguage() { return currentLang; }
+        function lookup(key) {
+            return key.split('.').reduce(function(obj, k) { return obj && obj[k]; }, languages[currentLang] || {});
+        }
+        function unavailable() {
+            return currentLang === 'zh-CN' ? '说明暂时无法显示，请重新加载界面后再试。' : 'This information is unavailable. Reload the interface and try again.';
+        }
+        function complete(key, params) {
+            var value = lookup(key);
+            if (typeof value !== 'string') return false;
+            return !Array.from(value.matchAll(/(?<!\$)\{(\w+)\}/g)).some(function(m) { return !params || params[m[1]] === undefined || params[m[1]] === null; });
+        }
         function translate(key, params) {
             params = params || {};
-            var translations = languages[currentLang] || languages['zh-CN'] || {};
-            var value = key.split('.').reduce(function(obj, k) { return obj && obj[k]; }, translations);
-            if (value === undefined && currentLang !== 'en-US' && languages['en-US'])
-                value = key.split('.').reduce(function(obj, k) { return obj && obj[k]; }, languages['en-US']);
-            if (value === undefined) return key;
-            if (typeof value === 'string' && Object.keys(params).length > 0)
-                value = value.replace(/\{(\w+)\}/g, function(m, p) { return params[p] !== undefined ? params[p] : m; });
-            return value;
+            if (!complete(key, params)) {
+                console.warn('Incomplete translation', currentLang, key, params);
+                return unavailable();
+            }
+            return lookup(key).replace(/(?<!\$)\{(\w+)\}/g, function(m, p) { return String(params[p]); });
         }
         function init() {
             try {
@@ -302,7 +310,7 @@
             root.querySelectorAll('[data-i18n-placeholder]').forEach(function(el) { el.placeholder = translate(el.getAttribute('data-i18n-placeholder')); });
             root.querySelectorAll('[data-i18n-title]').forEach(function(el) { el.title = translate(el.getAttribute('data-i18n-title')); });
         }
-        return { registerLanguage: registerLanguage, setLanguage: setLanguage, getLanguage: getLanguage, translate: translate, init: init, getSupportedLanguages: function() { return supportedLanguages; }, translateDOM: translateDOM };
+        return { complete: complete, unavailable: unavailable, hasLanguage: function(lang) { return !!languages[lang]; }, registerLanguage: registerLanguage, setLanguage: setLanguage, getLanguage: getLanguage, translate: translate, init: init, getSupportedLanguages: function() { return supportedLanguages; }, translateDOM: translateDOM };
     })();
     window.i18n = i18n;
     window.t = i18n.translate;
@@ -330,59 +338,88 @@
             document.removeEventListener('click', window.closeLangMenuOnClickOutside);
         }
     };
-    window.selectLanguage = function(lang) {
-        /* 动态加载语言包后切换 */
-        function doSwitch() {
-            if (i18n.setLanguage(lang)) {
-                var langs = i18n.getSupportedLanguages(), nameEl = document.getElementById('lang-name');
-                if (nameEl && langs[lang]) nameEl.textContent = langs[lang].name.split(' ')[0];
-                i18n.translateDOM();
-                /* 通知 app.js 重新渲染当前页面 */
-                if (typeof window.reloadCurrentPage === 'function') window.reloadCurrentPage();
-                var m = document.getElementById('lang-menu');
-                if (m) m.classList.add('hidden');
-            }
+    var languageLoads = {};
+    var languageGeneration = 0;
+    var initialReady = false;
+    function languageNotice(lang, failed, retry) {
+        var box = document.getElementById('language-status');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'language-status';
+            box.setAttribute('role', 'alert');
+            box.style.cssText = 'position:fixed;top:65px;left:20px;right:20px;z-index:1100;padding:16px;background:#fff;border:1px solid #e11d48';
+            document.body.appendChild(box);
         }
-        /* 如果语言包尚未加载，先动态加载 */
-        if (!window._loadedLangs || !window._loadedLangs[lang]) {
-            var s = document.createElement('script');
-            s.src = '/js/lang/' + lang + '.js?v=' + window.TS_ASSET_VERSION;
-            s.onload = function() {
-                window._loadedLangs = window._loadedLangs || {};
-                window._loadedLangs[lang] = true;
-                doSwitch();
-            };
-            document.head.appendChild(s);
-        } else {
-            doSwitch();
+        box.replaceChildren();
+        var text = document.createElement('span');
+        text.textContent = lang === 'zh-CN'
+            ? (failed ? '界面语言加载失败。请检查网络后重试。' : '正在加载界面语言…')
+            : (failed ? 'The interface language could not be loaded. Check your connection and retry.' : 'Loading the interface language…');
+        box.appendChild(text);
+        if (failed) {
+            var button = document.createElement('button');
+            button.className = 'btn';
+            button.textContent = lang === 'zh-CN' ? '重试' : 'Retry';
+            button.onclick = retry;
+            box.appendChild(button);
+        }
+        box.hidden = false;
+    }
+    function loadLanguage(lang) {
+        if (i18n.hasLanguage(lang)) return Promise.resolve();
+        if (languageLoads[lang]) return languageLoads[lang];
+        languageLoads[lang] = new Promise(function(resolve, reject) {
+            var script = document.createElement('script');
+            var timer = setTimeout(function() { finish(false); }, 15000);
+            function finish(ok) {
+                clearTimeout(timer);
+                script.onload = script.onerror = null;
+                if (ok && i18n.hasLanguage(lang)) resolve();
+                else { script.remove(); reject(new Error('Language resource unavailable: ' + lang)); }
+            }
+            script.src = '/js/lang/' + lang + '.js?v=' + window.TS_ASSET_VERSION;
+            script.onload = function() { finish(true); };
+            script.onerror = function() { finish(false); };
+            document.head.appendChild(script);
+        }).finally(function() { delete languageLoads[lang]; });
+        return languageLoads[lang];
+    }
+    window.selectLanguage = async function(lang) {
+        if (!i18n.getSupportedLanguages()[lang]) return false;
+        var generation = ++languageGeneration;
+        languageNotice(lang, false);
+        try {
+            await loadLanguage(lang);
+            if (generation !== languageGeneration) return false;
+            var first = !initialReady;
+            initialReady = true;
+            document.getElementById('app').inert = false;
+            i18n.setLanguage(lang, first);
+            document.getElementById('lang-name').textContent = lang === 'zh-CN' ? '中文' : 'EN';
+            i18n.translateDOM();
+            document.getElementById('language-status').hidden = true;
+            document.getElementById('lang-menu').classList.add('hidden');
+            if (typeof updateAuthUI === 'function') updateAuthUI();
+            if (first) window.dispatchEvent(new CustomEvent('languageReady'));
+            else if (typeof window.reloadCurrentPage === 'function') window.reloadCurrentPage();
+            return true;
+        } catch (error) {
+            if (generation === languageGeneration) languageNotice(lang, true, function() { window.selectLanguage(lang); });
+            console.error(error);
+            return false;
         }
     };
-    /* 动态加载当前语言包，初始化 i18n */
-    (function loadInitialLang() {
-        i18n.init();
-        var cur = i18n.getLanguage();
-        var nameEl = document.getElementById('lang-name');
-        if (nameEl) nameEl.textContent = cur === 'zh-CN' ? '\u4e2d\u6587' : 'English';
-        var s = document.createElement('script');
-        s.src = '/js/lang/' + cur + '.js?v=' + window.TS_ASSET_VERSION;
-        s.onload = function() {
-            window._loadedLangs = {};
-            window._loadedLangs[cur] = true;
-            var nameEl = document.getElementById('lang-name');
-            if (nameEl) nameEl.textContent = cur === 'zh-CN' ? '中文' : 'EN';
-            i18n.translateDOM();
-            /* translateDOM 会覆盖 #user-name 为「未登录」，需在之后恢复已登录状态 */
-            if (typeof updateAuthUI === 'function') setTimeout(updateAuthUI, 0);
-        };
-        document.head.appendChild(s);
-    })();
+    i18n.isReady = function() { return initialReady; };
+    i18n.init();
+    document.getElementById('app').inert = true;
+    window.languageReady = window.selectLanguage(i18n.getLanguage());
     })();
     </script>
     
-    <script defer src="/js/api.js?v=20260611-ota-path"></script>
-    <script defer src="/js/router.js?v=20260611-ota-path"></script>
-    <script defer src="/js/terminal.js?v=20260611-ota-path"></script>
-    <script defer src="/js/dragSort.js?v=20260611-ota-path"></script>
-    <script defer src="/js/app.js?v=20260611-ota-path"></script>
+    <script defer src="/js/api.js?v=20260928-local-xterm"></script>
+    <script defer src="/js/router.js?v=20260928-local-xterm"></script>
+    <script defer src="/js/terminal.js?v=20260928-local-xterm"></script>
+    <script defer src="/js/dragSort.js?v=20260928-local-xterm"></script>
+    <script defer src="/js/app.js?v=20260928-local-xterm"></script>
 </body>
 </html>

@@ -1,0 +1,13 @@
+PASS actual log hook/parser: full 510..4096 output, bounded UTF-8 preview, ANSI, concurrent capture/drop, full own output, callback recursion, capture toggle
+PASS rule codec: nine action types, conditions/repeats/explicit false, allocation failures, unsupported operator; rule=256 action=1000
+PASS actual rule persistence: NVS and SD fault injection, recovery boundaries, read-only rejection
+PASS actual rule engine: revisions/no-op/allocation failures, stale-evaluation barrier, pinned old execution, retirement bound, enable/manual/allow matrix, recreate identity
+PASS actual SSH client: pre-auth trust gate, six EAGAIN phase deadlines/cancellation, stderr-only cleanup, bounded wait
+PASS actual service registry + watcher: duplicate admission, task failure, immediate finish, stale handle, cooperative cancellation, late READY rejection, truthful remote stop/unknown
+PASS service protocol: stale credentials, cancellation cleanup, deletion barrier/failure/reuse, 70 replacements, missing config protection, physical identity, page-free recovery, 3-attempt budget, zero-I/O cached reads
+PASS production synchronous action completion: timeout then late result, success, queue rejection; semaphore lifetime balanced
+PASS actual configuration wrappers: host edit vs query, immutable target, failed delete preserves registration, successful delete then same-name replacement
+PASS actual store -> current loader: normal/dot IDs, temporary files ignored, reload retains saved rule
+PASS actual automation stop + engine: blocked action returns normally, leases/executing clear, async work prevents restart, independent remote ownership retained
+PASS actual probe builder: quotes, spaces, leading dash, literal shell metacharacters, fail priority, exact tokens, overflow
+PASS actual UI functions: bilingual states, one revisioned update, manual conditions/types, inline fields/repeat preservation, explicit false vs omitted, conflict/draft/uncertain write

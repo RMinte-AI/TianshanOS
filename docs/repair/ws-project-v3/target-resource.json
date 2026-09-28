@@ -1,0 +1,522 @@
+{
+  "components/ts_security/src/ts_ssh_shell.c": {
+    "before": {
+      "object_bytes": 1076,
+      "stack_usage": {
+        "get_term_string": [
+          "32",
+          "static"
+        ],
+        "wait_socket": [
+          "64",
+          "static"
+        ],
+        "ts_ssh_shell_open": [
+          "80",
+          "static"
+        ],
+        "ts_ssh_shell_close": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_write": [
+          "48",
+          "static"
+        ],
+        "ts_ssh_shell_read": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_set_output_cb": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_set_close_cb": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_poll": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_run": [
+          "64",
+          "static"
+        ],
+        "ts_ssh_shell_resize": [
+          "48",
+          "static"
+        ],
+        "ts_ssh_shell_send_signal": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_get_state": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_is_active": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_get_exit_code": [
+          "32",
+          "static"
+        ]
+      }
+    },
+    "after": {
+      "object_bytes": 1080,
+      "stack_usage": {
+        "get_term_string": [
+          "32",
+          "static"
+        ],
+        "shell_notify_close": [
+          "32",
+          "static"
+        ],
+        "wait_socket": [
+          "64",
+          "static"
+        ],
+        "shell_wait": [
+          "32",
+          "static"
+        ],
+        "shell_release_channel": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_open": [
+          "96",
+          "static"
+        ],
+        "ts_ssh_shell_request_close": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_close": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_write": [
+          "48",
+          "static"
+        ],
+        "ts_ssh_shell_read": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_set_output_cb": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_set_close_cb": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_poll": [
+          "48",
+          "static"
+        ],
+        "ts_ssh_shell_run": [
+          "64",
+          "static"
+        ],
+        "ts_ssh_shell_resize": [
+          "64",
+          "static"
+        ],
+        "ts_ssh_shell_send_signal": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_get_state": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_is_active": [
+          "32",
+          "static"
+        ],
+        "ts_ssh_shell_get_exit_code": [
+          "32",
+          "static"
+        ]
+      }
+    }
+  },
+  "components/ts_webui/src/ts_webui_ws.c": {
+    "before": {
+      "object_bytes": 20,
+      "stack_usage": {
+        "power_state_to_string": [
+          "32",
+          "static"
+        ],
+        "has_log_clients": [
+          "32",
+          "static"
+        ],
+        "power_policy_event_handler": [
+          "736",
+          "static"
+        ],
+        "ssh_request_error": [
+          "48",
+          "static"
+        ],
+        "add_client": [
+          "96",
+          "static"
+        ],
+        "terminal_output_cb": [
+          "32",
+          "static"
+        ],
+        "handle_terminal_command": [
+          "64",
+          "static"
+        ],
+        "ssh_send_output": [
+          "320",
+          "static"
+        ],
+        "shell_destroy": [
+          "32",
+          "static"
+        ],
+        "exec_destroy": [
+          "32",
+          "static"
+        ],
+        "ssh_start_status": [
+          "80",
+          "static"
+        ],
+        "ssh_close": [
+          "32",
+          "static"
+        ],
+        "ssh_disconnecting": [
+          "320",
+          "static"
+        ],
+        "shell_resources_close": [
+          "32",
+          "static"
+        ],
+        "ssh_poll_task": [
+          "2096",
+          "static"
+        ],
+        "handle_ssh_control": [
+          "64",
+          "static"
+        ],
+        "exec_timer_drained": [
+          "32",
+          "static"
+        ],
+        "exec_retry_timer_drain": [
+          "48",
+          "static"
+        ],
+        "ssh_cleanup": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ws_stopped": [
+          "32",
+          "static"
+        ],
+        "log_ws_callback": [
+          "48",
+          "static"
+        ],
+        "exec_abort": [
+          "32",
+          "static"
+        ],
+        "ssh_exec_timeout_callback": [
+          "32",
+          "static"
+        ],
+        "simple_pattern_match": [
+          "48",
+          "static"
+        ],
+        "ssh_exec_task": [
+          "544",
+          "static"
+        ],
+        "ssh_exec_output_callback": [
+          "1088",
+          "static"
+        ],
+        "exec_maintenance": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_start_ex_impl": [
+          "528",
+          "static"
+        ],
+        "ts_webui_ws_init": [
+          "64",
+          "static"
+        ],
+        "ts_webui_broadcast": [
+          "48",
+          "static"
+        ],
+        "ts_webui_broadcast_event": [
+          "32",
+          "static"
+        ],
+        "ts_webui_log_stream_enable": [
+          "32",
+          "static"
+        ],
+        "update_log_stream_state": [
+          "32",
+          "static"
+        ],
+        "cleanup_disconnected_client": [
+          "128",
+          "static"
+        ],
+        "peer_closed": [
+          "64",
+          "static"
+        ],
+        "set_client_role": [
+          "128",
+          "static"
+        ],
+        "start_terminal_session": [
+          "128",
+          "static"
+        ],
+        "handle_ssh_connect": [
+          "208",
+          "static"
+        ],
+        "ws_handler": [
+          "176",
+          "static"
+        ],
+        "ts_webui_ws_stop": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_start_ex": [
+          "144",
+          "static"
+        ],
+        "ts_webui_ssh_exec_start": [
+          "48",
+          "static"
+        ],
+        "ts_webui_ssh_result_free": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_cancel": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_is_running": [
+          "32",
+          "static"
+        ]
+      }
+    },
+    "after": {
+      "object_bytes": 20,
+      "stack_usage": {
+        "power_state_to_string": [
+          "32",
+          "static"
+        ],
+        "has_log_clients": [
+          "32",
+          "static"
+        ],
+        "power_policy_event_handler": [
+          "736",
+          "static"
+        ],
+        "ssh_request_error": [
+          "48",
+          "static"
+        ],
+        "add_client": [
+          "96",
+          "static"
+        ],
+        "terminal_output_cb": [
+          "32",
+          "static"
+        ],
+        "handle_terminal_command": [
+          "64",
+          "static"
+        ],
+        "ssh_send_output": [
+          "320",
+          "static"
+        ],
+        "shell_destroy": [
+          "32",
+          "static"
+        ],
+        "exec_destroy": [
+          "32",
+          "static"
+        ],
+        "ssh_start_status": [
+          "80",
+          "static"
+        ],
+        "ssh_close": [
+          "32",
+          "static"
+        ],
+        "ssh_disconnecting": [
+          "320",
+          "static"
+        ],
+        "shell_resources_close": [
+          "32",
+          "static"
+        ],
+        "ssh_poll_task": [
+          "2096",
+          "static"
+        ],
+        "handle_ssh_control": [
+          "96",
+          "static"
+        ],
+        "exec_timer_drained": [
+          "32",
+          "static"
+        ],
+        "exec_retry_timer_drain": [
+          "48",
+          "static"
+        ],
+        "ssh_cleanup": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ws_stopped": [
+          "32",
+          "static"
+        ],
+        "log_ws_callback": [
+          "48",
+          "static"
+        ],
+        "exec_abort": [
+          "32",
+          "static"
+        ],
+        "ssh_exec_timeout_callback": [
+          "32",
+          "static"
+        ],
+        "simple_pattern_match": [
+          "48",
+          "static"
+        ],
+        "ssh_exec_task": [
+          "544",
+          "static"
+        ],
+        "ssh_exec_output_callback": [
+          "1088",
+          "static"
+        ],
+        "exec_maintenance": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_start_ex_impl": [
+          "528",
+          "static"
+        ],
+        "ts_webui_ws_init": [
+          "64",
+          "static"
+        ],
+        "ts_webui_broadcast": [
+          "48",
+          "static"
+        ],
+        "ts_webui_broadcast_event": [
+          "32",
+          "static"
+        ],
+        "ts_webui_log_stream_enable": [
+          "32",
+          "static"
+        ],
+        "update_log_stream_state": [
+          "32",
+          "static"
+        ],
+        "cleanup_disconnected_client": [
+          "128",
+          "static"
+        ],
+        "peer_closed": [
+          "64",
+          "static"
+        ],
+        "set_client_role": [
+          "128",
+          "static"
+        ],
+        "start_terminal_session": [
+          "128",
+          "static"
+        ],
+        "handle_ssh_connect": [
+          "208",
+          "static"
+        ],
+        "ws_handler": [
+          "176",
+          "static"
+        ],
+        "ts_webui_ws_stop": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_start_ex": [
+          "144",
+          "static"
+        ],
+        "ts_webui_ssh_exec_start": [
+          "48",
+          "static"
+        ],
+        "ts_webui_ssh_result_free": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_cancel": [
+          "32",
+          "static"
+        ],
+        "ts_webui_ssh_exec_is_running": [
+          "32",
+          "static"
+        ]
+      }
+    }
+  }
+}

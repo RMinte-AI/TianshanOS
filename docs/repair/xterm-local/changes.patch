@@ -1,0 +1,149 @@
+diff --git a/components/ts_webui/web/index.html b/components/ts_webui/web/index.html
+index 59265c7..eea293c 100644
+--- a/components/ts_webui/web/index.html
++++ b/components/ts_webui/web/index.html
+@@ -41,9 +41,9 @@
+     .modal-content{background:var(--bg-card);border-radius:var(--radius-lg);max-width:600px;width:95%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+     </style>
+     <!-- 主 CSS 异步加载（非阻塞渲染） -->
+-    <link rel="preload" href="/css/style.css?v=20260927-power-prompt" as="style" onload="this.onload=null;this.rel='stylesheet'">
+-    <noscript><link rel="stylesheet" href="/css/style.css?v=20260927-power-prompt"></noscript>
+-    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260927-power-prompt">
++    <link rel="preload" href="/css/style.css?v=20260928-local-xterm" as="style" onload="this.onload=null;this.rel='stylesheet'">
++    <noscript><link rel="stylesheet" href="/css/style.css?v=20260928-local-xterm"></noscript>
++    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260928-local-xterm">
+     <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="any">
+     <link rel="icon" type="image/png" sizes="32x32" href="/images/tslogo-32.png">
+     <link rel="icon" type="image/png" sizes="48x48" href="/images/tslogo-48.png">
+@@ -247,7 +247,7 @@
+     <!-- i18n 国际化（内联避免 ERR_CONNECTION_RESET 导致 i18n 未定义） -->
+     <script>
+     (function(){
+-    window.TS_ASSET_VERSION = '20260927-power-prompt';
++    window.TS_ASSET_VERSION = '20260928-local-xterm';
+     var i18n = (function() {
+         var currentLang = 'zh-CN';
+         var languages = {};
+@@ -416,10 +416,10 @@
+     })();
+     </script>
+     
+-    <script defer src="/js/api.js?v=20260927-power-prompt"></script>
+-    <script defer src="/js/router.js?v=20260927-power-prompt"></script>
+-    <script defer src="/js/terminal.js?v=20260927-power-prompt"></script>
+-    <script defer src="/js/dragSort.js?v=20260927-power-prompt"></script>
+-    <script defer src="/js/app.js?v=20260927-power-prompt"></script>
++    <script defer src="/js/api.js?v=20260928-local-xterm"></script>
++    <script defer src="/js/router.js?v=20260928-local-xterm"></script>
++    <script defer src="/js/terminal.js?v=20260928-local-xterm"></script>
++    <script defer src="/js/dragSort.js?v=20260928-local-xterm"></script>
++    <script defer src="/js/app.js?v=20260928-local-xterm"></script>
+ </body>
+ </html>
+diff --git a/components/ts_webui/web/js/terminal.js b/components/ts_webui/web/js/terminal.js
+index 8fb1240..b1783eb 100644
+--- a/components/ts_webui/web/js/terminal.js
++++ b/components/ts_webui/web/js/terminal.js
+@@ -4,7 +4,7 @@
+  */
+ 
+ /**
+- * 按需加载 xterm.js 及其插件（从 CDN）
++ * 按需加载 xterm.js 及其插件（设备本地资源）
+  * 仅在首次打开终端页面时触发，后续调用直接返回
+  */
+ const _xtermReady = (function() {
+@@ -30,9 +30,9 @@ const _xtermReady = (function() {
+     }
+     return function ensureXtermLoaded() {
+         if (_promise) return _promise;
+-        _promise = loadResource('https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css', true)
+-            .then(() => loadResource('https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js', false))
+-            .then(() => loadResource('https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js', false))
++        _promise = loadResource('/vendor/xterm/xterm.css?v=' + encodeURIComponent(window.TS_ASSET_VERSION), true)
++            .then(() => loadResource('/vendor/xterm/xterm.min.js?v=' + encodeURIComponent(window.TS_ASSET_VERSION), false))
++            .then(() => loadResource('/vendor/xterm/fit.min.js?v=' + encodeURIComponent(window.TS_ASSET_VERSION), false))
+             .catch(error => { _promise = null; throw error; });
+         return _promise;
+     };
+@@ -70,7 +70,7 @@ class WebTerminal {
+             return false;
+         }
+ 
+-        // 按需加载 xterm.js（首次访问终端页面时从 CDN 拉取）
++        // 按需加载 xterm.js（首次访问终端页面时从设备加载）
+         try { await _xtermReady(); }
+         catch (error) {
+             if (this.destroyed) return false;
+diff --git a/tests/prompts/browser.test.cjs b/tests/prompts/browser.test.cjs
+index e452f44..5ff034e 100644
+--- a/tests/prompts/browser.test.cjs
++++ b/tests/prompts/browser.test.cjs
+@@ -71,7 +71,7 @@ test('delayed language package and rapid switches keep the latest requested lang
+  }finally{release();await context.close();}
+ });
+ test('terminal resource failure presents retry; a rejected cached promise is not reused',async()=>{
+- const {page,context,errors}=await pageFor('en-US');let attempts=0;
++ const {page,context,errors}=await pageFor('en-US',async(route,u)=>{if(u.pathname.startsWith('/vendor/')){await route.abort();return true;}return false;});let attempts=0;
+  try{await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+   page.on('request',r=>{if(r.url().includes('xterm.css'))attempts++;});
+   await page.evaluate(()=>{closeLoginModal();return loadTerminalPage();});
+@@ -118,15 +118,12 @@ test('failed language switch preserves the loaded language; retry clears failure
+  }finally{await context.close();}
+ });
+ test('terminal can initialize after failed resource load using newly served resources',async()=>{
+- const {page,context,errors}=await pageFor('en-US');
++ let fail=true;
++ const {page,context,errors}=await pageFor('en-US',async(route,u)=>{if(fail&&u.pathname.startsWith('/vendor/')){await route.abort();return true;}return false;});
+  try{await page.goto(base);await page.waitForFunction(()=>i18n.isReady());await page.evaluate(()=>{closeLoginModal();return loadTerminalPage();});
+-  await page.route('https://cdn.jsdelivr.net/**',async route=>{
+-   const url=route.request().url();let body='';
+-   if(url.includes('xterm.min.js')) body=`window.Terminal=class {constructor(){this.cols=80;this.rows=24;}open(el){el.replaceChildren();el.dataset.terminalReady='yes';}onData(){}loadAddon(){}write(){}writeln(){}focus(){}dispose(){}};`;
+-   if(url.includes('xterm-addon-fit'))body='window.FitAddon={FitAddon:class {fit(){}}};';
+-   await route.fulfill({contentType:url.endsWith('.css')?'text/css':'application/javascript',body});
+-  });
+-  await page.locator('#terminal-container button').click();await page.waitForSelector('#terminal-container[data-terminal-ready="yes"]');
++  assert.equal(await page.locator('#terminal-container button').count(),1);
++  fail=false;await page.locator('#terminal-container button').click();await page.waitForSelector('#terminal-container .xterm');
++  assert(await page.evaluate(()=>webTerminal.terminal instanceof Terminal&&!!webTerminal.fitAddon));
+   assert.equal(await page.locator('#terminal-container button').count(),0);assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+diff --git a/tests/prompts/package.json b/tests/prompts/package.json
+index 7ee8d1f..fb6290b 100644
+--- a/tests/prompts/package.json
++++ b/tests/prompts/package.json
+@@ -6,7 +6,8 @@
+   },
+   "scripts": {
+     "test": "cd ../.. && node --test tests/prompts/static.test.cjs tests/prompts/regression.test.cjs",
+-    "test:browser": "cd ../.. && node --test tests/prompts/browser.test.cjs tests/prompts/ownership.browser.test.cjs"
++    "test:browser": "cd ../.. && node --test tests/prompts/browser.test.cjs tests/prompts/ownership.browser.test.cjs",
++    "test:xterm": "cd ../.. && node --test tests/prompts/xterm-vendor.test.cjs tests/prompts/xterm-offline.test.cjs"
+   },
+   "devDependencies": {
+     "acorn": "8.16.0",
+diff --git a/tools/minify_web.py b/tools/minify_web.py
+index 0c1bd9a..3e8d510 100644
+--- a/tools/minify_web.py
++++ b/tools/minify_web.py
+@@ -123,6 +123,9 @@ def process_directory(web_dir: str) -> None:
+     
+     # 处理 JS 文件
+     for filepath in glob.glob(os.path.join(web_dir, '**', '*.js'), recursive=True):
++        # Preserve third-party release bytes; gzip still runs below.
++        if os.path.relpath(filepath, web_dir).split(os.sep)[0] == 'vendor':
++            continue
+         original_size = os.path.getsize(filepath)
+         with open(filepath, 'r', encoding='utf-8') as f:
+             content = f.read()
+@@ -141,6 +144,9 @@ def process_directory(web_dir: str) -> None:
+     
+     # 处理 CSS 文件
+     for filepath in glob.glob(os.path.join(web_dir, '**', '*.css'), recursive=True):
++        # Preserve third-party release bytes; gzip still runs below.
++        if os.path.relpath(filepath, web_dir).split(os.sep)[0] == 'vendor':
++            continue
+         original_size = os.path.getsize(filepath)
+         with open(filepath, 'r', encoding='utf-8') as f:
+             content = f.read()

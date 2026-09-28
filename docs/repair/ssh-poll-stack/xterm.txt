@@ -1,0 +1,16 @@
+
+> test:xterm
+> cd ../.. && node --test tests/prompts/xterm-vendor.test.cjs tests/prompts/xterm-offline.test.cjs
+
+✔ en-US: cold offline real xterm and terminal lifecycle (838.75975ms)
+✔ zh-CN: cold offline real xterm and terminal lifecycle (734.621083ms)
+✔ fixed vendor integrity, skip minify, gzip identity, local loader only (43.82125ms)
+✔ production lazy loader: same-origin cold load, shared promise and retry (1.851333ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1755.460958

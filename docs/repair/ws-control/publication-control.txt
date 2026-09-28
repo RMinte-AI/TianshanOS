@@ -1,0 +1,5 @@
+PASS actual WS controls: all four foreign controls rejected, owner controls work; borrowed original pinned, fd/epoch/server reuse and late close isolated; owner stop drains
+PASS accepted cancellation persists through task/key/create/connect/auth; cancel/submit claim both orders and result freeze tested; duplicate/old/zero IDs isolated
+PASS USER/TIMEOUT/MATCH keep distinct results; service stop busy does not cancel business, accepted user intent survives stop retry and all resource ledgers drain
+PASS output failure seals observation without cancelling business; later explicit cancel still reaches original executor without rewriting terminal; earlier timeout retains reason
+PASS actual ssh.cancel API exact-ID validation and accepted-intent response; ended operations reject without wildcard control

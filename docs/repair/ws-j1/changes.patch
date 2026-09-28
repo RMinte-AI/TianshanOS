@@ -1,0 +1,195 @@
+diff --git a/components/ts_webui/web/index.html b/components/ts_webui/web/index.html
+index d4aa9c9..59265c7 100644
+--- a/components/ts_webui/web/index.html
++++ b/components/ts_webui/web/index.html
+@@ -41,9 +41,9 @@
+     .modal-content{background:var(--bg-card);border-radius:var(--radius-lg);max-width:600px;width:95%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+     </style>
+     <!-- 主 CSS 异步加载（非阻塞渲染） -->
+-    <link rel="preload" href="/css/style.css?v=20260926-shell-contract" as="style" onload="this.onload=null;this.rel='stylesheet'">
+-    <noscript><link rel="stylesheet" href="/css/style.css?v=20260926-shell-contract"></noscript>
+-    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260926-shell-contract">
++    <link rel="preload" href="/css/style.css?v=20260927-power-prompt" as="style" onload="this.onload=null;this.rel='stylesheet'">
++    <noscript><link rel="stylesheet" href="/css/style.css?v=20260927-power-prompt"></noscript>
++    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260927-power-prompt">
+     <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="any">
+     <link rel="icon" type="image/png" sizes="32x32" href="/images/tslogo-32.png">
+     <link rel="icon" type="image/png" sizes="48x48" href="/images/tslogo-48.png">
+@@ -247,7 +247,7 @@
+     <!-- i18n 国际化（内联避免 ERR_CONNECTION_RESET 导致 i18n 未定义） -->
+     <script>
+     (function(){
+-    window.TS_ASSET_VERSION = '20260926-shell-contract';
++    window.TS_ASSET_VERSION = '20260927-power-prompt';
+     var i18n = (function() {
+         var currentLang = 'zh-CN';
+         var languages = {};
+@@ -416,10 +416,10 @@
+     })();
+     </script>
+     
+-    <script defer src="/js/api.js?v=20260926-shell-contract"></script>
+-    <script defer src="/js/router.js?v=20260926-shell-contract"></script>
+-    <script defer src="/js/terminal.js?v=20260926-shell-contract"></script>
+-    <script defer src="/js/dragSort.js?v=20260926-shell-contract"></script>
+-    <script defer src="/js/app.js?v=20260926-shell-contract"></script>
++    <script defer src="/js/api.js?v=20260927-power-prompt"></script>
++    <script defer src="/js/router.js?v=20260927-power-prompt"></script>
++    <script defer src="/js/terminal.js?v=20260927-power-prompt"></script>
++    <script defer src="/js/dragSort.js?v=20260927-power-prompt"></script>
++    <script defer src="/js/app.js?v=20260927-power-prompt"></script>
+ </body>
+ </html>
+diff --git a/components/ts_webui/web/js/terminal.js b/components/ts_webui/web/js/terminal.js
+index ccd3a51..8fb1240 100644
+--- a/components/ts_webui/web/js/terminal.js
++++ b/components/ts_webui/web/js/terminal.js
+@@ -477,6 +477,7 @@ class WebTerminal {
+      * 处理电压保护事件
+      */
+     handlePowerEvent(msg) {
++        if (this.destroyed || !this.terminal) return;
+         const state = msg.state || 'UNKNOWN';
+         const voltage = msg.voltage ? msg.voltage.toFixed(2) : '?.??';
+         const countdown = msg.countdown || 0;
+@@ -535,6 +536,19 @@ class WebTerminal {
+         }
+         
+         if (notification) {
++            const canRestoreLocalInput =
++                !this.destroyed &&
++                this.connected &&
++                this.ws &&
++                this.ws.readyState === WebSocket.OPEN &&
++                !this.sshMode &&
++                !this.sshConnecting &&
++                !this.sshDisconnecting &&
++                !this.restoring;
++            if (!canRestoreLocalInput) {
++                this.writeln(`\r\n${color}${notification}\x1b[0m`);
++                return;
++            }
+             // 保存当前输入状态
+             const savedBuffer = this.inputBuffer;
+             const savedPosition = this.cursorPosition;
+diff --git a/tests/prompts/project-cross.cjs b/tests/prompts/project-cross.cjs
+index c902f24..acc03de 100644
+--- a/tests/prompts/project-cross.cjs
++++ b/tests/prompts/project-cross.cjs
+@@ -48,6 +48,22 @@ async function main(){
+  if(baseline){assert(!recovered && next.type!=='ssh_input');await step({cmd:'finish'});await done;assert.equal(exit,0,err);console.log('CONFIRMED H1: actual C request error leaves op OPEN but JS exits SSH and next input is not routed to SSH');return;}
+  assert(recovered,'request failure changed active SSH mode/prompt/recovery');assert.equal(next.type,'ssh_input');
+  let cs=await step({message:next});assert.equal(cs.writes,afterSignal.writes+1,'next frontend input must execute on original C Shell');
++ // J1: real C protection notification must not fabricate local SSH input.
++ const j1Before=await state(),j1Frames=records.length,j1Identity=cs.identity,j1Writes=cs.writes;
++ await e.run(`term.inputBuffer='local-buffer';term.cursorPosition=3;`);
++ const j1Fields=()=>e.run(`JSON.stringify([term.connected,term.sshMode,term.sshConnecting,term.sshDisconnecting,term.restoring,term.inputBuffer,term.cursorPosition])`);
++ const j1Snapshot=await j1Fields();cs=await step({cmd:'power'});
++ const j1After=await state(),j1Display=j1After.lines.slice(j1Before.lines.length);
++ assert(records.slice(j1Frames).some(r=>r.fd===1&&r.frame?.type==='power_event'),'actual C power frame absent');
++ assert.equal(j1Display.length,1);assert(j1Display[0].startsWith('\r\n'));
++ assert(!j1Display.join('').includes('tianshan>')&&!j1Display.join('').includes('local-buffer')&&!j1Display.join('').includes('\x1b[K'));
++ assert.equal(await j1Fields(),j1Snapshot);assert.deepEqual(j1After.sent,j1Before.sent);
++ await e.run(`input('j')`);const j1Request=await e.run('sent.shift()');assert.equal(j1Request.type,'ssh_input');
++ cs=await step({message:j1Request});assert.equal(cs.identity,j1Identity);assert.equal(cs.writes,j1Writes+1);
++ await e.run(`input('\\x1c')`);await sendNext();assert(!(await state()).mode);assert.equal((await step({cmd:'drain'})).channels,0);
++ assert((await state()).lines.slice(j1Before.lines.length).includes('tianshan> '));
++ await e.run(`term.inputBuffer='';term.cursorPosition=0;`);cs=await start();assert((await state()).mode);
++ console.log('PASS J1 C power event -> actual JS -> original SSH input -> normal exit and channel cleanup');
+  for(const message of [{type:'ssh_resize',width:0,height:20},{type:'ssh_resize',width:80.5,height:20}]){await step({message});assert((await state()).mode);}
+  await step({cmd:'resize_reject'});await step({message:{type:'ssh_resize',width:80,height:24}});assert((await state()).mode);await step({cmd:'reset_driver'});
+  // Another page cannot input, disconnect, signal or resize the current owner.
+diff --git a/tests/prompts/regression.test.cjs b/tests/prompts/regression.test.cjs
+index d6bf002..2d9db10 100644
+--- a/tests/prompts/regression.test.cjs
++++ b/tests/prompts/regression.test.cjs
+@@ -169,3 +169,40 @@ for(const lang of ['zh-CN','en-US']) {
+   }
+  });
+ }
++
++for (const lang of ['zh-CN','en-US']) {
++ test(`${lang}: J1 power alerts preserve local line, SSH ownership, transition guards and filtering`,async()=>{
++  const h=await setup(lang),{run,ctx}=h;
++  run(`window.j1=new WebTerminal('fixture');window.j1Writes=[];window.j1Sent=[];window.j1Input=null;
++   j1.terminal={write:s=>j1Writes.push(s),writeln:s=>j1Writes.push(s),onData:f=>j1Input=f};
++   j1.ws={readyState:WebSocket.OPEN,send:s=>j1Sent.push(JSON.parse(s))};j1.connected=true;
++   j1.inputBuffer='abcd';j1.cursorPosition=2;j1.setupInputHandler();`);
++  const alert={type:'power_event',event:'low_voltage',voltage:10.5};
++  const snapshot=()=>run(`JSON.stringify([j1.connected,j1.sshMode,j1.sshConnecting,j1.sshDisconnecting,j1.restoring,j1.inputBuffer,j1.cursorPosition])`);
++  const deliver=msg=>ctx.j1.handleMessage(msg||alert);
++  const original=snapshot();deliver();deliver();assert.equal(snapshot(),original);assert.equal(ctx.j1Sent.length,0);
++  const local=[...ctx.j1Writes];assert.equal(local.length,8);
++  for(const offset of [0,4]){assert.equal(local[offset],'\r\x1b[K');assert(local[offset+1].includes(ctx.t('terminal.lowVoltageWarning',{voltage:'10.50'})));assert.equal(local[offset+2],'tianshan> abcd');assert.equal(local[offset+3],'\x1b[2D');}
++  const cases=[{sshMode:true},{sshConnecting:true},{sshMode:true,sshDisconnecting:true},{restoring:true,connected:false},{restoring:true},{connected:false},{socket:3},{socket:null}];
++  for(const changes of cases){
++   run(`Object.assign(j1,{connected:true,sshMode:false,sshConnecting:false,sshDisconnecting:false,restoring:false});j1.ws={readyState:1,send:s=>j1Sent.push(JSON.parse(s))};j1Writes.length=0;`);
++   for(const [key,value]of Object.entries(changes)){if(key==='socket'){if(value===null)ctx.j1.ws=null;else ctx.j1.ws.readyState=value;}else ctx.j1[key]=value;}
++   const before=snapshot();deliver();deliver();assert.equal(snapshot(),before);assert.equal(ctx.j1Sent.length,0);
++   assert.equal(ctx.j1Writes.length,2);for(const line of ctx.j1Writes){assert(line.startsWith('\r\n'));assert(!line.includes('tianshan>'));assert(!line.includes('abcd'));assert(!line.includes('\x1b[K'));assert(!line.includes('\x1b[2D'));}
++   if(changes.sshConnecting||changes.sshDisconnecting||changes.connected===false){run('j1Input('+JSON.stringify('x\r')+')');assert.equal(ctx.j1Sent.length,0);}
++  }
++  run(`Object.assign(j1,{connected:true,sshMode:true,sshConnecting:false,sshDisconnecting:false,restoring:false});j1.ws={readyState:1,send:s=>j1Sent.push(JSON.parse(s))};j1Writes.length=0;`);
++  deliver();run(`j1Input('z')`);assert.equal(ctx.j1Sent[0].type,'ssh_input');assert.equal(ctx.j1Sent[0].data,'z');
++  run(`j1Input('\x1c')`);assert.equal(ctx.j1Sent[1].type,'ssh_disconnect');assert(ctx.j1.sshMode);assert(!ctx.j1Writes.join('').includes('tianshan>'));
++  deliver({type:'ssh_status',status:'disconnecting'});deliver();assert(ctx.j1.sshMode);assert(!ctx.j1Writes.join('').includes('tianshan>'));
++  deliver({type:'ssh_status',status:'closed'});assert(!ctx.j1.sshMode);assert.equal(ctx.j1Writes.filter(x=>x==='tianshan> ').length,1);
++  ctx.j1Writes.length=0;deliver();assert.equal(ctx.j1Writes[2],'tianshan> abcd');assert.equal(ctx.j1Writes[3],'\x1b[2D');assert.equal(ctx.j1Sent.length,2);
++  ctx.j1Writes.length=0;deliver({type:'power_event',event:'countdown_tick',countdown:31});assert.equal(ctx.j1Writes.length,0);
++  for(const event of ['low_voltage','shutdown_start','protected','recovery_start','recovery_complete','debug_tick','state_changed','countdown_tick']){
++   ctx.j1Writes.length=0;deliver({type:'power_event',event,countdown:30,voltage:10.5,state:'NORMAL'});assert.equal(ctx.j1Writes.length,4,event);
++  }
++  ctx.j1.destroyed=true;ctx.j1.terminal=new Proxy({}, {get(){throw Error('destroyed terminal accessed');}});
++  assert.doesNotThrow(()=>ctx.j1.handlePowerEvent(alert));assert.doesNotThrow(()=>deliver());
++  ctx.j1.destroyed=false;ctx.j1.terminal=null;assert.doesNotThrow(()=>ctx.j1.handlePowerEvent(alert));assert.equal(ctx.j1Sent.length,2);
++ });
++}
+diff --git a/tests/ws_subscriptions/test_project.c b/tests/ws_subscriptions/test_project.c
+index b7b63f7..3966f69 100644
+--- a/tests/ws_subscriptions/test_project.c
++++ b/tests/ws_subscriptions/test_project.c
+@@ -13,6 +13,11 @@ int main(void){
+   cJSON *j=cJSON_Parse(line);assert(j);const char *cmd=cJSON_GetStringValue(cJSON_GetObjectItem(j,"cmd"));
+   if(cmd && !strcmp(cmd,"finish")){ssh_cleanup();if(shell_task.fn){shell_task.fn(shell_task.arg);shell_task.fn=NULL;}drive_all();cJSON_Delete(j);finish_all();assert(!driver_channels&&!driver_sessions&&!driver_sockets);puts("{\"finished\":true}");return 0;}
+   if(cmd && !strcmp(cmd,"eof")){driver_eof=true;shell_task.fn(shell_task.arg);shell_task.fn=NULL;drive_all();}
++  else if(cmd && !strcmp(cmd,"power")){
++   ts_power_policy_status_t status={.state=TS_POWER_POLICY_STATE_LOW_VOLTAGE,.current_voltage=10.5f,.countdown_remaining_sec=30};
++   ts_event_t event={.id=TS_POWER_POLICY_EVENT_LOW_VOLTAGE,.data=&status};
++   power_policy_event_handler(&event,NULL);drive_all();
++  }
+   else if(cmd && !strcmp(cmd,"output")){ssh_shell_context_t *ctx=shell_task.arg;ssh_send_output(ctx,"stream",6);}
+   else if(cmd && !strcmp(cmd,"error_close")){barrier_name="request_error_encode";barrier_action=close_during_error;}
+   else if(cmd && !strcmp(cmd,"write_again"))driver_write_again=true;
+@@ -34,7 +39,7 @@ int main(void){
+   }
+   if(shell_task.fn && (((ssh_shell_context_t*)shell_task.arg)->disconnect_requested || !ts_ws_op_is_open(((ssh_shell_context_t*)shell_task.arg)->op))){shell_task.fn(shell_task.arg);shell_task.fn=NULL;drive_all();}
+   ts_ws_op_stats_t st;ts_ws_op_stats(TS_WS_OP_SHELL,&st);
+-  printf("{\"state\":%d,\"writes\":%d,\"live\":%u,\"channels\":%d,\"refs\":%u,\"preparing\":%u,\"unsettled\":%u}\n",st.phase,driver_writes,live_allocations,driver_channels,st.refs,st.preparing,st.unsettled);fflush(stdout);cJSON_Delete(j);
++  printf("{\"identity\":%u,\"state\":%d,\"writes\":%d,\"live\":%u,\"channels\":%d,\"refs\":%u,\"preparing\":%u,\"unsettled\":%u}\n",st.identity,st.phase,driver_writes,live_allocations,driver_channels,st.refs,st.preparing,st.unsettled);fflush(stdout);cJSON_Delete(j);
+  }
+  return 2;
+ }
+diff --git a/tests/ws_subscriptions/verify_project_assets.py b/tests/ws_subscriptions/verify_project_assets.py
+index 20e4116..bbcda8b 100644
+--- a/tests/ws_subscriptions/verify_project_assets.py
++++ b/tests/ws_subscriptions/verify_project_assets.py
+@@ -1,15 +1,16 @@
+ #!/usr/bin/env python3
+ """Verify final optimized/gzip files and reproduce SPIFFS with the fixed SDK."""
+-import gzip,hashlib,json,os,pathlib,subprocess,tempfile
++import gzip,hashlib,json,os,pathlib,re,subprocess,tempfile
+ root=pathlib.Path(__file__).resolve().parents[2]
+-build=pathlib.Path(os.environ.get('V3_BUILD','/tmp/tianshan-project-v3-build/build'));web=build/'esp-idf/ts_webui/web_optimized';src=root/'components/ts_webui/web';doc=root/'docs/repair/ws-project-v3'
++build=pathlib.Path(os.environ.get('V3_BUILD','/tmp/tianshan-project-v3-build/build'));web=build/'esp-idf/ts_webui/web_optimized';src=root/'components/ts_webui/web';doc=pathlib.Path(os.environ.get('V3_RESULTS',str(root/'docs/repair/ws-project-v3')))
+ sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+ result={}
+ for rel in ['index.html','js/terminal.js','js/lang/zh-CN.js','js/lang/en-US.js']:
+  p=web/rel;gz=p.with_suffix(p.suffix+'.gz');assert gzip.decompress(gz.read_bytes())==p.read_bytes()
+  if rel.endswith('.js'):subprocess.run(['node','--check',str(p)],check=True)
+  result[rel]={'source_sha256':sha(src/rel),'optimized_sha256':sha(p),'gzip_sha256':sha(gz),'optimized_bytes':p.stat().st_size}
+-assert '20260926-shell-contract' in (web/'index.html').read_text()
++asset_version=re.search(r"TS_ASSET_VERSION = '([^']+)'",(src/'index.html').read_text()).group(1)
++assert asset_version in (web/'index.html').read_text()
+ assert 'sshControlUnsupported' in (web/'js/terminal.js').read_text()
+ with tempfile.TemporaryDirectory(prefix='ts-v3-spiffs-') as d:
+  image=pathlib.Path(d)/'www.bin'

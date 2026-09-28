@@ -302,6 +302,19 @@ bool ts_https_role_has_permission(ts_https_role_t user_role, ts_https_role_t req
  */
 httpd_handle_t ts_https_get_handle(void);
 
+/* Published runtime view, copied under a short critical section. No TLS calls in GET. */
+typedef struct {
+    bool running;
+    bool require_client_cert;
+    uint16_t port;
+    uint32_t loaded_generation;
+    char loaded_certificate_sha256[65];
+    char last_error_stage[24];
+    esp_err_t last_error;
+} ts_https_runtime_t;
+void ts_https_get_runtime(ts_https_runtime_t *out);
+void ts_https_record_error(const char *stage, esp_err_t error);
+
 #ifdef __cplusplus
 }
 #endif

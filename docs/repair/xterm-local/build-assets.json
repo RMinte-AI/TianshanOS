@@ -1,0 +1,51 @@
+{
+  "files": [
+    {
+      "file": "vendor/xterm/xterm.min.js",
+      "raw": 283670,
+      "sha256": "fc1dd31b221e3e5f929486e07a80b477a8aaf9dce2b4f9c3ffe7dd25f370655d",
+      "gzip": 65684
+    },
+    {
+      "file": "vendor/xterm/xterm.css",
+      "raw": 5383,
+      "sha256": "832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872",
+      "gzip": 2037
+    },
+    {
+      "file": "vendor/xterm/fit.min.js",
+      "raw": 1789,
+      "sha256": "c78e5795c6487acdf24ab436798d4a9cec3848101b281bc65b061f39db714be1",
+      "gzip": 822
+    },
+    {
+      "file": "vendor/xterm/LICENSE-xterm",
+      "raw": 1261,
+      "sha256": "b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd"
+    },
+    {
+      "file": "vendor/xterm/LICENSE-fit",
+      "raw": 1103,
+      "sha256": "e256f01188af527e4d06d21d06fbf785ae9c50d4b328bf03cbe0ba7f0aa4228f"
+    }
+  ],
+  "runtime_raw": 290842,
+  "runtime_gzip": 68543,
+  "vendor_raw_including_licenses": 293206,
+  "spiffs": {
+    "partition_bytes": 3145728,
+    "allocated_blocks": 676,
+    "block_bytes": 4096,
+    "unallocated_blocks": 92,
+    "note": "generator allocated blocks including metadata, not runtime filesystem free-space API"
+  },
+  "www_sha256": "8b7b51a11c281121fc80b7bdd6104fa4a522af39fb698902bf717faa710d7b4a",
+  "flash_files": {
+    "0x0": "bootloader/bootloader.bin",
+    "0x20000": "TianShanOS.bin",
+    "0x8000": "partition_table/partition-table.bin",
+    "0x16000": "ota_data_initial.bin",
+    "0x6a0000": "www.bin"
+  },
+  "spiffs_reconstruction": "byte-identical"
+}

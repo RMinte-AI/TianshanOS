@@ -1,0 +1,300 @@
+ts_ws_operation.c
+00000000 00000001 b s_op_accepting
+00000000 00000001 b s_op_tick
+00000000 00000007 T ts_ws_op_id
+00000000 00000008 b s_op_delivery
+00000000 00000008 d s_op_lock
+00000000 00000008 b s_op_sequence
+00000000 0000000e r __func__$0
+00000000 0000000e r __func__$1
+00000000 0000000e r __func__$9
+00000000 00000010 r __func__$8
+00000000 00000010 R op_sizes
+00000000 00000011 r __func__$4
+00000000 00000011 r __func__$7
+00000000 00000011 T ts_ws_op_shell_owner
+00000000 00000012 T ts_ws_op_peer
+00000000 00000015 t fail_locked
+00000000 00000016 r __func__$3
+00000000 00000017 r __func__$2
+00000000 00000017 r __func__$5
+00000000 00000017 r __func__$6
+00000000 0000001c T ts_ws_op_data
+00000000 0000001c T ts_ws_op_set_maintenance
+00000000 0000001e T ts_ws_op_shell_connection
+00000000 0000001e T ts_ws_op_shell_control
+00000000 0000001f T ts_ws_op_needs_tick
+00000000 00000022 T ts_ws_op_cancelled
+00000000 00000022 T ts_ws_op_enable
+00000000 00000022 T ts_ws_op_executing
+00000000 00000022 T ts_ws_op_stop_admission
+00000000 00000023 T ts_ws_op_starting
+00000000 00000024 t close_locked
+00000000 00000024 T ts_ws_op_is_open
+00000000 00000026 T ts_ws_op_request_stop
+00000000 00000030 T ts_ws_op_close_begin
+00000000 00000032 t close_snapshot
+00000000 00000032 T ts_ws_op_business_running
+00000000 00000033 T ts_ws_op_open
+00000000 00000034 t request_stop_locked
+00000000 00000034 T ts_ws_op_retain
+00000000 00000034 T ts_ws_op_stats
+00000000 0000003a T ts_ws_op_bind
+00000000 0000003b T ts_ws_op_business_end
+00000000 0000003b T ts_ws_op_claim_submit
+00000000 0000003c T ts_ws_op_executor_take
+00000000 0000003c T ts_ws_op_release
+00000000 00000040 T ts_ws_op_busy
+00000000 00000044 T ts_ws_op_executor_done
+00000000 0000004a t fallback
+00000000 0000006e T ts_ws_op_cancel_exec
+00000000 00000070 T ts_ws_op_discard
+00000000 0000007e t shell_for_peer
+00000000 0000007e T ts_ws_op_acquire
+00000000 00000086 T ts_ws_op_close_finish
+00000000 00000088 T ts_ws_op_output_begin
+00000000 00000157 T ts_ws_op_create
+00000000 0000018e t settle_target
+00000000 00000202 T ts_ws_op_output_finish
+00000000 000004f8 T ts_ws_op_poll
+00000000 00000760 b s_ops
+
+
+/tmp/tianshan-control-build/resources/ts_ws_operation.c.o:     file format elf32-xtensa-le
+
+Contents of section .rodata.op_sizes:
+ 0000 b0030000 18010000 10000000 58000000  ............X...
+
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:92:13:close_locked	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:115:13:fail_locked	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:241:13:request_stop_locked	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:96:13:close_snapshot	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:225:27:shell_for_peer	96	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:33:6:ts_ws_op_enable	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:34:6:ts_ws_op_stop_admission	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:35:6:ts_ws_op_busy	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:56:6:ts_ws_op_bind	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:59:6:ts_ws_op_set_maintenance	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:60:6:ts_ws_op_needs_tick	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:61:7:ts_ws_op_data	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:62:10:ts_ws_op_id	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:104:13:fallback	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:63:14:ts_ws_op_peer	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:64:20:ts_ws_op_acquire	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:70:6:ts_ws_op_retain	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:71:6:ts_ws_op_release	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:74:6:ts_ws_op_executor_take	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:77:6:ts_ws_op_executor_done	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:80:6:ts_ws_op_executing	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:81:6:ts_ws_op_open	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:84:6:ts_ws_op_is_open	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:85:6:ts_ws_op_starting	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:86:6:ts_ws_op_discard	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:40:20:ts_ws_op_create	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:100:6:ts_ws_op_close_begin	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:110:6:ts_ws_op_close_finish	288	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:118:13:settle_target	48	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:140:6:ts_ws_op_output_begin	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:149:6:ts_ws_op_output_finish	176	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:175:6:ts_ws_op_poll	576	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:221:6:ts_ws_op_stats	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:232:20:ts_ws_op_shell_control	80	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:235:20:ts_ws_op_shell_connection	80	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:238:20:ts_ws_op_shell_owner	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:247:20:ts_ws_op_cancel_exec	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:254:6:ts_ws_op_request_stop	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:257:6:ts_ws_op_cancelled	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:260:6:ts_ws_op_claim_submit	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:266:21:ts_ws_op_business_end	32	static
+/tmp/tianshan-control-build/resources/ts_ws_operation.c:274:6:ts_ws_op_business_running	32	static
+
+ts_webui_ws.c
+00000000 00000001 b s_log_streaming_enabled
+00000000 00000001 b s_ws_stopping
+00000000 00000004 b s_log_callback_handle
+00000000 00000004 b s_output_mutex
+00000000 00000004 b s_power_event_handle
+00000000 00000004 b s_server
+00000000 00000004 d s_terminal_client_fd
+00000000 00000004 b s_terminal_mutex
+00000000 00000004 b s_terminal_output_buf
+00000000 00000004 b s_terminal_output_len
+00000000 0000000d r __func__$0
+00000000 0000000e r __func__$1
+00000000 00000014 R adapter_sizes
+00000000 00000018 r s_level_names
+00000000 0000001a t exec_timer_drained
+00000000 00000022 T ts_webui_ssh_exec_start
+00000000 00000023 t ssh_cleanup
+00000000 00000028 t exec_abort
+00000000 0000002b T ts_webui_ssh_result_free
+00000000 0000002c t ssh_disconnecting
+00000000 0000002c T ts_webui_ssh_exec_is_running
+00000000 0000002f T ts_webui_ws_stopped
+00000000 00000031 T ts_webui_ssh_exec_cancel
+00000000 00000032 t shell_destroy
+00000000 00000035 T ts_webui_broadcast
+00000000 00000042 t shell_resources_close
+00000000 00000045 t power_state_to_string
+00000000 0000004a t has_log_clients
+00000000 0000004c t update_log_stream_state
+00000000 00000050 t ssh_exec_timeout_callback
+00000000 0000005c t peer_closed
+00000000 0000005f t exec_retry_timer_drain
+00000000 0000006c T ts_webui_log_stream_enable
+00000000 00000078 t ssh_close
+00000000 0000007e T ts_webui_ssh_exec_start_ex
+00000000 00000089 T ts_webui_broadcast_event
+00000000 0000009c t terminal_output_cb
+00000000 000000aa t exec_destroy
+00000000 000000ac t ssh_request_error
+00000000 000000b5 t ssh_start_status
+00000000 000000ca t ssh_poll_task
+00000000 000000cc t ssh_send_output
+00000000 000000db t add_client
+00000000 000000ee t set_client_role
+00000000 00000122 t exec_maintenance
+00000000 0000013a t cleanup_disconnected_client
+00000000 00000146 T ts_webui_ws_stop
+00000000 00000158 t log_ws_callback
+00000000 00000163 t power_policy_event_handler
+00000000 00000178 t simple_pattern_match
+00000000 00000198 t handle_ssh_control
+00000000 000001c0 b s_clients
+00000000 00000214 t handle_terminal_command
+00000000 00000246 T ts_webui_ws_init
+00000000 00000270 t start_terminal_session
+00000000 000002b2 t handle_ssh_connect
+00000000 0000050d t ts_webui_ssh_exec_start_ex_impl
+00000000 0000065c t ssh_exec_output_callback
+00000000 00000a4e t ws_handler
+00000000 00000c07 t ssh_exec_task
+
+
+/tmp/tianshan-control-build/resources/ts_webui_ws.c.o:     file format elf32-xtensa-le
+
+Contents of section .rodata.adapter_sizes:
+ 0000 14000000 18030000 88000000 38000000  ............8...
+ 0010 20000000                              ...            
+
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:124:20:power_state_to_string	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1177:13:has_log_clients	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:137:13:power_policy_event_handler	736	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:180:13:ssh_request_error	48	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:381:18:add_client	96	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:357:13:terminal_output_cb	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:400:13:handle_terminal_command	64	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:217:13:ssh_send_output	320	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:200:13:shell_destroy	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1579:13:exec_destroy	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:234:18:ssh_start_status	80	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:208:13:ssh_close	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:248:13:ssh_disconnecting	320	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:193:13:shell_resources_close	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:255:13:ssh_poll_task	2096	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:324:13:handle_ssh_control	64	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1540:13:exec_timer_drained	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1570:13:exec_retry_timer_drain	48	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:275:13:ssh_cleanup	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1057:6:ts_webui_ws_stopped	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1112:13:log_ws_callback	48	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1316:13:exec_abort	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1531:13:ssh_exec_timeout_callback	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1240:13:simple_pattern_match	48	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1591:13:ssh_exec_task	544	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1323:13:ssh_exec_output_callback	1088	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1546:13:exec_maintenance	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1976:18:ts_webui_ssh_exec_start_ex_impl	528	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:928:11:ts_webui_ws_init	64	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1064:11:ts_webui_broadcast	48	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1077:11:ts_webui_broadcast_event	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1154:11:ts_webui_log_stream_enable	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1190:13:update_log_stream_state	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:574:13:cleanup_disconnected_client	128	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:610:13:peer_closed	64	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:110:13:set_client_role	128	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:483:13:start_terminal_session	128	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:282:13:handle_ssh_connect	208	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:618:18:ws_handler	176	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:1021:11:ts_webui_ws_stop	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:2170:11:ts_webui_ssh_exec_start_ex	144	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:2185:11:ts_webui_ssh_exec_start	48	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:2192:6:ts_webui_ssh_result_free	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:2201:11:ts_webui_ssh_exec_cancel	32	static
+/tmp/tianshan-control-build/resources/ts_webui_ws.c:2211:6:ts_webui_ssh_exec_is_running	32	static
+
+ts_ws_subscriptions.c
+00000000 00000001 b s_stop_owner
+00000000 00000004 b s_entries
+00000000 00000004 b s_outstanding
+00000000 00000004 b s_state
+00000000 00000004 b s_subscription_cursor
+00000000 00000004 b s_topic_cursor
+00000000 00000004 b s_worker
+00000000 00000008 b s_allocation_retry_at
+00000000 00000008 d s_lock
+00000000 00000008 b s_sequence
+00000000 0000000c b s_handlers
+00000000 0000001a t wake_locked
+00000000 0000001c r fields
+00000000 0000001c r metrics
+00000000 0000001f T ts_ws_subscriptions_wake
+00000000 00000028 t leave
+00000000 00000035 t after_ms
+00000000 00000037 t enter
+00000000 00000038 t topic_id
+00000000 0000003a T ts_ws_subscriptions_in_context
+00000000 0000003d t metric_needed
+00000000 00000042 t wait_ticks
+00000000 00000047 t find_revision
+00000000 0000004e t delivery_valid
+00000000 0000006a t ts_ws_json_reference
+00000000 00000079 t reserve
+00000000 0000007a T ts_ws_subscriptions_pause
+00000000 0000007b T ts_ws_client_disconnected
+00000000 00000084 r topics
+00000000 00000096 t telemetry_worker
+00000000 000000a6 t submit
+00000000 000000c1 T ts_ws_unsubscribe
+00000000 000000c8 t delivery_done
+00000000 000000ce t event_handler
+00000000 000000e6 T ts_ws_subscriptions_drain
+00000000 000000f0 T ts_ws_subscriptions_init
+00000000 00000128 b s_stats
+00000000 000001b4 T ts_ws_broadcast_to_topic
+00000000 000001d3 T ts_ws_subscriptions_deinit
+00000000 00000209 t next_wait
+00000000 000002e5 T ts_ws_subscribe
+00000000 00000305 t collect_batch
+00000000 00000460 b s_events
+00000000 00000548 t run_batch
+00000000 00000a00 b s_subs
+
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:70:16:after_ms	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:97:24:find_revision	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:273:19:wait_ticks	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:103:13:delivery_valid	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:144:13:metric_needed	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:85:13:enter	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:75:13:wake_locked	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:128:13:reserve	80	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:93:13:leave	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:111:13:delivery_done	48	static
+/Users/massif/TianshanOS/components/ts_webui/include/ts_ws_transport.h:65:20:ts_ws_json_reference	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:150:13:collect_batch	176	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:136:13:submit	96	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:198:13:run_batch	3360	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:281:19:next_wait	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:301:13:telemetry_worker	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:80:12:topic_id	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:76:6:ts_ws_subscriptions_wake	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:353:11:ts_ws_subscriptions_pause	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:366:11:ts_ws_subscriptions_drain	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:386:11:ts_ws_subscriptions_deinit	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:332:11:ts_ws_subscriptions_init	96	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:419:11:ts_ws_subscribe	144	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:453:11:ts_ws_unsubscribe	96	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:464:6:ts_ws_client_disconnected	96	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:470:6:ts_ws_broadcast_to_topic	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:317:13:event_handler	32	static
+/tmp/tianshan-control-build/resources/ts_ws_subscriptions.c:495:6:ts_ws_subscriptions_in_context	32	static

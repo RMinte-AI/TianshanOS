@@ -45,35 +45,27 @@
 #define TS_API_ERR_HOST_MISMATCH  1001  /* 主机指纹不匹配 */
 #define TS_API_ERR_HOST_NEW       1002  /* 新主机需要确认 */
 
-/* 静态缓冲区用于存储主机、用户名等 */
-static char s_host_buf[64];
-static char s_user_buf[64];
-static char s_pass_buf[128];
-static char *s_key_buf = NULL;
-static size_t s_key_len = 0;
-
-/*===========================================================================*/
-/*                          Helper Functions                                  */
-/*===========================================================================*/
-
-/**
- * @brief 清理密钥缓冲区
- */
-static void cleanup_key_buffer(void)
-{
-    if (s_key_buf) {
-        memset(s_key_buf, 0, s_key_len);
-        free(s_key_buf);
-        s_key_buf = NULL;
-        s_key_len = 0;
+/* Request-local key lifetime; concurrent callers must never share credentials. */
+typedef struct {
+    char *data;
+    size_t len;
+} ssh_request_key_t;
+static void cleanup_key_buffer(ssh_request_key_t *key) {
+    if (key->data) {
+        volatile unsigned char *p = (volatile unsigned char *)key->data;
+        for (size_t i = 0; i < key->len; ++i)
+            p[i] = 0;
+        free(key->data);
+        key->data = NULL;
+        key->len = 0;
     }
 }
 
 /**
  * @brief 从参数中配置 SSH 会话
  */
-static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t *config)
-{
+static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t *config,
+                                           ssh_request_key_t *request_key) {
     /* 主机和用户名 */
     const cJSON *host = cJSON_GetObjectItem(params, "host");
     const cJSON *user = cJSON_GetObjectItem(params, "user");
@@ -82,39 +74,32 @@ static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t 
     if (!host || !cJSON_IsString(host) || !user || !cJSON_IsString(user)) {
         return ESP_ERR_INVALID_ARG;
     }
-    
-    /* 复制到静态缓冲区 */
-    strncpy(s_host_buf, host->valuestring, sizeof(s_host_buf) - 1);
-    s_host_buf[sizeof(s_host_buf) - 1] = '\0';
-    strncpy(s_user_buf, user->valuestring, sizeof(s_user_buf) - 1);
-    s_user_buf[sizeof(s_user_buf) - 1] = '\0';
-    
-    config->host = s_host_buf;
-    config->username = s_user_buf;
+
+    config->host = host->valuestring;
+    config->username = user->valuestring;
     config->port = cJSON_IsNumber(port) ? port->valueint : 22;
     
     /* 认证方式：密码或密钥 */
     const cJSON *password = cJSON_GetObjectItem(params, "password");
     const cJSON *keyid = cJSON_GetObjectItem(params, "keyid");
     const cJSON *keypath = cJSON_GetObjectItem(params, "keypath");
-    
-    cleanup_key_buffer();
-    
+
+    cleanup_key_buffer(request_key);
+
     if (cJSON_IsString(password) && password->valuestring[0]) {
-        strncpy(s_pass_buf, password->valuestring, sizeof(s_pass_buf) - 1);
-        s_pass_buf[sizeof(s_pass_buf) - 1] = '\0';
         config->auth_method = TS_SSH_AUTH_PASSWORD;
-        config->auth.password = s_pass_buf;
+        config->auth.password = password->valuestring;
     } else if (cJSON_IsString(keyid) && keyid->valuestring[0]) {
         /* 从密钥存储读取私钥 */
-        esp_err_t ret = ts_keystore_load_private_key(keyid->valuestring, &s_key_buf, &s_key_len);
+        esp_err_t ret =
+            ts_keystore_load_private_key(keyid->valuestring, &request_key->data, &request_key->len);
         if (ret != ESP_OK) {
             TS_LOGE(TAG, "Failed to load key '%s': %s", keyid->valuestring, esp_err_to_name(ret));
             return ret;
         }
         config->auth_method = TS_SSH_AUTH_PUBLICKEY;
-        config->auth.key.private_key = (const uint8_t *)s_key_buf;
-        config->auth.key.private_key_len = s_key_len;
+        config->auth.key.private_key = (const uint8_t *)request_key->data;
+        config->auth.key.private_key_len = request_key->len;
         config->auth.key.private_key_path = NULL;
         config->auth.key.passphrase = NULL;
     } else if (cJSON_IsString(keypath) && keypath->valuestring[0]) {
@@ -153,8 +138,8 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
     /* 获取验证参数 */
     const cJSON *trust_new_j = cJSON_GetObjectItem(params, "trust_new");
     const cJSON *accept_changed_j = cJSON_GetObjectItem(params, "accept_changed");
-    
-    bool trust_new = cJSON_IsBool(trust_new_j) ? cJSON_IsTrue(trust_new_j) : true;
+
+    bool trust_new = cJSON_IsBool(trust_new_j) ? cJSON_IsTrue(trust_new_j) : false;
     bool accept_changed = cJSON_IsBool(accept_changed_j) ? cJSON_IsTrue(accept_changed_j) : false;
     
     /* 验证主机指纹 */
@@ -166,7 +151,13 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
         ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to verify host fingerprint");
         return ret;
     }
-    
+
+    const cJSON *confirmed = cJSON_GetObjectItem(params, "confirmed_fingerprint");
+    bool confirmed_match =
+        cJSON_IsString(confirmed) && !strcmp(confirmed->valuestring, host_info.fingerprint);
+    trust_new = trust_new && confirmed_match;
+    accept_changed = accept_changed && confirmed_match;
+
     /* 输出主机信息 */
     if (host_info_out) {
         *host_info_out = host_info;
@@ -247,6 +238,20 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
     }
 }
 
+typedef struct {
+    const cJSON *params;
+    ts_api_result_t *result;
+} verify_context_t;
+static esp_err_t verify_before_auth(ts_ssh_session_t session, void *opaque) {
+    verify_context_t *ctx = opaque;
+    return verify_host_fingerprint(session, ctx->params, ctx->result, NULL);
+}
+static esp_err_t connect_verified(ts_ssh_session_t session, const cJSON *params,
+                                  ts_api_result_t *result) {
+    verify_context_t ctx = {params, result};
+    return ts_ssh_connect_with_verifier(session, verify_before_auth, &ctx);
+}
+
 /*===========================================================================*/
 /*                          API Handlers                                      */
 /*===========================================================================*/
@@ -282,6 +287,7 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
  */
 static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
 {
+    ssh_request_key_t request_key __attribute__((cleanup(cleanup_key_buffer))) = {0};
     if (!params) {
         ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
         return ESP_ERR_INVALID_ARG;
@@ -295,10 +301,10 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
     
     /* 配置 SSH */
     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
-    esp_err_t ret = configure_ssh_from_params(params, &config);
+    esp_err_t ret = configure_ssh_from_params(params, &config, &request_key);
     if (ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid SSH configuration");
-        cleanup_key_buffer();
+        cleanup_key_buffer(&request_key);
         return ret;
     }
     
@@ -313,17 +319,18 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
     ret = ts_ssh_session_create(&config, &session);
     if (ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create session");
-        cleanup_key_buffer();
+        cleanup_key_buffer(&request_key);
         return ret;
     }
     
     /* 连接（TCP 层） */
-    ret = ts_ssh_connect(session);
+    ret = connect_verified(session, params, result);
     if (ret != ESP_OK) {
         const char *err = ts_ssh_get_error(session);
-        ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
+        if (result->code == TS_API_OK)
+            ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
         ts_ssh_session_destroy(session);
-        cleanup_key_buffer();
+        cleanup_key_buffer(&request_key);
         return ret;
     }
     
@@ -334,7 +341,7 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
         /* result 已在 verify_host_fingerprint 中设置 */
         ts_ssh_disconnect(session);
         ts_ssh_session_destroy(session);
-        cleanup_key_buffer();
+        cleanup_key_buffer(&request_key);
         return ret;
     }
     
@@ -370,8 +377,8 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
     
     ts_ssh_disconnect(session);
     ts_ssh_session_destroy(session);
-    cleanup_key_buffer();
-    
+    cleanup_key_buffer(&request_key);
+
     return ret;
 }
 
@@ -538,24 +545,19 @@ static esp_err_t api_ssh_cancel(const cJSON *params, ts_api_result_t *result)
 {
     const cJSON *sid = cJSON_GetObjectItem(params, "session_id");
     
-    uint32_t session_id = 0;
-    if (sid && cJSON_IsNumber(sid)) {
-        session_id = (uint32_t)sid->valueint;
-    }
-    
-    /* 检查会话是否在运行 */
-    if (!ts_webui_ssh_exec_is_running(session_id)) {
+    /* Exact instance identity; a status wildcard is never a control target. */
+    if (!cJSON_IsNumber(sid) || sid->valuedouble < 1 || sid->valuedouble > UINT32_MAX ||
+        sid->valuedouble != (double)(uint32_t)sid->valuedouble) {
         ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "No running session");
         return ESP_ERR_NOT_FOUND;
     }
-    
-    /* 取消执行 */
-    esp_err_t ret = ts_webui_ssh_exec_cancel(session_id);
+    esp_err_t ret = ts_webui_ssh_exec_cancel((uint32_t)sid->valuedouble);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to cancel");
+        ts_api_result_error(result, ret == ESP_ERR_INVALID_STATE ? TS_API_ERR_NOT_FOUND : TS_API_ERR_INTERNAL,
+                            ret == ESP_ERR_INVALID_STATE ? "No running session" : "Failed to request cancellation");
         return ret;
     }
-    
+    /* Existing wire field means accepted intent, not confirmed remote exit. */
     cJSON *data = cJSON_CreateObject();
     cJSON_AddBoolToObject(data, "cancelled", true);
     ts_api_result_ok(result, data);
@@ -586,6 +588,7 @@ static esp_err_t api_ssh_cancel(const cJSON *params, ts_api_result_t *result)
  */
 static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
 {
+    ssh_request_key_t request_key __attribute__((cleanup(cleanup_key_buffer))) = {0};
     if (!params) {
         ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
         return ESP_ERR_INVALID_ARG;
@@ -593,10 +596,10 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
     
     /* 配置 SSH */
     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
-    esp_err_t ret = configure_ssh_from_params(params, &config);
+    esp_err_t ret = configure_ssh_from_params(params, &config, &request_key);
     if (ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid SSH configuration");
-        cleanup_key_buffer();
+        cleanup_key_buffer(&request_key);
         return ret;
     }
     
@@ -605,21 +608,26 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
     ret = ts_ssh_session_create(&config, &session);
     if (ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create session");
-        cleanup_key_buffer();
+        cleanup_key_buffer(&request_key);
         return ret;
     }
     
     /* 测试连接（TCP 层） */
-    ret = ts_ssh_connect(session);
-    
+    ret = connect_verified(session, params, result);
+
     if (ret != ESP_OK) {
+        if (result->code != TS_API_OK) {
+            ts_ssh_session_destroy(session);
+            cleanup_key_buffer(&request_key);
+            return ESP_OK;
+        }
         const char *err = ts_ssh_get_error(session);
         cJSON *data = cJSON_CreateObject();
         cJSON_AddBoolToObject(data, "success", false);
         cJSON_AddStringToObject(data, "error", err ? err : "Connection failed");
         ts_api_result_ok(result, data);
         ts_ssh_session_destroy(session);
-        cleanup_key_buffer();
+        cleanup_key_buffer(&request_key);
         return ESP_OK;
     }
     
@@ -633,8 +641,8 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
          */
         ts_ssh_disconnect(session);
         ts_ssh_session_destroy(session);
-        cleanup_key_buffer();
-        
+        cleanup_key_buffer(&request_key);
+
         /* 如果是 MISMATCH 或 NEW_HOST，返回 ESP_OK 让 HTTP 层返回 200
          * 实际错误信息已在 result 中设置 */
         if (result->code == TS_API_ERR_HOST_MISMATCH || 
@@ -655,8 +663,8 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
     
     ts_ssh_disconnect(session);
     ts_ssh_session_destroy(session);
-    cleanup_key_buffer();
-    
+    cleanup_key_buffer(&request_key);
+
     ts_api_result_ok(result, data);
     return ESP_OK;
 }
@@ -684,6 +692,7 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
  */
 static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
 {
+    ssh_request_key_t request_key __attribute__((cleanup(cleanup_key_buffer))) = {0};
     if (!params) {
         ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
         return ESP_ERR_INVALID_ARG;
@@ -728,16 +737,13 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     
     /* 配置 SSH 连接（使用密码认证） */
     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
-    strncpy(s_host_buf, host->valuestring, sizeof(s_host_buf) - 1);
-    strncpy(s_user_buf, user->valuestring, sizeof(s_user_buf) - 1);
-    strncpy(s_pass_buf, password->valuestring, sizeof(s_pass_buf) - 1);
-    
-    config.host = s_host_buf;
+
+    config.host = host->valuestring;
     config.port = ssh_port;
-    config.username = s_user_buf;
+    config.username = user->valuestring;
     config.auth_method = TS_SSH_AUTH_PASSWORD;
-    config.auth.password = s_pass_buf;
-    
+    config.auth.password = password->valuestring;
+
     /* 创建会话并连接 */
     ts_ssh_session_t session = NULL;
     ret = ts_ssh_session_create(&config, &session);
@@ -746,11 +752,12 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
         free(pubkey_data);
         return ret;
     }
-    
-    ret = ts_ssh_connect(session);
+
+    ret = connect_verified(session, params, result);
     if (ret != ESP_OK) {
         const char *err = ts_ssh_get_error(session);
-        ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
+        if (result->code == TS_API_OK)
+            ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
         ts_ssh_session_destroy(session);
         free(pubkey_data);
         return ret;
@@ -813,18 +820,18 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     bool verified = false;
     if (do_verify) {
         /* 加载私钥 */
-        cleanup_key_buffer();
-        ret = ts_keystore_load_private_key(keyid->valuestring, &s_key_buf, &s_key_len);
+        cleanup_key_buffer(&request_key);
+        ret = ts_keystore_load_private_key(keyid->valuestring, &request_key.data, &request_key.len);
         if (ret == ESP_OK) {
             /* 使用公钥认证重新连接 */
             ts_ssh_config_t verify_config = TS_SSH_DEFAULT_CONFIG();
-            verify_config.host = s_host_buf;
+            verify_config.host = host->valuestring;
             verify_config.port = ssh_port;
-            verify_config.username = s_user_buf;
+            verify_config.username = user->valuestring;
             verify_config.auth_method = TS_SSH_AUTH_PUBLICKEY;
-            verify_config.auth.key.private_key = (const uint8_t *)s_key_buf;
-            verify_config.auth.key.private_key_len = s_key_len;
-            
+            verify_config.auth.key.private_key = (const uint8_t *)request_key.data;
+            verify_config.auth.key.private_key_len = request_key.len;
+
             ts_ssh_session_t verify_session = NULL;
             if (ts_ssh_session_create(&verify_config, &verify_session) == ESP_OK) {
                 if (ts_ssh_connect(verify_session) == ESP_OK) {
@@ -833,7 +840,7 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
                 }
                 ts_ssh_session_destroy(verify_session);
             }
-            cleanup_key_buffer();
+            cleanup_key_buffer(&request_key);
         }
     }
     
@@ -962,16 +969,13 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     
     /* 配置 SSH 连接（使用密码认证） */
     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
-    strncpy(s_host_buf, host->valuestring, sizeof(s_host_buf) - 1);
-    strncpy(s_user_buf, user->valuestring, sizeof(s_user_buf) - 1);
-    strncpy(s_pass_buf, password->valuestring, sizeof(s_pass_buf) - 1);
-    
-    config.host = s_host_buf;
+
+    config.host = host->valuestring;
     config.port = ssh_port;
-    config.username = s_user_buf;
+    config.username = user->valuestring;
     config.auth_method = TS_SSH_AUTH_PASSWORD;
-    config.auth.password = s_pass_buf;
-    
+    config.auth.password = password->valuestring;
+
     /* 创建会话并连接 */
     ts_ssh_session_t session = NULL;
     ret = ts_ssh_session_create(&config, &session);
@@ -981,11 +985,12 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
         free(pubkey_copy);
         return ret;
     }
-    
-    ret = ts_ssh_connect(session);
+
+    ret = connect_verified(session, params, result);
     if (ret != ESP_OK) {
         const char *err = ts_ssh_get_error(session);
-        ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
+        if (result->code == TS_API_OK)
+            ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
         ts_ssh_session_destroy(session);
         free(pubkey_data);
         free(pubkey_copy);

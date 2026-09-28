@@ -47,7 +47,7 @@
 /* ESP-IDF logging for debugging */
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
-#define USERAUTH_DEBUG(fmt, ...) ESP_LOGI("libssh2_userauth", fmt, ##__VA_ARGS__)
+#define USERAUTH_DEBUG(fmt, ...) ESP_LOGD("libssh2_userauth", fmt, ##__VA_ARGS__)
 #define USERAUTH_ERROR(fmt, ...) ESP_LOGE("libssh2_userauth", fmt, ##__VA_ARGS__)
 #else
 #define USERAUTH_DEBUG(fmt, ...) 

@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include "ts_event.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -50,6 +51,10 @@ typedef struct ts_event_handler_instance {
     ts_event_priority_t min_priority;
     ts_event_handler_t handler;
     void *user_data;
+    bool retired;
+    bool drain_pending;
+    unsigned refs; /* snapshots + synchronous unregister waiters */
+    unsigned in_flight;
     struct ts_event_handler_instance *next;
 } ts_event_handler_instance_t;
 
@@ -80,7 +85,7 @@ typedef struct {
     ts_event_handler_instance_t *handlers;
     size_t handler_count;
     ts_event_stats_t stats;
-    bool running;
+    atomic_bool running;
 } ts_event_context_t;
 
 /* ============================================================================
@@ -88,6 +93,14 @@ typedef struct {
  * ========================================================================== */
 
 static ts_event_context_t s_event_ctx = {0};
+
+/* Includes synchronous posts from arbitrary tasks and nested dispatch. */
+typedef struct dispatch_scope {
+    TaskHandle_t task;
+    struct dispatch_scope *next;
+} dispatch_scope_t;
+static dispatch_scope_t *s_dispatch_scopes;
+
 
 /* ============================================================================
  * 私有函数声明
@@ -169,6 +182,7 @@ esp_err_t ts_event_deinit(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (ts_event_in_callback()) return ESP_ERR_INVALID_STATE;
     ESP_LOGI(TAG, "Deinitializing event system...");
 
     // 停止事件循环
@@ -178,16 +192,17 @@ esp_err_t ts_event_deinit(void)
     ts_event_internal_t dummy = {0};
     xQueueSend(s_event_ctx.event_queue, &dummy, 0);
 
-    // 等待任务结束
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // 删除任务
-    if (s_event_ctx.event_task != NULL) {
-        vTaskDelete(s_event_ctx.event_task);
-        s_event_ctx.event_task = NULL;
+    int64_t deadline = esp_timer_get_time() + 6000000;
+    for (;;) {
+        xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+        bool draining = s_event_ctx.event_task || s_dispatch_scopes;
+        for (ts_event_handler_instance_t *p = s_event_ctx.handlers; p; p=p->next)
+            if (p->refs || p->drain_pending) draining = true;
+        if (!draining) break; /* retain lock for final free */
+        xSemaphoreGive(s_event_ctx.mutex);
+        if (esp_timer_get_time() >= deadline) return ESP_ERR_TIMEOUT;
+        vTaskDelay(1);
     }
-
-    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
 
     // 释放所有处理器
     ts_event_handler_instance_t *handler = s_event_ctx.handlers;
@@ -250,11 +265,6 @@ esp_err_t ts_event_register_with_priority(ts_event_base_t event_base,
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (s_event_ctx.handler_count >= TS_EVENT_HANDLERS_MAX) {
-        ESP_LOGE(TAG, "Maximum handlers reached");
-        return ESP_ERR_NO_MEM;
-    }
-
     ts_event_handler_instance_t *node = TS_EVT_CALLOC(1, sizeof(ts_event_handler_instance_t));
     if (node == NULL) {
         return ESP_ERR_NO_MEM;
@@ -268,6 +278,11 @@ esp_err_t ts_event_register_with_priority(ts_event_base_t event_base,
 
     xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
 
+    if (!s_event_ctx.running || s_event_ctx.handler_count >= TS_EVENT_HANDLERS_MAX) {
+        xSemaphoreGive(s_event_ctx.mutex);
+        free(node);
+        return ESP_ERR_NO_MEM;
+    }
     node->next = s_event_ctx.handlers;
     s_event_ctx.handlers = node;
     s_event_ctx.handler_count++;
@@ -285,78 +300,95 @@ esp_err_t ts_event_register_with_priority(ts_event_base_t event_base,
     return ESP_OK;
 }
 
-esp_err_t ts_event_unregister(ts_event_handler_handle_t handle)
+/* Retired nodes remain discoverable while a drain waiter owns them. */
+static void reclaim_handler(ts_event_handler_instance_t *node)
 {
-    if (handle == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (!s_event_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
-
-    ts_event_handler_instance_t *prev = NULL;
-    ts_event_handler_instance_t *node = s_event_ctx.handlers;
-    ts_event_handler_instance_t *target = (ts_event_handler_instance_t *)handle;
-
-    while (node != NULL) {
-        if (node == target) {
-            if (prev == NULL) {
-                s_event_ctx.handlers = node->next;
-            } else {
-                prev->next = node->next;
-            }
-            s_event_ctx.handler_count--;
-            s_event_ctx.stats.handlers_registered = s_event_ctx.handler_count;
-
-            xSemaphoreGive(s_event_ctx.mutex);
-            free(node);
-            return ESP_OK;
-        }
-        prev = node;
-        node = node->next;
-    }
-
-    xSemaphoreGive(s_event_ctx.mutex);
-    return ESP_ERR_NOT_FOUND;
+    if (!node->retired || node->refs || node->drain_pending) return;
+    ts_event_handler_instance_t **link = &s_event_ctx.handlers;
+    while (*link && *link != node) link = &(*link)->next;
+    if (*link) { *link = node->next; free(node); }
 }
 
-esp_err_t ts_event_unregister_all(ts_event_base_t event_base, ts_event_id_t event_id)
+bool ts_event_in_callback(void)
 {
-    if (!s_event_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
+    if (!s_event_ctx.initialized) return false;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    bool found = false;
     xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+    for (dispatch_scope_t *p = s_dispatch_scopes; p; p = p->next)
+        if (p->task == self) { found = true; break; }
+    xSemaphoreGive(s_event_ctx.mutex);
+    return found;
+}
 
-    ts_event_handler_instance_t *prev = NULL;
+static esp_err_t unregister_handler(ts_event_handler_handle_t handle, bool wait,
+                                    uint32_t timeout_ms)
+{
+    if (!handle) return ESP_ERR_INVALID_ARG;
+    if (!s_event_ctx.initialized) return ESP_ERR_INVALID_STATE;
+    if (wait && ts_event_in_callback()) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
     ts_event_handler_instance_t *node = s_event_ctx.handlers;
-
-    while (node != NULL) {
-        bool match = (event_base == NULL || 
-                      (node->base != NULL && strcmp(node->base, event_base) == 0));
-        if (match && (event_id == TS_EVENT_ANY_ID || node->id == event_id)) {
-            ts_event_handler_instance_t *to_delete = node;
-            if (prev == NULL) {
-                s_event_ctx.handlers = node->next;
-                node = s_event_ctx.handlers;
-            } else {
-                prev->next = node->next;
-                node = node->next;
-            }
-            s_event_ctx.handler_count--;
-            free(to_delete);
-        } else {
-            prev = node;
-            node = node->next;
+    while (node && node != handle) node = node->next;
+    if (!node) { xSemaphoreGive(s_event_ctx.mutex); return ESP_ERR_NOT_FOUND; }
+    if (!node->retired) {
+        node->retired = true;
+        s_event_ctx.handler_count--;
+        s_event_ctx.stats.handlers_registered = s_event_ctx.handler_count;
+    }
+    if (!wait) {
+        reclaim_handler(node);
+        xSemaphoreGive(s_event_ctx.mutex);
+        return ESP_OK;
+    }
+    node->drain_pending = true;
+    node->refs++; /* pins both node and its position while the lock is dropped */
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    while (node->in_flight) {
+        xSemaphoreGive(s_event_ctx.mutex);
+        vTaskDelay(1);
+        xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+        if (node->in_flight && esp_timer_get_time() >= deadline) {
+            /* Keep a retired registry reference for retry, even after callbacks end. */
+            node->refs--;
+            xSemaphoreGive(s_event_ctx.mutex);
+            return ESP_ERR_TIMEOUT;
         }
     }
+    node->refs--;
+    node->drain_pending = false;
+    reclaim_handler(node);
+    xSemaphoreGive(s_event_ctx.mutex);
+    return ESP_OK;
+}
 
+esp_err_t ts_event_unregister(ts_event_handler_handle_t handle)
+{
+    return unregister_handler(handle, false, 0);
+}
+
+esp_err_t ts_event_unregister_sync(ts_event_handler_handle_t handle, uint32_t timeout_ms)
+{
+    return unregister_handler(handle, true, timeout_ms);
+}
+
+esp_err_t ts_event_unregister_all(ts_event_base_t base, ts_event_id_t id)
+{
+    if (!s_event_ctx.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+    ts_event_handler_instance_t *node = s_event_ctx.handlers;
+    while (node) {
+        ts_event_handler_instance_t *next = node->next;
+        if (!node->retired && (!base || (node->base && !strcmp(base, node->base))) &&
+            (id == TS_EVENT_ANY_ID || id == node->id)) {
+            node->retired = true;
+            s_event_ctx.handler_count--;
+            reclaim_handler(node);
+        }
+        node = next;
+    }
     s_event_ctx.stats.handlers_registered = s_event_ctx.handler_count;
     xSemaphoreGive(s_event_ctx.mutex);
-
     return ESP_OK;
 }
 
@@ -659,6 +691,9 @@ static void event_loop_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Event loop task ended");
+    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+    s_event_ctx.event_task = NULL;
+    xSemaphoreGive(s_event_ctx.mutex);
     vTaskDelete(NULL);
 }
 
@@ -683,30 +718,41 @@ static void dispatch_event(const ts_event_internal_t *internal_event)
 
     xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
 
-    ts_event_handler_instance_t *handler = s_event_ctx.handlers;
-    while (handler != NULL) {
-        if (handler_matches(handler, internal_event)) {
-            // 释放锁来调用处理器（避免死锁）
-            xSemaphoreGive(s_event_ctx.mutex);
-
-            if (handler->handler != NULL) {
-                handler->handler(&event, handler->user_data);
-            }
-
-            s_event_ctx.stats.events_delivered++;
-
-            xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+    ts_event_handler_instance_t *snapshot[TS_EVENT_HANDLERS_MAX];
+    size_t count = 0;
+    dispatch_scope_t scope = {.task = xTaskGetCurrentTaskHandle(), .next = s_dispatch_scopes};
+    s_dispatch_scopes = &scope;
+    for (ts_event_handler_instance_t *p = s_event_ctx.handlers; p; p = p->next) {
+        if (!p->retired && handler_matches(p, internal_event)) {
+            p->refs++;
+            snapshot[count++] = p;
         }
-        handler = handler->next;
     }
-
-    xSemaphoreGive(s_event_ctx.mutex);
+    for (size_t i = 0; i < count; ++i) {
+        ts_event_handler_instance_t *p = snapshot[i];
+        if (!p->retired) {
+            p->in_flight++;
+            ts_event_handler_t fn = p->handler;
+            void *data = p->user_data;
+            xSemaphoreGive(s_event_ctx.mutex);
+            fn(&event, data);
+            xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+            p->in_flight--;
+            s_event_ctx.stats.events_delivered++;
+        }
+        p->refs--;
+        reclaim_handler(p);
+    }
+    dispatch_scope_t **link = &s_dispatch_scopes;
+    while (*link != &scope) link = &(*link)->next;
+    *link = scope.next;
 
     // 更新统计
     int64_t elapsed = esp_timer_get_time() - start_time;
     if (elapsed > s_event_ctx.stats.max_delivery_time_us) {
         s_event_ctx.stats.max_delivery_time_us = (uint32_t)elapsed;
     }
+    xSemaphoreGive(s_event_ctx.mutex);
 }
 
 static bool handler_matches(const ts_event_handler_instance_t *handler,
@@ -718,7 +764,7 @@ static bool handler_matches(const ts_event_handler_instance_t *handler,
     }
 
     // 检查事件基础
-    if (handler->base != TS_EVENT_ANY_BASE && handler->base != NULL) {
+    if (handler->base != NULL && strcmp(handler->base, TS_EVENT_ANY_BASE) != 0) {
         if (event->base == NULL || strcmp(handler->base, event->base) != 0) {
             return false;
         }

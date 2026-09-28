@@ -1,3 +1,6 @@
+#include "ts_rule_codec.h"
+#include "ts_ssh_service.h"
+#include <math.h>
 /**
  * @file ts_api_automation.c
  * @brief TianShanOS Automation Engine API
@@ -129,7 +132,7 @@ static esp_err_t api_automation_start(const cJSON *params, ts_api_result_t *resu
         result->message = strdup("Automation engine started");
     } else if (ret == ESP_ERR_INVALID_STATE) {
         result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Engine already running or not initialized");
+        result->message = strdup("Engine is stopping, busy, or not initialized");
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to start automation engine");
@@ -150,7 +153,9 @@ static esp_err_t api_automation_stop(const cJSON *params, ts_api_result_t *resul
         result->message = strdup("Automation engine stopped");
     } else {
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to stop automation engine");
+        result->message = strdup(ret == ESP_ERR_TIMEOUT
+            ? "Automation is stopping; retry after active operations finish"
+            : "Failed to stop automation engine");
     }
 
     return ESP_OK;
@@ -472,6 +477,10 @@ static esp_err_t api_automation_variables_set(const cJSON *params, ts_api_result
 static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t *result)
 {
     result->data = cJSON_CreateObject();
+    bool loaded, recovery;
+    ts_rule_config_status(&loaded, &recovery);
+    cJSON_AddBoolToObject(result->data, "loaded", loaded);
+    cJSON_AddBoolToObject(result->data, "recovery_required", recovery);
     cJSON *rules_array = cJSON_AddArrayToObject(result->data, "rules");
 
     // 遍历所有规则
@@ -480,12 +489,17 @@ static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t 
         ts_auto_rule_t rule;
         if (ts_rule_get_by_index(i, &rule) != ESP_OK) continue;
 
+        ts_rule_resolve_presentation(&rule);
         cJSON *rule_obj = cJSON_CreateObject();
         cJSON_AddStringToObject(rule_obj, "id", rule.id);
         cJSON_AddStringToObject(rule_obj, "name", rule.name);
         cJSON_AddStringToObject(rule_obj, "icon", rule.icon[0] ? rule.icon : "⚡");
         cJSON_AddBoolToObject(rule_obj, "enabled", rule.enabled);
         cJSON_AddBoolToObject(rule_obj, "manual_trigger", rule.manual_trigger);
+        cJSON_AddBoolToObject(rule_obj, "show_on_dashboard", rule.show_on_dashboard);
+        cJSON_AddBoolToObject(rule_obj, "allow_manual_trigger", rule.allow_manual_trigger);
+        cJSON_AddBoolToObject(rule_obj, "reference_unresolved", rule.reference_unresolved);
+        cJSON_AddNumberToObject(rule_obj, "revision", rule.revision);
         cJSON_AddNumberToObject(rule_obj, "trigger_count", rule.trigger_count);
         cJSON_AddNumberToObject(rule_obj, "last_trigger_ms", (double)rule.last_trigger_ms);
         cJSON_AddNumberToObject(rule_obj, "cooldown_ms", rule.cooldown_ms);
@@ -493,6 +507,7 @@ static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t 
         cJSON_AddNumberToObject(rule_obj, "actions_count", rule.action_count);
 
         cJSON_AddItemToArray(rules_array, rule_obj);
+        ts_rule_release(&rule);
     }
 
     cJSON_AddNumberToObject(result->data, "count", count);
@@ -503,62 +518,157 @@ static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t 
 /**
  * @brief automation.rules.enable - Enable a rule
  */
-static esp_err_t api_automation_rules_enable(const cJSON *params, ts_api_result_t *result)
-{
-    cJSON *id_param = cJSON_GetObjectItem(params, "id");
-    if (!id_param || !cJSON_IsString(id_param)) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Missing 'id' parameter");
+static void rule_commit_reply(ts_api_result_t *result, esp_err_t ret,
+                              const ts_rule_commit_result_t *commit) {
+    result->code = ret == ESP_OK ? TS_API_OK : TS_API_ERR_INVALID_ARG;
+    result->message = strdup(commit->error_code ? commit->error_code : "invalid_configuration");
+    result->data = cJSON_CreateObject();
+    if (!result->data)
+        return;
+    if (commit->applied < 0)
+        cJSON_AddNullToObject(result->data, "applied");
+    else
+        cJSON_AddBoolToObject(result->data, "applied", commit->applied);
+    if (commit->durable < 0)
+        cJSON_AddNullToObject(result->data, "durable");
+    else
+        cJSON_AddBoolToObject(result->data, "durable", commit->durable);
+    if (commit->mirror_synced < 0)
+        cJSON_AddNullToObject(result->data, "mirror_synced");
+    else
+        cJSON_AddBoolToObject(result->data, "mirror_synced", commit->mirror_synced);
+    cJSON_AddNumberToObject(result->data, "revision", commit->revision);
+    cJSON_AddStringToObject(result->data, "error_code",
+                            commit->error_code ? commit->error_code : "invalid_configuration");
+}
+static esp_err_t rule_mutate_locked(const cJSON *params, ts_api_result_t *result, int operation) {
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(params, "id"),
+                *revision = cJSON_GetObjectItemCaseSensitive(params, "expected_revision");
+    if (!cJSON_IsString(id) || !ts_rule_id_valid(id->valuestring) || !cJSON_IsNumber(revision) ||
+        !isfinite(revision->valuedouble) || revision->valuedouble < 0 ||
+        revision->valuedouble > UINT32_MAX ||
+        trunc(revision->valuedouble) != revision->valuedouble) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG,
+                            "refresh_required: refresh the interface before saving");
         return ESP_OK;
     }
-
-    esp_err_t ret = ts_rule_enable(id_param->valuestring);
-
-    if (ret == ESP_OK) {
-        result->code = TS_API_OK;
-        result->message = strdup("Rule enabled");
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        result->code = TS_API_ERR_NOT_FOUND;
-        result->message = strdup("Rule not found");
-    } else {
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to enable rule");
+    uint32_t expected = revision->valuedouble;
+    ts_rule_commit_result_t commit = {.error_code = "invalid_configuration"};
+    if (operation == 3) {
+        esp_err_t e = ts_rule_commit(NULL, id->valuestring, expected, &commit);
+        rule_commit_reply(result, e, &commit);
+        return ESP_OK;
     }
-
+    ts_auto_rule_t old = {0};
+    esp_err_t found = ts_rule_acquire(id->valuestring, &old);
+    cJSON *merged = found == ESP_OK ? ts_rule_encode(&old) : cJSON_CreateObject();
+    if (found == ESP_OK && old.revision != expected) {
+        ts_rule_release(&old);
+        cJSON_Delete(merged);
+        commit.error_code = "revision_conflict";
+        rule_commit_reply(result, ESP_ERR_INVALID_STATE, &commit);
+        return ESP_OK;
+    }
+    ts_rule_release(&old);
+    if (!merged) {
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "no_memory");
+        return ESP_OK;
+    }
+    const cJSON *field;
+    cJSON_ArrayForEach(field, params) {
+        if (!field->string || !strcmp(field->string, "expected_revision"))
+            continue;
+        cJSON *copy = cJSON_Duplicate(field, true);
+        if (!copy) {
+            cJSON_Delete(merged);
+            ts_api_result_error(result, TS_API_ERR_INTERNAL, "no_memory");
+            return ESP_OK;
+        }
+        cJSON_DeleteItemFromObjectCaseSensitive(merged, field->string);
+        if (!cJSON_AddItemToObject(merged, field->string, copy)) {
+            cJSON_Delete(copy);
+            cJSON_Delete(merged);
+            ts_api_result_error(result, TS_API_ERR_INTERNAL, "no_memory");
+            return ESP_OK;
+        }
+    }
+    if (operation == 1 || operation == 2) {
+        cJSON_DeleteItemFromObject(merged, "enabled");
+        if (!cJSON_AddBoolToObject(merged, "enabled", operation == 1)) {
+            cJSON_Delete(merged);
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    ts_auto_rule_t candidate = {0};
+    esp_err_t e = ts_rule_decode(merged, &candidate);
+    cJSON_Delete(merged);
+    if (e == ESP_OK)
+        e = ts_rule_commit(&candidate, id->valuestring, expected, &commit);
+    else
+        commit.error_code = e == ESP_ERR_NO_MEM ? "no_memory" : "invalid_configuration";
+    ts_rule_dispose(&candidate);
+    rule_commit_reply(result, e, &commit);
     return ESP_OK;
+}
+
+static esp_err_t rule_mutate(const cJSON *params, ts_api_result_t *result, int operation) {
+    if (!ts_rule_edit_begin()) {
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "configuration_busy");
+        return ESP_OK;
+    }
+    esp_err_t ret = rule_mutate_locked(params, result, operation);
+    ts_rule_edit_end();
+    return ret;
+}
+static esp_err_t api_automation_rules_enable(const cJSON *params, ts_api_result_t *result) {
+    return rule_mutate(params, result, 1);
 }
 
 /**
  * @brief automation.rules.disable - Disable a rule
  */
-static esp_err_t api_automation_rules_disable(const cJSON *params, ts_api_result_t *result)
-{
-    cJSON *id_param = cJSON_GetObjectItem(params, "id");
-    if (!id_param || !cJSON_IsString(id_param)) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Missing 'id' parameter");
-        return ESP_OK;
-    }
-
-    esp_err_t ret = ts_rule_disable(id_param->valuestring);
-
-    if (ret == ESP_OK) {
-        result->code = TS_API_OK;
-        result->message = strdup("Rule disabled");
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        result->code = TS_API_ERR_NOT_FOUND;
-        result->message = strdup("Rule not found");
-    } else {
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to disable rule");
-    }
-
-    return ESP_OK;
+static esp_err_t api_automation_rules_disable(const cJSON *params, ts_api_result_t *result) {
+    return rule_mutate(params, result, 2);
 }
 
 /**
  * @brief automation.rules.trigger - Manually trigger a rule
  */
+static esp_err_t service_request(const cJSON *params, ts_api_result_t *result, bool stop) {
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(params, "command_id");
+    if (!cJSON_IsString(id) || !id->valuestring[0]) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "command_id required");
+        return ESP_ERR_INVALID_ARG;
+    }
+    ts_ssh_service_status_t state = {0};
+    esp_err_t ret = stop ? ts_ssh_service_stop(id->valuestring, &state)
+                         : (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "verify"))
+                                ? ts_ssh_service_query(id->valuestring, &state)
+                                : ts_ssh_service_cached(id->valuestring, &state));
+    cJSON *data = cJSON_CreateObject();
+    if (!data)
+        return ESP_ERR_NO_MEM;
+    cJSON_AddStringToObject(data, "state", state.state[0] ? state.state : "unknown");
+    cJSON_AddStringToObject(data, "last_known", state.last_known);
+    cJSON_AddStringToObject(data, "source", state.source);
+    cJSON_AddNumberToObject(data, "confirmed_ms", state.confirmed_ms);
+    cJSON_AddNumberToObject(data, "generation", state.generation);
+    cJSON_AddBoolToObject(data, "busy", state.busy);
+    if (ret == ESP_OK)
+        ts_api_result_ok(result, data);
+    else {
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "service_state_unconfirmed");
+        result->data = data;
+    }
+    return ret;
+}
+static esp_err_t api_service_status(const cJSON *params, ts_api_result_t *result) {
+    return service_request(params, result, false);
+}
+static esp_err_t api_service_stop(const cJSON *params, ts_api_result_t *result) {
+    return service_request(params, result, true);
+}
+
 static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result_t *result)
 {
     cJSON *id_param = cJSON_GetObjectItem(params, "id");
@@ -589,701 +699,44 @@ static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result
 /**
  * @brief Convert operator to string
  */
-static const char *operator_to_string(ts_auto_operator_t op)
-{
-    switch (op) {
-        case TS_AUTO_OP_EQ: return "eq";
-        case TS_AUTO_OP_NE: return "ne";
-        case TS_AUTO_OP_LT: return "lt";
-        case TS_AUTO_OP_LE: return "le";
-        case TS_AUTO_OP_GT: return "gt";
-        case TS_AUTO_OP_GE: return "ge";
-        case TS_AUTO_OP_CONTAINS: return "contains";
-        case TS_AUTO_OP_CHANGED: return "changed";
-        case TS_AUTO_OP_CHANGED_TO: return "changed_to";
-        default: return "eq";
-    }
-}
 
 /**
  * @brief automation.rules.get - Get rule details by ID
  */
-static esp_err_t api_automation_rules_get(const cJSON *params, ts_api_result_t *result)
-{
-    cJSON *id_param = cJSON_GetObjectItem(params, "id");
-    if (!id_param || !cJSON_IsString(id_param)) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Missing 'id' parameter");
+static esp_err_t api_automation_rules_get(const cJSON *params, ts_api_result_t *result) {
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(params, "id");
+    ts_auto_rule_t rule;
+    if (!cJSON_IsString(id) || ts_rule_acquire(id->valuestring, &rule) != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Rule not found");
         return ESP_OK;
     }
-
-    const ts_auto_rule_t *rule = ts_rule_get(id_param->valuestring);
-    if (!rule) {
-        result->code = TS_API_ERR_NOT_FOUND;
-        result->message = strdup("Rule not found");
-        return ESP_OK;
-    }
-
-    result->data = cJSON_CreateObject();
-    cJSON_AddStringToObject(result->data, "id", rule->id);
-    cJSON_AddStringToObject(result->data, "name", rule->name);
-    if (rule->icon[0]) {
-        cJSON_AddStringToObject(result->data, "icon", rule->icon);
-    }
-    cJSON_AddBoolToObject(result->data, "enabled", rule->enabled);
-    cJSON_AddBoolToObject(result->data, "manual_trigger", rule->manual_trigger);
-    cJSON_AddNumberToObject(result->data, "cooldown_ms", rule->cooldown_ms);
-    cJSON_AddStringToObject(result->data, "logic", 
-                            rule->conditions.logic == TS_AUTO_LOGIC_OR ? "or" : "and");
-    cJSON_AddNumberToObject(result->data, "trigger_count", rule->trigger_count);
-    cJSON_AddNumberToObject(result->data, "last_trigger_ms", (double)rule->last_trigger_ms);
-
-    // 添加条件数组
-    cJSON *conditions = cJSON_AddArrayToObject(result->data, "conditions");
-    for (int i = 0; i < rule->conditions.count; i++) {
-        const ts_auto_condition_t *c = &rule->conditions.conditions[i];
-        cJSON *cond = cJSON_CreateObject();
-        cJSON_AddStringToObject(cond, "variable", c->variable);
-        cJSON_AddStringToObject(cond, "operator", operator_to_string(c->op));
-        
-        // 根据值类型添加值
-        switch (c->value.type) {
-            case TS_AUTO_VAL_BOOL:
-                cJSON_AddBoolToObject(cond, "value", c->value.bool_val);
-                break;
-            case TS_AUTO_VAL_INT:
-                cJSON_AddNumberToObject(cond, "value", c->value.int_val);
-                break;
-            case TS_AUTO_VAL_FLOAT:
-                cJSON_AddNumberToObject(cond, "value", c->value.float_val);
-                break;
-            case TS_AUTO_VAL_STRING:
-                cJSON_AddStringToObject(cond, "value", c->value.str_val);
-                break;
-            default:
-                cJSON_AddNullToObject(cond, "value");
-                break;
-        }
-        
-        cJSON_AddItemToArray(conditions, cond);
-    }
-
-    // 获取所有动作模板用于匹配
-    int tpl_count = ts_action_template_count();
-    ts_action_template_t *templates = NULL;
-    if (tpl_count > 0) {
-        templates = heap_caps_malloc(sizeof(ts_action_template_t) * tpl_count, MALLOC_CAP_SPIRAM);
-        if (templates) {
-            size_t out_count = 0;
-            ts_action_template_list(templates, tpl_count, &out_count);
-            tpl_count = out_count;
-        } else {
-            tpl_count = 0;
-        }
-    }
-
-    // 添加动作数组 - 完整序列化
-    cJSON *actions = cJSON_AddArrayToObject(result->data, "actions");
-    for (int i = 0; i < rule->action_count; i++) {
-        const ts_auto_action_t *a = &rule->actions[i];
-        cJSON *act = cJSON_CreateObject();
-        
-        // 添加动作类型
-        const char *type_str = "log";
-        switch (a->type) {
-            case TS_AUTO_ACT_LED: type_str = "led"; break;
-            case TS_AUTO_ACT_GPIO: type_str = "gpio"; break;
-            case TS_AUTO_ACT_DEVICE_CTRL: type_str = "device"; break;
-            case TS_AUTO_ACT_CLI: type_str = "cli"; break;
-            case TS_AUTO_ACT_LOG: type_str = "log"; break;
-            case TS_AUTO_ACT_SET_VAR: type_str = "set_var"; break;
-            case TS_AUTO_ACT_WEBHOOK: type_str = "webhook"; break;
-            case TS_AUTO_ACT_SSH_CMD: type_str = "ssh"; break;
-            case TS_AUTO_ACT_SSH_CMD_REF: type_str = "ssh_cmd_ref"; break;
-            default: type_str = "log"; break;
-        }
-        cJSON_AddStringToObject(act, "type", type_str);
-        cJSON_AddNumberToObject(act, "delay_ms", a->delay_ms);
-        
-        // 添加重复执行选项
-        if (a->repeat_mode != TS_AUTO_REPEAT_ONCE) {
-            const char *repeat_mode_str = "once";
-            switch (a->repeat_mode) {
-                case TS_AUTO_REPEAT_WHILE_TRUE: repeat_mode_str = "while_true"; break;
-                case TS_AUTO_REPEAT_COUNT: repeat_mode_str = "count"; break;
-                default: break;
-            }
-            cJSON_AddStringToObject(act, "repeat_mode", repeat_mode_str);
-            cJSON_AddNumberToObject(act, "repeat_interval_ms", a->repeat_interval_ms);
-            if (a->repeat_mode == TS_AUTO_REPEAT_COUNT) {
-                cJSON_AddNumberToObject(act, "repeat_count", a->repeat_count);
-            }
-        }
-        
-        // 如果有模板 ID，添加它
-        if (a->template_id[0]) {
-            cJSON_AddStringToObject(act, "template_id", a->template_id);
-        }
-        
-        // 根据类型添加特定字段
-        switch (a->type) {
-            case TS_AUTO_ACT_LED:
-                cJSON_AddStringToObject(act, "device", a->led.device);
-                cJSON_AddNumberToObject(act, "index", a->led.index);
-                cJSON_AddNumberToObject(act, "r", a->led.r);
-                cJSON_AddNumberToObject(act, "g", a->led.g);
-                cJSON_AddNumberToObject(act, "b", a->led.b);
-                if (a->led.effect[0]) {
-                    cJSON_AddStringToObject(act, "effect", a->led.effect);
-                }
-                cJSON_AddNumberToObject(act, "duration_ms", a->led.duration_ms);
-                break;
-            case TS_AUTO_ACT_GPIO:
-                cJSON_AddNumberToObject(act, "pin", a->gpio.pin);
-                cJSON_AddBoolToObject(act, "level", a->gpio.level);
-                cJSON_AddNumberToObject(act, "pulse_ms", a->gpio.pulse_ms);
-                break;
-            case TS_AUTO_ACT_DEVICE_CTRL:
-                cJSON_AddStringToObject(act, "device", a->device.device);
-                cJSON_AddStringToObject(act, "action", a->device.action);
-                break;
-            case TS_AUTO_ACT_CLI:
-                cJSON_AddStringToObject(act, "command", a->cli.command);
-                break;
-            case TS_AUTO_ACT_LOG:
-                cJSON_AddStringToObject(act, "message", a->log.message);
-                cJSON_AddNumberToObject(act, "level", a->log.level);
-                break;
-            case TS_AUTO_ACT_SSH_CMD_REF:
-                cJSON_AddStringToObject(act, "cmd_id", a->ssh_ref.cmd_id);
-                break;
-            default:
-                break;
-        }
-        
-        // 尝试通过动作配置查找匹配的模板 ID（仅当没有保存 template_id 时）
-        if (!a->template_id[0]) {
-            for (int j = 0; j < tpl_count && templates; j++) {
-                ts_action_template_t *tpl = &templates[j];
-                if (tpl->action.type == a->type) {
-                    bool match = false;
-                    switch (a->type) {
-                        case TS_AUTO_ACT_CLI:
-                            match = (strcmp(tpl->action.cli.command, a->cli.command) == 0);
-                            break;
-                        case TS_AUTO_ACT_LED:
-                            match = (strcmp(tpl->action.led.device, a->led.device) == 0);
-                            break;
-                        case TS_AUTO_ACT_LOG:
-                            match = (strcmp(tpl->action.log.message, a->log.message) == 0);
-                            break;
-                        default:
-                            match = true;
-                            break;
-                    }
-                    if (match) {
-                        cJSON_AddStringToObject(act, "template_id", tpl->id);
-                        break;
-                    }
-                }
-            }
-        }
-        
-        // 序列化动作级别的条件
-        if (a->condition.has_condition) {
-            cJSON *action_cond = cJSON_CreateObject();
-            cJSON_AddStringToObject(action_cond, "variable", a->condition.variable);
-            cJSON_AddStringToObject(action_cond, "operator", operator_to_string(a->condition.op));
-            
-            switch (a->condition.value.type) {
-                case TS_AUTO_VAL_BOOL:
-                    cJSON_AddBoolToObject(action_cond, "value", a->condition.value.bool_val);
-                    break;
-                case TS_AUTO_VAL_INT:
-                    cJSON_AddNumberToObject(action_cond, "value", a->condition.value.int_val);
-                    break;
-                case TS_AUTO_VAL_FLOAT:
-                    cJSON_AddNumberToObject(action_cond, "value", a->condition.value.float_val);
-                    break;
-                case TS_AUTO_VAL_STRING:
-                    cJSON_AddStringToObject(action_cond, "value", a->condition.value.str_val);
-                    break;
-                default:
-                    cJSON_AddNullToObject(action_cond, "value");
-                    break;
-            }
-            
-            cJSON_AddItemToObject(act, "condition", action_cond);
-        }
-        
-        cJSON_AddItemToArray(actions, act);
-    }
-
-    // 释放模板列表
-    if (templates) {
-        free(templates);
-    }
-
-    result->code = TS_API_OK;
+    ts_rule_resolve_presentation(&rule);
+    result->data = ts_rule_encode(&rule);
+    ts_rule_release(&rule);
+    result->code = result->data ? TS_API_OK : TS_API_ERR_INTERNAL;
     return ESP_OK;
 }
 
 /**
  * @brief Parse operator from string
  */
-static ts_auto_operator_t parse_operator(const char *op_str)
-{
-    if (!op_str) return TS_AUTO_OP_EQ;
-    if (strcmp(op_str, "eq") == 0 || strcmp(op_str, "==") == 0) return TS_AUTO_OP_EQ;
-    if (strcmp(op_str, "ne") == 0 || strcmp(op_str, "!=") == 0) return TS_AUTO_OP_NE;
-    if (strcmp(op_str, "lt") == 0 || strcmp(op_str, "<") == 0) return TS_AUTO_OP_LT;
-    if (strcmp(op_str, "le") == 0 || strcmp(op_str, "<=") == 0) return TS_AUTO_OP_LE;
-    if (strcmp(op_str, "gt") == 0 || strcmp(op_str, ">") == 0) return TS_AUTO_OP_GT;
-    if (strcmp(op_str, "ge") == 0 || strcmp(op_str, ">=") == 0) return TS_AUTO_OP_GE;
-    if (strcmp(op_str, "contains") == 0) return TS_AUTO_OP_CONTAINS;
-    if (strcmp(op_str, "changed") == 0) return TS_AUTO_OP_CHANGED;
-    if (strcmp(op_str, "changed_to") == 0) return TS_AUTO_OP_CHANGED_TO;
-    return TS_AUTO_OP_EQ;
-}
 
 /**
  * @brief Parse action type from string
  */
-static ts_auto_action_type_t parse_action_type(const char *type_str)
-{
-    if (!type_str) return TS_AUTO_ACT_LOG;
-    if (strcmp(type_str, "led") == 0) return TS_AUTO_ACT_LED;
-    if (strcmp(type_str, "gpio") == 0) return TS_AUTO_ACT_GPIO;
-    if (strcmp(type_str, "ssh") == 0) return TS_AUTO_ACT_SSH_CMD;
-    if (strcmp(type_str, "ssh_cmd_ref") == 0) return TS_AUTO_ACT_SSH_CMD_REF;
-    if (strcmp(type_str, "webhook") == 0) return TS_AUTO_ACT_WEBHOOK;
-    if (strcmp(type_str, "log") == 0) return TS_AUTO_ACT_LOG;
-    if (strcmp(type_str, "set_var") == 0) return TS_AUTO_ACT_SET_VAR;
-    if (strcmp(type_str, "device") == 0) return TS_AUTO_ACT_DEVICE_CTRL;
-    return TS_AUTO_ACT_LOG;
-}
 
 /**
  * @brief automation.rules.add - Add a new rule
  */
-static esp_err_t api_automation_rules_add(const cJSON *params, ts_api_result_t *result)
-{
-    // 必须参数
-    cJSON *id_param = cJSON_GetObjectItem(params, "id");
-    cJSON *name_param = cJSON_GetObjectItem(params, "name");
-    
-    if (!id_param || !cJSON_IsString(id_param)) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Missing 'id' parameter");
-        return ESP_OK;
-    }
-    
-    if (!name_param || !cJSON_IsString(name_param)) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Missing 'name' parameter");
-        return ESP_OK;
-    }
-
-    // 分配规则结构
-    ts_auto_rule_t rule = {0};
-    strncpy(rule.id, id_param->valuestring, sizeof(rule.id) - 1);
-    strncpy(rule.name, name_param->valuestring, sizeof(rule.name) - 1);
-    
-    // 图标（可选）
-    cJSON *icon = cJSON_GetObjectItem(params, "icon");
-    if (icon && cJSON_IsString(icon)) {
-        strncpy(rule.icon, icon->valuestring, sizeof(rule.icon) - 1);
-    } else {
-        strncpy(rule.icon, "⚡", sizeof(rule.icon) - 1);
-    }
-    
-    // 可选参数
-    cJSON *enabled = cJSON_GetObjectItem(params, "enabled");
-    rule.enabled = enabled ? cJSON_IsTrue(enabled) : true;
-    
-    // 手动触发标记
-    cJSON *manual_trigger = cJSON_GetObjectItem(params, "manual_trigger");
-    rule.manual_trigger = manual_trigger ? cJSON_IsTrue(manual_trigger) : false;
-    
-    cJSON *cooldown = cJSON_GetObjectItem(params, "cooldown_ms");
-    rule.cooldown_ms = cooldown && cJSON_IsNumber(cooldown) ? (uint32_t)cooldown->valueint : 0;
-
-    // 解析条件数组
-    cJSON *conditions = cJSON_GetObjectItem(params, "conditions");
-    if (conditions && cJSON_IsArray(conditions)) {
-        int cond_count = cJSON_GetArraySize(conditions);
-        if (cond_count > 0) {
-            rule.conditions.conditions = heap_caps_calloc(cond_count, sizeof(ts_auto_condition_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (rule.conditions.conditions) {
-                rule.conditions.count = cond_count;
-                
-                cJSON *logic_param = cJSON_GetObjectItem(params, "logic");
-                if (logic_param && cJSON_IsString(logic_param) && strcmp(logic_param->valuestring, "or") == 0) {
-                    rule.conditions.logic = TS_AUTO_LOGIC_OR;
-                } else {
-                    rule.conditions.logic = TS_AUTO_LOGIC_AND;
-                }
-                
-                int idx = 0;
-                cJSON *cond;
-                cJSON_ArrayForEach(cond, conditions) {
-                    ts_auto_condition_t *c = &rule.conditions.conditions[idx];
-                    
-                    cJSON *var = cJSON_GetObjectItem(cond, "variable");
-                    cJSON *op = cJSON_GetObjectItem(cond, "operator");
-                    cJSON *val = cJSON_GetObjectItem(cond, "value");
-                    
-                    if (var && cJSON_IsString(var)) {
-                        strncpy(c->variable, var->valuestring, sizeof(c->variable) - 1);
-                    }
-                    if (op && cJSON_IsString(op)) {
-                        c->op = parse_operator(op->valuestring);
-                    }
-                    if (val) {
-                        if (cJSON_IsBool(val)) {
-                            c->value.type = TS_AUTO_VAL_BOOL;
-                            c->value.bool_val = cJSON_IsTrue(val);
-                        } else if (cJSON_IsNumber(val)) {
-                            c->value.type = TS_AUTO_VAL_FLOAT;
-                            c->value.float_val = val->valuedouble;
-                        } else if (cJSON_IsString(val)) {
-                            c->value.type = TS_AUTO_VAL_STRING;
-                            strncpy(c->value.str_val, val->valuestring, sizeof(c->value.str_val) - 1);
-                        }
-                    }
-                    idx++;
-                }
-            }
-        }
-    }
-
-    // 解析动作数组
-    // 支持两种格式：
-    // 1. 模板引用: { "template_id": "xxx", "delay_ms": 0 }
-    // 2. 内联定义: { "type": "led", "device": "board", ... } (向后兼容)
-    cJSON *actions = cJSON_GetObjectItem(params, "actions");
-    if (actions && cJSON_IsArray(actions)) {
-        int act_count = cJSON_GetArraySize(actions);
-        if (act_count > 0) {
-            rule.actions = heap_caps_calloc(act_count, sizeof(ts_auto_action_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (rule.actions) {
-                rule.action_count = act_count;
-                
-                int idx = 0;
-                cJSON *act;
-                cJSON_ArrayForEach(act, actions) {
-                    ts_auto_action_t *a = &rule.actions[idx];
-                    
-                    // 检查是否是模板引用
-                    cJSON *template_id = cJSON_GetObjectItem(act, "template_id");
-                    if (template_id && cJSON_IsString(template_id)) {
-                        // 从动作模板获取配置
-                        ts_action_template_t tpl;
-                        if (ts_action_template_get(template_id->valuestring, &tpl) == ESP_OK) {
-                            // 复制动作配置
-                            memcpy(a, &tpl.action, sizeof(ts_auto_action_t));
-                            
-                            // 保存模板 ID 用于追踪
-                            strncpy(a->template_id, template_id->valuestring, sizeof(a->template_id) - 1);
-                            
-                            // 如果提供了覆盖的 delay_ms，使用它
-                            cJSON *delay = cJSON_GetObjectItem(act, "delay_ms");
-                            if (delay && cJSON_IsNumber(delay)) {
-                                a->delay_ms = (uint16_t)delay->valueint;
-                            }
-                            
-                            // 解析重复执行选项
-                            cJSON *repeat_mode = cJSON_GetObjectItem(act, "repeat_mode");
-                            if (repeat_mode && cJSON_IsString(repeat_mode)) {
-                                if (strcmp(repeat_mode->valuestring, "while_true") == 0) {
-                                    a->repeat_mode = TS_AUTO_REPEAT_WHILE_TRUE;
-                                } else if (strcmp(repeat_mode->valuestring, "count") == 0) {
-                                    a->repeat_mode = TS_AUTO_REPEAT_COUNT;
-                                } else {
-                                    a->repeat_mode = TS_AUTO_REPEAT_ONCE;
-                                }
-                            }
-                            
-                            cJSON *repeat_count = cJSON_GetObjectItem(act, "repeat_count");
-                            if (repeat_count && cJSON_IsNumber(repeat_count)) {
-                                a->repeat_count = (uint8_t)repeat_count->valueint;
-                            }
-                            
-                            cJSON *repeat_interval = cJSON_GetObjectItem(act, "repeat_interval_ms");
-                            if (repeat_interval && cJSON_IsNumber(repeat_interval)) {
-                                a->repeat_interval_ms = (uint16_t)repeat_interval->valueint;
-                            }
-                            
-                            // 解析动作级别的条件
-                            cJSON *action_cond = cJSON_GetObjectItem(act, "condition");
-                            if (action_cond && cJSON_IsObject(action_cond)) {
-                                a->condition.has_condition = true;
-                                
-                                cJSON *cond_var = cJSON_GetObjectItem(action_cond, "variable");
-                                cJSON *cond_op = cJSON_GetObjectItem(action_cond, "operator");
-                                cJSON *cond_val = cJSON_GetObjectItem(action_cond, "value");
-                                
-                                if (cond_var && cJSON_IsString(cond_var)) {
-                                    strncpy(a->condition.variable, cond_var->valuestring, 
-                                            sizeof(a->condition.variable) - 1);
-                                }
-                                if (cond_op && cJSON_IsString(cond_op)) {
-                                    a->condition.op = parse_operator(cond_op->valuestring);
-                                }
-                                if (cond_val) {
-                                    if (cJSON_IsBool(cond_val)) {
-                                        a->condition.value.type = TS_AUTO_VAL_BOOL;
-                                        a->condition.value.bool_val = cJSON_IsTrue(cond_val);
-                                    } else if (cJSON_IsNumber(cond_val)) {
-                                        a->condition.value.type = TS_AUTO_VAL_FLOAT;
-                                        a->condition.value.float_val = cond_val->valuedouble;
-                                    } else if (cJSON_IsString(cond_val)) {
-                                        a->condition.value.type = TS_AUTO_VAL_STRING;
-                                        strncpy(a->condition.value.str_val, cond_val->valuestring, 
-                                                sizeof(a->condition.value.str_val) - 1);
-                                    }
-                                }
-                                
-                                TS_LOGI(TAG, "Action condition: %s %d ...", 
-                                         a->condition.variable, a->condition.op);
-                            }
-                            
-                            TS_LOGI(TAG, "Rule action from template: %s (type=%d, repeat=%d)", 
-                                     template_id->valuestring, a->type, a->repeat_mode);
-                        } else {
-                            TS_LOGW(TAG, "Action template not found: %s, using LOG action as placeholder", 
-                                    template_id->valuestring);
-                            // 设置为 LOG 类型，记录错误信息
-                            a->type = TS_AUTO_ACT_LOG;
-                            a->log.level = 2; // ESP_LOG_WARN
-                            snprintf(a->log.message, sizeof(a->log.message), 
-                                    "Missing action template: %s", template_id->valuestring);
-                        }
-                        idx++;
-                        continue;
-                    }
-                    
-                    // 向后兼容：内联动作定义
-                    cJSON *type = cJSON_GetObjectItem(act, "type");
-                    if (type && cJSON_IsString(type)) {
-                        a->type = parse_action_type(type->valuestring);
-                    }
-                    
-                    cJSON *delay = cJSON_GetObjectItem(act, "delay_ms");
-                    a->delay_ms = delay && cJSON_IsNumber(delay) ? (uint16_t)delay->valueint : 0;
-                    
-                    // 根据类型解析参数
-                    switch (a->type) {
-                        case TS_AUTO_ACT_LED: {
-                            cJSON *device = cJSON_GetObjectItem(act, "device");
-                            cJSON *index = cJSON_GetObjectItem(act, "index");
-                            cJSON *r = cJSON_GetObjectItem(act, "r");
-                            cJSON *g = cJSON_GetObjectItem(act, "g");
-                            cJSON *b = cJSON_GetObjectItem(act, "b");
-                            cJSON *effect = cJSON_GetObjectItem(act, "effect");
-                            cJSON *duration = cJSON_GetObjectItem(act, "duration");
-                            
-                            if (device && cJSON_IsString(device)) {
-                                strncpy(a->led.device, device->valuestring, sizeof(a->led.device) - 1);
-                            }
-                            a->led.index = index && cJSON_IsNumber(index) ? (uint8_t)index->valueint : 0xFF;
-                            a->led.r = r && cJSON_IsNumber(r) ? (uint8_t)r->valueint : 0;
-                            a->led.g = g && cJSON_IsNumber(g) ? (uint8_t)g->valueint : 0;
-                            a->led.b = b && cJSON_IsNumber(b) ? (uint8_t)b->valueint : 0;
-                            if (effect && cJSON_IsString(effect)) {
-                                strncpy(a->led.effect, effect->valuestring, sizeof(a->led.effect) - 1);
-                                TS_LOGI(TAG, "Parsed LED action: device=%s, effect=%s", 
-                                        a->led.device, a->led.effect);
-                            }
-                            a->led.duration_ms = duration && cJSON_IsNumber(duration) ? (uint16_t)duration->valueint : 0;
-                            break;
-                        }
-                        case TS_AUTO_ACT_GPIO: {
-                            cJSON *pin = cJSON_GetObjectItem(act, "pin");
-                            cJSON *level = cJSON_GetObjectItem(act, "level");
-                            cJSON *pulse = cJSON_GetObjectItem(act, "pulse_ms");
-                            
-                            a->gpio.pin = pin && cJSON_IsNumber(pin) ? (uint8_t)pin->valueint : 0;
-                            a->gpio.level = level && cJSON_IsTrue(level);
-                            a->gpio.pulse_ms = pulse && cJSON_IsNumber(pulse) ? (uint32_t)pulse->valueint : 0;
-                            break;
-                        }
-                        case TS_AUTO_ACT_DEVICE_CTRL: {
-                            cJSON *device = cJSON_GetObjectItem(act, "device");
-                            cJSON *action = cJSON_GetObjectItem(act, "action");
-                            
-                            if (device && cJSON_IsString(device)) {
-                                strncpy(a->device.device, device->valuestring, sizeof(a->device.device) - 1);
-                            }
-                            if (action && cJSON_IsString(action)) {
-                                strncpy(a->device.action, action->valuestring, sizeof(a->device.action) - 1);
-                            }
-                            break;
-                        }
-                        case TS_AUTO_ACT_LOG: {
-                            cJSON *message = cJSON_GetObjectItem(act, "message");
-                            cJSON *level = cJSON_GetObjectItem(act, "level");
-                            
-                            if (message && cJSON_IsString(message)) {
-                                strncpy(a->log.message, message->valuestring, sizeof(a->log.message) - 1);
-                            }
-                            a->log.level = level && cJSON_IsNumber(level) ? (uint8_t)level->valueint : 3; // ESP_LOG_INFO
-                            break;
-                        }
-                        case TS_AUTO_ACT_SET_VAR: {
-                            cJSON *var = cJSON_GetObjectItem(act, "variable");
-                            cJSON *val = cJSON_GetObjectItem(act, "value");
-                            
-                            if (var && cJSON_IsString(var)) {
-                                strncpy(a->set_var.variable, var->valuestring, sizeof(a->set_var.variable) - 1);
-                            }
-                            if (val) {
-                                if (cJSON_IsBool(val)) {
-                                    a->set_var.value.type = TS_AUTO_VAL_BOOL;
-                                    a->set_var.value.bool_val = cJSON_IsTrue(val);
-                                } else if (cJSON_IsNumber(val)) {
-                                    a->set_var.value.type = TS_AUTO_VAL_FLOAT;
-                                    a->set_var.value.float_val = val->valuedouble;
-                                } else if (cJSON_IsString(val)) {
-                                    a->set_var.value.type = TS_AUTO_VAL_STRING;
-                                    strncpy(a->set_var.value.str_val, val->valuestring, sizeof(a->set_var.value.str_val) - 1);
-                                }
-                            }
-                            break;
-                        }
-                        case TS_AUTO_ACT_WEBHOOK: {
-                            cJSON *url = cJSON_GetObjectItem(act, "url");
-                            cJSON *method = cJSON_GetObjectItem(act, "method");
-                            cJSON *body = cJSON_GetObjectItem(act, "body");
-                            
-                            if (url && cJSON_IsString(url)) {
-                                strncpy(a->webhook.url, url->valuestring, sizeof(a->webhook.url) - 1);
-                            }
-                            if (method && cJSON_IsString(method)) {
-                                strncpy(a->webhook.method, method->valuestring, sizeof(a->webhook.method) - 1);
-                            } else {
-                                strcpy(a->webhook.method, "POST");
-                            }
-                            if (body && cJSON_IsString(body)) {
-                                strncpy(a->webhook.body_template, body->valuestring, sizeof(a->webhook.body_template) - 1);
-                            }
-                            break;
-                        }
-                        case TS_AUTO_ACT_SSH_CMD_REF: {
-                            cJSON *cmd_id = cJSON_GetObjectItem(act, "cmd_id");
-                            if (cmd_id && cJSON_IsString(cmd_id)) {
-                                strncpy(a->ssh_ref.cmd_id, cmd_id->valuestring, sizeof(a->ssh_ref.cmd_id) - 1);
-                                TS_LOGI(TAG, "Parsed SSH_CMD_REF action: cmd_id=%s", a->ssh_ref.cmd_id);
-                            }
-                            break;
-                        }
-                        default:
-                            break;
-                    }
-                    
-                    // 解析内联动作的条件
-                    cJSON *action_cond = cJSON_GetObjectItem(act, "condition");
-                    if (action_cond && cJSON_IsObject(action_cond)) {
-                        a->condition.has_condition = true;
-                        
-                        cJSON *cond_var = cJSON_GetObjectItem(action_cond, "variable");
-                        cJSON *cond_op = cJSON_GetObjectItem(action_cond, "operator");
-                        cJSON *cond_val = cJSON_GetObjectItem(action_cond, "value");
-                        
-                        if (cond_var && cJSON_IsString(cond_var)) {
-                            strncpy(a->condition.variable, cond_var->valuestring, 
-                                    sizeof(a->condition.variable) - 1);
-                        }
-                        if (cond_op && cJSON_IsString(cond_op)) {
-                            a->condition.op = parse_operator(cond_op->valuestring);
-                        }
-                        if (cond_val) {
-                            if (cJSON_IsBool(cond_val)) {
-                                a->condition.value.type = TS_AUTO_VAL_BOOL;
-                                a->condition.value.bool_val = cJSON_IsTrue(cond_val);
-                            } else if (cJSON_IsNumber(cond_val)) {
-                                a->condition.value.type = TS_AUTO_VAL_FLOAT;
-                                a->condition.value.float_val = cond_val->valuedouble;
-                            } else if (cJSON_IsString(cond_val)) {
-                                a->condition.value.type = TS_AUTO_VAL_STRING;
-                                strncpy(a->condition.value.str_val, cond_val->valuestring, 
-                                        sizeof(a->condition.value.str_val) - 1);
-                            }
-                        }
-                    }
-                    idx++;
-                }
-            }
-        }
-    }
-
-    esp_err_t ret = ts_rule_register(&rule);
-    
-    // 释放分配的内存（ts_rule_register 会复制数据）
-    if (rule.conditions.conditions) {
-        free(rule.conditions.conditions);
-    }
-    if (rule.actions) {
-        free(rule.actions);
-    }
-    
-    if (ret == ESP_OK) {
-        result->code = TS_API_OK;
-        result->message = strdup("Rule created successfully");
-        result->data = cJSON_CreateObject();
-        cJSON_AddStringToObject(result->data, "id", rule.id);
-    } else if (ret == ESP_ERR_NO_MEM) {
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("No memory for new rule");
-    } else if (ret == ESP_ERR_INVALID_STATE) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Rule with this ID already exists");
-    } else {
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to create rule");
-    }
-    
-    return ESP_OK;
+static esp_err_t api_automation_rules_add(const cJSON *params, ts_api_result_t *result) {
+    return rule_mutate(params, result, 0);
 }
 
 /**
  * @brief automation.rules.delete - Delete a rule
  */
-static esp_err_t api_automation_rules_delete(const cJSON *params, ts_api_result_t *result)
-{
-    cJSON *id_param = cJSON_GetObjectItem(params, "id");
-    if (!id_param || !cJSON_IsString(id_param)) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Missing 'id' parameter");
-        return ESP_OK;
-    }
-
-    const char *rule_id = id_param->valuestring;
-    esp_err_t ret = ts_rule_unregister(rule_id);
-    
-    if (ret == ESP_OK) {
-        // 同时删除 SD 卡上的配置文件（.json 和 .tscfg）
-        char filepath[128];
-        snprintf(filepath, sizeof(filepath), "%s/%s.json", RULES_SDCARD_DIR, rule_id);
-        if (unlink(filepath) == 0) {
-            TS_LOGI(TAG, "Deleted rule config: %s", filepath);
-        }
-        snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", RULES_SDCARD_DIR, rule_id);
-        if (unlink(filepath) == 0) {
-            TS_LOGI(TAG, "Deleted rule config pack: %s", filepath);
-        }
-        
-        result->code = TS_API_OK;
-        result->message = strdup("Rule deleted");
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        result->code = TS_API_ERR_NOT_FOUND;
-        result->message = strdup("Rule not found");
-    } else {
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to delete rule");
-    }
-    
-    return ESP_OK;
+static esp_err_t api_automation_rules_delete(const cJSON *params, ts_api_result_t *result) {
+    return rule_mutate(params, result, 3);
 }
 
 /*===========================================================================*/
@@ -4184,7 +3637,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
     }
     // Copy to avoid holding lock
     memcpy(&source_copy, source, sizeof(ts_auto_source_t));
-    
+
     // Build export JSON
     cJSON *export_json = cJSON_CreateObject();
     cJSON_AddStringToObject(export_json, "type", "automation_source");
@@ -4395,105 +3848,6 @@ static esp_err_t api_automation_sources_import(const cJSON *params, ts_api_resul
 /**
  * @brief Serialize rule to JSON for export
  */
-static cJSON *rule_to_export_json(const ts_auto_rule_t *rule)
-{
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "id", rule->id);
-    cJSON_AddStringToObject(obj, "name", rule->name);
-    if (rule->icon[0]) {
-        cJSON_AddStringToObject(obj, "icon", rule->icon);
-    }
-    cJSON_AddBoolToObject(obj, "enabled", rule->enabled);
-    cJSON_AddBoolToObject(obj, "manual_trigger", rule->manual_trigger);
-    cJSON_AddNumberToObject(obj, "cooldown_ms", rule->cooldown_ms);
-    cJSON_AddStringToObject(obj, "logic", 
-                            rule->conditions.logic == TS_AUTO_LOGIC_OR ? "or" : "and");
-    
-    // Conditions
-    cJSON *conditions = cJSON_AddArrayToObject(obj, "conditions");
-    for (int i = 0; i < rule->conditions.count; i++) {
-        const ts_auto_condition_t *c = &rule->conditions.conditions[i];
-        cJSON *cond = cJSON_CreateObject();
-        cJSON_AddStringToObject(cond, "variable", c->variable);
-        cJSON_AddStringToObject(cond, "operator", operator_to_string(c->op));
-        switch (c->value.type) {
-            case TS_AUTO_VAL_BOOL:
-                cJSON_AddBoolToObject(cond, "value", c->value.bool_val);
-                break;
-            case TS_AUTO_VAL_INT:
-                cJSON_AddNumberToObject(cond, "value", c->value.int_val);
-                break;
-            case TS_AUTO_VAL_FLOAT:
-                cJSON_AddNumberToObject(cond, "value", c->value.float_val);
-                break;
-            case TS_AUTO_VAL_STRING:
-                cJSON_AddStringToObject(cond, "value", c->value.str_val);
-                break;
-            default:
-                cJSON_AddNullToObject(cond, "value");
-                break;
-        }
-        cJSON_AddItemToArray(conditions, cond);
-    }
-    
-    // Actions
-    cJSON *actions = cJSON_AddArrayToObject(obj, "actions");
-    for (int i = 0; i < rule->action_count; i++) {
-        const ts_auto_action_t *a = &rule->actions[i];
-        cJSON *act = cJSON_CreateObject();
-        
-        const char *type_str = "log";
-        switch (a->type) {
-            case TS_AUTO_ACT_LED: type_str = "led"; break;
-            case TS_AUTO_ACT_GPIO: type_str = "gpio"; break;
-            case TS_AUTO_ACT_DEVICE_CTRL: type_str = "device"; break;
-            case TS_AUTO_ACT_CLI: type_str = "cli"; break;
-            case TS_AUTO_ACT_LOG: type_str = "log"; break;
-            case TS_AUTO_ACT_SET_VAR: type_str = "set_var"; break;
-            case TS_AUTO_ACT_WEBHOOK: type_str = "webhook"; break;
-            case TS_AUTO_ACT_SSH_CMD: type_str = "ssh"; break;
-            case TS_AUTO_ACT_SSH_CMD_REF: type_str = "ssh_cmd_ref"; break;
-            default: type_str = "log"; break;
-        }
-        cJSON_AddStringToObject(act, "type", type_str);
-        cJSON_AddNumberToObject(act, "delay_ms", a->delay_ms);
-        
-        if (a->template_id[0]) {
-            cJSON_AddStringToObject(act, "template_id", a->template_id);
-        }
-        
-        // Type-specific fields
-        switch (a->type) {
-            case TS_AUTO_ACT_LED:
-                cJSON_AddStringToObject(act, "device", a->led.device);
-                cJSON_AddNumberToObject(act, "index", a->led.index);
-                cJSON_AddNumberToObject(act, "r", a->led.r);
-                cJSON_AddNumberToObject(act, "g", a->led.g);
-                cJSON_AddNumberToObject(act, "b", a->led.b);
-                if (a->led.effect[0]) {
-                    cJSON_AddStringToObject(act, "effect", a->led.effect);
-                }
-                cJSON_AddNumberToObject(act, "duration_ms", a->led.duration_ms);
-                break;
-            case TS_AUTO_ACT_CLI:
-                cJSON_AddStringToObject(act, "command", a->cli.command);
-                break;
-            case TS_AUTO_ACT_LOG:
-                cJSON_AddStringToObject(act, "message", a->log.message);
-                cJSON_AddNumberToObject(act, "level", a->log.level);
-                break;
-            case TS_AUTO_ACT_SSH_CMD_REF:
-                cJSON_AddStringToObject(act, "cmd_id", a->ssh_ref.cmd_id);
-                break;
-            default:
-                break;
-        }
-        
-        cJSON_AddItemToArray(actions, act);
-    }
-    
-    return obj;
-}
 
 /**
  * @brief automation.rules.export - Export rule as config pack
@@ -4516,18 +3870,27 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
             "This device is not authorized to export config packs");
         return ESP_OK;
     }
-    
-    const ts_auto_rule_t *rule = ts_rule_get(id->valuestring);
-    if (!rule) {
+
+    ts_auto_rule_t snapshot;
+    if (ts_rule_acquire(id->valuestring, &snapshot) != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Rule not found");
         return ESP_OK;
     }
-    
+
+    char rule_id[TS_AUTO_NAME_MAX_LEN];
+    strcpy(rule_id, snapshot.id);
     // Build export JSON
     cJSON *export_json = cJSON_CreateObject();
     cJSON_AddStringToObject(export_json, "type", "automation_rule");
-    cJSON_AddItemToObject(export_json, "rule", rule_to_export_json(rule));
-    
+    cJSON *encoded = ts_rule_encode(&snapshot);
+    ts_rule_release(&snapshot);
+    if (!encoded || !export_json || !cJSON_AddItemToObject(export_json, "rule", encoded)) {
+        cJSON_Delete(encoded);
+        cJSON_Delete(export_json);
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "no_memory");
+        return ESP_OK;
+    }
+
     char *json_str = cJSON_PrintUnformatted(export_json);
     cJSON_Delete(export_json);
     if (!json_str) {
@@ -4571,9 +3934,9 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
     
     char *tscfg_output = NULL;
     size_t tscfg_len = 0;
-    ts_config_pack_result_t pack_result = ts_config_pack_create(
-        rule->id, json_str, strlen(json_str), &opts, &tscfg_output, &tscfg_len);
-    
+    ts_config_pack_result_t pack_result = ts_config_pack_create(rule_id, json_str, strlen(json_str),
+                                                                &opts, &tscfg_output, &tscfg_len);
+
     cJSON_free(json_str);
     if (free_cert) free(cert_pem);
     
@@ -4586,7 +3949,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "tscfg", tscfg_output);
     char filename[80];
-    snprintf(filename, sizeof(filename), "rule_%s.tscfg", rule->id);
+    snprintf(filename, sizeof(filename), "rule_%s.tscfg", rule_id);
     cJSON_AddStringToObject(data, "filename", filename);
     
     free(tscfg_output);
@@ -4683,45 +4046,9 @@ static esp_err_t api_automation_rules_import(const cJSON *params, ts_api_result_
         ts_api_result_ok(result, data);
         return ESP_OK;
     }
-    
-    // Ensure directory exists
-    if (stat(RULES_SDCARD_DIR, &st) != 0) {
-        mkdir(RULES_SDCARD_DIR, 0755);
-    }
-    
-    // Save .tscfg file
-    snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", RULES_SDCARD_DIR, config_id);
-    FILE *f = fopen(filepath, "w");
-    if (!f) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config file");
-        return ESP_OK;
-    }
-    
-    size_t written = fwrite(tscfg->valuestring, 1, strlen(tscfg->valuestring), f);
-    fclose(f);
-    
-    if (written != strlen(tscfg->valuestring)) {
-        unlink(filepath);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to write config file");
-        return ESP_OK;
-    }
-    
-    // Delete old .json if overwriting
-    if (do_overwrite) {
-        char json_path[128];
-        snprintf(json_path, sizeof(json_path), "%s/%s.json", RULES_SDCARD_DIR, config_id);
-        unlink(json_path);
-    }
-    
-    TS_LOGI(TAG, "Rule config imported: %s (will be loaded on restart)", filepath);
-    
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddStringToObject(data, "id", config_id);
-    cJSON_AddStringToObject(data, "path", filepath);
-    cJSON_AddBoolToObject(data, "imported", true);
-    cJSON_AddBoolToObject(data, "overwritten", exists && do_overwrite);
-    cJSON_AddStringToObject(data, "note", "Restart system to load the new config");
-    ts_api_result_ok(result, data);
+
+    ts_api_result_error(result, TS_API_ERR_INVALID_ARG,
+                        "source_read_only: encrypted rule import requires a recoverable writer");
     return ESP_OK;
 }
 
@@ -5151,6 +4478,16 @@ esp_err_t ts_api_automation_register(void)
     };
     ts_api_register(&ep_rules_get);
 
+    ts_api_endpoint_t ep_service = {.name = "automation.services.status",
+                                    .description = "Confirm managed remote process state",
+                                    .category = TS_API_CAT_SYSTEM,
+                                    .handler = api_service_status,
+                                    .requires_auth = true};
+    ts_api_register(&ep_service);
+    ep_service.name = "automation.services.stop";
+    ep_service.handler = api_service_stop;
+    ep_service.description = "Stop verified managed remote process";
+    ts_api_register(&ep_service);
     ts_api_endpoint_t ep_rules_trigger = {
         .name = "automation.rules.trigger",
         .description = "Manually trigger a rule",
@@ -5168,6 +4505,10 @@ esp_err_t ts_api_automation_register(void)
         .requires_auth = true,
     };
     ts_api_register(&ep_rules_add);
+    ts_api_endpoint_t ep_rules_update = ep_rules_add;
+    ep_rules_update.name = "automation.rules.update";
+    ep_rules_update.description = "Update rule with expected revision";
+    ts_api_register(&ep_rules_update);
 
     ts_api_endpoint_t ep_rules_delete = {
         .name = "automation.rules.delete",

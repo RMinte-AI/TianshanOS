@@ -1,0 +1,71 @@
+{
+  "requests": [
+    {
+      "url": "http://fixture.local/",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/css/style.css?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/fonts/remixicon.css?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/images/tslogo-48.png",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/js/api.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/js/router.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/js/terminal.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/js/dragSort.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/js/app.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/js/lang/zh-CN.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/fonts/remixicon.woff2",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/api/v1/ota/version",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/images/tslogo-32.png",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/vendor/xterm/xterm.css?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/vendor/xterm/xterm.min.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    },
+    {
+      "url": "http://fixture.local/vendor/xterm/fit.min.js?v=20260928-local-xterm",
+      "origin": "http://fixture.local"
+    }
+  ],
+  "errors": [],
+  "realXterm": true,
+  "externalRequests": 0
+}

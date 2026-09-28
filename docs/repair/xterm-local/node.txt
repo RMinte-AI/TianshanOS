@@ -1,0 +1,53 @@
+
+> test
+> cd ../.. && node --test tests/prompts/static.test.cjs tests/prompts/regression.test.cjs
+
+✔ zh-CN: actual inline translator, cold language, missing/objects/parameters and confirmations (15.730084ms)
+✔ zh-CN: REST business failure remains returned; strict operation rejects with original metadata (6.203792ms)
+✔ zh-CN: timeout covers response body; result stays unknown for POST (8.026375ms)
+✔ zh-CN: toast timer replacement, priority, safe multiline text (5.502125ms)
+✔ zh-CN: actual mutations do not report success or close dialogs on business failures (5.626625ms)
+✔ zh-CN: batch deletion all / partial / no success with business errors (4.978959ms)
+✔ zh-CN: downloads propagate actual initiation failures and retain batch details (5.521042ms)
+✔ zh-CN: file names are text; upload/verification/apply remain separate (5.504667ms)
+✔ zh-CN: SSH actual event handler honors terminal states and diagnoses conflicts (4.7525ms)
+✔ zh-CN: background command timeout is unconfirmed and never resubmitted (5.7085ms)
+✔ zh-CN: terminal restoration waits for acknowledgement; timeout/failure stay distinct (5.863333ms)
+✔ zh-CN: ping results are reachability only; failed probe is unknown and no pulse replay (5.307125ms)
+✔ zh-CN: websocket label matches color across language changes and power warnings persist (4.848666ms)
+✔ en-US: actual inline translator, cold language, missing/objects/parameters and confirmations (4.982166ms)
+✔ en-US: REST business failure remains returned; strict operation rejects with original metadata (4.595125ms)
+✔ en-US: timeout covers response body; result stays unknown for POST (6.167833ms)
+✔ en-US: toast timer replacement, priority, safe multiline text (5.60625ms)
+✔ en-US: actual mutations do not report success or close dialogs on business failures (5.592667ms)
+✔ en-US: batch deletion all / partial / no success with business errors (5.326666ms)
+✔ en-US: downloads propagate actual initiation failures and retain batch details (5.496708ms)
+✔ en-US: file names are text; upload/verification/apply remain separate (5.433791ms)
+✔ en-US: SSH actual event handler honors terminal states and diagnoses conflicts (7.831042ms)
+✔ en-US: background command timeout is unconfirmed and never resubmitted (4.648625ms)
+✔ en-US: terminal restoration waits for acknowledgement; timeout/failure stay distinct (4.474958ms)
+✔ en-US: ping results are reachability only; failed probe is unknown and no pulse replay (4.458208ms)
+✔ en-US: websocket label matches color across language changes and power warnings persist (4.239083ms)
+✔ zh-CN: upload and download aggregates cover all success and all failure (4.610875ms)
+✔ zh-CN: key deployment requires successful business code and distinguishes verification (5.354333ms)
+✔ zh-CN: real LED/status renderers localize finite built-in identifiers (4.810584ms)
+✔ en-US: upload and download aggregates cover all success and all failure (4.728291ms)
+✔ en-US: key deployment requires successful business code and distinguishes verification (5.131292ms)
+✔ en-US: real LED/status renderers localize finite built-in identifiers (4.838458ms)
+✔ zh-CN: widget dynamic families render real labels and literal braces in names remain valid (4.638625ms)
+✔ zh-CN: unknown stop result never escalates to forced termination (5.698834ms)
+✔ en-US: widget dynamic families render real labels and literal braces in names remain valid (5.041667ms)
+✔ en-US: unknown stop result never escalates to forced termination (4.4465ms)
+✔ zh-CN: J1 power alerts preserve local line, SSH ownership, transition guards and filtering (5.1135ms)
+✔ en-US: J1 power alerts preserve local line, SSH ownership, transition guards and filtering (4.793083ms)
+Checked 3066 references including conditional and finite dynamic families.
+✔ actual UI literal/conditional and finite dynamic keys exist in both languages with matching contracts (5.766583ms)
+✔ production i18n is the inline entry; no second translator script is loaded (0.089625ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 257.469375

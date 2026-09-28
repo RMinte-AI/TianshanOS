@@ -1,0 +1,15 @@
+PASS R1/R4 real busy stop: existing task and full fanout continue with no new business message; retry succeeds
+PASS HTTPD barrier timeout retains worker and retry state
+PASS R3: real role change drops old queued logs, including unsubscribe/resubscribe ABA
+R5 observed system.dashboard: 75 delivered frames
+R5 observed system.info: 75 delivered frames
+R5 observed system.memory: 75 delivered frames
+R5 observed system.cpu: 75 delivered frames
+R5 observed network.status: 75 delivered frames
+R5 observed power.status: 75 delivered frames
+R5 observed fan.status: 75 delivered frames
+R5 observed service.list: 75 delivered frames
+PASS R5: all eight topics progress under six-slot pressure; no API collection without message/descriptor/byte capacity
+PASS R4 service: stop errors retain registry/dependencies; retry drains then releases ownership
+PASS R4 core: real event drain timeout retains downstream resources; service/config/log errors propagate; partial deinit retries succeed
+PASS R1 HTTP admission: stopping rejects writes before body/handler execution; reads and resumed admission remain valid

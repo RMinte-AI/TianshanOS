@@ -1,0 +1,2 @@
+PASS 16 failure schedules: encode/SDK/socket/stale peer, early/deferred done, duplicate tokens do not double-settle
+PASS production operation/TX: 36 barrier schedules, ticket/target ledgers and B09 executor retention; destroyed=36

@@ -78,6 +78,7 @@ static void print_status_json(const ts_cert_pki_status_t *status)
         ts_console_printf("    \"issuer\": \"%s\",\n", status->cert_info.issuer_cn);
         ts_console_printf("    \"serial\": \"%s\",\n", status->cert_info.serial);
         ts_console_printf("    \"valid\": %s,\n", status->cert_info.is_valid ? "true" : "false");
+        ts_console_printf("    \"validity\": \"%s\",\n", ts_cert_validity_to_str(status->cert_info.validity));
         ts_console_printf("    \"days_until_expiry\": %d\n", status->cert_info.days_until_expiry);
         ts_console_printf("  }\n");
     } else {
@@ -99,7 +100,7 @@ static void print_status_text(const ts_cert_pki_status_t *status)
     
     switch (status->status) {
         case TS_CERT_STATUS_ACTIVATED:
-            status_str = "ACTIVATED";
+            status_str = "TIME VALID";
             status_color = "\033[32m";  /* Green */
             break;
         case TS_CERT_STATUS_KEY_GENERATED:
@@ -110,6 +111,12 @@ static void print_status_text(const ts_cert_pki_status_t *status)
             status_str = "CSR PENDING";
             status_color = "\033[33m";  /* Yellow */
             break;
+        case TS_CERT_STATUS_TIME_UNVERIFIED:
+            status_str = "TIME UNVERIFIED"; status_color = "\033[33m"; break;
+        case TS_CERT_STATUS_NOT_YET_VALID:
+            status_str = "NOT YET VALID"; status_color = "\033[33m"; break;
+        case TS_CERT_STATUS_ERROR:
+            status_str = "MATERIAL ERROR"; status_color = "\033[31m"; break;
         case TS_CERT_STATUS_EXPIRED:
             status_str = "EXPIRED";
             status_color = "\033[31m";  /* Red */
@@ -142,7 +149,7 @@ static void print_status_text(const ts_cert_pki_status_t *status)
                                  status->cert_info.days_until_expiry);
             }
         } else {
-            ts_console_printf("║ Validity: \033[31mExpired\033[0m                        ║\n");
+            ts_console_printf("║ Validity: %-30s ║\n", ts_cert_validity_to_str(status->cert_info.validity));
         }
     }
     
@@ -352,7 +359,7 @@ static int cmd_pki_install(const char *filepath, bool is_ca)
     long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
     
-    if (file_size <= 0 || file_size > TS_CERT_PEM_MAX_LEN) {
+    if (file_size <= 0 || file_size >= TS_CERT_INSTALL_MAX_LEN) {
         fclose(f);
         ts_console_printf("Error: Invalid file size\n");
         return 1;
@@ -488,7 +495,9 @@ static int cmd_pki_handler(int argc, char **argv)
         ts_console_printf("  Issuer:   %s\n", info.issuer_cn);
         ts_console_printf("  Serial:   %s\n", info.serial);
         ts_console_printf("  Valid:    %s\n", info.is_valid ? "Yes" : "No");
-        ts_console_printf("  Expires:  %d days\n", info.days_until_expiry);
+        ts_console_printf("  Time validity: %s\n", ts_cert_validity_to_str(info.validity));
+        if (info.time_ready && info.validity != TS_CERT_VALIDITY_INVALID)
+            ts_console_printf("  Expires:  %d days\n", info.days_until_expiry);
         return 0;
     }
     

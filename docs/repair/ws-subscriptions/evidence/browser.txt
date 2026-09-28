@@ -1,0 +1,46 @@
+✔ zh-CN: real index cold start, safe toast/file text, current websocket state (1322.276542ms)
+✔ zh-CN: initial language failure blocks controls and retry recovers (253.712708ms)
+✔ en-US: real index cold start, safe toast/file text, current websocket state (293.583417ms)
+✔ en-US: initial language failure blocks controls and retry recovers (359.235625ms)
+✔ delayed language package and rapid switches keep the latest requested language (278.384042ms)
+✔ terminal resource failure presents retry; a rejected cached promise is not reused (343.014833ms)
+✔ zh-CN: package confirmation treats names as text and applies only on explicit verified action (341.160416ms)
+✔ en-US: package confirmation treats names as text and applies only on explicit verified action (350.750167ms)
+✔ initial delayed language keeps controls inert until the real package arrives (229.216833ms)
+✔ failed language switch preserves the loaded language; retry clears failure and stale toast (362.679833ms)
+✔ terminal can initialize after failed resource load using newly served resources (394.451292ms)
+✔ review2: successful retry retains old failure zh-CN (1255.2385ms)
+✔ review2: prior completion closes new package confirmation zh-CN (206.934916ms)
+✔ review2: uploaded file missing after dialog close zh-CN (193.256833ms)
+✔ review2: successful retry retains old failure en-US (235.599708ms)
+✔ review2: prior completion closes new package confirmation en-US (260.557208ms)
+✔ review2: uploaded file missing after dialog close en-US (281.35075ms)
+✔ R1: endpoint-specific logout and HTTP errors zh-CN (195.632583ms)
+✔ R3: late validation cannot revive an old apply entry zh-CN (166.452459ms)
+✔ R3: previously opened confirmation loses validity on reupload zh-CN (168.332833ms)
+✔ R4/R5: obsolete errors and finally cannot update newer attempts zh-CN (174.766958ms)
+✔ R6: fixed upload destination and separate refresh failure zh-CN (203.446625ms)
+✔ R6: out-of-order directory success and error do not replace latest list zh-CN (165.160917ms)
+✔ R1: endpoint-specific logout and HTTP errors en-US (260.099834ms)
+✔ R3: late validation cannot revive an old apply entry en-US (241.685167ms)
+✔ R3: previously opened confirmation loses validity on reupload en-US (224.730584ms)
+✔ R4/R5: obsolete errors and finally cannot update newer attempts en-US (243.901292ms)
+✔ R6: fixed upload destination and separate refresh failure en-US (226.192291ms)
+✔ R6: out-of-order directory success and error do not replace latest list en-US (234.449292ms)
+✔ R2: authenticated startup initializes once (271.784208ms)
+✔ R2: obsolete system loader cannot update new page; failed navigation retries (243.631583ms)
+✔ R4/R5: newest result wins over late success and late failure (221.469541ms)
+✔ R3: overlapping writes to one path cannot claim current verified content (227.251833ms)
+✔ R2: disposed page only removes its dashboard callback (267.292417ms)
+✔ R2: stale finally cannot unlock the new page read (214.759ms)
+✔ R1: delayed sign-out does not clear a newer sign-in (218.671084ms)
+✔ WS protocol: actual page subscription class, independent intervals and acknowledgements zh-CN (277.515ms)
+✔ WS protocol: actual page subscription class, independent intervals and acknowledgements en-US (359.278541ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7607.990125

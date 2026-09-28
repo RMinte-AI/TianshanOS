@@ -1,0 +1,5 @@
+{
+  "source": "git show 568b871:components/ts_console/commands/ts_cmd_ssh.c",
+  "basis": "initial workspace was clean for tracked files",
+  "sha256": "4b4edc6e2be0dfedda745d998232bafe99e12496d2ddb8af9f4bb04a5a1bb526"
+}

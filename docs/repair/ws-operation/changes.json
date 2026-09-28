@@ -1,0 +1,29 @@
+{
+  "HEAD": "74b1b646ec4a45f9159bd028e622b13fca5eff75",
+  "scope": "local only; no commit/push/PR/device operations",
+  "source_and_test_sha256": {
+    "components/ts_webui/CMakeLists.txt": "53e02258893758d55edf0debef2e0694b154ecccda65ab3b5bb5d34770c39d45",
+    "components/ts_webui/include/ts_ws_operation.h": "1c57f95fed42db3a478e73755c047b0ab64fe68b5dd3e64d0e6a7a673b6c8c11",
+    "components/ts_webui/include/ts_ws_subscriptions.h": "edcfedcdb48cc47bdd776218d43f362f4f2feb84f0a8bd347b465e3dd751e3ae",
+    "components/ts_webui/include/ts_ws_transport.h": "4c7b996ed4e6a578ce7daa1a02a13729795bd4dca2e66eb8b49895b6f59f36ee",
+    "components/ts_webui/src/ts_webui_ws.c": "ff9eb33748bf3c33a3df99273ec634512e74ca2207b610a8e4ee0791cdb56122",
+    "components/ts_webui/src/ts_ws_operation.c": "db6fa86b5759079e4477cdd9e1239bc1fc2d50c4b59cd007f9886638ce848097",
+    "components/ts_webui/src/ts_ws_subscriptions.c": "9f8d2f33a374d6992a1ef119cd20a791244e44abc8d7cd66dc906b4896f764fb",
+    "components/ts_webui/src/ts_ws_transport.c": "e2eaeb31d00d7996a84badc669ca5587628c63b044c9a8014e587e84b5ab37f8",
+    "tests/ws_subscriptions/baseline_operation_adapter.c": "0b0703b144fa8fc7d412110e55b4d7d2010196e9422deb78ff00185059a5af05",
+    "tests/ws_subscriptions/replay_operation_baseline.py": "ba26a739d9dfb4b30b4e10ac0b3955994738820b85a156406dcaaa9518382cc3",
+    "tests/ws_subscriptions/run_f1_f2.sh": "8e804b7a5c66663a62da53f9027b175722034e5cce77ba152aba8ad13b527935",
+    "tests/ws_subscriptions/run_operation.sh": "bf9d6db03b483d4b74db26e464efc73b673648ef82565edf987e6f275c9ee6c5",
+    "tests/ws_subscriptions/run_operation_adapter.sh": "1a5b900b4c6aae1619b86a285b6371a683263304db90a81d82477d8fb750d3f5",
+    "tests/ws_subscriptions/run_reviewer.sh": "2a957bb5d4e0ca0c357ec32fffb23aa60c75019b60cc4c5c33d468d389013ea8",
+    "tests/ws_subscriptions/stubs/esp_console.h": "f97fca9ebf2a497277d9ac5af3581a2e83789b4acf3e8b125e0f36fb27210151",
+    "tests/ws_subscriptions/stubs/freertos/timers.h": "fd6abec4a547b6e9caed8f0514a08ead4223303736dade89179bb8812a2a5d94",
+    "tests/ws_subscriptions/test_f1_f2.c": "7d4907e42f3a9c7110055acb6ca667abd62a5f16712306c7dde6b85ec285c9b4",
+    "tests/ws_subscriptions/test_init.c": "49b7ade237c4fe5df5fe683f4ec731c222cc4939b91b19d976471e99d29173c7",
+    "tests/ws_subscriptions/test_manager.c": "a1b46f3ad3a877a5cfd1235e7253418aec965c442a5c21ab811a68f1e70be8cd",
+    "tests/ws_subscriptions/test_operation.c": "c28fd00d191f92bbe8722033a3dbf5d7c6bcc54e054c06acff4429fce149a4e6",
+    "tests/ws_subscriptions/test_operation_adapter.c": "832ffe800b228b453d920e75e6d2070d0b45db6217c3edab9535d3f0903873f7",
+    "tests/ws_subscriptions/test_reviewer.c": "65916f6af7fb3fe00d00bf6999a55f441422b35d4d95b3f801d9cb9b0f591c54"
+  },
+  "patch_sha256": "f7c97098339577e4343644d6730878da673de1fb1576b742330f89e04cb28baa"
+}

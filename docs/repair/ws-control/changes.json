@@ -1,0 +1,18 @@
+{
+  "HEAD": "1591ecc8e293c0fa62feda18d2517edfc179ca5a",
+  "scope": "local only, no commit/push/PR/device operations",
+  "source_and_test_sha256": {
+    "components/ts_api/src/ts_api_ssh.c": "edbf7f6a4c80f3b15a75e7b39096ca0e6fe6c98ab1cc5c3e3091b5c947646ff7",
+    "components/ts_webui/include/ts_ws_operation.h": "4a31681f9e5d0041d2627b5850b23c083e1b0ca3b876acf959adab5955611512",
+    "components/ts_webui/src/ts_webui_ws.c": "8f26c8ddf9bf391a70ec0909809e2a084352f4cff23c97875baecd838e4eb4ba",
+    "components/ts_webui/src/ts_ws_operation.c": "504ce5caa9375a792692eec681a86bf4515aa5c2d28e758d67df08117b6fe865",
+    "components/ts_webui/web/js/lang/en-US.js": "24bfe60afe5589d5f257baa6b1ef66f23e23453f70be9c8bd7778944f73ac3fc",
+    "components/ts_webui/web/js/lang/zh-CN.js": "0ec109e51f3bc21531f8fca829eaed271898a4cfd7172696881013d5b20e6817",
+    "tests/prompts/regression.test.cjs": "c372b74e125b361103defe66017c3eeb286fea9975cf4f3167ed5cf981050516",
+    "tests/ws_subscriptions/test_operation_adapter.c": "4178c7dd1b9ad582cdc0fd5950dced82d448494494702dfd30246d7ba60f3338",
+    "tests/ws_subscriptions/test_control.c": "7e70ad841a86f6c39a1274f715502991e37c7aa1b7802f7b3dcf805a6aa7d917",
+    "tests/ws_subscriptions/run_control.sh": "e2853acc8652b99dfccca85d25425b870996e7bfcb03a5cfe021b76e66d0139e",
+    "tests/ws_subscriptions/replay_control_baseline.py": "aefd5ff8bc6ced036c9fec466bef70bddb8b66949b4eed3994cdd109fe2f255f"
+  },
+  "patch_sha256": "00258dc9ae34c33ae25df12c1caa9d8f53684aade3e25bc07c114e225f4544e5"
+}

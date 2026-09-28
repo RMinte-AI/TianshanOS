@@ -1,0 +1,52 @@
+[
+  {
+    "package": "xterm",
+    "version": "5.3.0",
+    "original": "lib/xterm.min.js",
+    "file": "xterm.min.js",
+    "source": "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js",
+    "sha256": "fc1dd31b221e3e5f929486e07a80b477a8aaf9dce2b4f9c3ffe7dd25f370655d",
+    "bytes": 283670,
+    "license": "MIT"
+  },
+  {
+    "package": "xterm",
+    "version": "5.3.0",
+    "original": "css/xterm.css",
+    "file": "xterm.css",
+    "source": "https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css",
+    "sha256": "832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872",
+    "bytes": 5383,
+    "license": "MIT"
+  },
+  {
+    "package": "xterm-addon-fit",
+    "version": "0.8.0",
+    "original": "lib/xterm-addon-fit.min.js",
+    "file": "fit.min.js",
+    "source": "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js",
+    "sha256": "c78e5795c6487acdf24ab436798d4a9cec3848101b281bc65b061f39db714be1",
+    "bytes": 1789,
+    "license": "MIT"
+  },
+  {
+    "package": "xterm",
+    "version": "5.3.0",
+    "original": "LICENSE",
+    "file": "LICENSE-xterm",
+    "source": "https://cdn.jsdelivr.net/npm/xterm@5.3.0/LICENSE",
+    "sha256": "b569f629d00f2626a8100df2a1798210535621e42164dfd426a6fe5aac7b0ccd",
+    "bytes": 1261,
+    "license": "MIT"
+  },
+  {
+    "package": "xterm-addon-fit",
+    "version": "0.8.0",
+    "original": "LICENSE",
+    "file": "LICENSE-fit",
+    "source": "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/LICENSE",
+    "sha256": "e256f01188af527e4d06d21d06fbf785ae9c50d4b328bf03cbe0ba7f0aa4228f",
+    "bytes": 1103,
+    "license": "MIT"
+  }
+]

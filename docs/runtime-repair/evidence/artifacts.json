@@ -1,0 +1,26 @@
+{
+  "TianShanOS.bin": {
+    "bytes": 2157264,
+    "sha256": "1b32fa63b196fd97f5e69811ab88bc7758f611b43242c1712a5da4c879f4565f"
+  },
+  "www.bin": {
+    "bytes": 3145728,
+    "sha256": "b0fa8484b032e1a457dc2e42faa8b2eb5dce75a7ba4f141464ec270a3e0c4bce"
+  },
+  "bootloader/bootloader.bin": {
+    "bytes": 22496,
+    "sha256": "293d3ec188d6246688c6d1d971ece0f7dcc130117cb04be5aa1d36a80550c81f"
+  },
+  "partition_table/partition-table.bin": {
+    "bytes": 3072,
+    "sha256": "973dfb7f44bdd42d525e53fcc1eb06ac5745687dddc1c73223715df841d785e5"
+  },
+  "ota_data_initial.bin": {
+    "bytes": 8192,
+    "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+  },
+  "flasher_args.json": {
+    "bytes": 1169,
+    "sha256": "5288d74c7e3ee9e0369f93f9418802ad2b455159cae42f6261c29be818034cc9"
+  }
+}

@@ -1,0 +1,1 @@
+PASS actual configuration wrappers: host edit vs query, immutable target, failed delete preserves registration, successful delete then same-name replacement

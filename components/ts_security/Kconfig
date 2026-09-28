@@ -29,4 +29,12 @@ menu "TianShanOS Security Configuration"
         default 4
         depends on TS_SECURITY_ENABLE
 
+    config TS_SSH_LOG_WATCH_MAX
+        int "Maximum concurrent SSH log watchers"
+        range 1 32
+        default 32
+        help
+            Bounded control slots. Each active watcher uses the existing 8 KiB
+            task stack; no tasks are allocated for idle slots.
+
 endmenu

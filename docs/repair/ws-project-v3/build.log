@@ -1,0 +1,30 @@
+Executing action: all (aliases: build)
+Running ninja in directory /private/tmp/tianshan-project-v3-build/build
+Executing "ninja all"...
+[1/10] Performing build step for 'bootloader'
+[1/1] cd /tmp/tianshan-project-v3-build/build/bootloader/esp-idf/esptool_py && /Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /tmp/tianshan-project-v3-build/build/bootloader/bootloader.bin
+Bootloader binary size 0x57e0 bytes. 0x2820 bytes (31%) free.
+[2/10] No install step for 'bootloader'
+[3/10] cd /tmp/tianshan-project-v3-build/build/esp-idf/ts_webui && /Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/spiffs/spiffsgen.py 0x300000 /tmp/tianshan-project-v3-build/build/esp-idf/ts_webui/web_optimized /tmp/tianshan-project-v3-build/build/www.bin --page-size=256 --obj-name-len=32 --meta-len=4 --use-magic --use-magic-len
+[4/10] Completed 'bootloader'
+[5/10] Building C object esp-idf/ts_security/CMakeFiles/__idf_ts_security.dir/src/ts_ssh_shell.c.obj
+[6/10] Linking C static library esp-idf/ts_security/libts_security.a
+[7/10] Generating esp-idf/esp_system/ld/sections.ld
+[8/10] Linking CXX executable TianShanOS.elf
+[9/10] Generating binary image from built executable
+esptool.py v4.12.dev2
+Creating esp32s3 image...
+Merged 2 ELF sections
+Successfully created esp32s3 image.
+Generated /tmp/tianshan-project-v3-build/build/TianShanOS.bin
+[10/10] cd /tmp/tianshan-project-v3-build/build/esp-idf/esptool_py && /Users/massif/.espressif/python_env/idf5.5_py3.12_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /tmp/tianshan-project-v3-build/build/partition_table/partition-table.bin /tmp/tianshan-project-v3-build/build/TianShanOS.bin
+TianShanOS.bin binary size 0x215120 bytes. Smallest app partition is 0x300000 bytes. 0xeaee0 bytes (31%) free.
+
+Project build complete. To flash, run:
+ idf.py flash
+or
+ idf.py -p PORT flash
+or
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 ../../../private/tmp/tianshan-project-v3-build/build/bootloader/bootloader.bin 0x8000 ../../../private/tmp/tianshan-project-v3-build/build/partition_table/partition-table.bin 0x16000 ../../../private/tmp/tianshan-project-v3-build/build/ota_data_initial.bin 0x20000 ../../../private/tmp/tianshan-project-v3-build/build/TianShanOS.bin 0x6a0000 ../../../private/tmp/tianshan-project-v3-build/build/www.bin
+or from the "/private/tmp/tianshan-project-v3-build/build" directory
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash "@flash_args"

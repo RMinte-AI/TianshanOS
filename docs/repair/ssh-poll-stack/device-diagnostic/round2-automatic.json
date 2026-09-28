@@ -1,0 +1,14 @@
+{
+  "round": 2,
+  "minimumObservedHwm": 3984,
+  "free_heap": 7617308,
+  "psram_free": 7595964,
+  "statuses": [
+    "connecting",
+    "connected",
+    "disconnecting",
+    "closed"
+  ],
+  "echoVerified": true,
+  "pollerGone": true
+}

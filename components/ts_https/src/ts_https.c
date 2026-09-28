@@ -7,6 +7,9 @@
  */
 
 #include "ts_https.h"
+#include "ts_cert_time.h"
+#include "mbedtls/platform_util.h"
+#include "freertos/FreeRTOS.h"
 #include "ts_https_internal.h"
 #include "ts_cert.h"
 #include "esp_https_server.h"
@@ -43,6 +46,30 @@ static const char *TAG = "ts_https";
 
 static httpd_handle_t s_server = NULL;
 static bool s_initialized = false;
+static ts_cert_snapshot_t s_material;
+static portMUX_TYPE s_runtime_lock = portMUX_INITIALIZER_UNLOCKED;
+static ts_https_runtime_t s_runtime = {.port = 443, .require_client_cert = true};
+void ts_https_get_runtime(ts_https_runtime_t *out)
+{
+    if (!out) return;
+    portENTER_CRITICAL(&s_runtime_lock); *out = s_runtime; portEXIT_CRITICAL(&s_runtime_lock);
+}
+void ts_https_record_error(const char *stage, esp_err_t error)
+{
+    portENTER_CRITICAL(&s_runtime_lock);
+    s_runtime.last_error = error;
+    snprintf(s_runtime.last_error_stage, sizeof(s_runtime.last_error_stage), "%s", error == ESP_OK ? "" : stage);
+    portEXIT_CRITICAL(&s_runtime_lock);
+}
+static void publish_running(bool running)
+{
+    portENTER_CRITICAL(&s_runtime_lock);
+    s_runtime.running = running;
+    s_runtime.loaded_generation = running ? s_material.generation : 0;
+    snprintf(s_runtime.loaded_certificate_sha256, sizeof(s_runtime.loaded_certificate_sha256),
+             "%s", running ? s_material.certificate_sha256 : "");
+    portEXIT_CRITICAL(&s_runtime_lock);
+}
 static ts_https_config_t s_config;
 
 // Certificate buffers (loaded from ts_cert)
@@ -81,22 +108,11 @@ esp_err_t ts_https_init(const ts_https_config_t *config)
         s_config = (ts_https_config_t)TS_HTTPS_CONFIG_DEFAULT();
     }
     
-    // Check if PKI is ready
-    ts_cert_pki_status_t pki_status;
-    esp_err_t ret = ts_cert_get_status(&pki_status);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get PKI status: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    if (pki_status.status != TS_CERT_STATUS_ACTIVATED) {
-        ESP_LOGE(TAG, "PKI not activated (status=%d), cannot start HTTPS",
-                 pki_status.status);
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    // Load certificates
-    ret = load_certificates();
+    portENTER_CRITICAL(&s_runtime_lock);
+    s_runtime.port = s_config.port;
+    s_runtime.require_client_cert = s_config.require_client_cert;
+    portEXIT_CRITICAL(&s_runtime_lock);
+    esp_err_t ret = load_certificates();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to load certificates: %s", esp_err_to_name(ret));
         return ret;
@@ -114,7 +130,7 @@ esp_err_t ts_https_init(const ts_https_config_t *config)
 void ts_https_deinit(void)
 {
     if (s_server) {
-        ts_https_stop();
+        if (ts_https_stop() != ESP_OK) return;
     }
     
     free_certificates();
@@ -130,74 +146,18 @@ void ts_https_deinit(void)
 
 static esp_err_t load_certificates(void)
 {
-    esp_err_t ret;
-    
-    // Allocate buffers
-    s_server_cert = heap_caps_malloc(TS_CERT_PEM_MAX_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_server_key = heap_caps_malloc(TS_CERT_KEY_MAX_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_ca_chain = heap_caps_malloc(TS_CERT_CA_CHAIN_MAX_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    
-    if (!s_server_cert || !s_server_key || !s_ca_chain) {
-        ESP_LOGE(TAG, "Failed to allocate certificate buffers");
-        free_certificates();
-        return ESP_ERR_NO_MEM;
-    }
-    
-    // Load server certificate
-    size_t cert_len = TS_CERT_PEM_MAX_LEN;
-    ret = ts_cert_get_certificate(s_server_cert, &cert_len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to load server certificate: %s", esp_err_to_name(ret));
-        free_certificates();
-        return ret;
-    }
-    ESP_LOGI(TAG, "Server certificate loaded (%d bytes)", (int)cert_len);
-    
-    // Load private key
-    size_t key_len = TS_CERT_KEY_MAX_LEN;
-    ret = ts_cert_get_private_key(s_server_key, &key_len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to load private key: %s", esp_err_to_name(ret));
-        free_certificates();
-        return ret;
-    }
-    ESP_LOGI(TAG, "Private key loaded (%d bytes)", (int)key_len);
-    
-    // Load CA chain (for client certificate verification)
-    size_t ca_len = TS_CERT_CA_CHAIN_MAX_LEN;
-    ret = ts_cert_get_ca_chain(s_ca_chain, &ca_len);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "No CA chain loaded: %s", esp_err_to_name(ret));
-        // This is okay if we don't require client certs
-        if (s_config.require_client_cert) {
-            ESP_LOGE(TAG, "CA chain required for mTLS but not available");
-            free_certificates();
-            return ret;
-        }
-    } else {
-        ESP_LOGI(TAG, "CA chain loaded (%d bytes)", (int)ca_len);
-    }
-    
+    esp_err_t ret = ts_cert_get_snapshot(s_config.require_client_cert, &s_material);
+    if (ret != ESP_OK) return ret;
+    s_server_cert = s_material.certificate;
+    s_server_key = s_material.key;
+    s_ca_chain = s_material.ca;
     return ESP_OK;
 }
 
 static void free_certificates(void)
 {
-    if (s_server_cert) {
-        // Clear sensitive data before freeing
-        memset(s_server_cert, 0, TS_CERT_PEM_MAX_LEN);
-        free(s_server_cert);
-        s_server_cert = NULL;
-    }
-    if (s_server_key) {
-        memset(s_server_key, 0, TS_CERT_KEY_MAX_LEN);
-        free(s_server_key);
-        s_server_key = NULL;
-    }
-    if (s_ca_chain) {
-        free(s_ca_chain);
-        s_ca_chain = NULL;
-    }
+    ts_cert_free_snapshot(&s_material);
+    s_server_cert = s_server_key = s_ca_chain = NULL;
 }
 
 /*===========================================================================*/
@@ -213,7 +173,7 @@ esp_err_t ts_https_start(void)
     
     if (s_server) {
         ESP_LOGW(TAG, "Server already running");
-        return ESP_OK;
+        return ts_https_is_running() ? ESP_OK : ESP_ERR_INVALID_STATE;
     }
     
     // Configure HTTPS server
@@ -253,7 +213,7 @@ esp_err_t ts_https_start(void)
     // Session tickets for faster reconnection
     config.httpd.enable_so_linger = false;
     
-    // Start server
+    // Retain a failed candidate handle if its stop fails, but do not publish it.
     esp_err_t ret = httpd_ssl_start(&s_server, &config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTPS server: %s", esp_err_to_name(ret));
@@ -268,9 +228,17 @@ esp_err_t ts_https_start(void)
             .handler = generic_handler,
             .user_ctx = &s_endpoints[i]
         };
-        httpd_register_uri_handler(s_server, &uri_handler);
+        ret = httpd_register_uri_handler(s_server, &uri_handler);
+        if (ret != ESP_OK) {
+            ts_https_record_error("register_uri", ret);
+            esp_err_t stop = ts_https_stop();
+            if (stop != ESP_OK) ts_https_record_error("cleanup", stop);
+            return ret;
+        }
     }
     
+    publish_running(true);
+    ts_https_record_error("", ESP_OK);
     ESP_LOGI(TAG, "HTTPS server started on port %d with %d endpoints",
              s_config.port, s_endpoint_count);
     
@@ -284,7 +252,8 @@ esp_err_t ts_https_stop(void)
     }
     
     esp_err_t ret = httpd_ssl_stop(s_server);
-    s_server = NULL;
+    if (ret == ESP_OK) { s_server = NULL; publish_running(false); }
+    else ts_https_record_error("stop", ret);
     
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "HTTPS server stopped");
@@ -295,7 +264,9 @@ esp_err_t ts_https_stop(void)
 
 bool ts_https_is_running(void)
 {
-    return s_server != NULL;
+    ts_https_runtime_t runtime;
+    ts_https_get_runtime(&runtime);
+    return runtime.running;
 }
 
 httpd_handle_t ts_https_get_handle(void)
@@ -489,22 +460,13 @@ static void extract_auth_from_cert(const mbedtls_x509_crt *cert, ts_https_auth_t
         ESP_LOGI(TAG, "Client cert OU='%s' -> role=%s", buf, ts_https_role_to_str(auth->role));
     }
     
-    // 计算证书有效天数
-    // mbedtls_x509_time 包含 year, mon, day, hour, min, sec
-    // 这里简单估算剩余天数
-    time_t now;
-    time(&now);
-    struct tm *tm_now = gmtime(&now);
-    if (tm_now) {
-        int years_diff = cert->valid_to.year - (tm_now->tm_year + 1900);
-        int months_diff = cert->valid_to.mon - (tm_now->tm_mon + 1);
-        int days_diff = cert->valid_to.day - tm_now->tm_mday;
-        auth->cert_days_remaining = years_diff * 365 + months_diff * 30 + days_diff;
-        if (auth->cert_days_remaining < 0) {
-            auth->cert_days_remaining = 0;  // 已过期
-        }
-    }
-    
+    int64_t expiry;
+    time_t now = time(NULL);
+    auth->cert_days_remaining = 0;
+    if (now != (time_t)-1 && ts_cert_time_utc(cert->valid_to.year, cert->valid_to.mon,
+            cert->valid_to.day, cert->valid_to.hour, cert->valid_to.min, cert->valid_to.sec, &expiry))
+        auth->cert_days_remaining = ts_cert_time_days(expiry - (int64_t)now);
+
     auth->authenticated = true;
 }
 

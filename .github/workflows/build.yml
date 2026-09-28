@@ -18,11 +18,36 @@ on:
     types: [published]  # 手动发布 Release 时也自动构建并上传 bin
   workflow_dispatch:  # 允许手动触发
 
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   IDF_VERSION: v5.5.2
   TARGET: esp32s3
 
 jobs:
+  web-tests:
+    name: WebUI regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/prompts/package-lock.json
+      - run: npm ci --prefix tests/prompts
+      - run: npm test --prefix tests/prompts
+      - run: python3 tests/release/test_release.py
+      - name: Install Chrome for actual-page regressions
+        working-directory: tests/prompts
+        run: npx playwright install --with-deps chrome
+      - run: npm run test:browser --prefix tests/prompts
+
   build:
     name: Build ESP32-S3 Firmware
     runs-on: ubuntu-latest
@@ -129,13 +154,16 @@ jobs:
   # 编译成功后自动创建或更新 Release：tag 推送、main 推送或手动发布 Release
   release:
     name: Create or Update Release
-    needs: build
-    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event_name == 'push')
+    needs: [build, web-tests]
+    if: github.repository == 'RMinte-AI/TianshanOS' && (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event_name == 'push'))
     runs-on: ubuntu-latest
     permissions:
       contents: write  # 创建 Release 需要写权限
     
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -155,6 +183,13 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
+
+      - name: Validate Chinese release notes and build version
+        env:
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+          BUILD_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          python3 tools/check_release.py "$RELEASE_TAG" "$BUILD_VERSION"
 
       - name: Check if release already exists (main branch)
         if: github.ref == 'refs/heads/main'
@@ -181,6 +216,8 @@ jobs:
             firmware/**/*.bin
             firmware/**/flasher_args.json
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
+          body_path: docs/releases/${{ steps.release_tag.outputs.tag }}.md
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,1396 @@
+diff --git a/components/ts_console/commands/ts_cmd_ssh.c b/components/ts_console/commands/ts_cmd_ssh.c
+index ebda813..0a0b5a1 100644
+--- a/components/ts_console/commands/ts_cmd_ssh.c
++++ b/components/ts_console/commands/ts_cmd_ssh.c
+@@ -412,6 +412,7 @@ static const char *shell_input_callback(size_t *out_len, void *user_data)
+         } else if (ch == 0x1C) {  /* Ctrl+\ - 退出 Shell */
+             ts_console_printf("\n^\\  (Exit shell)\n");
+             ts_console_request_interrupt();
++            ts_ssh_shell_request_close(shell);
+             return NULL;
+         }
+         
+diff --git a/components/ts_security/include/ts_ssh_shell.h b/components/ts_security/include/ts_ssh_shell.h
+index 8af5053..f88efa0 100644
+--- a/components/ts_security/include/ts_ssh_shell.h
++++ b/components/ts_security/include/ts_ssh_shell.h
+@@ -95,20 +95,28 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
+                              ts_ssh_shell_t *shell_out);
+ 
+ /**
+- * @brief Close the shell session
++ * @brief Consume and release an allocated Shell handle, including EOF/ERROR.
++ * Caller must clear its handle; a second call with a freed pointer is invalid.
++ * If channel release would block, locally disconnect its owning SSH session.
++ * This does not confirm that remote processes have terminated.
+  * 
+  * @param shell Shell handle
+  * @return esp_err_t ESP_OK on success
+  */
+ esp_err_t ts_ssh_shell_close(ts_ssh_shell_t shell);
+ 
++/** Request local loop exit without freeing the handle or confirming remote exit.
++ * The caller serializes this with other Shell access and still calls close(). */
++esp_err_t ts_ssh_shell_request_close(ts_ssh_shell_t shell);
++
+ /**
+  * @brief Write data to the shell (send to remote)
+  * 
+  * @param shell Shell handle
+  * @param data Data to write
+  * @param len Length of data
+- * @param written Pointer to receive bytes written (optional)
++ * @param written Bytes accepted by the transport, including partial failure (optional).
++ * Write/setup waits are bounded; timeout leaves ERROR and must not be replayed.
+  * @return esp_err_t ESP_OK on success
+  */
+ esp_err_t ts_ssh_shell_write(ts_ssh_shell_t shell,
+diff --git a/components/ts_security/src/ts_ssh_shell.c b/components/ts_security/src/ts_ssh_shell.c
+index 08f8444..a2e8b16 100644
+--- a/components/ts_security/src/ts_ssh_shell.c
++++ b/components/ts_security/src/ts_ssh_shell.c
+@@ -13,6 +13,7 @@
+ #include "ts_ssh_client.h"
+ #include "ts_core.h"  /* TS_CALLOC_PSRAM */
+ #include "esp_log.h"
++#include "esp_timer.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
+ #include "freertos/semphr.h"
+@@ -38,6 +39,7 @@ struct ts_ssh_shell_s {
+     LIBSSH2_CHANNEL *channel;           /**< SSH 通道 */
+     ts_shell_config_t config;           /**< Shell 配置 */
+     ts_shell_state_t state;             /**< 当前状态 */
++    bool close_notified;
+     int exit_code;                      /**< 退出码 */
+     
+     /* 回调 */
+@@ -102,6 +104,30 @@ static int wait_socket(int sock, LIBSSH2_SESSION *session, int timeout_ms)
+     return select(sock + 1, readfd, writefd, NULL, &timeout);
+ }
+ 
++/* A libssh2 request left in EAGAIN cannot be replaced by a different request.
++ * Bound the wait and retire the channel on uncertainty instead of replaying. */
++static bool shell_wait(int sock,LIBSSH2_SESSION *ssh,int64_t deadline)
++{
++    int64_t left=deadline-esp_timer_get_time();
++    if(left<=0)return false;
++    int ms=(int)((left+999)/1000);if(ms>100)ms=100;
++    return wait_socket(sock,ssh,ms)>=0 && esp_timer_get_time()<deadline;
++}
++static void shell_release_channel(ts_ssh_shell_t shell)
++{
++    if(!shell->channel)return;
++    /* libssh2 retains ownership only on EAGAIN. Its session owns that channel
++     * and the client's local-disconnect callbacks make destruction nonwaiting. */
++    if(libssh2_channel_free(shell->channel)==LIBSSH2_ERROR_EAGAIN)
++        ts_ssh_disconnect(shell->ssh_session);
++    shell->channel=NULL;
++}
++static void shell_notify_close(ts_ssh_shell_t shell)
++{
++    if(!shell->close_notified){shell->close_notified=true;
++        if(shell->close_cb)shell->close_cb(shell->exit_code,shell->close_cb_data);}
++}
++
+ /* ============================================================================
+  * 公开 API 实现
+  * ============================================================================ */
+@@ -114,6 +140,7 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
+         return ESP_ERR_INVALID_ARG;
+     }
+ 
++    *shell_out=NULL;
+     if (!ts_ssh_is_connected(session)) {
+         ESP_LOGE(TAG, "SSH session not connected");
+         return ESP_ERR_INVALID_STATE;
+@@ -154,10 +181,11 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
+     /* 打开通道 */
+     LIBSSH2_CHANNEL *channel = NULL;
+     int rc;
++    int64_t deadline=esp_timer_get_time()+10000000;
+ 
+     while ((channel = libssh2_channel_open_session(ssh)) == NULL &&
+            libssh2_session_last_errno(ssh) == LIBSSH2_ERROR_EAGAIN) {
+-        wait_socket(sock, ssh, 1000);
++        if(!shell_wait(sock,ssh,deadline))goto setup_timeout;
+     }
+ 
+     if (!channel) {
+@@ -168,6 +196,7 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
+         return ESP_FAIL;
+     }
+ 
++    shell->channel=channel;
+     /* 请求 PTY */
+     const char *term = get_term_string(shell->config.term_type);
+     
+@@ -177,14 +206,14 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
+                                                  shell->config.term_width,
+                                                  shell->config.term_height,
+                                                  0, 0)) == LIBSSH2_ERROR_EAGAIN) {
+-        wait_socket(sock, ssh, 1000);
++        if(!shell_wait(sock,ssh,deadline))goto setup_timeout;
+     }
+ 
+     if (rc != 0) {
+         char *err_msg = NULL;
+         libssh2_session_last_error(ssh, &err_msg, NULL, 0);
+         ESP_LOGE(TAG, "Failed to request PTY: %s", err_msg ? err_msg : "unknown");
+-        libssh2_channel_free(channel);
++        shell_release_channel(shell);
+         free(shell);
+         return ESP_FAIL;
+     }
+@@ -194,14 +223,14 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
+ 
+     /* 启动 Shell */
+     while ((rc = libssh2_channel_shell(channel)) == LIBSSH2_ERROR_EAGAIN) {
+-        wait_socket(sock, ssh, 1000);
++        if(!shell_wait(sock,ssh,deadline))goto setup_timeout;
+     }
+ 
+     if (rc != 0) {
+         char *err_msg = NULL;
+         libssh2_session_last_error(ssh, &err_msg, NULL, 0);
+         ESP_LOGE(TAG, "Failed to start shell: %s", err_msg ? err_msg : "unknown");
+-        libssh2_channel_free(channel);
++        shell_release_channel(shell);
+         free(shell);
+         return ESP_FAIL;
+     }
+@@ -212,6 +241,18 @@ esp_err_t ts_ssh_shell_open(ts_ssh_session_t session,
+     *shell_out = shell;
+     ESP_LOGI(TAG, "Interactive shell opened");
+     return ESP_OK;
++setup_timeout:
++    shell_release_channel(shell);
++    ts_ssh_disconnect(session); /* pending open/setup must not survive as a usable session */
++    free(shell);
++    return ESP_ERR_TIMEOUT;
++}
++
++esp_err_t ts_ssh_shell_request_close(ts_ssh_shell_t shell)
++{
++    if (!shell) return ESP_ERR_INVALID_ARG;
++    if (shell->state == TS_SHELL_STATE_RUNNING) shell->state = TS_SHELL_STATE_CLOSED;
++    return ESP_OK;
+ }
+ 
+ esp_err_t ts_ssh_shell_close(ts_ssh_shell_t shell)
+@@ -220,117 +261,51 @@ esp_err_t ts_ssh_shell_close(ts_ssh_shell_t shell)
+         return ESP_ERR_INVALID_ARG;
+     }
+ 
+-    if (shell->state != TS_SHELL_STATE_RUNNING) {
+-        return ESP_OK;
+-    }
+-
+-    LIBSSH2_SESSION *ssh = ts_ssh_get_libssh2_session(shell->ssh_session);
+-    int sock = ts_ssh_get_socket(shell->ssh_session);
+-
+-    /* 发送 EOF */
+-    int rc;
+-    while ((rc = libssh2_channel_send_eof(shell->channel)) == LIBSSH2_ERROR_EAGAIN) {
+-        wait_socket(sock, ssh, 100);
+-    }
+-
+-    /* 等待远程关闭 */
+-    while ((rc = libssh2_channel_wait_eof(shell->channel)) == LIBSSH2_ERROR_EAGAIN) {
+-        wait_socket(sock, ssh, 100);
+-    }
+-
+-    /* 关闭通道 */
+-    while ((rc = libssh2_channel_close(shell->channel)) == LIBSSH2_ERROR_EAGAIN) {
+-        wait_socket(sock, ssh, 100);
+-    }
+-
+-    /* 获取退出码 */
+-    if (rc == 0) {
+-        shell->exit_code = libssh2_channel_get_exit_status(shell->channel);
+-    }
+-
+-    /* 调用关闭回调 */
+-    if (shell->close_cb) {
+-        shell->close_cb(shell->exit_code, shell->close_cb_data);
+-    }
+-
+-    libssh2_channel_free(shell->channel);
+-    shell->channel = NULL;
+-    shell->state = TS_SHELL_STATE_CLOSED;
+-
+-    ESP_LOGI(TAG, "Shell closed with exit code: %d", shell->exit_code);
+-    
+-    /* 释放结构 */
++    /* EOF/ERROR changes state, not ownership. All allocated handles are
++     * consumed here; callers clear their handle after this call. */
++    if(shell->channel && shell->state==TS_SHELL_STATE_RUNNING)
++        shell->exit_code=libssh2_channel_get_exit_status(shell->channel);
++    shell->state=TS_SHELL_STATE_CLOSED;
++    shell_release_channel(shell);
++    shell_notify_close(shell);
+     free(shell);
+     return ESP_OK;
+ }
+ 
+-esp_err_t ts_ssh_shell_write(ts_ssh_shell_t shell,
+-                              const char *data, size_t len,
+-                              size_t *written)
++esp_err_t ts_ssh_shell_write(ts_ssh_shell_t shell,const char *data,size_t len,size_t *written)
+ {
+-    if (!shell || !data || len == 0) {
+-        return ESP_ERR_INVALID_ARG;
+-    }
+-
+-    if (shell->state != TS_SHELL_STATE_RUNNING) {
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-
+-    LIBSSH2_SESSION *ssh = ts_ssh_get_libssh2_session(shell->ssh_session);
+-    int sock = ts_ssh_get_socket(shell->ssh_session);
+-
+-    size_t total_written = 0;
+-    while (total_written < len) {
+-        int rc = libssh2_channel_write(shell->channel, data + total_written, 
+-                                        len - total_written);
+-        if (rc > 0) {
+-            total_written += rc;
+-        } else if (rc == LIBSSH2_ERROR_EAGAIN) {
+-            wait_socket(sock, ssh, 100);
+-        } else {
+-            ESP_LOGE(TAG, "Write error: %d", rc);
+-            return ESP_FAIL;
+-        }
+-    }
+-
+-    if (written) {
+-        *written = total_written;
++    if(written)*written=0;
++    if(!shell || !data || !len)return ESP_ERR_INVALID_ARG;
++    if(shell->state!=TS_SHELL_STATE_RUNNING)return ESP_ERR_INVALID_STATE;
++    LIBSSH2_SESSION *ssh=ts_ssh_get_libssh2_session(shell->ssh_session);
++    int sock=ts_ssh_get_socket(shell->ssh_session);
++    int64_t deadline=esp_timer_get_time()+1000000;
++    size_t total=0;
++    while(total<len){
++        int rc=libssh2_channel_write(shell->channel,data+total,len-total);
++        if(rc>0){total+=rc;if(written)*written=total;}
++        else if(rc==LIBSSH2_ERROR_EAGAIN && shell_wait(sock,ssh,deadline))continue;
++        else {shell->state=TS_SHELL_STATE_ERROR;return rc==LIBSSH2_ERROR_EAGAIN?ESP_ERR_TIMEOUT:ESP_FAIL;}
++        if(total<len && esp_timer_get_time()>=deadline){shell->state=TS_SHELL_STATE_ERROR;return ESP_ERR_TIMEOUT;}
+     }
+-
+     return ESP_OK;
+ }
+ 
+-esp_err_t ts_ssh_shell_read(ts_ssh_shell_t shell,
+-                             char *buffer, size_t buffer_size,
+-                             size_t *read_len)
++esp_err_t ts_ssh_shell_read(ts_ssh_shell_t shell,char *buffer,size_t size,size_t *read_len)
+ {
+-    if (!shell || !buffer || buffer_size == 0) {
+-        return ESP_ERR_INVALID_ARG;
+-    }
+-
+-    if (shell->state != TS_SHELL_STATE_RUNNING) {
+-        if (read_len) *read_len = 0;
++    if(read_len)*read_len=0;
++    if(!shell || !buffer || !size)return ESP_ERR_INVALID_ARG;
++    if(shell->state!=TS_SHELL_STATE_RUNNING)return ESP_ERR_INVALID_STATE;
++    int rc=libssh2_channel_read(shell->channel,buffer,size);
++    if(rc>0){if(read_len)*read_len=rc;return ESP_OK;}
++    if((rc==0 || rc==LIBSSH2_ERROR_EAGAIN) && libssh2_channel_eof(shell->channel)){
++        shell->state=TS_SHELL_STATE_CLOSED;
++        shell->exit_code=libssh2_channel_get_exit_status(shell->channel);
+         return ESP_ERR_INVALID_STATE;
+     }
+-
+-    int rc = libssh2_channel_read(shell->channel, buffer, buffer_size);
+-    
+-    if (rc > 0) {
+-        if (read_len) *read_len = rc;
+-        return ESP_OK;
+-    } else if (rc == 0) {
+-        /* EOF */
+-        if (read_len) *read_len = 0;
+-        shell->state = TS_SHELL_STATE_CLOSED;
+-        shell->exit_code = libssh2_channel_get_exit_status(shell->channel);
+-        return ESP_ERR_INVALID_STATE;
+-    } else if (rc == LIBSSH2_ERROR_EAGAIN) {
+-        if (read_len) *read_len = 0;
+-        return ESP_ERR_TIMEOUT;
+-    } else {
+-        if (read_len) *read_len = 0;
+-        return ESP_FAIL;
+-    }
++    if(rc==0 || rc==LIBSSH2_ERROR_EAGAIN)return ESP_ERR_TIMEOUT; /* no data, not EOF */
++    shell->state=TS_SHELL_STATE_ERROR;
++    return ESP_FAIL;
+ }
+ 
+ esp_err_t ts_ssh_shell_set_output_cb(ts_ssh_shell_t shell,
+@@ -359,124 +334,40 @@ esp_err_t ts_ssh_shell_set_close_cb(ts_ssh_shell_t shell,
+ 
+ esp_err_t ts_ssh_shell_poll(ts_ssh_shell_t shell)
+ {
+-    if (!shell) {
+-        return ESP_ERR_INVALID_ARG;
+-    }
+-
+-    if (shell->state != TS_SHELL_STATE_RUNNING) {
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-
+-    /* 检查通道是否关闭 */
+-    if (libssh2_channel_eof(shell->channel)) {
+-        shell->state = TS_SHELL_STATE_CLOSED;
+-        shell->exit_code = libssh2_channel_get_exit_status(shell->channel);
+-        if (shell->close_cb) {
+-            shell->close_cb(shell->exit_code, shell->close_cb_data);
+-        }
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-
+-    /* 读取可用数据 */
+-    int rc = libssh2_channel_read(shell->channel, shell->read_buffer, 
+-                                   sizeof(shell->read_buffer));
+-    
+-    if (rc > 0) {
+-        if (shell->output_cb) {
+-            shell->output_cb(shell->read_buffer, rc, shell->output_cb_data);
+-        }
+-        return ESP_OK;
+-    } else if (rc == LIBSSH2_ERROR_EAGAIN) {
+-        return ESP_ERR_TIMEOUT;
+-    } else if (rc == 0) {
+-        shell->state = TS_SHELL_STATE_CLOSED;
+-        shell->exit_code = libssh2_channel_get_exit_status(shell->channel);
+-        if (shell->close_cb) {
+-            shell->close_cb(shell->exit_code, shell->close_cb_data);
+-        }
+-        return ESP_ERR_INVALID_STATE;
+-    } else {
+-        return ESP_FAIL;
+-    }
++    if(!shell)return ESP_ERR_INVALID_ARG;
++    size_t n=0;esp_err_t ret=ts_ssh_shell_read(shell,shell->read_buffer,sizeof(shell->read_buffer),&n);
++    if(n && shell->output_cb)shell->output_cb(shell->read_buffer,n,shell->output_cb_data);
++    if(shell->state==TS_SHELL_STATE_CLOSED || shell->state==TS_SHELL_STATE_ERROR)shell_notify_close(shell);
++    return ret;
+ }
+ 
+-esp_err_t ts_ssh_shell_run(ts_ssh_shell_t shell,
+-                            ts_shell_output_cb_t output_cb,
+-                            ts_shell_input_cb_t input_cb,
+-                            void *user_data)
++esp_err_t ts_ssh_shell_run(ts_ssh_shell_t shell,ts_shell_output_cb_t output_cb,
++                         ts_shell_input_cb_t input_cb,void *data)
+ {
+-    if (!shell || !output_cb || !input_cb) {
+-        return ESP_ERR_INVALID_ARG;
+-    }
+-
+-    if (shell->state != TS_SHELL_STATE_RUNNING) {
+-        return ESP_ERR_INVALID_STATE;
+-    }
+-
+-    LIBSSH2_SESSION *ssh = ts_ssh_get_libssh2_session(shell->ssh_session);
+-    int sock = ts_ssh_get_socket(shell->ssh_session);
+-
+-    while (shell->state == TS_SHELL_STATE_RUNNING) {
+-        bool activity = false;
+-        
+-        /* 检查本地输入（优先处理，提高响应性） */
+-        size_t input_len = 0;
+-        const char *input = input_cb(&input_len, user_data);
+-        if (input && input_len > 0) {
+-            activity = true;
+-            size_t written = 0;
+-            while (written < input_len) {
+-                int rc = libssh2_channel_write(shell->channel, input + written,
+-                                            input_len - written);
+-                if (rc > 0) {
+-                    written += rc;
+-                } else if (rc == LIBSSH2_ERROR_EAGAIN) {
+-                    wait_socket(sock, ssh, 10);
+-                } else {
+-                    shell->state = TS_SHELL_STATE_ERROR;
+-                    return ESP_FAIL;
+-                }
+-            }
+-        }
+-
+-        /* 持续读取远程数据直到没有更多数据 */
+-        int rc;
++    if(!shell || !output_cb || !input_cb)return ESP_ERR_INVALID_ARG;
++    if(shell->state!=TS_SHELL_STATE_RUNNING)return ESP_ERR_INVALID_STATE;
++    while(shell->state==TS_SHELL_STATE_RUNNING){
++        size_t len=0;const char *input=input_cb(&len,data);
++        if(shell->state!=TS_SHELL_STATE_RUNNING)break;
++        if(input && len){esp_err_t ret=ts_ssh_shell_write(shell,input,len,NULL);if(ret!=ESP_OK)return ret;}
++        bool activity = len != 0;
++        size_t n;
+         do {
+-            rc = libssh2_channel_read(shell->channel, shell->read_buffer,
+-                                       sizeof(shell->read_buffer));
+-            if (rc > 0) {
+-                activity = true;
+-                output_cb(shell->read_buffer, rc, user_data);
+-            } else if (rc == 0 || libssh2_channel_eof(shell->channel)) {
+-                /* 远程关闭 */
+-                shell->exit_code = libssh2_channel_get_exit_status(shell->channel);
+-                shell->state = TS_SHELL_STATE_CLOSED;
+-                return ESP_OK;
+-            }
+-        } while (rc > 0);  /* 继续读取直到 EAGAIN */
+-
+-        if (rc < 0 && rc != LIBSSH2_ERROR_EAGAIN) {
+-            /* 真正的错误 */
+-            shell->state = TS_SHELL_STATE_ERROR;
+-            return ESP_FAIL;
+-        }
+-
+-        /* 只在没有活动时短暂等待，避免 CPU 空转 */
+-        if (!activity) {
+-            wait_socket(sock, ssh, 10);  /* 减少等待时间到 10ms */
+-        }
+-    }
+-
+-    shell->exit_code = libssh2_channel_get_exit_status(shell->channel);
+-    shell->state = TS_SHELL_STATE_CLOSED;
+-    
+-    return ESP_OK;
++            n = 0;
++            esp_err_t ret = ts_ssh_shell_read(shell, shell->read_buffer, sizeof(shell->read_buffer), &n);
++            if (n) { output_cb(shell->read_buffer, n, data); activity = true; }
++            if (shell->state == TS_SHELL_STATE_CLOSED) return ESP_OK;
++            if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) return ret;
++        } while (n); /* preserve CLI's existing drain-until-no-data cadence */
++        if(!activity)wait_socket(ts_ssh_get_socket(shell->ssh_session),ts_ssh_get_libssh2_session(shell->ssh_session),10);
++    }
++    return shell->state==TS_SHELL_STATE_CLOSED?ESP_OK:ESP_FAIL;
+ }
+ 
+ esp_err_t ts_ssh_shell_resize(ts_ssh_shell_t shell,
+                                uint16_t width, uint16_t height)
+ {
+-    if (!shell) {
++    if (!shell || !width || !height) {
+         return ESP_ERR_INVALID_ARG;
+     }
+ 
+@@ -488,13 +379,15 @@ esp_err_t ts_ssh_shell_resize(ts_ssh_shell_t shell,
+     int sock = ts_ssh_get_socket(shell->ssh_session);
+ 
+     int rc;
++    int64_t deadline=esp_timer_get_time()+1000000;
+     while ((rc = libssh2_channel_request_pty_size(shell->channel, width, height)) 
+            == LIBSSH2_ERROR_EAGAIN) {
+-        wait_socket(sock, ssh, 100);
++        if(!shell_wait(sock,ssh,deadline)){shell->state=TS_SHELL_STATE_ERROR;return ESP_ERR_TIMEOUT;}
+     }
+ 
+     if (rc != 0) {
+         ESP_LOGW(TAG, "Failed to resize PTY: %d", rc);
++        if(rc!=LIBSSH2_ERROR_CHANNEL_REQUEST_DENIED)shell->state=TS_SHELL_STATE_ERROR;
+         return ESP_FAIL;
+     }
+ 
+diff --git a/components/ts_webui/src/ts_webui_ws.c b/components/ts_webui/src/ts_webui_ws.c
+index 5d0ca91..9bc83dc 100644
+--- a/components/ts_webui/src/ts_webui_ws.c
++++ b/components/ts_webui/src/ts_webui_ws.c
+@@ -179,11 +179,11 @@ static void power_policy_event_handler(const ts_event_t *event, void *user_data)
+ /* Request errors must go to the requester, never mutate an existing session. */
+ static void ssh_request_error(httpd_req_t *req, const char *message)
+ {
++    TS_WS_TEST_POINT("request_error_encode");
+     cJSON *msg=cJSON_CreateObject();
+-    bool ok=msg && cJSON_AddStringToObject(msg,"type","ssh_status") &&
+-        cJSON_AddStringToObject(msg,"status","error") && cJSON_AddStringToObject(msg,"message",message);
++    bool ok=msg && cJSON_AddStringToObject(msg,"type","error") && cJSON_AddStringToObject(msg,"message",message);
+     char *json=ok?cJSON_PrintUnformatted(msg):NULL;cJSON_Delete(msg);
+-    const char *text=json?json:"{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH request rejected\"}";
++    const char *text=json?json:"{\"type\":\"error\",\"message\":\"SSH request rejected\"}";
+     httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)text,.len=strlen(text)};
+     esp_err_t ret=httpd_ws_send_frame(req,&frame);
+     if(ret!=ESP_OK)TS_LOGW(TAG,"SSH request error could not be sent: %s",esp_err_to_name(ret));
+@@ -263,9 +263,10 @@ static void ssh_poll_task(void *arg)
+         xSemaphoreTake(ctx->io,portMAX_DELAY);
+         esp_err_t ret=ts_ssh_shell_read(ctx->shell,buf,sizeof(buf)-1,&n);
+         bool active=ts_ssh_shell_is_active(ctx->shell);
++        bool failed=ts_ssh_shell_get_state(ctx->shell)==TS_SHELL_STATE_ERROR;
+         xSemaphoreGive(ctx->io);
+         if(ret==ESP_OK && n)ssh_send_output(ctx,buf,n);
+-        if(!active){ssh_close(op,"closed","SSH session closed");break;}
++        if(!active){ssh_close(op,failed?"error":"closed",failed?"SSH channel failed; remote result is not confirmed":"SSH session closed");break;}
+         vTaskDelay(pdMS_TO_TICKS(20));
+     }
+     shell_resources_close(ctx);
+@@ -328,9 +329,10 @@ static void handle_ssh_control(httpd_req_t *req,ts_ws_peer_t peer,const char *ty
+     ssh_shell_context_t *ctx=ts_ws_op_data(op);
+     if(!strcmp(type,"ssh_disconnect"))ctx->disconnect_requested=true;
+     else {
+-        esp_err_t ret=ESP_ERR_INVALID_STATE;
++        esp_err_t ret=ESP_ERR_INVALID_ARG;bool active=false;
+         xSemaphoreTake(ctx->io,portMAX_DELAY);
+         if(ctx->shell && ts_ws_op_is_open(op)) {
++            active=true;
+             if(!strcmp(type,"ssh_input")) {
+                 cJSON *data=cJSON_GetObjectItem(msg,"data");
+                 if(cJSON_IsString(data))ret=ts_ssh_shell_write(ctx->shell,data->valuestring,strlen(data->valuestring),NULL);
+@@ -339,12 +341,18 @@ static void handle_ssh_control(httpd_req_t *req,ts_ws_peer_t peer,const char *ty
+                 if(cJSON_IsString(signal))ret=ts_ssh_shell_send_signal(ctx->shell,signal->valuestring);
+             } else {
+                 cJSON *w=cJSON_GetObjectItem(msg,"width"),*h=cJSON_GetObjectItem(msg,"height");
+-                if(cJSON_IsNumber(w) && cJSON_IsNumber(h) && w->valueint>0 && h->valueint>0)
++                if(cJSON_IsNumber(w) && cJSON_IsNumber(h) && w->valuedouble>=1 && w->valuedouble<=UINT16_MAX && h->valuedouble>=1 && h->valuedouble<=UINT16_MAX &&
++                   w->valuedouble==w->valueint && h->valuedouble==h->valueint)
+                     ret=ts_ssh_shell_resize(ctx->shell,w->valueint,h->valueint);
+             }
+         }
++        if(ctx->shell)active=ts_ssh_shell_is_active(ctx->shell);
+         xSemaphoreGive(ctx->io);
+-        if(ret!=ESP_OK)ssh_request_error(req,"SSH control could not be completed for this session");
++        if(ret!=ESP_OK){
++            if(!active)ssh_close(op,"error","SSH channel failed; remote result is not confirmed");
++            else ssh_request_error(req,ret==ESP_ERR_NOT_SUPPORTED?"Unsupported SSH signal":
++                ret==ESP_ERR_INVALID_ARG?"Invalid SSH control parameters":"SSH control request failed; input was not replayed");
++        }
+     }
+     ts_ws_op_release(op);
+ }
+diff --git a/components/ts_webui/web/index.html b/components/ts_webui/web/index.html
+index 25eb98c..d4aa9c9 100644
+--- a/components/ts_webui/web/index.html
++++ b/components/ts_webui/web/index.html
+@@ -41,9 +41,9 @@
+     .modal-content{background:var(--bg-card);border-radius:var(--radius-lg);max-width:600px;width:95%;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+     </style>
+     <!-- 主 CSS 异步加载（非阻塞渲染） -->
+-    <link rel="preload" href="/css/style.css?v=20260924-prompts-runtime" as="style" onload="this.onload=null;this.rel='stylesheet'">
+-    <noscript><link rel="stylesheet" href="/css/style.css?v=20260924-prompts-runtime"></noscript>
+-    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260924-prompts-runtime">
++    <link rel="preload" href="/css/style.css?v=20260926-shell-contract" as="style" onload="this.onload=null;this.rel='stylesheet'">
++    <noscript><link rel="stylesheet" href="/css/style.css?v=20260926-shell-contract"></noscript>
++    <link rel="stylesheet" href="/fonts/remixicon.css?v=20260926-shell-contract">
+     <link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="any">
+     <link rel="icon" type="image/png" sizes="32x32" href="/images/tslogo-32.png">
+     <link rel="icon" type="image/png" sizes="48x48" href="/images/tslogo-48.png">
+@@ -247,7 +247,7 @@
+     <!-- i18n 国际化（内联避免 ERR_CONNECTION_RESET 导致 i18n 未定义） -->
+     <script>
+     (function(){
+-    window.TS_ASSET_VERSION = '20260924-prompts-runtime';
++    window.TS_ASSET_VERSION = '20260926-shell-contract';
+     var i18n = (function() {
+         var currentLang = 'zh-CN';
+         var languages = {};
+@@ -416,10 +416,10 @@
+     })();
+     </script>
+     
+-    <script defer src="/js/api.js?v=20260924-prompts-runtime"></script>
+-    <script defer src="/js/router.js?v=20260924-prompts-runtime"></script>
+-    <script defer src="/js/terminal.js?v=20260924-prompts-runtime"></script>
+-    <script defer src="/js/dragSort.js?v=20260924-prompts-runtime"></script>
+-    <script defer src="/js/app.js?v=20260924-prompts-runtime"></script>
++    <script defer src="/js/api.js?v=20260926-shell-contract"></script>
++    <script defer src="/js/router.js?v=20260926-shell-contract"></script>
++    <script defer src="/js/terminal.js?v=20260926-shell-contract"></script>
++    <script defer src="/js/dragSort.js?v=20260926-shell-contract"></script>
++    <script defer src="/js/app.js?v=20260926-shell-contract"></script>
+ </body>
+ </html>
+diff --git a/components/ts_webui/web/js/lang/en-US.js b/components/ts_webui/web/js/lang/en-US.js
+index 8eaf87b..cae057d 100644
+--- a/components/ts_webui/web/js/lang/en-US.js
++++ b/components/ts_webui/web/js/lang/en-US.js
+@@ -3699,6 +3699,25 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
+ 
+     // Terminal Page
+     terminal: {
++        sshCapacity: "The result channel is busy. SSH was not started; try again shortly.",
++        sshCreateFailed: "The SSH session could not be created. Try again shortly.",
++        sshOpenFailed: "The remote shell could not be opened. Check whether the server permits interactive sessions.",
++        sshStartupClosed: "The SSH session ended during startup. Check the server before reconnecting.",
++        sshStatusFailed: "SSH status notification failed. The connection state is unconfirmed; reconnect to check.",
++        sshOutputIncomplete: "SSH output in this page is incomplete. The remote result is unconfirmed. Check the server before repeating commands.",
++        sshClosed: "The SSH session has ended.",
++        sshClosing: "Closing the SSH session; waiting for confirmation.",
++        sshConnecting: "Establishing the SSH connection…",
++        sshReady: "The SSH shell is ready.",
++        sshServiceStopping: "The service is stopping. This request was not accepted.",
++        sshControlUnsupported: "Unsupported SSH signal; the session is still active.",
++        sshControlInvalid: "Invalid SSH control parameters; the session is still active.",
++        sshControlFailed: "This SSH request failed. Input was not replayed.",
++        sshChannelUnknown: "The SSH channel ended unexpectedly. The remote result is unconfirmed.",
++        sshWrongOwner: "This connection does not own an active SSH session.",
++        sshBusy: "Another SSH session is active. This connection attempt was rejected.",
++        sshRequestRejected: "This SSH request was rejected.",
++
+         connecting: 'Connecting to device...',
+         connected: 'Connected to device',
+         helpHint: 'Enter {help} to view available commands',
+diff --git a/components/ts_webui/web/js/lang/zh-CN.js b/components/ts_webui/web/js/lang/zh-CN.js
+index cfebef2..1e2f124 100644
+--- a/components/ts_webui/web/js/lang/zh-CN.js
++++ b/components/ts_webui/web/js/lang/zh-CN.js
+@@ -3663,6 +3663,25 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
+ 
+     // 终端页面
+     terminal: {
++        sshCapacity: "结果通知通道暂时繁忙，本次 SSH 连接未启动，请稍后重试。",
++        sshCreateFailed: "未能创建 SSH 会话，请稍后重试。",
++        sshOpenFailed: "未能启动远端交互式终端，请检查远端是否允许此类连接。",
++        sshStartupClosed: "SSH 会话在启动期间已结束，请检查远端状态后重新连接。",
++        sshStatusFailed: "SSH 状态通知未能完成，连接状态尚未确认，请重新连接。",
++        sshOutputIncomplete: "网页 SSH 输出不完整，远端执行结果尚未确认。请检查远端状态，不要直接重发命令。",
++        sshClosed: "SSH 会话已结束。",
++        sshClosing: "正在结束 SSH 会话，请等待确认。",
++        sshConnecting: "正在建立 SSH 连接…",
++        sshReady: "SSH 交互式终端已就绪。",
++        sshServiceStopping: "服务正在停止，本次请求未被接受。",
++        sshControlUnsupported: "不支持此 SSH 信号，会话仍可继续使用。",
++        sshControlInvalid: "SSH 控制参数无效，会话仍可继续使用。",
++        sshControlFailed: "本次 SSH 请求失败，输入未自动重发。",
++        sshChannelUnknown: "SSH 通道异常结束，远端执行结果尚未确认。",
++        sshWrongOwner: "此连接不属于当前有效的 SSH 会话。",
++        sshBusy: "已有 SSH 会话，本次连接请求未被接受。",
++        sshRequestRejected: "本次 SSH 请求未被接受。",
++
+         connecting: '正在连接到设备...',
+         connected: '已连接到设备',
+         helpHint: '输入 {help} 查看可用命令',
+diff --git a/components/ts_webui/web/js/terminal.js b/components/ts_webui/web/js/terminal.js
+index 0f66d25..ccd3a51 100644
+--- a/components/ts_webui/web/js/terminal.js
++++ b/components/ts_webui/web/js/terminal.js
+@@ -54,6 +54,7 @@ class WebTerminal {
+         // SSH Shell 模式
+         this.sshMode = false;
+         this.sshConnecting = false;
++        this.sshDisconnecting = false;
+         this.restoring = false;
+         this.restoreTimer = null;
+         this.destroyed = false;
+@@ -149,7 +150,7 @@ class WebTerminal {
+      */
+     setupInputHandler() {
+         this.terminal.onData(data => {
+-            if (!this.connected) return;
++            if (!this.connected || this.sshConnecting || this.sshDisconnecting) return;
+             
+             // SSH Shell 模式
+             if (this.sshMode) {
+@@ -306,26 +307,31 @@ class WebTerminal {
+      */
+     connect() {
+         if (this.destroyed) return;
++        if (this.ws) this.disconnect();
+         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+         const wsUrl = `${protocol}//${window.location.host}/ws`;
+         
+-        this.ws = new WebSocket(wsUrl);
++        const ws = new WebSocket(wsUrl);
++        this.ws = ws;
++        const current = () => !this.destroyed && this.ws === ws;
+         this.pingInterval = null;
+         
+-        this.ws.onopen = () => {
++        ws.onopen = () => {
++            if (!current()) return;
+             console.log('Terminal WebSocket connected');
+             // 发送终端启动请求
+-            this.ws.send(JSON.stringify({ type: 'terminal_start' }));
++            ws.send(JSON.stringify({ type: 'terminal_start' }));
+             
+             // 启动心跳机制
+             this.pingInterval = setInterval(() => {
+-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+-                    this.ws.send(JSON.stringify({ type: 'ping' }));
++                if (current() && ws.readyState === WebSocket.OPEN) {
++                    ws.send(JSON.stringify({ type: 'ping' }));
+                 }
+             }, 15000); // 每15秒发送心跳
+         };
+         
+-        this.ws.onmessage = (event) => {
++        ws.onmessage = (event) => {
++            if (!current()) return;
+             try {
+                 const msg = JSON.parse(event.data);
+                 this.handleMessage(msg);
+@@ -334,9 +340,11 @@ class WebTerminal {
+             }
+         };
+         
+-        this.ws.onclose = (event) => {
++        ws.onclose = (event) => {
++            if (!current()) return;
+             console.log('Terminal WebSocket disconnected, code:', event.code);
+             this.connected = false;
++            this.sshMode = this.sshConnecting = this.sshDisconnecting = false;
+             if (this.restoring) this.finishRestore(false);
+             
+             // 清除心跳
+@@ -351,7 +359,7 @@ class WebTerminal {
+             if (event.code !== 1000) { // 非正常关闭
+                 this.writeln('\x1b[33m' + (typeof t === 'function' ? t('terminal.reconnectIn') : '5秒后尝试重新连接...') + '\x1b[0m');
+                 const tryReconnect = () => {
+-                    if (this.destroyed || this.connected) return;
++                    if (!current() || this.connected) return;
+                     if (document.visibilityState !== 'visible') {
+                         document.addEventListener('visibilitychange', function handler() {
+                             document.removeEventListener('visibilitychange', handler);
+@@ -366,7 +374,8 @@ class WebTerminal {
+             }
+         };
+         
+-        this.ws.onerror = (error) => {
++        ws.onerror = (error) => {
++            if (!current()) return;
+             console.error('Terminal WebSocket error:', error);
+             this.writeln('\r\n\x1b[1;31m' + (typeof t === 'function' ? t('terminal.connectionError') : '连接错误') + '\x1b[0m');
+         };
+@@ -384,8 +393,10 @@ class WebTerminal {
+     }
+ 
+     handleMessage(msg) {
++        if (this.destroyed) return;
+         switch (msg.type) {
+             case 'connected':
++                if (this.sshMode || this.sshConnecting || this.sshDisconnecting) return;
+                 if (this.restoring) this.finishRestore(true);
+                 this.connected = true;
+                 this.prompt = msg.prompt || 'tianshan> ';
+@@ -403,18 +414,25 @@ class WebTerminal {
+                 break;
+                 
+             case 'done':
++                if (this.sshMode || this.sshConnecting || this.sshDisconnecting) return;
+                 // 命令执行完成
+                 this.writePrompt();
+                 break;
+                 
+             case 'error': {
+                 const errMsg = msg.message || (typeof t === 'function' ? t('terminal.unknownError') : '未知错误');
++                if (this.sshMode || this.sshConnecting || this.sshDisconnecting) {
++                    this.writeln('\x1b[1;31m' + this.sshMessageText(errMsg) + '\x1b[0m');
++                    if (this.sshConnecting && !this.sshMode) { this.sshConnecting = false; this.writePrompt(); }
++                    break; // request failure is not an operation terminal
++                }
+                 if (errMsg.indexOf('Not a terminal session') >= 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
+                     if (!this.restoring) {
+                         this.restoring = true; this.connected = false;
+                         this.ws.send(JSON.stringify({type: 'terminal_start'}));
+                         showToast(t('promptRepair.terminalRestoring'), 'info');
+-                        this.restoreTimer = setTimeout(() => this.finishRestore(false, true), 10000);
++                        const restoringSocket = this.ws;
++                        this.restoreTimer = setTimeout(() => { if (!this.destroyed && this.ws === restoringSocket && this.restoring) this.finishRestore(false, true); }, 10000);
+                     }
+                 } else {
+                     if (this.restoring) this.finishRestore(false);
+@@ -446,6 +464,7 @@ class WebTerminal {
+             
+             case 'session_closed':
+                 this.connected = false;
++                this.sshMode = this.sshConnecting = this.sshDisconnecting = false;
+                 this.writeln('\x1b[33m' + (typeof t === 'function' ? t('terminal.sessionClosed') : '会话已关闭，请重新连接') + '\x1b[0m');
+                 break;
+                 
+@@ -593,10 +612,9 @@ class WebTerminal {
+     startSshShell(params) {
+         if (this.sshConnecting || this.sshMode) {
+             this.writeln('\x1b[1;31m' + (typeof t === 'function' ? t('terminal.sshSessionInProgress') : 'SSH 会话已在进行中') + '\x1b[0m');
+-            this.writePrompt();
+             return;
+         }
+-        
++        if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+         this.sshConnecting = true;
+         const connMsg = typeof t === 'function' ? t('terminal.sshConnectingTo', { user: params.user, host: params.host, port: params.port }) : `正在连接到 ${params.user}@${params.host}:${params.port}...`;
+         this.writeln(`\x1b[36m${connMsg}\x1b[0m`);
+@@ -627,29 +645,66 @@ class WebTerminal {
+     /**
+      * 处理 SSH 状态消息
+      */
++    sshMessageText(message) {
++        const keys = {
++            "Missing host or user": "sshShellRequiresParams",
++            "SSH result delivery capacity unavailable": "sshCapacity",
++            "Failed to create SSH session": "sshCreateFailed",
++            "Failed to open shell": "sshOpenFailed",
++            "SSH shell closed during startup": "sshStartupClosed",
++            "SSH connection status delivery failed": "sshStatusFailed",
++            "SSH readiness delivery failed": "sshStatusFailed",
++            "SSH status delivery failed": "sshStatusFailed",
++            "SSH output delivery incomplete; remote command result is not confirmed": "sshOutputIncomplete",
++            "SSH session closed": "sshClosed",
++            "Closing SSH session...": "sshClosing",
++            "Connecting to SSH server...": "sshConnecting",
++            "SSH shell ready": "sshReady",
++            "Service is stopping": "sshServiceStopping",
++            'Unsupported SSH signal': 'sshControlUnsupported',
++            'Invalid SSH control parameters': 'sshControlInvalid',
++            'SSH control request failed; input was not replayed': 'sshControlFailed',
++            'SSH channel failed; remote result is not confirmed': 'sshChannelUnknown',
++            'This connection does not own an active SSH session': 'sshWrongOwner',
++            'Another SSH session is active': 'sshBusy',
++            'SSH request rejected': 'sshRequestRejected'
++        };
++        return keys[message] && typeof t === 'function' ? t('terminal.' + keys[message]) : message;
++    }
++
+     handleSshStatus(msg) {
+         const status = msg.status;
+-        const message = msg.message || '';
++        const message = this.sshMessageText(msg.message || '');
+         
+         switch (status) {
+             case 'connecting':
+                 this.writeln(`\x1b[33m${message}\x1b[0m`);
+                 break;
+             case 'connected':
++                if (!this.sshConnecting) return;
++                this.sshDisconnecting = false;
+                 this.sshMode = true;
+                 this.sshConnecting = false;
+                 this.writeln(`\x1b[1;32m${message}\x1b[0m`);
+                 this.writeln('\x1b[90m' + (typeof t === 'function' ? t('terminal.exitSshHint') : '(按 Ctrl+\\ 退出 SSH shell)') + '\x1b[0m');
+                 this.writeln('');
+                 break;
+-            case 'closed':
+             case 'disconnecting':
++                if (!this.sshMode) return;
++                this.sshDisconnecting = true;
++                this.writeln(`\r\n\x1b[33m${message}\x1b[0m`);
++                break;
++            case 'closed':
++                if (!this.sshMode && !this.sshConnecting) return;
++                this.sshDisconnecting = false;
+                 this.sshMode = false;
+                 this.sshConnecting = false;
+                 this.writeln(`\r\n\x1b[33m${message}\x1b[0m`);
+                 this.writePrompt();
+                 break;
+             case 'error':
++                if (!this.sshMode && !this.sshConnecting) return;
++                this.sshDisconnecting = false;
+                 this.sshMode = false;
+                 this.sshConnecting = false;
+                 this.writeln(`\x1b[1;31m${message}\x1b[0m`);
+@@ -725,6 +780,7 @@ class WebTerminal {
+             this.ws = null;
+         }
+         this.connected = false;
++        this.sshMode = this.sshConnecting = this.sshDisconnecting = false;
+     }
+ 
+     /**
+diff --git a/tests/ws_subscriptions/test_operation_adapter.c b/tests/ws_subscriptions/test_operation_adapter.c
+index fa881f7..4a98321 100644
+--- a/tests/ws_subscriptions/test_operation_adapter.c
++++ b/tests/ws_subscriptions/test_operation_adapter.c
+@@ -68,11 +68,15 @@ static int adapter_create_caps(void(*fn)(void*),const char *n,unsigned stack,voi
+ #undef heap_caps_calloc
+ #undef xTaskCreate
+ #undef xTaskCreateWithCaps
++#ifndef PROJECT_REAL_DRIVER
+ struct ts_ssh_session_s {bool aborted;ts_ssh_config_t config;};
++#endif
+ static unsigned control_writes,control_signals,control_resizes,commands_submitted;
+ static void (*stage_hook)(const char *);
+ static void stage(const char *name){if(stage_hook)stage_hook(name);}
++#ifndef PROJECT_REAL_DRIVER
+ struct ts_ssh_shell_s {bool active;};
++#endif
+ static unsigned aborts,variable_writes,session_destroys;
+ static int remote_failure;
+ static void (*remote_hook)(void);
+@@ -92,6 +96,7 @@ BaseType_t xTimerPendFunctionCall(void(*fn)(void*,uint32_t),void *arg,uint32_t v
+  assert(timer_queued<16);timer_queue[timer_queued++]=(typeof(timer_queue[0])){fn,arg,v,NULL};return pdPASS;
+ }
+ static void timer_pump(void){while(timer_queued){typeof(timer_queue[0]) q=timer_queue[0];memmove(timer_queue,timer_queue+1,--timer_queued*sizeof(*timer_queue));if(q.deleted){free(q.deleted);host_timer=NULL;}else q.fn(q.arg,q.value);}}
++#ifndef PROJECT_REAL_DRIVER
+ esp_err_t ts_ssh_session_create(const ts_ssh_config_t*c,ts_ssh_session_t *out){stage("create");if(remote_failure==1)return ESP_FAIL;*out=host_calloc(1,sizeof(**out));if(*out)(*out)->config=*c;return *out?ESP_OK:ESP_ERR_NO_MEM;}
+ esp_err_t ts_ssh_connect(ts_ssh_session_t s){stage("connect");if(s->config.cancelled && s->config.cancelled(s->config.cancel_context))return ESP_ERR_TIMEOUT;stage("auth");return remote_failure==2?ESP_FAIL:ESP_OK;}
+ const char *ts_ssh_get_error(ts_ssh_session_t s){(void)s;return "fake network error";}
+@@ -100,6 +105,7 @@ esp_err_t ts_ssh_session_destroy(ts_ssh_session_t s){session_destroys++;tracked_
+ void ts_ssh_abort(ts_ssh_session_t s){s->aborted=true;aborts++;}
+ esp_err_t ts_ssh_shell_open(ts_ssh_session_t s,const ts_shell_config_t*c,ts_ssh_shell_t *out){(void)s;(void)c;if(remote_failure==3)return ESP_FAIL;*out=host_calloc(1,sizeof(**out));(*out)->active=true;return 0;}
+ bool ts_ssh_shell_is_active(ts_ssh_shell_t s){return s&&s->active;}
++ts_shell_state_t ts_ssh_shell_get_state(ts_ssh_shell_t s){return s&&s->active?TS_SHELL_STATE_RUNNING:TS_SHELL_STATE_CLOSED;}
+ esp_err_t ts_ssh_shell_close(ts_ssh_shell_t s){tracked_free(s);return 0;}
+ esp_err_t ts_ssh_shell_read(ts_ssh_shell_t s,char *b,size_t n,size_t *out){(void)b;(void)n;*out=0;s->active=false;return 0;}
+ esp_err_t ts_ssh_shell_write(ts_ssh_shell_t s,const char *b,size_t n,size_t *out){(void)s;(void)b;(void)n;(void)out;control_writes++;return 0;}
+@@ -109,6 +115,9 @@ esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s,const char *command,ts_ssh_outpu
+  (void)command;stage("submit");if(s->config.cancelled && s->config.cancelled(s->config.cancel_context))return ESP_ERR_TIMEOUT;commands_submitted++;if(remote_hook)remote_hook();if(remote_timeout && host_timer)host_timer->fn(host_timer);
+  cb("value=42\n",9,false,arg);*code=0;return s->aborted || (s->config.cancelled && s->config.cancelled(s->config.cancel_context))?ESP_ERR_TIMEOUT:ESP_OK;
+ }
++#else
++#include "project_driver.inc"
++#endif
+ esp_err_t ts_keystore_load_private_key(const char *id,char **out,size_t *n){(void)id;stage("key");*out=host_strdup("fake-key");*n=9;return ESP_OK;}
+ esp_err_t ts_variable_upsert(const ts_auto_variable_t *v){(void)v;variable_writes++;return 0;}
+ esp_err_t ts_console_exec(const char *cmd,ts_cmd_result_t *result){(void)cmd;memset(result,0,sizeof(*result));return 0;}
+@@ -121,7 +130,11 @@ esp_err_t ts_log_remove_callback(ts_log_callback_handle_t h){(void)h;return remo
+ size_t ts_log_buffer_search(ts_log_entry_t *e,size_t n,ts_log_level_t min,ts_log_level_t max,const char *tag,const char *keyword){(void)e;(void)n;(void)min;(void)max;(void)tag;(void)keyword;return 0;}
+ httpd_handle_t ts_http_server_get_handle(void){return (void*)11;}
+ void ts_http_server_set_stop_hooks(esp_err_t(*stop)(httpd_handle_t),void(*stopped)(httpd_handle_t)){(void)stop;(void)stopped;}
+-static int adapter_create_caps(void(*fn)(void*),const char*n,unsigned stack,void*arg,unsigned p,TaskHandle_t*out,unsigned caps){(void)caps;if(close_during_create)((ssh_shell_context_t*)arg)->shell->active=false;return adapter_create(fn,n,stack,arg,p,out);}
++static int adapter_create_caps(void(*fn)(void*),const char*n,unsigned stack,void*arg,unsigned p,TaskHandle_t*out,unsigned caps){(void)caps;
++#ifndef PROJECT_REAL_DRIVER
++if(close_during_create)((ssh_shell_context_t*)arg)->shell->active=false;
++#endif
++return adapter_create(fn,n,stack,arg,p,out);}
+ static void drive_all(void){for(unsigned i=0;i<12;i++){ts_ws_op_poll();pump();timer_pump();}assert(!timer_queued);}
+ static void setup(void){start();memset(s_clients,0,sizeof(s_clients));s_server=(void*)11;s_ws_stopping=false;ts_ws_op_enable();transport_server.closed=peer_closed;for(int fd=1;fd<=2;fd++){reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};current=(void*)3;assert(add_client(&reqs[fd],WS_CLIENT_TYPE_EVENT)==ESP_OK);}current=(void*)1;}
+ static void finish_all(void){drive_all();assert(!ts_ws_op_busy());stop();assert(!live_allocations);}
+diff --git a/tests/ws_subscriptions/measure_project_v3.py b/tests/ws_subscriptions/measure_project_v3.py
+new file mode 100644
+index 0000000..139b558
+--- /dev/null
++++ b/tests/ws_subscriptions/measure_project_v3.py
+@@ -0,0 +1,23 @@
++#!/usr/bin/env python3
++"""Use the actual fixed-SDK compile commands; no target execution."""
++import os,json,pathlib,shlex,subprocess,tarfile,tempfile
++root=pathlib.Path(__file__).resolve().parents[2];build=pathlib.Path(os.environ.get('V3_BUILD','/tmp/tianshan-project-v3-build/build'));doc=root/'docs/repair/ws-project-v3'
++commands=json.loads((build/'compile_commands.json').read_text());result={}
++with tempfile.TemporaryDirectory(prefix='ts-v3-size-') as d:
++ temp=pathlib.Path(d)
++ for rel,typ in [('components/ts_security/src/ts_ssh_shell.c','struct ts_ssh_shell_s'),('components/ts_webui/src/ts_webui_ws.c','ssh_shell_context_t')]:
++  entry=next(c for c in commands if c['file']==str(root/rel));base=shlex.split(entry['command']);result[rel]={}
++  for kind in ['before','after']:
++   if kind=='before':
++    with tarfile.open(doc/'baseline.tar.gz') as t:source=t.extractfile(rel).read().decode()
++   else:source=(root/rel).read_text()
++   src=temp/(kind+'-'+pathlib.Path(rel).name);src.write_text(source+'\nconst unsigned char v3_object_size[sizeof('+typ+')]={0};\n')
++   obj=src.with_suffix('.o');args=base[:];args[args.index('-o')+1]=str(obj);args[args.index('-c')+1]=str(src);args+=['-fstack-usage']
++   subprocess.run(args,cwd=entry['directory'],check=True,capture_output=True)
++   nm=str(pathlib.Path(args[0]).with_name('xtensa-esp32s3-elf-nm'));nm=nm if pathlib.Path(nm).exists() else str(pathlib.Path(args[0]).with_name('xtensa-esp-elf-nm'))
++   symbols=subprocess.check_output([nm,'-S',str(obj)],text=True)
++   size=int(next(l.split()[1] for l in symbols.splitlines() if l.endswith(' v3_object_size')),16)
++   stack={l.split('\t')[0].rsplit(':',1)[-1]:l.split('\t')[1:] for l in src.with_suffix('.su').read_text().splitlines()}
++   result[rel][kind]={'object_bytes':size,'stack_usage':stack}
++(doc/'target-resource.json').write_text(json.dumps(result,indent=2))
++print(json.dumps({k:{x:v[x]['object_bytes'] for x in v} for k,v in result.items()},indent=2))
+diff --git a/tests/ws_subscriptions/project_driver.inc b/tests/ws_subscriptions/project_driver.inc
+new file mode 100644
+index 0000000..efe9497
+--- /dev/null
++++ b/tests/ws_subscriptions/project_driver.inc
+@@ -0,0 +1,69 @@
++/* Real project SSH client + Shell; only libssh2/socket/clock boundaries fake. */
++#include <libssh2.h>
++#include <arpa/inet.h>
++#include <netdb.h>
++#include <fcntl.h>
++#include <sys/select.h>
++#include <errno.h>
++#include <unistd.h>
++#include "ts_known_hosts.h"
++struct _LIBSSH2_SESSION {bool local_closed;};
++struct _LIBSSH2_CHANNEL {LIBSSH2_SESSION *owner;};
++static LIBSSH2_CHANNEL *driver_channel;
++static int driver_channels,driver_sessions,driver_sockets,driver_writes,driver_phase,driver_reads;
++static bool driver_eof,driver_write_fail,driver_write_again,driver_resize_reject,driver_close_again,driver_partial,driver_read_fail;
++static int driver_socket(int d,int t,int p){(void)d;(void)t;(void)p;driver_sockets++;return 10;}
++static int driver_close(int fd){(void)fd;driver_sockets--;return 0;}
++static int driver_connect(int fd,const struct sockaddr*a,socklen_t n){(void)fd;(void)a;(void)n;return 0;}
++static int driver_fcntl(int fd,int cmd,...){(void)fd;(void)cmd;return 0;}
++static int driver_select(int n,fd_set*r,fd_set*w,fd_set*x,struct timeval*t){(void)n;(void)r;(void)w;(void)x;test_now+=(int64_t)t->tv_sec*1000000+t->tv_usec;return 0;}
++int libssh2_init(int f){(void)f;return 0;}
++void libssh2_exit(void){}
++LIBSSH2_SESSION *libssh2_session_init_ex(LIBSSH2_ALLOC_FUNC((*a)),LIBSSH2_FREE_FUNC((*f)),LIBSSH2_REALLOC_FUNC((*r)),void*x){(void)a;(void)f;(void)r;(void)x;driver_sessions++;return calloc(1,sizeof(LIBSSH2_SESSION));}
++int libssh2_channel_free(LIBSSH2_CHANNEL*c){if(driver_close_again && !c->owner->local_closed)return LIBSSH2_ERROR_EAGAIN;assert(c==driver_channel);driver_channel=NULL;driver_channels--;free(c);return 0;}
++int libssh2_session_free(LIBSSH2_SESSION*s){if(driver_channel){int r=libssh2_channel_free(driver_channel);if(r)return r;}driver_sessions--;free(s);return 0;}
++void libssh2_session_set_blocking(LIBSSH2_SESSION*s,int b){(void)s;assert(!b);}
++void *libssh2_session_callback_set(LIBSSH2_SESSION*s,int c,void*f){(void)c;(void)f;s->local_closed=true;return NULL;}
++int libssh2_session_handshake(LIBSSH2_SESSION*s,libssh2_socket_t f){(void)s;(void)f;return 0;}
++int libssh2_session_block_directions(LIBSSH2_SESSION*s){(void)s;return LIBSSH2_SESSION_BLOCK_INBOUND;}
++int libssh2_session_last_errno(LIBSSH2_SESSION*s){(void)s;return driver_phase==1?LIBSSH2_ERROR_EAGAIN:0;}
++int libssh2_session_last_error(LIBSSH2_SESSION*s,char **m,int*n,int w){(void)s;(void)n;(void)w;*m="boundary rejection";return 0;}
++int libssh2_userauth_password_ex(LIBSSH2_SESSION*s,const char*u,unsigned int l,const char*p,unsigned int n,LIBSSH2_PASSWD_CHANGEREQ_FUNC((*change))){(void)s;(void)u;(void)l;(void)p;(void)n;(void)change;return 0;}
++int libssh2_userauth_publickey_fromfile_ex(LIBSSH2_SESSION*s,const char*u,unsigned int l,const char*a,const char*b,const char*p){(void)a;(void)b;return libssh2_userauth_password_ex(s,u,l,p,0,NULL);}
++int libssh2_userauth_publickey_frommemory(LIBSSH2_SESSION*s,const char*u,size_t l,const char*a,size_t al,const char*b,size_t bl,const char*p){(void)a;(void)al;(void)b;(void)bl;return libssh2_userauth_password_ex(s,u,l,p,0,NULL);}
++LIBSSH2_CHANNEL *libssh2_channel_open_ex(LIBSSH2_SESSION*s,const char*t,unsigned int l,unsigned int w,unsigned int p,const char*m,unsigned int ml){(void)t;(void)l;(void)w;(void)p;(void)m;(void)ml;if(driver_phase==1)return NULL;assert(!driver_channel);driver_channel=calloc(1,sizeof(*driver_channel));driver_channel->owner=s;driver_channels++;return driver_channel;}
++int libssh2_channel_request_pty_ex(LIBSSH2_CHANNEL*c,const char*t,unsigned int l,const char*m,unsigned int ml,int w,int h,int wp,int hp){(void)c;(void)t;(void)l;(void)m;(void)ml;(void)w;(void)h;(void)wp;(void)hp;return driver_phase==2?LIBSSH2_ERROR_EAGAIN:driver_phase==4?-1:0;}
++int libssh2_channel_process_startup(LIBSSH2_CHANNEL*c,const char*r,unsigned int rl,const char*m,unsigned int ml){(void)c;(void)r;(void)rl;(void)m;(void)ml;return driver_phase==3?LIBSSH2_ERROR_EAGAIN:0;}
++int libssh2_channel_request_pty_size_ex(LIBSSH2_CHANNEL*c,int w,int h,int wp,int hp){(void)c;(void)w;(void)h;(void)wp;(void)hp;return driver_resize_reject?LIBSSH2_ERROR_CHANNEL_REQUEST_DENIED:0;}
++ssize_t libssh2_channel_write_ex(LIBSSH2_CHANNEL*c,int stream,const char*b,size_t n){(void)c;(void)stream;(void)b;if(driver_partial){driver_partial=false;driver_write_fail=true;driver_writes++;return 1;}if(driver_write_again)return LIBSSH2_ERROR_EAGAIN;if(driver_write_fail)return LIBSSH2_ERROR_SOCKET_SEND;driver_writes++;return n;}
++ssize_t libssh2_channel_read_ex(LIBSSH2_CHANNEL*c,int stream,char*b,size_t n){(void)c;(void)stream;(void)b;(void)n;driver_reads++;return driver_read_fail?LIBSSH2_ERROR_SOCKET_RECV:0;}
++int libssh2_channel_eof(LIBSSH2_CHANNEL*c){(void)c;return driver_eof;}
++int libssh2_channel_send_eof(LIBSSH2_CHANNEL*c){(void)c;return driver_close_again?LIBSSH2_ERROR_EAGAIN:0;}
++int libssh2_channel_wait_eof(LIBSSH2_CHANNEL*c){(void)c;return driver_close_again?LIBSSH2_ERROR_EAGAIN:0;}
++int libssh2_channel_close(LIBSSH2_CHANNEL*c){return driver_close_again&&!c->owner->local_closed?LIBSSH2_ERROR_EAGAIN:0;}
++int libssh2_channel_get_exit_status(LIBSSH2_CHANNEL*c){(void)c;return 0;}
++esp_err_t ts_known_hosts_verify(ts_ssh_session_t s,ts_host_verify_result_t*r,ts_known_host_t*h){(void)s;(void)h;*r=TS_HOST_VERIFY_OK;return ESP_OK;}
++#define socket driver_socket
++#define close driver_close
++#define connect driver_connect
++#define fcntl driver_fcntl
++#define select driver_select
++#define malloc tracked_malloc
++#define calloc host_calloc
++#define free tracked_free
++#define TAG client_tag
++#define wait_socket client_wait_socket
++#include "../../components/ts_security/src/ts_ssh_client.c"
++#undef wait_socket
++#undef TAG
++#define TAG shell_tag
++#include "../../components/ts_security/src/ts_ssh_shell.c"
++#undef TAG
++#undef malloc
++#undef calloc
++#undef free
++#undef socket
++#undef close
++#undef connect
++#undef fcntl
++#undef select
+diff --git a/tests/ws_subscriptions/project_stubs/ts_core.h b/tests/ws_subscriptions/project_stubs/ts_core.h
+new file mode 100644
+index 0000000..b3a531d
+--- /dev/null
++++ b/tests/ws_subscriptions/project_stubs/ts_core.h
+@@ -0,0 +1,4 @@
++#pragma once
++#define TS_MALLOC_PSRAM(n) tracked_malloc(n)
++#define TS_CALLOC_PSRAM(n,z) host_calloc(n,z)
++#define TS_REALLOC_PSRAM(p,n) realloc(p,n)
+diff --git a/tests/ws_subscriptions/replay_project_baseline.py b/tests/ws_subscriptions/replay_project_baseline.py
+new file mode 100644
+index 0000000..f1e73b4
+--- /dev/null
++++ b/tests/ws_subscriptions/replay_project_baseline.py
+@@ -0,0 +1,31 @@
++#!/usr/bin/env python3
++"""Replay frozen pre-v3 product source; no checkout or mutation of working source."""
++import hashlib,json,os,pathlib,shutil,subprocess,tarfile,tempfile
++root=pathlib.Path(__file__).resolve().parents[2];doc=root/'docs/repair/ws-project-v3'
++with tempfile.TemporaryDirectory(prefix='ts-v3-baseline-') as name:
++ dst=pathlib.Path(name)
++ with tarfile.open(doc/'baseline.tar.gz') as t:t.extractall(dst,filter='data')
++ for file,digest in json.loads((doc/'baseline.json').read_text())['sha256'].items():
++  assert hashlib.sha256((dst/file).read_bytes()).hexdigest()==digest,file
++ (dst/'components/ts_console/commands').mkdir(parents=True,exist_ok=True)
++ shutil.copy2(doc/'baseline-console.c',dst/'components/ts_console/commands/ts_cmd_ssh.c')
++ # Console header only; do not replace the frozen callback with today's code.
++ (dst/'components/ts_console/include').symlink_to(root/'components/ts_console/include',target_is_directory=True)
++ # Dependencies outside the frozen affected units are read-only current headers/vendor.
++ for p in (root/'components').iterdir():
++  if not (dst/'components'/p.name).exists():(dst/'components'/p.name).symlink_to(p,target_is_directory=p.is_dir())
++ with tarfile.open(doc/'baseline-fixture.tar.gz') as t:t.extractall(dst,filter='data')
++ p=subprocess.run(['node','tests/prompts/project-cross.cjs','--baseline'],cwd=dst,env=dict(os.environ,CROSS_OUTPUT=str(doc/'baseline-h1.json')),capture_output=True,text=True)
++ (doc/'baseline-h1.txt').write_text(p.stdout+p.stderr);assert p.returncode==0 and 'CONFIRMED H1' in p.stdout,p.stdout+p.stderr
++ # Same current lower-driver assertions against the frozen production, separate from H1.
++ for file in ['test_shell_driver.c','run_shell_driver.sh','project_driver.inc']:
++  shutil.copy2(root/'tests/ws_subscriptions'/file,dst/'tests/ws_subscriptions'/file)
++ for args,label,marker in [([], 'no-data','ESP_ERR_TIMEOUT'),(['--eof-only'],'eof-release','!live_allocations'),(['--cli-exit'],'cli-exit','!ts_ssh_shell_is_active(shell)')]:
++  p=subprocess.run(['bash','tests/ws_subscriptions/run_shell_driver.sh',*args],cwd=dst,env=dict(os.environ,PROJECT_BASELINE='1'),capture_output=True,text=True)
++  evidence=p.stdout+p.stderr;(doc/('baseline-'+label+'.txt')).write_text(evidence)
++  assert p.returncode!=0 and 'Assertion failed:' in evidence and marker in evidence,evidence
++  print('CONFIRMED production defect:',label)
++ p=subprocess.run(['bash','tests/ws_subscriptions/run_shell_driver.sh','--metrics'],cwd=dst,env=dict(os.environ,PROJECT_BASELINE='1'),capture_output=True,text=True)
++ assert p.returncode==0,p.stderr
++ (doc/'baseline-allocation-metrics.json').write_text(p.stdout)
++ print('CONFIRMED H1 and lower-driver business counterexamples; source hashes verified')
+diff --git a/tests/ws_subscriptions/run_project_bridge.sh b/tests/ws_subscriptions/run_project_bridge.sh
+new file mode 100644
+index 0000000..9609ec6
+--- /dev/null
++++ b/tests/ws_subscriptions/run_project_bridge.sh
+@@ -0,0 +1,11 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++: "${IDF_PATH:?NOT RUN: set IDF_PATH to the project SDK}"
++build=$(mktemp -d /tmp/ts-ws-adapter.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++cjson="$IDF_PATH/components/json/cJSON"
++"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -Wno-macro-redefined -fsanitize=address,undefined \
++ -Itests/ws_subscriptions/project_stubs -Icomponents/ch405labs_esp_libssh2/libssh2/include -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -I"$cjson" \
++ tests/ws_subscriptions/test_project.c "$cjson/cJSON.c" -o "$build/adapter"
++"$build/adapter"
+diff --git a/tests/ws_subscriptions/run_project_v3.py b/tests/ws_subscriptions/run_project_v3.py
+new file mode 100644
+index 0000000..5fb597c
+--- /dev/null
++++ b/tests/ws_subscriptions/run_project_v3.py
+@@ -0,0 +1,19 @@
++#!/usr/bin/env python3
++"""Local suite entry; no device access. Preserve every subprocess exit status."""
++import json, os, pathlib, subprocess, sys
++root=pathlib.Path(__file__).resolve().parents[2]
++out=pathlib.Path(os.environ.get('V3_RESULTS',str(root/'docs/repair/ws-project-v3/results')));out.mkdir(parents=True,exist_ok=True)
++commands=[('host',['bash','tests/ws_subscriptions/run_host.sh']),('operation',['bash','tests/ws_subscriptions/run_operation.sh']),('adapter',['bash','tests/ws_subscriptions/run_operation_adapter.sh']),('control',['bash','tests/ws_subscriptions/run_control.sh']),('reviewer',['bash','tests/ws_subscriptions/run_reviewer.sh']),('f1_f2',['bash','tests/ws_subscriptions/run_f1_f2.sh']),('runtime',['bash','tests/runtime/run_all.sh']),('certificate',['bash','tests/certificate/run_host.sh']),('prompts',['npm','test','--prefix','tests/prompts']),('release',['python3','tests/release/test_release.py']),('shell_driver',['bash','tests/ws_subscriptions/run_shell_driver.sh'])]
++if '--browser' in sys.argv: commands=[('browser',['npm','run','test:browser','--prefix','tests/prompts'])]
++results=[]
++for name,cmd in commands:
++ with (out/(name+'.log')).open('w') as f:r=subprocess.run(cmd,cwd=root,stdout=f,stderr=subprocess.STDOUT)
++ results.append(dict(name=name,command=cmd,exit=r.returncode));print(name,r.returncode,flush=True)
++for language in ['en-US','zh-CN']:
++ name=('cross-browser-' if '--browser' in sys.argv else 'cross-node-')+language
++ env=dict(os.environ,CROSS_LANGUAGE=language,CROSS_OUTPUT=str(out/(name+'.json')))
++ cmd=['node','tests/prompts/project-cross.cjs']+(['--browser'] if '--browser' in sys.argv else [])
++ with (out/(name+'.log')).open('w') as f:r=subprocess.run(cmd,cwd=root,env=env,stdout=f,stderr=subprocess.STDOUT)
++ results.append(dict(name=name,command=cmd,exit=r.returncode));print(name,r.returncode,flush=True)
++(out/('browser.json' if '--browser' in sys.argv else 'host.json')).write_text(json.dumps(results,indent=2))
++sys.exit(any(r['exit'] for r in results))
+diff --git a/tests/ws_subscriptions/run_shell_driver.sh b/tests/ws_subscriptions/run_shell_driver.sh
+new file mode 100644
+index 0000000..fb52e4f
+--- /dev/null
++++ b/tests/ws_subscriptions/run_shell_driver.sh
+@@ -0,0 +1,19 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++: "${IDF_PATH:?NOT RUN: set IDF_PATH to the project SDK}"
++build=$(mktemp -d /tmp/ts-ws-adapter.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++cjson="$IDF_PATH/components/json/cJSON"
++extra=()
++if [[ "${PROJECT_BASELINE:-0}" == 1 ]]; then extra+=(-DPROJECT_BASELINE); fi
++python3 - "$build" <<'PYCLI'
++import pathlib,sys
++s=pathlib.Path('components/ts_console/commands/ts_cmd_ssh.c').read_text()
++a=s.index('static const char *shell_input_callback(');b=s.index('static int do_ssh_shell(',a)
++pathlib.Path(sys.argv[1],'cli_shell_fixture.inc').write_text(s[a:b])
++PYCLI
++"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -Wno-macro-redefined -fsanitize=address,undefined \
++ "${extra[@]}" -I"$build" -Itests/ws_subscriptions/project_stubs -Icomponents/ch405labs_esp_libssh2/libssh2/include -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -I"$cjson" \
++ tests/ws_subscriptions/test_shell_driver.c "$cjson/cJSON.c" -o "$build/adapter"
++"$build/adapter" "$@"
+diff --git a/tests/ws_subscriptions/test_project.c b/tests/ws_subscriptions/test_project.c
+new file mode 100644
+index 0000000..b7b63f7
+--- /dev/null
++++ b/tests/ws_subscriptions/test_project.c
+@@ -0,0 +1,40 @@
++#define OP_ADAPTER_NO_MAIN
++#define PROJECT_REAL_DRIVER
++#include "test_operation_adapter.c"
++static void emit(httpd_ws_frame_t*f){
++ printf("{\"frame\":%.*s,\"fd\":%d,\"bytes\":\"",(int)f->len,f->payload,sent_fd);
++ for(size_t i=0;i<f->len;i++){unsigned char c=f->payload[i];if(c=='"'||c=='\\')putchar('\\');if(c<32)printf("\\u%04x",c);else putchar(c);}puts("\"}");
++}
++static void close_during_error(void){ssh_shell_context_t *ctx=shell_task.arg;ssh_send_output(ctx,"last output",11);ssh_close(ctx->op,"closed","SSH session closed");}
++static void fail_error_encoding(void){fail_allocation=allocations+1;}
++int main(void){
++ cJSON_Hooks h={tracked_malloc,tracked_free};cJSON_InitHooks(&h);sent_hook=emit;setup();
++ char line[4096];while(fgets(line,sizeof(line),stdin)){
++  cJSON *j=cJSON_Parse(line);assert(j);const char *cmd=cJSON_GetStringValue(cJSON_GetObjectItem(j,"cmd"));
++  if(cmd && !strcmp(cmd,"finish")){ssh_cleanup();if(shell_task.fn){shell_task.fn(shell_task.arg);shell_task.fn=NULL;}drive_all();cJSON_Delete(j);finish_all();assert(!driver_channels&&!driver_sessions&&!driver_sockets);puts("{\"finished\":true}");return 0;}
++  if(cmd && !strcmp(cmd,"eof")){driver_eof=true;shell_task.fn(shell_task.arg);shell_task.fn=NULL;drive_all();}
++  else if(cmd && !strcmp(cmd,"output")){ssh_shell_context_t *ctx=shell_task.arg;ssh_send_output(ctx,"stream",6);}
++  else if(cmd && !strcmp(cmd,"error_close")){barrier_name="request_error_encode";barrier_action=close_during_error;}
++  else if(cmd && !strcmp(cmd,"write_again"))driver_write_again=true;
++  else if(cmd && !strcmp(cmd,"close_again"))driver_close_again=true;
++  else if(cmd && !strcmp(cmd,"reset_driver")){driver_write_fail=driver_write_again=driver_resize_reject=driver_close_again=driver_eof=false;driver_phase=0;}
++  else if(cmd && !strcmp(cmd,"setup_fail"))driver_phase=4;
++  else if(cmd && !strcmp(cmd,"queue_fail"))queue_fail=true;
++  else if(cmd && !strcmp(cmd,"queue_resume")){queue_fail=false;test_now+=100000;drive_all();}
++  else if(cmd && !strcmp(cmd,"send_fail"))send_fail=true;
++  else if(cmd && !strcmp(cmd,"send_resume"))send_fail=false;
++  else if(cmd && !strcmp(cmd,"encode_fail")){barrier_name="request_error_encode";barrier_action=fail_error_encoding;}
++  else if(cmd && !strcmp(cmd,"encode_resume"))fail_allocation=0;
++  else if(cmd && !strcmp(cmd,"write_fail"))driver_write_fail=true;
++  else if(cmd && !strcmp(cmd,"resize_reject"))driver_resize_reject=true;
++  else if(cmd && !strcmp(cmd,"drain"))drive_all();
++  else {
++   int fd=1;cJSON *f=cJSON_GetObjectItem(j,"fd");if(f)fd=f->valueint;
++   cJSON *msg=cJSON_GetObjectItem(j,"message");char *raw=cJSON_PrintUnformatted(msg);incoming=raw;reqs[fd].method=1;current=(void*)3;int ret=ws_handler(&reqs[fd]);current=(void*)1;incoming=NULL;cJSON_free(raw);assert(ret==0);drive_all();
++  }
++  if(shell_task.fn && (((ssh_shell_context_t*)shell_task.arg)->disconnect_requested || !ts_ws_op_is_open(((ssh_shell_context_t*)shell_task.arg)->op))){shell_task.fn(shell_task.arg);shell_task.fn=NULL;drive_all();}
++  ts_ws_op_stats_t st;ts_ws_op_stats(TS_WS_OP_SHELL,&st);
++  printf("{\"state\":%d,\"writes\":%d,\"live\":%u,\"channels\":%d,\"refs\":%u,\"preparing\":%u,\"unsettled\":%u}\n",st.phase,driver_writes,live_allocations,driver_channels,st.refs,st.preparing,st.unsettled);fflush(stdout);cJSON_Delete(j);
++ }
++ return 2;
++}
+diff --git a/tests/ws_subscriptions/test_shell_driver.c b/tests/ws_subscriptions/test_shell_driver.c
+new file mode 100644
+index 0000000..d6f6f8d
+--- /dev/null
++++ b/tests/ws_subscriptions/test_shell_driver.c
+@@ -0,0 +1,56 @@
++#define OP_ADAPTER_NO_MAIN
++#define PROJECT_REAL_DRIVER
++#include "test_operation_adapter.c"
++static unsigned notified;
++static void cli_output(const char *data,size_t len,void *arg){(void)data;(void)len;(void)arg;}
++#define CONFIG_ESP_CONSOLE_UART_NUM 0
++static unsigned cli_interrupts;
++static int uart_read_bytes(int port,uint8_t *b,size_t n,unsigned wait){(void)port;(void)n;(void)wait;*b=0x1c;return 1;}
++static void cli_request_interrupt(void){cli_interrupts++;}
++static void cli_printf(const char *fmt,...){(void)fmt;}
++#define ts_console_request_interrupt cli_request_interrupt
++#define ts_console_printf cli_printf
++#include "cli_shell_fixture.inc"
++#undef ts_console_request_interrupt
++#undef ts_console_printf
++static void driver_closed_cb(int code,void *arg){(void)code;(void)arg;notified++;}
++static void make_shell(ts_ssh_session_t *session,ts_ssh_shell_t *shell){
++ ts_ssh_config_t c=TS_SSH_DEFAULT_CONFIG();c.host="192.0.2.1";c.username="u";c.auth.password="p";
++ assert(ts_ssh_session_create(&c,session)==0 && ts_ssh_connect(*session)==0);
++ assert(ts_ssh_shell_open(*session,NULL,shell)==0);
++}
++static void empty(void){assert(!live_allocations && !driver_channels && !driver_sessions && !driver_sockets);}
++int main(int argc,char **argv){
++ (void)argv;
++ cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);
++ ts_ssh_session_t session;ts_ssh_shell_t shell;char buf[8];size_t n;int64_t before;
++ if(argc>1 && !strcmp(argv[1],"--cli-exit")){make_shell(&session,&shell);size_t ignored=0;shell_input_callback(&ignored,shell);fprintf(stderr,"CLI exit: active=%d interrupt=%u\n",ts_ssh_shell_is_active(shell),cli_interrupts);assert(!ts_ssh_shell_is_active(shell) && cli_interrupts==1);ts_ssh_shell_close(shell);ts_ssh_session_destroy(session);empty();return 0;}
++ if(argc>1 && !strcmp(argv[1],"--metrics")){unsigned begin=allocations;make_shell(&session,&shell);unsigned opened=allocations;assert(ts_ssh_shell_write(shell,"abc",3,&n)==ESP_OK);unsigned wrote=allocations;assert(ts_ssh_shell_send_signal(shell,"TERM")==ESP_ERR_NOT_SUPPORTED);unsigned rejected=allocations;ts_ssh_shell_close(shell);ts_ssh_session_destroy(session);empty();printf("{\"open_allocations\":%u,\"write_allocations\":%u,\"unsupported_allocations\":%u,\"close_allocations\":%u,\"retained\":%u}\n",opened-begin,wrote-opened,rejected-wrote,allocations-rejected,live_allocations);return 0;}
++ if(argc>1){make_shell(&session,&shell);driver_eof=true;assert(ts_ssh_shell_read(shell,buf,sizeof(buf),&n)==ESP_ERR_INVALID_STATE);assert(ts_ssh_shell_close(shell)==0);ts_ssh_session_destroy(session);fprintf(stderr,"EOF ledger: allocations=%u channels=%d sessions=%d sockets=%d\n",live_allocations,driver_channels,driver_sessions,driver_sockets);empty();return 0;}
++ make_shell(&session,&shell);assert(ts_ssh_shell_read(shell,buf,sizeof(buf),&n)==ESP_ERR_TIMEOUT && ts_ssh_shell_is_active(shell));
++ ts_ssh_shell_set_close_cb(shell,driver_closed_cb,NULL);driver_eof=true;
++ assert(ts_ssh_shell_poll(shell)==ESP_ERR_INVALID_STATE && notified==1);assert(ts_ssh_shell_close(shell)==0);shell=NULL;assert(notified==1);assert(ts_ssh_session_destroy(session)==0);empty();driver_eof=false;
++ puts("PASS real Shell+client: zero data is not EOF; EOF then close releases wrapper/channel/session/socket; close callback exactly once");
++ make_shell(&session,&shell);driver_write_fail=true;assert(ts_ssh_shell_write(shell,"x",1,&n)==ESP_FAIL && n==0 && !ts_ssh_shell_is_active(shell));driver_write_fail=false;
++ assert(ts_ssh_shell_close(shell)==0);ts_ssh_session_destroy(session);empty();
++ make_shell(&session,&shell);driver_partial=true;assert(ts_ssh_shell_write(shell,"abc",3,&n)==ESP_FAIL && n==1 && !ts_ssh_shell_is_active(shell));driver_write_fail=false;ts_ssh_shell_close(shell);ts_ssh_session_destroy(session);empty();
++ make_shell(&session,&shell);driver_resize_reject=true;assert(ts_ssh_shell_resize(shell,80,24)==ESP_FAIL && ts_ssh_shell_is_active(shell));driver_resize_reject=false;driver_read_fail=true;assert(ts_ssh_shell_read(shell,buf,sizeof(buf),&n)==ESP_FAIL && !ts_ssh_shell_is_active(shell));driver_read_fail=false;ts_ssh_shell_close(shell);ts_ssh_session_destroy(session);empty();
++ make_shell(&session,&shell);driver_write_again=true;before=test_now;assert(ts_ssh_shell_write(shell,"x",1,&n)==ESP_ERR_TIMEOUT && test_now-before<=1000000);driver_write_again=false;
++ driver_close_again=true;before=test_now;assert(ts_ssh_shell_close(shell)==0 && test_now==before);ts_ssh_session_destroy(session);driver_close_again=false;empty();
++ puts("PASS real Shell+client: fatal write/timeout retires channel; persistent close EAGAIN falls back to local session teardown without waiting");
++ for(int phase=1;phase<=4;phase++){
++  ts_ssh_config_t c=TS_SSH_DEFAULT_CONFIG();c.host="192.0.2.1";c.username="u";c.auth.password="p";
++  assert(ts_ssh_session_create(&c,&session)==0 && ts_ssh_connect(session)==0);driver_phase=phase;driver_close_again=true;before=test_now;shell=(void*)1;
++  assert(ts_ssh_shell_open(session,NULL,&shell)!=0 && !shell && test_now-before<=10000000);ts_ssh_session_destroy(session);driver_phase=0;driver_close_again=false;empty();
++ }
++ puts("PASS real Shell+client: partial initialization/open/PTY/shell-start failure and bounded EAGAIN all release owned resources");
++  make_shell(&session,&shell);before=driver_reads;assert(ts_ssh_shell_run(shell,cli_output,shell_input_callback,shell)==ESP_OK && driver_reads==before && cli_interrupts==1);ts_ssh_shell_close(shell);ts_ssh_session_destroy(session);empty();
++ puts("PASS Shell run: local exit requested by input callback stops before another network read; close still owns cleanup");
++  setup();cJSON *j=cJSON_Parse("{\"host\":\"192.0.2.1\",\"user\":\"u\",\"password\":\"p\"}");handle_ssh_connect(&reqs[1],j);cJSON_Delete(j);assert(shell_task.fn);ssh_shell_context_t *ctx=shell_task.arg;ssh_cleanup();shell_resources_close(ctx);shell_resources_close(ctx);shell_task.fn(shell_task.arg);finish_all();empty();
++ puts("PASS actual WebUI cleanup twice uses cleared handles; original operation/ticket/target and actual lower resources drain");
++ setup();shell_task.fn=NULL;j=cJSON_Parse("{\"host\":\"192.0.2.1\",\"user\":\"u\",\"password\":\"p\"}");handle_ssh_connect(&reqs[1],j);cJSON_Delete(j);assert(shell_task.fn);
++ ssh_send_output(shell_task.arg,"accepted",8);
++ assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(driver_channels==1 && ts_ws_op_busy());
++ delay_hook=stop_progress_shell;assert(ts_webui_ws_stop((void*)11)==ESP_OK);delay_hook=NULL;for(int i=0;i<32;i++)if(reqs[i].sess_ctx)close_peer(i);ts_webui_ws_stopped((void*)11);empty();
++ puts("PASS real lower resources survive stop timeout; accepted output and terminal drain on retry with no new business message");
++}
+diff --git a/tests/ws_subscriptions/verify_project_assets.py b/tests/ws_subscriptions/verify_project_assets.py
+new file mode 100644
+index 0000000..20e4116
+--- /dev/null
++++ b/tests/ws_subscriptions/verify_project_assets.py
+@@ -0,0 +1,21 @@
++#!/usr/bin/env python3
++"""Verify final optimized/gzip files and reproduce SPIFFS with the fixed SDK."""
++import gzip,hashlib,json,os,pathlib,subprocess,tempfile
++root=pathlib.Path(__file__).resolve().parents[2]
++build=pathlib.Path(os.environ.get('V3_BUILD','/tmp/tianshan-project-v3-build/build'));web=build/'esp-idf/ts_webui/web_optimized';src=root/'components/ts_webui/web';doc=root/'docs/repair/ws-project-v3'
++sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
++result={}
++for rel in ['index.html','js/terminal.js','js/lang/zh-CN.js','js/lang/en-US.js']:
++ p=web/rel;gz=p.with_suffix(p.suffix+'.gz');assert gzip.decompress(gz.read_bytes())==p.read_bytes()
++ if rel.endswith('.js'):subprocess.run(['node','--check',str(p)],check=True)
++ result[rel]={'source_sha256':sha(src/rel),'optimized_sha256':sha(p),'gzip_sha256':sha(gz),'optimized_bytes':p.stat().st_size}
++assert '20260926-shell-contract' in (web/'index.html').read_text()
++assert 'sshControlUnsupported' in (web/'js/terminal.js').read_text()
++with tempfile.TemporaryDirectory(prefix='ts-v3-spiffs-') as d:
++ image=pathlib.Path(d)/'www.bin'
++ cmd=['python3',os.environ['IDF_PATH']+'/components/spiffs/spiffsgen.py','0x300000',str(web),str(image),'--page-size=256','--obj-name-len=32','--meta-len=4','--use-magic','--use-magic-len']
++ subprocess.run(cmd,check=True);assert image.read_bytes()==(build/'www.bin').read_bytes()
++result['build']={p:{'sha256':sha(build/p),'bytes':(build/p).stat().st_size} for p in ['TianShanOS.bin','www.bin','TianShanOS.elf']}
++result['spiffs_regeneration']='byte-identical from verified optimized directory'
++(doc/'assets.json').write_text(json.dumps(result,indent=2))
++print('PASS optimized syntax, gzip identity, cache key, and byte-identical SPIFFS reconstruction')
+diff --git a/tests/prompts/project-cross.cjs b/tests/prompts/project-cross.cjs
+new file mode 100644
+index 0000000..c902f24
+--- /dev/null
++++ b/tests/prompts/project-cross.cjs
+@@ -0,0 +1,88 @@
++/* Bidirectional bridge: final production C frames -> actual JS socket dispatcher ->
++ * actual onData/start/exit requests -> real C ws_handler + operation + SSH drivers.
++ * Network/libssh2/xterm rendering are boundaries; no lifecycle logic is replaced. */
++const assert=require('node:assert/strict'),{spawn}=require('node:child_process'),readline=require('node:readline'),fs=require('node:fs');
++const path=require('node:path'),{harness,read:sourceRead}=require('./harness.cjs');
++const read=file=>process.env.PROJECT_WEB_ROOT?fs.readFileSync(path.join(process.env.PROJECT_WEB_ROOT,file),'utf8'):sourceRead(file);
++async function engine(language,browserMode){
++ if(!browserMode){const h=harness(language);await h.ready();h.load();await h.run(`i18n.setLanguage('${language}')`);return {run:async s=>h.run(s),close:async()=>{}};}
++ const {chromium}=require('playwright');const browser=await chromium.launch({channel:'chrome',headless:true});
++ const page=await browser.newPage();const errors=[];page.on('pageerror',err=>errors.push(err.message));
++ await page.addInitScript(language=>{localStorage.setItem('ts_language',language);window.WebSocket=class{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){}};},language);
++ await page.route('**/*',async r=>{
++  const url=new URL(r.request().url());if(url.origin!=='http://fixture.local'){await r.abort();return;}
++  if(url.pathname.startsWith('/api/')){await r.fulfill({json:{code:0,data:{}}});return;}
++  const rel=url.pathname==='/'?'index.html':url.pathname.slice(1);
++  try{await r.fulfill({body:read(rel),contentType:rel.endsWith('.js')?'application/javascript':rel.endsWith('.css')?'text/css':rel.endsWith('.html')?'text/html':'application/octet-stream'});}catch{await r.abort();}
++ });
++ await page.goto('http://fixture.local/');await page.waitForFunction(()=>i18n.isReady());
++ await page.evaluate(()=>{const f=document.createElement('div');f.id='fixture';document.body.append(f);});
++ return {run:s=>page.evaluate(s),close:async()=>{await browser.close();assert.deepEqual(errors,[]);}};
++}
++async function main(){
++ const baseline=process.argv.includes('--baseline'),browserMode=process.argv.includes('--browser');
++ const language=process.env.CROSS_LANGUAGE||'en-US',e=await engine(language,browserMode);
++ let c;const records=[];let exit,err='',pending,chain=Promise.resolve();
++ try{
++ await e.run(`window.sent=[];window.lines=[];window.input=null;
++ window.WebSocket=class {static OPEN=1;static CONNECTING=0;constructor(){this.readyState=1;}send(s){sent.push(JSON.parse(s));}close(){this.readyState=3;}};
++ window.term=new WebTerminal('fixture');term.terminal={write:s=>lines.push(s),writeln:s=>lines.push(s),onData:f=>input=f,dispose:()=>{}};
++ term.setupInputHandler();term.connect();term.ws.onopen();`);
++ c=spawn('bash',['tests/ws_subscriptions/run_project_bridge.sh'],{cwd:path.resolve(__dirname,'../..'),env:process.env});
++ c.stderr.on('data',b=>err+=b);
++ const done=new Promise(r=>c.on('close',code=>{exit=code;r(code);if(pending){pending.reject(new Error(err||'C exited '+code));pending=null;}}));
++ readline.createInterface({input:c.stdout}).on('line',line=>{
++  chain=chain.then(async()=>{const m=JSON.parse(line);records.push(m);
++   if(m.frame && m.fd===1)await e.run(`term.ws.onmessage({data:${JSON.stringify(m.bytes || JSON.stringify(m.frame))}})`);
++   if('state'in m||m.finished){const p=pending;pending=null;p?.resolve(m);}
++  }).catch(error=>{pending?.reject(error);pending=null;});
++ });
++ const step=msg=>new Promise((resolve,reject)=>{assert(!pending);pending={resolve,reject};c.stdin.write(JSON.stringify(msg)+'\n');});
++ const sendNext=async()=>{const message=await e.run('sent.shift()');assert(message,'frontend generated no request');return step({message});};
++ const start=async()=>{await e.run(`term.startSshShell({host:'192.0.2.1',user:'fake',password:'fake',port:22})`);return sendNext();};
++ const state=()=>e.run(`({mode:term.sshMode,connecting:term.sshConnecting,restoring:term.restoring,connected:term.connected,lines:[...lines],sent:[...sent]})`);
++ await sendNext();await start();assert((await state()).mode);
++ const before=(await state()).lines.length;const afterSignal=await step({message:{type:'ssh_signal',signal:'TERM'}});
++ const s=await state();const recovered=s.mode&&!s.restoring&&!s.lines.slice(before).some(x=>x==='tianshan> ');
++ await e.run(`input('x\\r')`);const next=await e.run('sent.shift()');
++ if(baseline){assert(!recovered && next.type!=='ssh_input');await step({cmd:'finish'});await done;assert.equal(exit,0,err);console.log('CONFIRMED H1: actual C request error leaves op OPEN but JS exits SSH and next input is not routed to SSH');return;}
++ assert(recovered,'request failure changed active SSH mode/prompt/recovery');assert.equal(next.type,'ssh_input');
++ let cs=await step({message:next});assert.equal(cs.writes,afterSignal.writes+1,'next frontend input must execute on original C Shell');
++ for(const message of [{type:'ssh_resize',width:0,height:20},{type:'ssh_resize',width:80.5,height:20}]){await step({message});assert((await state()).mode);}
++ await step({cmd:'resize_reject'});await step({message:{type:'ssh_resize',width:80,height:24}});assert((await state()).mode);await step({cmd:'reset_driver'});
++ // Another page cannot input, disconnect, signal or resize the current owner.
++ const n=cs.writes;for(const message of [{type:'ssh_input',data:'wrong'},{type:'ssh_disconnect'},{type:'ssh_signal',signal:'INT'},{type:'ssh_resize',width:80,height:24},{type:'ssh_connect',host:'192.0.2.2',user:'other'}]){cs=await step({fd:2,message});assert.equal(cs.writes,n);assert.equal(cs.channels,1);assert((await state()).mode);}
++ // A rejected duplicate start on the owner also must not terminate its live op.
++ await step({message:{type:'ssh_connect',host:'192.0.2.1',user:'fake'}});assert((await state()).mode);
++ await e.run(`input('\\x1c')`);await sendNext();assert(!(await state()).mode);assert((await state()).connected);
++ await e.run(`input('help\\r')`);const local=await e.run('sent.shift()');assert.equal(local.type,'terminal_input');await step({message:local});
++ await step({message:{type:'terminal_stop'}});await e.run(`input('help\\r')`);await sendNext();assert((await state()).restoring);
++ const restore=await e.run('sent.shift()');assert.equal(restore.type,'terminal_start');await step({message:restore});assert((await state()).connected && !(await state()).restoring);
++ await start();assert((await state()).mode);await step({cmd:'write_fail'});await e.run(`input('x')`);await sendNext();assert(!(await state()).mode);assert(!(await state()).restoring);assert((await state()).lines.some(x=>/unconfirmed|尚未确认/.test(x)));
++ await step({cmd:'reset_driver'});await start();assert((await state()).mode);await step({cmd:'eof'});assert(!(await state()).mode);
++ await step({cmd:'reset_driver'});await step({cmd:'setup_fail'});await start();assert(!(await state()).mode && !(await state()).connecting);await step({cmd:'reset_driver'});await start();assert((await state()).mode);
++ // Failed notification encoding does not change active request ownership.
++ await step({cmd:'encode_fail'});await step({message:{type:'ssh_signal',signal:'TERM'}});await step({cmd:'encode_resume'});assert((await state()).mode);await e.run(`input('z')`);await sendNext();
++ // A control failure crosses output preparation and a genuine close: exactly one terminal,
++ // queued output precedes it, then next frontend action is local (no automatic replay).
++ const crossing=records.length;await step({cmd:'error_close'});await step({message:{type:'ssh_signal',signal:'TERM'}});assert(!(await state()).mode);
++ const crossed=records.slice(crossing).filter(r=>r.frame&&r.fd===1).map(r=>r.frame);
++ assert.equal(crossed.filter(f=>f.type==='ssh_status'&&f.status==='closed').length,1);
++ assert(crossed.findIndex(f=>f.type==='ssh_output')<crossed.findIndex(f=>f.type==='ssh_status'&&f.status==='closed'));
++ await start();assert((await state()).mode);
++ // Direct request notification send failure cannot recursively change the operation.
++ await step({cmd:'send_fail'});await step({message:{type:'ssh_signal',signal:'TERM'}});await step({cmd:'send_resume'});assert((await state()).mode);
++ await e.run(`input('q')`);await sendNext();
++ // Output accepted while HTTPD is unavailable follows the existing original-operation
++ // failure path; capacity recovers with no new business input, and resources settle.
++ await step({cmd:'queue_fail'});await step({cmd:'output'});await step({cmd:'queue_resume'});assert(!(await state()).mode);
++ await step({cmd:'finish'});await done;assert.equal(exit,0,err);
++ // Old socket frames/close and callbacks after destroy cannot change new instance.
++ const stale=await e.run(`(()=>{const old=term.ws;term.connect();term.connected=true;term.sshMode=true;const fresh=term.ws;old.onmessage({data:JSON.stringify({type:'ssh_status',status:'error'})});old.onclose({code:1006});const held=term.sshMode&&term.connected&&term.ws===fresh;term.destroy();fresh.onmessage({data:JSON.stringify({type:'connected'})});return held&&!term.connected;})()`);assert(stale);
++ console.log(`PASS ${browserMode?'Chrome':'Node'} ${language}: actual C frames + JS dispatcher + next C requests; recoverable/fatal/start/EOF/owner/encoding/socket paths; C resources zero`);
++ }finally{
++  if(process.env.CROSS_OUTPUT)fs.writeFileSync(process.env.CROSS_OUTPUT,JSON.stringify({records,stderr:err,exit},null,2));
++  if(c && exit===undefined)c.kill('SIGTERM');await e.close();
++ }
++}
++main().catch(e=>{console.error(e);process.exitCode=1;});

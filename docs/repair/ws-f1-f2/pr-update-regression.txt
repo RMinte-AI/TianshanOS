@@ -1,0 +1,23 @@
+F1 assertion: accepted SSH output enqueue failure reaches session and error frame: PASS
+F2 assertion: protection transition survives ordinary log pool saturation: PASS
+PASS late SSH rejection: prior output settles before terminal; closed becomes explicit incomplete-output error
+PASS callback-before-return and actual send failure: exactly one settlement, no reference leak
+PASS old connection/generation cannot receive old output or fail replacement session
+PASS actual exec callback: partial target failure is independent; no successful output replay and no false done
+PASS continuous exec: observation reports incomplete immediately; no remote abort/replay or later normal completion
+PASS protection queue recovery without new messages; partial socket failure never replays successful recipient
+PASS separate ordinary slot/descriptor/byte exhaustion cannot consume power quota; power overload counted without construction
+PASS persistent SDK rejection has bounded retry and observable terminal settlement
+PASS busy stop retains output and protection drain; retry releases dependencies
+PASS timeout stop continues output/protection drain without new messages; retry completes
+PASS completion callbacks do not reclassify SSH output or subject it to telemetry cancellation
+PASS ticks cannot evict transitions; four accepted transitions retain order, fifth overload is explicit
+fair system.dashboard=25
+fair system.info=18
+fair system.memory=18
+fair system.cpu=24
+fair network.status=18
+fair power.status=18
+fair fan.status=18
+fair service.list=18
+PASS bounded sustained log/protection/topic competition: all eligible classes progress

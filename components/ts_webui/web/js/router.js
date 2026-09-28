@@ -7,6 +7,9 @@ class Router {
     constructor() {
         this.routes = {};
         this.currentPage = null;
+        this.appReady = false;
+        this.startupStarted = false;
+        this.navigation = null;
         
         // 需要 root 权限的页面（终端、自动化、指令）
         this.rootOnlyPages = ['/terminal', '/automation', '/commands'];
@@ -15,7 +18,9 @@ class Router {
         this.publicPages = [];  // 暂时没有公开页面
         
         window.addEventListener('hashchange', () => this.navigate());
-        window.addEventListener('load', () => this.navigate());
+        window.addEventListener('load', () => this.start());
+        window.addEventListener('languageReady', () => this.start());
+        window.addEventListener('appReady', () => { this.appReady = true; this.start(); });
     }
     
     register(path, loader) {
@@ -42,27 +47,45 @@ class Router {
         return { allowed: true };
     }
     
-    navigate(path = null) {
-        if (path) {
+    start() {
+        if (this.startupStarted || !this.appReady || !window.i18n?.isReady()) return;
+        this.startupStarted = true;
+        const pending = this.navigate();
+        const navigation = this.navigation;
+        return pending.then(ok => {
+            if (!ok && this.navigation === navigation) this.startupStarted = false;
+        });
+    }
+
+    async navigate(path = null) {
+        if (path && (window.location.hash.slice(1) || '/') !== path) {
             window.location.hash = path;
-            return;
+            return false;
         }
-        
-        let hash = window.location.hash.slice(1) || '/';
-        
-        // 页面切换前的清理 - 停止定时器等
-        if (typeof stopDeviceStateMonitor === 'function') {
-            stopDeviceStateMonitor();
-        }
-        // 取消系统页快捷操作定时器，避免切走后仍触发 refreshQuickActions
-        if (typeof stopSystemPageTimers === 'function') {
-            stopSystemPageTimers();
-        }
-        // 离开终端页时主动断开 WebSocket，避免 1006 异常关闭
-        if (typeof destroyWebTerminal === 'function') {
-            destroyWebTerminal();
-        }
-        
+        if (!this.appReady || !window.i18n?.isReady()) return false;
+        const hash = window.location.hash.slice(1) || '/';
+        // Dispose synchronously before the next loader starts. A late loader never
+        // runs global cleanup and cannot dispose resources belonging to its successor.
+        this.navigation?.dispose();
+        const disposers = [];
+        const navigation = {
+            active: true,
+            isCurrent: () => this.navigation === navigation && navigation.active,
+            onDispose: fn => { if (navigation.active) disposers.push(fn); else fn(); },
+            dispose: () => {
+                if (!navigation.active) return;
+                navigation.active = false;
+                for (const fn of disposers) fn();
+            }
+        };
+        this.navigation = navigation;
+        navigation.onDispose(() => {
+            if (typeof stopDeviceStateMonitor === 'function') stopDeviceStateMonitor();
+            if (typeof stopSystemPageTimers === 'function') stopSystemPageTimers();
+            if (typeof stopDataWidgetsAutoRefresh === 'function') stopDataWidgetsAutoRefresh();
+            if (typeof stopNetworkLpmuAccessPolling === 'function') stopNetworkLpmuAccessPolling();
+            if (typeof destroyWebTerminal === 'function') destroyWebTerminal();
+        });
         // 检查访问权限
         const access = this.checkAccess(hash);
         if (!access.allowed) {
@@ -96,7 +119,21 @@ class Router {
         const loader = this.routes[hash] || this.routes['/'];
         if (loader) {
             this.currentPage = loader;
-            loader();
+            try {
+                await loader();
+                return navigation.isCurrent();
+            } catch (error) {
+                if (!navigation.isCurrent()) return false;
+                navigation.dispose();
+                const content = document.getElementById('page-content');
+                content.replaceChildren();
+                const message = document.createElement('p'); message.textContent = t('promptRepair.pageLoadFailed');
+                const retry = document.createElement('button'); retry.textContent = t('promptRepair.retry');
+                retry.onclick = () => this.navigate();
+                content.append(message, retry);
+                console.error('Page initialization failed:', error);
+                return false;
+            }
         }
     }
     

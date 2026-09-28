@@ -1,0 +1,714 @@
+{
+  "records": [
+    {
+      "frame": {
+        "type": "connected",
+        "message": "Terminal session started",
+        "prompt": "tianshan> "
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"connected\",\"message\":\"Terminal session started\",\"prompt\":\"tianshan> \"}"
+    },
+    {
+      "state": 0,
+      "writes": 0,
+      "live": 8,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connecting",
+        "message": "Connecting to SSH server..."
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connecting\",\"message\":\"Connecting to SSH server...\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connected",
+        "message": "SSH shell ready"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connected\",\"message\":\"SSH shell ready\"}"
+    },
+    {
+      "state": 2,
+      "writes": 0,
+      "live": 26,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "Unsupported SSH signal"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"Unsupported SSH signal\"}"
+    },
+    {
+      "state": 2,
+      "writes": 0,
+      "live": 18,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 18,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "Invalid SSH control parameters"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"Invalid SSH control parameters\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 19,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "Invalid SSH control parameters"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"Invalid SSH control parameters\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 19,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "SSH control request failed; input was not replayed"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"SSH control request failed; input was not replayed\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 19,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "This connection does not own an active SSH session"
+      },
+      "fd": 2,
+      "bytes": "{\"type\":\"error\",\"message\":\"This connection does not own an active SSH session\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 20,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "This connection does not own an active SSH session"
+      },
+      "fd": 2,
+      "bytes": "{\"type\":\"error\",\"message\":\"This connection does not own an active SSH session\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 17,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "This connection does not own an active SSH session"
+      },
+      "fd": 2,
+      "bytes": "{\"type\":\"error\",\"message\":\"This connection does not own an active SSH session\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 20,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "This connection does not own an active SSH session"
+      },
+      "fd": 2,
+      "bytes": "{\"type\":\"error\",\"message\":\"This connection does not own an active SSH session\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 21,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "Another SSH session is active"
+      },
+      "fd": 2,
+      "bytes": "{\"type\":\"error\",\"message\":\"Another SSH session is active\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 23,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "Another SSH session is active"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"Another SSH session is active\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 21,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "disconnecting",
+        "message": "Closing SSH session..."
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"disconnecting\",\"message\":\"Closing SSH session...\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "closed",
+        "message": "SSH session closed"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"closed\",\"message\":\"SSH session closed\"}"
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 8,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "done",
+        "code": 0
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"done\",\"code\":0}"
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 11,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 8,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "Not a terminal session"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"Not a terminal session\"}"
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 11,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "connected",
+        "message": "Terminal session started",
+        "prompt": "tianshan> "
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"connected\",\"message\":\"Terminal session started\",\"prompt\":\"tianshan> \"}"
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 8,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connecting",
+        "message": "Connecting to SSH server..."
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connecting\",\"message\":\"Connecting to SSH server...\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connected",
+        "message": "SSH shell ready"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connected\",\"message\":\"SSH shell ready\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 26,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "error",
+        "message": "SSH channel failed; remote result is not confirmed"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH channel failed; remote result is not confirmed\"}"
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 11,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 6,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connecting",
+        "message": "Connecting to SSH server..."
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connecting\",\"message\":\"Connecting to SSH server...\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connected",
+        "message": "SSH shell ready"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connected\",\"message\":\"SSH shell ready\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 26,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "closed",
+        "message": "SSH session closed"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"closed\",\"message\":\"SSH session closed\"}"
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 6,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 6,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 6,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connecting",
+        "message": "Connecting to SSH server..."
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connecting\",\"message\":\"Connecting to SSH server...\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "error",
+        "message": "Failed to open shell"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"Failed to open shell\"}"
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 19,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 0,
+      "writes": 1,
+      "live": 6,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connecting",
+        "message": "Connecting to SSH server..."
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connecting\",\"message\":\"Connecting to SSH server...\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connected",
+        "message": "SSH shell ready"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connected\",\"message\":\"SSH shell ready\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 26,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "SSH request rejected"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"SSH request rejected\"}"
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 18,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 1,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 2,
+      "live": 18,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 2,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "error",
+        "message": "Unsupported SSH signal"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"error\",\"message\":\"Unsupported SSH signal\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_output",
+        "data": "last output"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_output\",\"data\":\"last output\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "closed",
+        "message": "SSH session closed"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"closed\",\"message\":\"SSH session closed\"}"
+    },
+    {
+      "state": 0,
+      "writes": 2,
+      "live": 11,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connecting",
+        "message": "Connecting to SSH server..."
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connecting\",\"message\":\"Connecting to SSH server...\"}"
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "connected",
+        "message": "SSH shell ready"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"connected\",\"message\":\"SSH shell ready\"}"
+    },
+    {
+      "state": 2,
+      "writes": 2,
+      "live": 26,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 2,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 2,
+      "live": 18,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 2,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 3,
+      "live": 18,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 2,
+      "writes": 3,
+      "live": 13,
+      "channels": 1,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "state": 5,
+      "writes": 3,
+      "live": 8,
+      "channels": 0,
+      "refs": 1,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "frame": {
+        "type": "ssh_status",
+        "status": "error",
+        "message": "SSH output delivery incomplete; remote command result is not confirmed"
+      },
+      "fd": 1,
+      "bytes": "{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"SSH output delivery incomplete; remote command result is not confirmed\"}"
+    },
+    {
+      "state": 0,
+      "writes": 3,
+      "live": 6,
+      "channels": 0,
+      "refs": 0,
+      "preparing": 0,
+      "unsettled": 0
+    },
+    {
+      "finished": true
+    }
+  ],
+  "stderr": "",
+  "exit": 0
+}

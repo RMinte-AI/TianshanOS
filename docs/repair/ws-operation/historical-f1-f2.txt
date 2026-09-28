@@ -1,0 +1,4 @@
+Frozen production snapshot hashes verified
+F1 assertion: accepted SSH output enqueue failure reaches session and error frame: FAIL (stream still normal / no error frame)
+F2 assertion: protection transition survives ordinary log pool saturation: FAIL (no protection frame)
+CONFIRMED: both failures are behavioral assertions, not compilation or cleanup failures

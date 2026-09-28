@@ -1,0 +1,249 @@
+{
+  "system/info": {
+    "code": 0,
+    "data": {
+      "app": {
+        "name": "TianShanOS",
+        "version": "0.5.2+3a19128d.09281801",
+        "idf_version": "v5.5.2",
+        "compile_time": "18:01:50",
+        "compile_date": "Sep 28 2026"
+      },
+      "chip": {
+        "model": "ESP32-S3",
+        "cores": 2,
+        "revision": 2,
+        "features": [
+          "WiFi",
+          "BLE"
+        ]
+      },
+      "flash_size": 16777216,
+      "uptime_ms": 614026
+    }
+  },
+  "system/tasks": {
+    "code": 0,
+    "data": {
+      "tasks": [
+        {
+          "name": "httpd",
+          "priority": 5,
+          "stack_hwm": 1144,
+          "core": 1,
+          "state": "running"
+        },
+        {
+          "name": "IDLE0",
+          "priority": 0,
+          "stack_hwm": 624,
+          "core": 0,
+          "state": "ready"
+        },
+        {
+          "name": "IDLE1",
+          "priority": 0,
+          "stack_hwm": 696,
+          "core": 1,
+          "state": "ready"
+        },
+        {
+          "name": "power_policy",
+          "priority": 5,
+          "stack_hwm": 636,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "ts_auto",
+          "priority": 5,
+          "stack_hwm": 2032,
+          "core": 1,
+          "state": "blocked"
+        },
+        {
+          "name": "tiT",
+          "priority": 18,
+          "stack_hwm": 1580,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "sio_agx-info",
+          "priority": 5,
+          "stack_hwm": 1792,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "https_coord",
+          "priority": 5,
+          "stack_hwm": 5432,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "websocket_task",
+          "priority": 5,
+          "stack_hwm": 1340,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "action_exec",
+          "priority": 5,
+          "stack_hwm": 13008,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "w5500_tsk",
+          "priority": 15,
+          "stack_hwm": 2792,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "main",
+          "priority": 1,
+          "stack_hwm": 536,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "power_monitor",
+          "priority": 5,
+          "stack_hwm": 1956,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "ts_console",
+          "priority": 5,
+          "stack_hwm": 1964,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "dhcp_evt",
+          "priority": 5,
+          "stack_hwm": 900,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "ipc1",
+          "priority": 24,
+          "stack_hwm": 528,
+          "core": 1,
+          "state": "suspended"
+        },
+        {
+          "name": "ipc0",
+          "priority": 24,
+          "stack_hwm": 392,
+          "core": 0,
+          "state": "suspended"
+        },
+        {
+          "name": "ws_telemetry",
+          "priority": 2,
+          "stack_hwm": 2116,
+          "core": 0,
+          "state": "suspended"
+        },
+        {
+          "name": "ts_event",
+          "priority": 5,
+          "stack_hwm": 904,
+          "core": 1,
+          "state": "blocked"
+        },
+        {
+          "name": "esp_timer",
+          "priority": 22,
+          "stack_hwm": 2488,
+          "core": 0,
+          "state": "suspended"
+        },
+        {
+          "name": "led_render",
+          "priority": 5,
+          "stack_hwm": 1364,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "sys_evt",
+          "priority": 20,
+          "stack_hwm": 1684,
+          "core": 0,
+          "state": "blocked"
+        },
+        {
+          "name": "Tmr Svc",
+          "priority": 1,
+          "stack_hwm": 800,
+          "core": 2147483647,
+          "state": "blocked"
+        },
+        {
+          "name": "httpd",
+          "priority": 5,
+          "stack_hwm": 15152,
+          "core": 2147483647,
+          "state": "blocked"
+        }
+      ],
+      "count": 24
+    }
+  },
+  "power/status": {
+    "code": 0,
+    "data": {
+      "voltage": {
+        "supply_v": 20.48579978942871,
+        "adc_raw": 2121,
+        "timestamp_ms": 614165
+      },
+      "power_chip": {
+        "valid": false,
+        "voltage_v": 20,
+        "current_a": 4.5,
+        "power_w": 90,
+        "crc_valid": false
+      },
+      "protection": {
+        "running": true,
+        "state": "正常运行",
+        "countdown_sec": 0,
+        "current_voltage_v": 20.48579978942871
+      },
+      "stats": {
+        "samples": 119,
+        "avg_voltage_v": 20.466068267822266,
+        "avg_current_a": 0,
+        "avg_power_w": 0,
+        "uptime_ms": 612892
+      },
+      "monitoring_active": true
+    }
+  },
+  "vendor": {
+    "xterm.min.js": {
+      "sha256": "fc1dd31b221e3e5f929486e07a80b477a8aaf9dce2b4f9c3ffe7dd25f370655d",
+      "size": 283670,
+      "matches_source": true
+    },
+    "xterm.css": {
+      "sha256": "832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872",
+      "size": 5383,
+      "matches_source": true
+    },
+    "fit.min.js": {
+      "sha256": "c78e5795c6487acdf24ab436798d4a9cec3848101b281bc65b061f39db714be1",
+      "size": 1789,
+      "matches_source": true
+    }
+  }
+}

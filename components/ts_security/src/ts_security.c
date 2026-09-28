@@ -1,3 +1,5 @@
+#include "ts_ssh_log_watch.h"
+#include "ts_ssh_service.h"
 /**
  * @file ts_security.c
  * @brief Security Subsystem Implementation
@@ -54,6 +56,10 @@ esp_err_t ts_security_init(void)
         // 非致命错误，继续运行
     }
     
+    ret = ts_ssh_service_init();
+    if (ret != ESP_OK) return ret;
+    ret = ts_ssh_log_watch_init();
+    if (ret != ESP_OK) return ret;
     s_initialized = true;
     TS_LOGI(TAG, "Security subsystem initialized");
     return ESP_OK;

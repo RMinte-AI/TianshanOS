@@ -1,0 +1,21 @@
+/Users/massif/TianshanOS/components/ts_webui/src/ts_webui_ws.c:385:13:handle_ssh_connect	336	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_subscriptions.c:149:13:collect_batch	176	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_subscriptions.c:197:13:run_batch	3360	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_subscriptions.c:299:13:telemetry_worker	32	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:496:11:ts_ws_reserve	112	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:529:6:ts_ws_reserved_json	32	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:540:11:ts_ws_reserved_text	32	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:548:11:ts_ws_reserved_submit	80	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:570:11:ts_ws_result_broadcast	304	static
+ts_webui_ws.o
+00000000 00000088 b s_exec_terminal
+00000000 00000004 b s_server
+00000000 00000088 b s_ssh_terminal
+ts_ws_subscriptions.o
+00000000 00000460 b s_events
+00000000 00000a00 b s_subs
+ts_ws_transport.o
+00000000 00001180 b s_deliveries
+00000000 00000040 b s_log_revisions
+00000000 000000a0 b s_messages
+00000000 00000028 b s_server

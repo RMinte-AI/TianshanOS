@@ -60,3 +60,6 @@ password*.txt
 # Documentation
 frontend_modification.md
 frontend_emoji_list.md
+
+# Local regression dependencies
+tests/prompts/node_modules/

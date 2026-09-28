@@ -1,0 +1,56 @@
+
+> test:browser
+> cd ../.. && node --test tests/prompts/browser.test.cjs tests/prompts/ownership.browser.test.cjs
+
+✔ zh-CN: real index cold start, safe toast/file text, current websocket state (729.437291ms)
+✔ zh-CN: initial language failure blocks controls and retry recovers (272.524792ms)
+✔ en-US: real index cold start, safe toast/file text, current websocket state (325.275125ms)
+✔ en-US: initial language failure blocks controls and retry recovers (356.387875ms)
+✔ delayed language package and rapid switches keep the latest requested language (275.792084ms)
+✔ terminal resource failure presents retry; a rejected cached promise is not reused (372.424292ms)
+✔ zh-CN: package confirmation treats names as text and applies only on explicit verified action (289.534792ms)
+✔ en-US: package confirmation treats names as text and applies only on explicit verified action (357.364958ms)
+✔ initial delayed language keeps controls inert until the real package arrives (266.181584ms)
+✔ failed language switch preserves the loaded language; retry clears failure and stale toast (349.318334ms)
+✔ terminal can initialize after failed resource load using newly served resources (446.691125ms)
+{"case":"successful retry","language":"zh-CN","failure":"/sdcard/a.tscfg: 应用失败: 设备处理请求时发生错误，请查看详细原因。\n详细原因：fixture failure","afterSuccess":"/sdcard/a.tscfg: 配置包已应用。","dialogClosed":true,"errors":[]}
+✔ review2: successful retry retains old failure zh-CN (679.726708ms)
+{"case":"late completion","language":"zh-CN","secondShown":true,"secondRemoved":false,"toast":"/sdcard/a.tscfg: 正在应用配置...","errors":[]}
+✔ review2: prior completion closes new package confirmation zh-CN (217.10475ms)
+{"case":"stale file list","language":"zh-CN","callsBefore":1,"callsAfter":2,"visibleAfterUpload":true,"visibleAfterManualRefresh":true,"errors":[]}
+✔ review2: uploaded file missing after dialog close zh-CN (193.948375ms)
+{"case":"successful retry","language":"en-US","failure":"/sdcard/a.tscfg: Apply failed: The device encountered an error while processing the request. See the details below.\nDetails: fixture failure","afterSuccess":"/sdcard/a.tscfg: The configuration package was applied.","dialogClosed":true,"errors":[]}
+✔ review2: successful retry retains old failure en-US (247.410375ms)
+{"case":"late completion","language":"en-US","secondShown":true,"secondRemoved":false,"toast":"/sdcard/a.tscfg: Applying config...","errors":[]}
+✔ review2: prior completion closes new package confirmation en-US (289.153166ms)
+{"case":"stale file list","language":"en-US","callsBefore":1,"callsAfter":2,"visibleAfterUpload":true,"visibleAfterManualRefresh":true,"errors":[]}
+✔ review2: uploaded file missing after dialog close en-US (264.067041ms)
+✔ R1: endpoint-specific logout and HTTP errors zh-CN (203.259833ms)
+✔ R3: late validation cannot revive an old apply entry zh-CN (186.349208ms)
+✔ R3: previously opened confirmation loses validity on reupload zh-CN (225.070834ms)
+✔ R4/R5: obsolete errors and finally cannot update newer attempts zh-CN (170.0385ms)
+✔ R6: fixed upload destination and separate refresh failure zh-CN (184.442416ms)
+✔ R6: out-of-order directory success and error do not replace latest list zh-CN (179.461334ms)
+✔ R1: endpoint-specific logout and HTTP errors en-US (248.38575ms)
+✔ R3: late validation cannot revive an old apply entry en-US (259.659292ms)
+✔ R3: previously opened confirmation loses validity on reupload en-US (292.953208ms)
+✔ R4/R5: obsolete errors and finally cannot update newer attempts en-US (381.539709ms)
+✔ R6: fixed upload destination and separate refresh failure en-US (374.5865ms)
+✔ R6: out-of-order directory success and error do not replace latest list en-US (342.098916ms)
+✔ R2: authenticated startup initializes once (403.996458ms)
+✔ R2: obsolete system loader cannot update new page; failed navigation retries (290.781875ms)
+✔ R4/R5: newest result wins over late success and late failure (306.662292ms)
+✔ R3: overlapping writes to one path cannot claim current verified content (394.631792ms)
+✔ R2: disposed page only removes its dashboard callback (316.358291ms)
+✔ R2: stale finally cannot unlock the new page read (303.17125ms)
+✔ R1: delayed sign-out does not clear a newer sign-in (357.729166ms)
+✔ WS protocol: actual page subscription class, independent intervals and acknowledgements zh-CN (440.745167ms)
+✔ WS protocol: actual page subscription class, independent intervals and acknowledgements en-US (461.678583ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8605.612583

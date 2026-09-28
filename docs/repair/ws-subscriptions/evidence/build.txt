@@ -1,0 +1,10 @@
+SDK: ESP-IDF v5.5.2
+Target: ESP32-S3
+Command: idf.py -B /tmp/tianshan-ws-build/build -D SDKCONFIG=/tmp/tianshan-ws-build/sdkconfig build
+Exit code: 0
+Bootloader binary size 0x57e0 bytes. 0x2820 bytes (31%) free.
+TianShanOS.bin binary size 0x211be0 bytes. Smallest app partition is 0x300000 bytes. 0xee420 bytes (31%) free.
+Project build complete. To flash, run:
+Firmware: /tmp/tianshan-ws-build/build/TianShanOS.bin
+SHA256: 8c8da47bb61b734054b99ea4680df562e5b2be379bc57c006dc9064d5f4b0e7b
+Compile only; SDK-printed flashing instructions NOT executed. Repository build/*.bin and sdkconfig unchanged.

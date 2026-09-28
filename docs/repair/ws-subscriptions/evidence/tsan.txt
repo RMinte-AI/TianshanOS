@@ -1,0 +1,1 @@
+PASS T32: self unregister, selected-node retirement, in-flight synchronous drain, unrelated handler retained

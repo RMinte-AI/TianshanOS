@@ -1,0 +1,26 @@
+ M components/ts_webui/CMakeLists.txt
+ M components/ts_webui/include/ts_ws_subscriptions.h
+ M components/ts_webui/include/ts_ws_transport.h
+ M components/ts_webui/src/ts_webui_ws.c
+ M components/ts_webui/src/ts_ws_subscriptions.c
+ M components/ts_webui/src/ts_ws_transport.c
+ M tests/ws_subscriptions/run_f1_f2.sh
+ M tests/ws_subscriptions/run_reviewer.sh
+ M tests/ws_subscriptions/test_f1_f2.c
+ M tests/ws_subscriptions/test_init.c
+ M tests/ws_subscriptions/test_manager.c
+ M tests/ws_subscriptions/test_reviewer.c
+?? components/ts_webui/include/ts_ws_operation.h
+?? components/ts_webui/src/ts_ws_operation.c
+?? docs/repair/ws-operation/
+?? docs/runtime-repair/evidence/reviewer-fixes/diff-check.txt
+?? output/
+?? tests/ws_subscriptions/baseline_operation_adapter.c
+?? tests/ws_subscriptions/replay_operation_baseline.py
+?? tests/ws_subscriptions/run_operation.sh
+?? tests/ws_subscriptions/run_operation_adapter.sh
+?? tests/ws_subscriptions/stubs/esp_console.h
+?? tests/ws_subscriptions/stubs/freertos/timers.h
+?? tests/ws_subscriptions/test_operation.c
+?? tests/ws_subscriptions/test_operation_adapter.c
+?? tmp/

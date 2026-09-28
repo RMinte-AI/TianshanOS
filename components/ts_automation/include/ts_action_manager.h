@@ -105,6 +105,7 @@ typedef struct {
     uint8_t priority;                    /**< Priority (0=highest) */
     int64_t enqueue_time;                /**< When queued */
     /* Sync execution support */
+    void *completion; /**< Shared completion lifetime, independent of waiter stack. */
     SemaphoreHandle_t done_sem;          /**< Signaled when done (sync mode) */
     ts_action_result_t *result_ptr;      /**< Where to store result (sync mode) */
 } ts_action_queue_entry_t;
@@ -147,6 +148,9 @@ esp_err_t ts_action_manager_init(void);
  * @return ESP_OK on success
  */
 esp_err_t ts_action_manager_deinit(void);
+esp_err_t ts_action_manager_quiesce(void);
+bool ts_action_manager_accepting(void);
+esp_err_t ts_action_manager_resume(void);
 
 /**
  * @brief Check if action manager is initialized
@@ -523,6 +527,12 @@ esp_err_t ts_action_templates_load(void);
  * @return ESP_OK on success
  */
 esp_err_t ts_action_templates_load_from_file(const char *filepath);
+
+/* Only actual admissions allocate snapshots; ordinary condition evaluation does not. */
+esp_err_t ts_action_snapshot(const ts_auto_action_t *source, ts_auto_action_t *out);
+void ts_action_snapshot_owner(const ts_auto_action_t *action, const char *rule);
+void ts_action_snapshot_retain(const ts_auto_action_t *action);
+void ts_action_snapshot_release(ts_auto_action_t *action);
 
 #ifdef __cplusplus
 }

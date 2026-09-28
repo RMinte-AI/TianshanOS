@@ -1,0 +1,18 @@
+/Users/massif/TianshanOS/components/ts_webui/src/ts_webui_ws.c:155:13:power_policy_event_handler	736	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_webui_ws.c:236:13:ssh_terminal_flush	192	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_webui_ws.c:227:13:ssh_output_done	32	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_webui_ws.c:1790:13:ssh_exec_terminal_flush	272	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_webui_ws.c:1584:13:ssh_exec_output_callback	528	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_subscriptions.c:197:13:run_batch	3360	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:234:13:settle	48	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:288:18:publish_delivery	32	static
+/Users/massif/TianshanOS/components/ts_webui/src/ts_ws_transport.c:627:11:ts_ws_power_reserve	288	static
+ts_webui_ws.o
+00000000 00000100 b s_exec_result_peers
+00000000 00000088 b s_exec_terminal
+00000000 00000088 b s_ssh_terminal
+ts_ws_subscriptions.o
+ts_ws_transport.o
+00000000 00002100 b s_deliveries
+00000000 0000012c b s_messages
+00000000 00001400 b s_power_payloads

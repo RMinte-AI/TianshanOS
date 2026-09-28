@@ -1,3 +1,5 @@
+#include "ts_log_preview.h"
+#include <stdatomic.h>
 /**
  * @file ts_log.c
  * @brief TianShanOS Logging System Implementation
@@ -72,6 +74,7 @@ typedef struct ts_log_tag_level {
  * @brief 回调节点
  */
 typedef struct ts_log_callback_node {
+    unsigned readers;
     ts_log_callback_t callback;
     ts_log_level_t min_level;
     void *user_data;
@@ -92,7 +95,7 @@ typedef struct {
  * @brief 日志上下文
  */
 typedef struct {
-    bool initialized;
+    _Atomic bool initialized;
     SemaphoreHandle_t mutex;
     ts_log_level_t global_level;
     uint32_t output_mask;
@@ -106,9 +109,12 @@ typedef struct {
     FILE *log_file;
     size_t file_size;
     int file_index;
-    vprintf_like_t original_vprintf;     /**< 原始 vprintf 函数指针 */
-    bool esp_log_capture_enabled;        /**< 是否启用 ESP_LOG 捕获 */
+    _Atomic(vprintf_like_t) original_vprintf; /**< 原始 vprintf 函数指针 */
+    _Atomic bool esp_log_capture_enabled;     /**< 是否启用 ESP_LOG 捕获 */
     uint32_t total_logs_captured;        /**< 总捕获日志数（含溢出） */
+    _Atomic uint32_t capture_dropped;
+    _Atomic uint32_t capture_truncated;
+    unsigned active_writers;
     uint32_t logs_dropped;               /**< 因缓冲区满丢弃的日志数 */
 } ts_log_context_t;
 
@@ -117,36 +123,53 @@ typedef struct {
  * ========================================================================== */
 
 static ts_log_context_t s_log_ctx = {0};
+static SemaphoreHandle_t s_log_io_mutex;
+static portMUX_TYPE s_capture_lock = portMUX_INITIALIZER_UNLOCKED;
+static struct {
+    bool busy;
+    char text[512];
+    ts_log_entry_t entry;
+} s_capture[2];
+_Static_assert(sizeof(s_capture) <= 2048, "log capture RAM budget");
 
 /* ============================================================================
  * 私有函数声明
  * ========================================================================== */
 
-static void log_output_console(const ts_log_entry_t *entry);
+static void log_output_console(const ts_log_entry_t *entry, const char *format, va_list args);
 static void log_output_file(const ts_log_entry_t *entry);
 static void log_output_buffer(const ts_log_entry_t *entry);
 static void notify_callbacks(const ts_log_entry_t *entry);
 static ts_log_level_t get_effective_level(const char *tag);
 static void rotate_log_file(void);
 static int ts_log_vprintf_hook(const char *fmt, va_list args);
-static void parse_esp_log_and_store(const char *log_line);
+static void parse_esp_log(const char *log_line, ts_log_entry_t *out, bool clipped);
 
 /* ============================================================================
  * 初始化和反初始化
  * ========================================================================== */
 
+static atomic_bool s_log_lifecycle_busy;
+
 esp_err_t ts_log_init(void)
 {
+    if (atomic_exchange(&s_log_lifecycle_busy, true))
+        return ESP_ERR_INVALID_STATE;
     if (s_log_ctx.initialized) {
+        atomic_store(&s_log_lifecycle_busy, false);
         return ESP_ERR_INVALID_STATE;
     }
 
     ESP_LOGI(TAG, "Initializing TianShanOS Logging System...");
 
     // 创建互斥锁
-    s_log_ctx.mutex = xSemaphoreCreateMutex();
-    if (s_log_ctx.mutex == NULL) {
+    if (!s_log_ctx.mutex)
+        s_log_ctx.mutex = xSemaphoreCreateMutex();
+    if (!s_log_io_mutex)
+        s_log_io_mutex = xSemaphoreCreateMutex();
+    if (s_log_ctx.mutex == NULL || !s_log_io_mutex) {
         ESP_LOGE(TAG, "Failed to create mutex");
+        atomic_store(&s_log_lifecycle_busy, false);
         return ESP_ERR_NO_MEM;
     }
 
@@ -220,12 +243,13 @@ esp_err_t ts_log_init(void)
     s_log_ctx.total_logs_captured = 0;
     s_log_ctx.logs_dropped = 0;
 
+    portENTER_CRITICAL(&s_capture_lock);
     s_log_ctx.initialized = true;
+    portEXIT_CRITICAL(&s_capture_lock);
 
     // 安装 ESP_LOG vprintf 钩子（捕获所有 ESP-IDF 日志）
 #ifdef CONFIG_TS_LOG_CAPTURE_ESP_LOG
-    s_log_ctx.esp_log_capture_enabled = true;
-    s_log_ctx.original_vprintf = esp_log_set_vprintf(ts_log_vprintf_hook);
+    ts_log_enable_esp_capture(true);
     ESP_LOGI(TAG, "ESP_LOG capture hook installed");
 #else
     s_log_ctx.esp_log_capture_enabled = false;
@@ -236,52 +260,59 @@ esp_err_t ts_log_init(void)
              s_log_ctx.global_level, (unsigned long)s_log_ctx.output_mask,
              s_log_ctx.buffer.capacity);
 
+    atomic_store(&s_log_lifecycle_busy, false);
+
     return ESP_OK;
 }
 
 esp_err_t ts_log_deinit(void)
 {
+    if (atomic_exchange(&s_log_lifecycle_busy, true))
+        return ESP_ERR_INVALID_STATE;
     if (!s_log_ctx.initialized) {
+        atomic_store(&s_log_lifecycle_busy, false);
         return ESP_ERR_INVALID_STATE;
     }
-
+    xSemaphoreTake(s_log_io_mutex, portMAX_DELAY);
     xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
-
-    // 关闭日志文件
-    if (s_log_ctx.log_file != NULL) {
-        fclose(s_log_ctx.log_file);
-        s_log_ctx.log_file = NULL;
+    if (s_log_ctx.active_writers) {
+        xSemaphoreGive(s_log_ctx.mutex);
+        xSemaphoreGive(s_log_io_mutex);
+        atomic_store(&s_log_lifecycle_busy, false);
+        return ESP_ERR_INVALID_STATE;
     }
-
-    // 释放缓冲区
-    if (s_log_ctx.buffer.entries != NULL) {
-        free(s_log_ctx.buffer.entries);
-        s_log_ctx.buffer.entries = NULL;
-    }
-
-    // 释放标签级别列表
-    ts_log_tag_level_t *tag = s_log_ctx.tag_levels;
-    while (tag != NULL) {
-        ts_log_tag_level_t *next = tag->next;
-        free(tag);
-        tag = next;
-    }
-    s_log_ctx.tag_levels = NULL;
-
-    // 释放回调列表
-    ts_log_callback_node_t *cb = s_log_ctx.callbacks;
-    while (cb != NULL) {
-        ts_log_callback_node_t *next = cb->next;
-        free(cb);
-        cb = next;
-    }
-    s_log_ctx.callbacks = NULL;
-
-    xSemaphoreGive(s_log_ctx.mutex);
-    vSemaphoreDelete(s_log_ctx.mutex);
-    s_log_ctx.mutex = NULL;
-
+    portENTER_CRITICAL(&s_capture_lock);
     s_log_ctx.initialized = false;
+    if (s_log_ctx.esp_log_capture_enabled && s_log_ctx.original_vprintf)
+        esp_log_set_vprintf(s_log_ctx.original_vprintf);
+    s_log_ctx.esp_log_capture_enabled = false;
+    portEXIT_CRITICAL(&s_capture_lock);
+    ts_log_entry_t *entries = s_log_ctx.buffer.entries;
+    ts_log_tag_level_t *tags = s_log_ctx.tag_levels;
+    ts_log_callback_node_t *callbacks = s_log_ctx.callbacks;
+    s_log_ctx.buffer.entries = NULL;
+    s_log_ctx.buffer.count = 0;
+    s_log_ctx.tag_levels = NULL;
+    s_log_ctx.callbacks = NULL;
+    FILE *file = s_log_ctx.log_file;
+    s_log_ctx.log_file = NULL;
+    xSemaphoreGive(s_log_ctx.mutex);
+    if (file)
+        fclose(file);
+    xSemaphoreGive(s_log_io_mutex);
+    free(entries);
+    while (tags) {
+        ts_log_tag_level_t *next = tags->next;
+        free(tags);
+        tags = next;
+    }
+    while (callbacks) {
+        ts_log_callback_node_t *next = callbacks->next;
+        free(callbacks);
+        callbacks = next;
+    }
+    /* Mutex lifetime exceeds all hooks/readers that observed initialized=true. */
+    atomic_store(&s_log_lifecycle_busy, false);
     return ESP_OK;
 }
 
@@ -319,9 +350,19 @@ void ts_log_v(ts_log_level_t level, const char *tag, const char *format, va_list
         return;
     }
 
+    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    if (!s_log_ctx.initialized) {
+        xSemaphoreGive(s_log_ctx.mutex);
+        return;
+    }
+    ++s_log_ctx.active_writers;
+    xSemaphoreGive(s_log_ctx.mutex);
     // 检查级别过滤
     ts_log_level_t effective_level = get_effective_level(tag);
     if (level > effective_level) {
+        xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+        --s_log_ctx.active_writers;
+        xSemaphoreGive(s_log_ctx.mutex);
         return;
     }
 
@@ -342,19 +383,27 @@ void ts_log_v(ts_log_level_t level, const char *tag, const char *format, va_list
         }
     }
 
-    vsnprintf(entry.message, TS_LOG_MSG_MAX_LEN, format, args);
+    va_list preview;
+    va_copy(preview, args);
+    int needed = vsnprintf(entry.message, TS_LOG_MSG_MAX_LEN, format, preview);
+    va_end(preview);
+    if (ts_log_preview(entry.message, sizeof(entry.message), entry.message,
+                       needed >= TS_LOG_MSG_MAX_LEN))
+        atomic_fetch_add(&s_log_ctx.capture_truncated, 1);
 
     // 输出到各目标
-    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    xSemaphoreTake(s_log_io_mutex, portMAX_DELAY);
 
     if (s_log_ctx.output_mask & TS_LOG_OUTPUT_CONSOLE) {
-        log_output_console(&entry);
+        log_output_console(&entry, format, args);
     }
 
     if (s_log_ctx.output_mask & TS_LOG_OUTPUT_FILE) {
         log_output_file(&entry);
     }
 
+    xSemaphoreGive(s_log_io_mutex);
+    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
     if (s_log_ctx.output_mask & TS_LOG_OUTPUT_BUFFER) {
         log_output_buffer(&entry);
     }
@@ -363,6 +412,9 @@ void ts_log_v(ts_log_level_t level, const char *tag, const char *format, va_list
 
     // 通知回调（在锁外调用）
     notify_callbacks(&entry);
+    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    --s_log_ctx.active_writers;
+    xSemaphoreGive(s_log_ctx.mutex);
 }
 
 void ts_log_hex(ts_log_level_t level, const char *tag, const void *data, size_t length)
@@ -523,7 +575,7 @@ esp_err_t ts_log_set_file_path(const char *path)
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    xSemaphoreTake(s_log_io_mutex, portMAX_DELAY);
 
     // 关闭当前文件
     if (s_log_ctx.log_file != NULL) {
@@ -535,19 +587,19 @@ esp_err_t ts_log_set_file_path(const char *path)
     s_log_ctx.file_index = 0;
     s_log_ctx.file_size = 0;
 
-    xSemaphoreGive(s_log_ctx.mutex);
+    xSemaphoreGive(s_log_io_mutex);
     return ESP_OK;
 }
 
 esp_err_t ts_log_flush(void)
 {
-    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    xSemaphoreTake(s_log_io_mutex, portMAX_DELAY);
 
     if (s_log_ctx.log_file != NULL) {
         fflush(s_log_ctx.log_file);
     }
 
-    xSemaphoreGive(s_log_ctx.mutex);
+    xSemaphoreGive(s_log_io_mutex);
     return ESP_OK;
 }
 
@@ -567,6 +619,10 @@ size_t ts_log_buffer_get(ts_log_entry_t *entries, size_t max_count, size_t start
     }
 
     xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    if (!s_log_ctx.initialized || !s_log_ctx.buffer.entries) {
+        xSemaphoreGive(s_log_ctx.mutex);
+        return 0;
+    }
 
     size_t count = s_log_ctx.buffer.count;
     if (start_index >= count) {
@@ -621,6 +677,14 @@ esp_err_t ts_log_add_callback(ts_log_callback_t callback,
     node->user_data = user_data;
 
     xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    unsigned count = 0;
+    for (ts_log_callback_node_t *n = s_log_ctx.callbacks; n; n = n->next)
+        ++count;
+    if (!s_log_ctx.initialized || count == 8) {
+        xSemaphoreGive(s_log_ctx.mutex);
+        free(node);
+        return ESP_ERR_NO_MEM;
+    }
     node->next = s_log_ctx.callbacks;
     s_log_ctx.callbacks = node;
     xSemaphoreGive(s_log_ctx.mutex);
@@ -646,6 +710,10 @@ esp_err_t ts_log_remove_callback(ts_log_callback_handle_t handle)
 
     while (node != NULL) {
         if (node == target) {
+            if (node->readers) {
+                xSemaphoreGive(s_log_ctx.mutex);
+                return ESP_ERR_INVALID_STATE;
+            }
             if (prev == NULL) {
                 s_log_ctx.callbacks = node->next;
             } else {
@@ -724,44 +792,19 @@ const char *ts_log_level_color(ts_log_level_t level)
  * 私有函数实现
  * ========================================================================== */
 
-static void log_output_console(const ts_log_entry_t *entry)
-{
-    static const char level_chars[] = { 'N', 'E', 'W', 'I', 'D', 'V' };
-    char level_char = (entry->level < TS_LOG_MAX) ? level_chars[entry->level] : '?';
-
-    if (s_log_ctx.colors_enabled) {
-        const char *color = ts_log_level_color(entry->level);
-        
-        if (s_log_ctx.timestamp_enabled) {
-            printf("%s%c (%lu) %s: %s%s\n",
-                   color,
-                   level_char,
-                   (unsigned long)entry->timestamp_ms,
-                   entry->tag,
-                   entry->message,
-                   LOG_RESET_COLOR);
-        } else {
-            printf("%s%c %s: %s%s\n",
-                   color,
-                   level_char,
-                   entry->tag,
-                   entry->message,
-                   LOG_RESET_COLOR);
-        }
-    } else {
-        if (s_log_ctx.timestamp_enabled) {
-            printf("%c (%lu) %s: %s\n",
-                   level_char,
-                   (unsigned long)entry->timestamp_ms,
-                   entry->tag,
-                   entry->message);
-        } else {
-            printf("%c %s: %s\n",
-                   level_char,
-                   entry->tag,
-                   entry->message);
-        }
-    }
+static void log_output_console(const ts_log_entry_t *entry, const char *format, va_list args) {
+    static const char levels[] = "NEWIDV";
+    char level = entry->level >= 0 && entry->level < TS_LOG_MAX ? levels[entry->level] : '?';
+    const char *color = s_log_ctx.colors_enabled ? ts_log_level_color(entry->level) : "";
+    if (s_log_ctx.timestamp_enabled)
+        printf("%s%c (%lu) %s: ", color, level, (unsigned long)entry->timestamp_ms, entry->tag);
+    else
+        printf("%s%c %s: ", color, level, entry->tag);
+    va_list output;
+    va_copy(output, args);
+    vprintf(format, output);
+    va_end(output);
+    printf("%s\n", s_log_ctx.colors_enabled ? LOG_RESET_COLOR : "");
 }
 
 static void log_output_file(const ts_log_entry_t *entry)
@@ -814,40 +857,63 @@ static void log_output_buffer(const ts_log_entry_t *entry)
 
     if (s_log_ctx.buffer.count < s_log_ctx.buffer.capacity) {
         s_log_ctx.buffer.count++;
+    } else {
+        ++s_log_ctx.logs_dropped;
     }
 }
 
+static TaskHandle_t callback_tasks[8];
 static void notify_callbacks(const ts_log_entry_t *entry)
 {
+    /* Bounded snapshot; removal returns BUSY while its user_data is borrowed. */
+    ts_log_callback_node_t *snapshot[8];
+    unsigned count = 0;
+    TaskHandle_t task = xTaskGetCurrentTaskHandle();
+    int slot = -1;
     xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
-
-    ts_log_callback_node_t *node = s_log_ctx.callbacks;
-    while (node != NULL) {
-        if (entry->level <= node->min_level && node->callback != NULL) {
-            node->callback(entry, node->user_data);
+    for (unsigned i = 0; i < 8; i++) {
+        if (callback_tasks[i] == task) {
+            xSemaphoreGive(s_log_ctx.mutex);
+            return;
         }
-        node = node->next;
+        if (!callback_tasks[i] && slot < 0)
+            slot = i;
     }
-
+    if (slot < 0) {
+        xSemaphoreGive(s_log_ctx.mutex);
+        return;
+    }
+    callback_tasks[slot] = task;
+    for (ts_log_callback_node_t *n = s_log_ctx.callbacks; n && count < 8; n = n->next) {
+        if (entry->level <= n->min_level && n->callback) {
+            ++n->readers;
+            snapshot[count++] = n;
+        }
+    }
+    xSemaphoreGive(s_log_ctx.mutex);
+    for (unsigned i = 0; i < count; ++i) {
+        snapshot[i]->callback(entry, snapshot[i]->user_data);
+        xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+        --snapshot[i]->readers;
+        xSemaphoreGive(s_log_ctx.mutex);
+    }
+    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    callback_tasks[slot] = NULL;
     xSemaphoreGive(s_log_ctx.mutex);
 }
 
 static ts_log_level_t get_effective_level(const char *tag)
 {
-    if (tag == NULL) {
-        return s_log_ctx.global_level;
-    }
-
-    // 在锁外快速检查（可能存在竞争，但影响不大）
-    ts_log_tag_level_t *node = s_log_ctx.tag_levels;
-    while (node != NULL) {
-        if (strcmp(node->tag, tag) == 0) {
-            return node->level;
+    xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    ts_log_level_t level = s_log_ctx.global_level;
+    for (ts_log_tag_level_t *n = s_log_ctx.tag_levels; tag && n; n = n->next) {
+        if (!strcmp(n->tag, tag)) {
+            level = n->level;
+            break;
         }
-        node = node->next;
     }
-
-    return s_log_ctx.global_level;
+    xSemaphoreGive(s_log_ctx.mutex);
+    return level;
 }
 
 /**
@@ -889,14 +955,13 @@ static void rotate_log_file(void)
  * ESP_LOG 格式: "\033[0;32mI (12345) tag: message\033[0m"
  * 或无颜色格式: "I (12345) tag: message"
  */
-static void parse_esp_log_and_store(const char *log_line)
-{
+static void parse_esp_log(const char *log_line, ts_log_entry_t *out, bool clipped) {
     if (log_line == NULL || log_line[0] == '\0') {
         return;
     }
 
-    ts_log_entry_t entry;
-    memset(&entry, 0, sizeof(entry));
+    ts_log_entry_t *entry = out;
+    memset(entry, 0, sizeof(*entry));
 
     const char *p = log_line;
 
@@ -909,18 +974,29 @@ static void parse_esp_log_and_store(const char *log_line)
     // 解析日志级别字符 (E/W/I/D/V)
     char level_char = *p;
     switch (level_char) {
-        case 'E': entry.level = TS_LOG_ERROR; break;
-        case 'W': entry.level = TS_LOG_WARN; break;
-        case 'I': entry.level = TS_LOG_INFO; break;
-        case 'D': entry.level = TS_LOG_DEBUG; break;
-        case 'V': entry.level = TS_LOG_VERBOSE; break;
-        default:
-            // 非标准日志格式，作为 INFO 级别存储
-            entry.level = TS_LOG_INFO;
-            strncpy(entry.tag, "system", TS_LOG_TAG_MAX_LEN - 1);
-            strncpy(entry.message, log_line, TS_LOG_MSG_MAX_LEN - 1);
-            entry.timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
-            goto store_entry;
+    case 'E':
+        entry->level = TS_LOG_ERROR;
+        break;
+    case 'W':
+        entry->level = TS_LOG_WARN;
+        break;
+    case 'I':
+        entry->level = TS_LOG_INFO;
+        break;
+    case 'D':
+        entry->level = TS_LOG_DEBUG;
+        break;
+    case 'V':
+        entry->level = TS_LOG_VERBOSE;
+        break;
+    default:
+        // 非标准日志格式，作为 INFO 级别存储
+        entry->level = TS_LOG_INFO;
+        strncpy(entry->tag, "system", TS_LOG_TAG_MAX_LEN - 1);
+        if (ts_log_preview(entry->message, sizeof(entry->message), log_line, clipped))
+            atomic_fetch_add(&s_log_ctx.capture_truncated, 1);
+        entry->timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        goto store_entry;
     }
     p++;
 
@@ -930,10 +1006,10 @@ static void parse_esp_log_and_store(const char *log_line)
     // 解析时间戳 (12345)
     if (*p == '(') {
         p++;
-        entry.timestamp_ms = (uint32_t)strtoul(p, (char **)&p, 10);
+        entry->timestamp_ms = (uint32_t)strtoul(p, (char **)&p, 10);
         if (*p == ')') p++;
     } else {
-        entry.timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        entry->timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
     }
 
     // 跳过空格
@@ -944,8 +1020,8 @@ static void parse_esp_log_and_store(const char *log_line)
     while (*p && *p != ':') p++;
     size_t tag_len = p - tag_start;
     if (tag_len > 0 && tag_len < TS_LOG_TAG_MAX_LEN) {
-        strncpy(entry.tag, tag_start, tag_len);
-        entry.tag[tag_len] = '\0';
+        strncpy(entry->tag, tag_start, tag_len);
+        entry->tag[tag_len] = '\0';
     }
 
     // 跳过 ": "
@@ -955,43 +1031,17 @@ static void parse_esp_log_and_store(const char *log_line)
     // 剩余部分是消息
     const char *msg_start = p;
 
-    // 去除尾部的 ANSI 重置码和换行符
-    size_t msg_len = strlen(msg_start);
-    while (msg_len > 0 && (msg_start[msg_len - 1] == '\n' ||
-                          msg_start[msg_len - 1] == '\r' ||
-                          msg_start[msg_len - 1] == 'm')) {
-        msg_len--;
-        // 检查是否是 ANSI 重置码结尾
-        if (msg_len >= 3 && msg_start[msg_len - 3] == '\033') {
-            msg_len -= 3;  // 跳过 \033[0
-        }
-    }
-
-    if (msg_len > 0 && msg_len < TS_LOG_MSG_MAX_LEN) {
-        strncpy(entry.message, msg_start, msg_len);
-        entry.message[msg_len] = '\0';
-    }
+    if (ts_log_preview(entry->message, sizeof(entry->message), msg_start, clipped))
+        atomic_fetch_add(&s_log_ctx.capture_truncated, 1);
 
     // 获取当前任务名
     TaskHandle_t task = xTaskGetCurrentTaskHandle();
     if (task != NULL) {
-        strncpy(entry.task_name, pcTaskGetName(task), sizeof(entry.task_name) - 1);
+        strncpy(entry->task_name, pcTaskGetName(task), sizeof(entry->task_name) - 1);
     }
 
 store_entry:
-    // 存入缓冲区（不需要互斥锁，因为调用者已经在临界区）
-    if (s_log_ctx.buffer.entries != NULL) {
-        // 直接写入，不调用 log_output_buffer 避免重复锁
-        memcpy(&s_log_ctx.buffer.entries[s_log_ctx.buffer.head], &entry, sizeof(ts_log_entry_t));
-        s_log_ctx.buffer.head = (s_log_ctx.buffer.head + 1) % s_log_ctx.buffer.capacity;
-        if (s_log_ctx.buffer.count < s_log_ctx.buffer.capacity) {
-            s_log_ctx.buffer.count++;
-        }
-        s_log_ctx.total_logs_captured++;
-    }
-
-    // 通知回调（需要小心，回调中不能再打印日志）
-    // notify_callbacks(&entry);  // 暂时禁用，避免递归
+    return;
 }
 
 /**
@@ -999,41 +1049,48 @@ store_entry:
  */
 static int ts_log_vprintf_hook(const char *fmt, va_list args)
 {
-    // 临时缓冲区格式化日志
-    static char log_buffer[512];
-    static bool in_hook = false;  // 防止递归
-
-    // 防止递归调用（某些情况下 vprintf 可能被嵌套调用）
-    if (in_hook) {
-        if (s_log_ctx.original_vprintf) {
-            return s_log_ctx.original_vprintf(fmt, args);
+    vprintf_like_t output = atomic_load(&s_log_ctx.original_vprintf);
+    if (!output || output == ts_log_vprintf_hook)
+        output = vprintf;
+    va_list console_args;
+    va_copy(console_args, args);
+    int result = output(fmt, console_args);
+    va_end(console_args);
+    if (!atomic_load(&s_log_ctx.esp_log_capture_enabled))
+        return result;
+    int slot = -1;
+    portENTER_CRITICAL(&s_capture_lock);
+    for (unsigned i = 0; i < 2; ++i)
+        if (!s_capture[i].busy) {
+            s_capture[i].busy = true;
+            slot = (int)i;
+            break;
         }
-        return vprintf(fmt, args);
+    portEXIT_CRITICAL(&s_capture_lock);
+    if (slot < 0) {
+        atomic_fetch_add(&s_log_ctx.capture_dropped, 1);
+        return result;
     }
-
-    in_hook = true;
-
-    // 格式化日志到缓冲区
-    int len = vsnprintf(log_buffer, sizeof(log_buffer), fmt, args);
-
-    // 解析并存储日志（跳过空行）
-    if (len > 0 && log_buffer[0] != '\n' && log_buffer[0] != '\r') {
-        // 使用快速锁保护缓冲区访问
-        if (s_log_ctx.mutex && xSemaphoreTake(s_log_ctx.mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            parse_esp_log_and_store(log_buffer);
+    va_list preview_args;
+    va_copy(preview_args, args);
+    int len = vsnprintf(s_capture[slot].text, sizeof(s_capture[slot].text), fmt, preview_args);
+    va_end(preview_args);
+    if (len > 0) {
+        parse_esp_log(s_capture[slot].text, &s_capture[slot].entry,
+                      (size_t)len >= sizeof(s_capture[slot].text));
+        if (s_log_ctx.mutex && xSemaphoreTake(s_log_ctx.mutex, 0) == pdTRUE) {
+            if (s_log_ctx.initialized && s_log_ctx.esp_log_capture_enabled) {
+                log_output_buffer(&s_capture[slot].entry);
+                ++s_log_ctx.total_logs_captured;
+            }
             xSemaphoreGive(s_log_ctx.mutex);
-        }
+        } else
+            atomic_fetch_add(&s_log_ctx.capture_dropped, 1);
     }
-
-    in_hook = false;
-
-    // 调用原始 vprintf 输出到控制台
-    if (s_log_ctx.original_vprintf) {
-        // 需要重新创建 va_list，因为已经被消费
-        // 直接用已格式化的字符串输出
-        return printf("%s", log_buffer);
-    }
-    return printf("%s", log_buffer);
+    portENTER_CRITICAL(&s_capture_lock);
+    s_capture[slot].busy = false;
+    portEXIT_CRITICAL(&s_capture_lock);
+    return result;
 }
 
 /* ============================================================================
@@ -1056,6 +1113,8 @@ esp_err_t ts_log_get_stats(ts_log_stats_t *stats)
     stats->buffer_count = s_log_ctx.buffer.count;
     stats->total_captured = s_log_ctx.total_logs_captured;
     stats->dropped = s_log_ctx.logs_dropped;
+    stats->capture_dropped = atomic_load(&s_log_ctx.capture_dropped);
+    stats->capture_truncated = atomic_load(&s_log_ctx.capture_truncated);
     stats->esp_log_capture_enabled = s_log_ctx.esp_log_capture_enabled;
 
     xSemaphoreGive(s_log_ctx.mutex);
@@ -1071,6 +1130,10 @@ size_t ts_log_buffer_search(ts_log_entry_t *entries, size_t max_count,
     }
 
     xSemaphoreTake(s_log_ctx.mutex, portMAX_DELAY);
+    if (!s_log_ctx.buffer.entries) {
+        xSemaphoreGive(s_log_ctx.mutex);
+        return 0;
+    }
 
     size_t found = 0;
     size_t count = s_log_ctx.buffer.count;
@@ -1118,7 +1181,8 @@ void ts_log_enable_esp_capture(bool enable)
         return;
     }
 
-    if (enable && !s_log_ctx.esp_log_capture_enabled) {
+    portENTER_CRITICAL(&s_capture_lock);
+    if (enable && s_log_ctx.initialized && !s_log_ctx.esp_log_capture_enabled) {
         // 安装钩子
         s_log_ctx.original_vprintf = esp_log_set_vprintf(ts_log_vprintf_hook);
         s_log_ctx.esp_log_capture_enabled = true;
@@ -1129,4 +1193,5 @@ void ts_log_enable_esp_capture(bool enable)
         }
         s_log_ctx.esp_log_capture_enabled = false;
     }
+    portEXIT_CRITICAL(&s_capture_lock);
 }

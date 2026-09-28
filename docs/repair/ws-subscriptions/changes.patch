@@ -1,0 +1,3573 @@
+diff --git a/components/ts_core/ts_event/include/ts_event.h b/components/ts_core/ts_event/include/ts_event.h
+index 23703dd..10f1505 100644
+--- a/components/ts_core/ts_event/include/ts_event.h
++++ b/components/ts_core/ts_event/include/ts_event.h
+@@ -372,6 +372,12 @@ esp_err_t ts_event_register_with_priority(ts_event_base_t event_base,
+  */
+ esp_err_t ts_event_unregister(ts_event_handler_handle_t handle);
+ 
++/** Stop new invocations and drain existing callbacks. Timeout retains the handle
++ * for retry; only ESP_OK / NOT_FOUND permits freeing user_data. Never call from
++ * an event callback (including post_sync); use nonblocking unregister there. */
++esp_err_t ts_event_unregister_sync(ts_event_handler_handle_t handle, uint32_t timeout_ms);
++bool ts_event_in_callback(void);
++
+ /**
+  * @brief 取消注册指定事件的所有处理器
+  *
+diff --git a/components/ts_core/ts_event/src/ts_event.c b/components/ts_core/ts_event/src/ts_event.c
+index e80dee2..4dc94cf 100644
+--- a/components/ts_core/ts_event/src/ts_event.c
++++ b/components/ts_core/ts_event/src/ts_event.c
+@@ -10,6 +10,7 @@
+ 
+ #include <string.h>
+ #include <stdlib.h>
++#include <stdatomic.h>
+ #include "ts_event.h"
+ #include "esp_log.h"
+ #include "esp_timer.h"
+@@ -50,6 +51,10 @@ typedef struct ts_event_handler_instance {
+     ts_event_priority_t min_priority;
+     ts_event_handler_t handler;
+     void *user_data;
++    bool retired;
++    bool drain_pending;
++    unsigned refs; /* snapshots + synchronous unregister waiters */
++    unsigned in_flight;
+     struct ts_event_handler_instance *next;
+ } ts_event_handler_instance_t;
+ 
+@@ -80,7 +85,7 @@ typedef struct {
+     ts_event_handler_instance_t *handlers;
+     size_t handler_count;
+     ts_event_stats_t stats;
+-    bool running;
++    atomic_bool running;
+ } ts_event_context_t;
+ 
+ /* ============================================================================
+@@ -89,6 +94,14 @@ typedef struct {
+ 
+ static ts_event_context_t s_event_ctx = {0};
+ 
++/* Includes synchronous posts from arbitrary tasks and nested dispatch. */
++typedef struct dispatch_scope {
++    TaskHandle_t task;
++    struct dispatch_scope *next;
++} dispatch_scope_t;
++static dispatch_scope_t *s_dispatch_scopes;
++
++
+ /* ============================================================================
+  * 私有函数声明
+  * ========================================================================== */
+@@ -169,6 +182,7 @@ esp_err_t ts_event_deinit(void)
+         return ESP_ERR_INVALID_STATE;
+     }
+ 
++    if (ts_event_in_callback()) return ESP_ERR_INVALID_STATE;
+     ESP_LOGI(TAG, "Deinitializing event system...");
+ 
+     // 停止事件循环
+@@ -178,17 +192,18 @@ esp_err_t ts_event_deinit(void)
+     ts_event_internal_t dummy = {0};
+     xQueueSend(s_event_ctx.event_queue, &dummy, 0);
+ 
+-    // 等待任务结束
+-    vTaskDelay(pdMS_TO_TICKS(100));
+-
+-    // 删除任务
+-    if (s_event_ctx.event_task != NULL) {
+-        vTaskDelete(s_event_ctx.event_task);
+-        s_event_ctx.event_task = NULL;
++    int64_t deadline = esp_timer_get_time() + 6000000;
++    for (;;) {
++        xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
++        bool draining = s_event_ctx.event_task || s_dispatch_scopes;
++        for (ts_event_handler_instance_t *p = s_event_ctx.handlers; p; p=p->next)
++            if (p->refs || p->drain_pending) draining = true;
++        if (!draining) break; /* retain lock for final free */
++        xSemaphoreGive(s_event_ctx.mutex);
++        if (esp_timer_get_time() >= deadline) return ESP_ERR_TIMEOUT;
++        vTaskDelay(1);
+     }
+ 
+-    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+-
+     // 释放所有处理器
+     ts_event_handler_instance_t *handler = s_event_ctx.handlers;
+     while (handler != NULL) {
+@@ -250,11 +265,6 @@ esp_err_t ts_event_register_with_priority(ts_event_base_t event_base,
+         return ESP_ERR_INVALID_STATE;
+     }
+ 
+-    if (s_event_ctx.handler_count >= TS_EVENT_HANDLERS_MAX) {
+-        ESP_LOGE(TAG, "Maximum handlers reached");
+-        return ESP_ERR_NO_MEM;
+-    }
+-
+     ts_event_handler_instance_t *node = TS_EVT_CALLOC(1, sizeof(ts_event_handler_instance_t));
+     if (node == NULL) {
+         return ESP_ERR_NO_MEM;
+@@ -268,6 +278,11 @@ esp_err_t ts_event_register_with_priority(ts_event_base_t event_base,
+ 
+     xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+ 
++    if (!s_event_ctx.running || s_event_ctx.handler_count >= TS_EVENT_HANDLERS_MAX) {
++        xSemaphoreGive(s_event_ctx.mutex);
++        free(node);
++        return ESP_ERR_NO_MEM;
++    }
+     node->next = s_event_ctx.handlers;
+     s_event_ctx.handlers = node;
+     s_event_ctx.handler_count++;
+@@ -285,78 +300,95 @@ esp_err_t ts_event_register_with_priority(ts_event_base_t event_base,
+     return ESP_OK;
+ }
+ 
+-esp_err_t ts_event_unregister(ts_event_handler_handle_t handle)
++/* Retired nodes remain discoverable while a drain waiter owns them. */
++static void reclaim_handler(ts_event_handler_instance_t *node)
+ {
+-    if (handle == NULL) {
+-        return ESP_ERR_INVALID_ARG;
+-    }
+-
+-    if (!s_event_ctx.initialized) {
+-        return ESP_ERR_INVALID_STATE;
+-    }
++    if (!node->retired || node->refs || node->drain_pending) return;
++    ts_event_handler_instance_t **link = &s_event_ctx.handlers;
++    while (*link && *link != node) link = &(*link)->next;
++    if (*link) { *link = node->next; free(node); }
++}
+ 
++bool ts_event_in_callback(void)
++{
++    if (!s_event_ctx.initialized) return false;
++    TaskHandle_t self = xTaskGetCurrentTaskHandle();
++    bool found = false;
+     xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
++    for (dispatch_scope_t *p = s_dispatch_scopes; p; p = p->next)
++        if (p->task == self) { found = true; break; }
++    xSemaphoreGive(s_event_ctx.mutex);
++    return found;
++}
+ 
+-    ts_event_handler_instance_t *prev = NULL;
++static esp_err_t unregister_handler(ts_event_handler_handle_t handle, bool wait,
++                                    uint32_t timeout_ms)
++{
++    if (!handle) return ESP_ERR_INVALID_ARG;
++    if (!s_event_ctx.initialized) return ESP_ERR_INVALID_STATE;
++    if (wait && ts_event_in_callback()) return ESP_ERR_INVALID_STATE;
++    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+     ts_event_handler_instance_t *node = s_event_ctx.handlers;
+-    ts_event_handler_instance_t *target = (ts_event_handler_instance_t *)handle;
+-
+-    while (node != NULL) {
+-        if (node == target) {
+-            if (prev == NULL) {
+-                s_event_ctx.handlers = node->next;
+-            } else {
+-                prev->next = node->next;
+-            }
+-            s_event_ctx.handler_count--;
+-            s_event_ctx.stats.handlers_registered = s_event_ctx.handler_count;
+-
++    while (node && node != handle) node = node->next;
++    if (!node) { xSemaphoreGive(s_event_ctx.mutex); return ESP_ERR_NOT_FOUND; }
++    if (!node->retired) {
++        node->retired = true;
++        s_event_ctx.handler_count--;
++        s_event_ctx.stats.handlers_registered = s_event_ctx.handler_count;
++    }
++    if (!wait) {
++        reclaim_handler(node);
++        xSemaphoreGive(s_event_ctx.mutex);
++        return ESP_OK;
++    }
++    node->drain_pending = true;
++    node->refs++; /* pins both node and its position while the lock is dropped */
++    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
++    while (node->in_flight) {
++        xSemaphoreGive(s_event_ctx.mutex);
++        vTaskDelay(1);
++        xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
++        if (node->in_flight && esp_timer_get_time() >= deadline) {
++            /* Keep a retired registry reference for retry, even after callbacks end. */
++            node->refs--;
+             xSemaphoreGive(s_event_ctx.mutex);
+-            free(node);
+-            return ESP_OK;
++            return ESP_ERR_TIMEOUT;
+         }
+-        prev = node;
+-        node = node->next;
+     }
+-
++    node->refs--;
++    node->drain_pending = false;
++    reclaim_handler(node);
+     xSemaphoreGive(s_event_ctx.mutex);
+-    return ESP_ERR_NOT_FOUND;
++    return ESP_OK;
+ }
+ 
+-esp_err_t ts_event_unregister_all(ts_event_base_t event_base, ts_event_id_t event_id)
++esp_err_t ts_event_unregister(ts_event_handler_handle_t handle)
+ {
+-    if (!s_event_ctx.initialized) {
+-        return ESP_ERR_INVALID_STATE;
+-    }
++    return unregister_handler(handle, false, 0);
++}
+ 
+-    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
++esp_err_t ts_event_unregister_sync(ts_event_handler_handle_t handle, uint32_t timeout_ms)
++{
++    return unregister_handler(handle, true, timeout_ms);
++}
+ 
+-    ts_event_handler_instance_t *prev = NULL;
++esp_err_t ts_event_unregister_all(ts_event_base_t base, ts_event_id_t id)
++{
++    if (!s_event_ctx.initialized) return ESP_ERR_INVALID_STATE;
++    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+     ts_event_handler_instance_t *node = s_event_ctx.handlers;
+-
+-    while (node != NULL) {
+-        bool match = (event_base == NULL || 
+-                      (node->base != NULL && strcmp(node->base, event_base) == 0));
+-        if (match && (event_id == TS_EVENT_ANY_ID || node->id == event_id)) {
+-            ts_event_handler_instance_t *to_delete = node;
+-            if (prev == NULL) {
+-                s_event_ctx.handlers = node->next;
+-                node = s_event_ctx.handlers;
+-            } else {
+-                prev->next = node->next;
+-                node = node->next;
+-            }
++    while (node) {
++        ts_event_handler_instance_t *next = node->next;
++        if (!node->retired && (!base || (node->base && !strcmp(base, node->base))) &&
++            (id == TS_EVENT_ANY_ID || id == node->id)) {
++            node->retired = true;
+             s_event_ctx.handler_count--;
+-            free(to_delete);
+-        } else {
+-            prev = node;
+-            node = node->next;
++            reclaim_handler(node);
+         }
++        node = next;
+     }
+-
+     s_event_ctx.stats.handlers_registered = s_event_ctx.handler_count;
+     xSemaphoreGive(s_event_ctx.mutex);
+-
+     return ESP_OK;
+ }
+ 
+@@ -659,6 +691,9 @@ static void event_loop_task(void *arg)
+     }
+ 
+     ESP_LOGI(TAG, "Event loop task ended");
++    xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
++    s_event_ctx.event_task = NULL;
++    xSemaphoreGive(s_event_ctx.mutex);
+     vTaskDelete(NULL);
+ }
+ 
+@@ -683,30 +718,41 @@ static void dispatch_event(const ts_event_internal_t *internal_event)
+ 
+     xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
+ 
+-    ts_event_handler_instance_t *handler = s_event_ctx.handlers;
+-    while (handler != NULL) {
+-        if (handler_matches(handler, internal_event)) {
+-            // 释放锁来调用处理器（避免死锁）
++    ts_event_handler_instance_t *snapshot[TS_EVENT_HANDLERS_MAX];
++    size_t count = 0;
++    dispatch_scope_t scope = {.task = xTaskGetCurrentTaskHandle(), .next = s_dispatch_scopes};
++    s_dispatch_scopes = &scope;
++    for (ts_event_handler_instance_t *p = s_event_ctx.handlers; p; p = p->next) {
++        if (!p->retired && handler_matches(p, internal_event)) {
++            p->refs++;
++            snapshot[count++] = p;
++        }
++    }
++    for (size_t i = 0; i < count; ++i) {
++        ts_event_handler_instance_t *p = snapshot[i];
++        if (!p->retired) {
++            p->in_flight++;
++            ts_event_handler_t fn = p->handler;
++            void *data = p->user_data;
+             xSemaphoreGive(s_event_ctx.mutex);
+-
+-            if (handler->handler != NULL) {
+-                handler->handler(&event, handler->user_data);
+-            }
+-
+-            s_event_ctx.stats.events_delivered++;
+-
++            fn(&event, data);
+             xSemaphoreTake(s_event_ctx.mutex, portMAX_DELAY);
++            p->in_flight--;
++            s_event_ctx.stats.events_delivered++;
+         }
+-        handler = handler->next;
++        p->refs--;
++        reclaim_handler(p);
+     }
+-
+-    xSemaphoreGive(s_event_ctx.mutex);
++    dispatch_scope_t **link = &s_dispatch_scopes;
++    while (*link != &scope) link = &(*link)->next;
++    *link = scope.next;
+ 
+     // 更新统计
+     int64_t elapsed = esp_timer_get_time() - start_time;
+     if (elapsed > s_event_ctx.stats.max_delivery_time_us) {
+         s_event_ctx.stats.max_delivery_time_us = (uint32_t)elapsed;
+     }
++    xSemaphoreGive(s_event_ctx.mutex);
+ }
+ 
+ static bool handler_matches(const ts_event_handler_instance_t *handler,
+@@ -718,7 +764,7 @@ static bool handler_matches(const ts_event_handler_instance_t *handler,
+     }
+ 
+     // 检查事件基础
+-    if (handler->base != TS_EVENT_ANY_BASE && handler->base != NULL) {
++    if (handler->base != NULL && strcmp(handler->base, TS_EVENT_ANY_BASE) != 0) {
+         if (event->base == NULL || strcmp(handler->base, event->base) != 0) {
+             return false;
+         }
+diff --git a/components/ts_net/include/ts_http_server.h b/components/ts_net/include/ts_http_server.h
+index 9e18598..e79d91b 100644
+--- a/components/ts_net/include/ts_http_server.h
++++ b/components/ts_net/include/ts_http_server.h
+@@ -123,6 +123,12 @@ esp_err_t ts_http_set_cors(ts_http_request_t *req, const char *origin);
+  */
+ httpd_handle_t ts_http_server_get_handle(void);
+ 
++/* Owner hooks: before_stop must drain users; failure preserves the live handle. */
++void ts_http_server_set_stop_hooks(esp_err_t (*before)(httpd_handle_t),
++                                   void (*after)(httpd_handle_t));
++
++bool ts_http_server_is_stopping(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/components/ts_net/src/ts_http_server.c b/components/ts_net/src/ts_http_server.c
+index a8f7726..edb8086 100644
+--- a/components/ts_net/src/ts_http_server.c
++++ b/components/ts_net/src/ts_http_server.c
+@@ -12,12 +12,30 @@
+ #include "esp_log.h"
+ #include "esp_heap_caps.h"
+ #include <string.h>
++#include <stdatomic.h>
++#include "freertos/task.h"
+ 
+ #define TAG "ts_http"
+ #define MAX_ROUTES 64
+ 
+ static httpd_handle_t s_server = NULL;
+ static bool s_initialized = false;
++static _Atomic(TaskHandle_t) s_http_task;
++static atomic_flag s_stop_busy = ATOMIC_FLAG_INIT;
++static atomic_bool s_stopping;
++bool ts_http_server_is_stopping(void) { return s_stopping; }
++static esp_err_t session_open(httpd_handle_t server, int fd)
++{
++    (void)server; (void)fd;
++    s_http_task = xTaskGetCurrentTaskHandle();
++    return ESP_OK;
++}
++static esp_err_t (*s_before_stop)(httpd_handle_t);
++static void (*s_after_stop)(httpd_handle_t);
++void ts_http_server_set_stop_hooks(esp_err_t (*before)(httpd_handle_t), void (*after)(httpd_handle_t))
++{
++    s_before_stop = before; s_after_stop = after;
++}
+ 
+ // 路由注册表（用于同步到 HTTPS）
+ typedef struct {
+@@ -26,6 +44,7 @@ typedef struct {
+     ts_http_handler_t handler;
+     void *user_data;         // 原始 user_data
+     bool requires_auth;      // 认证要求
++    ts_http_route_t *owned_copy; /* HTTPD borrows user_ctx; it does not free it. */
+ } registered_route_t;
+ 
+ static registered_route_t s_registered_routes[MAX_ROUTES];
+@@ -46,19 +65,22 @@ esp_err_t ts_http_server_init(void)
+ 
+ esp_err_t ts_http_server_deinit(void)
+ {
+-    ts_http_server_stop();
++    esp_err_t ret = ts_http_server_stop();
++    if (ret != ESP_OK) return ret;
+     s_initialized = false;
+     return ESP_OK;
+ }
+ 
+ esp_err_t ts_http_server_start(void)
+ {
++    if (s_stopping) return ESP_ERR_INVALID_STATE;
+     if (s_server) return ESP_OK;
+     
+     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+ #ifdef CONFIG_TS_NET_HTTP_PORT
+     config.server_port = CONFIG_TS_NET_HTTP_PORT;
+ #endif
++    config.open_fn = session_open;
+     config.max_uri_handlers = MAX_ROUTES;
+     config.uri_match_fn = httpd_uri_match_wildcard;
+     config.global_user_ctx = NULL;
+@@ -81,12 +103,27 @@ esp_err_t ts_http_server_start(void)
+ 
+ esp_err_t ts_http_server_stop(void)
+ {
+-    if (!s_server) return ESP_OK;
+-    
+-    httpd_stop(s_server);
++    if (s_http_task && s_http_task == xTaskGetCurrentTaskHandle()) return ESP_ERR_INVALID_STATE;
++    if (atomic_flag_test_and_set(&s_stop_busy)) return ESP_ERR_INVALID_STATE;
++    esp_err_t ret = ESP_OK;
++    if (!s_server) goto done;
++    s_stopping = true;
++    ret = s_before_stop ? s_before_stop(s_server) : ESP_OK;
++    if (ret != ESP_OK) goto done;
++    httpd_handle_t stopped = s_server;
++    ret = httpd_stop(stopped);
++    if (ret != ESP_OK) goto done;
++    if (s_after_stop) s_after_stop(stopped);
+     s_server = NULL;
++    s_http_task = NULL;
++    s_stopping = false;
++    for (int i = 0; i < s_route_count; ++i) free(s_registered_routes[i].owned_copy);
++    memset(s_registered_routes, 0, sizeof(s_registered_routes));
++    s_route_count = 0;
+     TS_LOGI(TAG, "HTTP server stopped");
+-    return ESP_OK;
++done:
++    atomic_flag_clear(&s_stop_busy);
++    return ret;
+ }
+ 
+ static esp_err_t http_handler_wrapper(httpd_req_t *req)
+@@ -145,7 +182,8 @@ static esp_err_t http_handler_wrapper(httpd_req_t *req)
+ 
+ esp_err_t ts_http_server_register_route(const ts_http_route_t *route)
+ {
+-    if (!s_server || !route) return ESP_ERR_INVALID_STATE;
++    if (!s_server || !route || s_stopping) return ESP_ERR_INVALID_STATE;
++    if (s_route_count >= MAX_ROUTES) return ESP_ERR_NO_MEM;
+     
+     // Allocate persistent copy of route (prefer PSRAM)
+     ts_http_route_t *route_copy = TS_MALLOC_PSRAM(sizeof(ts_http_route_t));
+@@ -173,6 +211,7 @@ esp_err_t ts_http_server_register_route(const ts_http_route_t *route)
+         s_registered_routes[s_route_count].method = route->method;
+         s_registered_routes[s_route_count].handler = route->handler;
+         s_registered_routes[s_route_count].user_data = route->user_data;  // 保存 user_data
++        s_registered_routes[s_route_count].owned_copy = route_copy;
+         s_registered_routes[s_route_count].requires_auth = route->requires_auth;  // 保存认证要求
+         s_route_count++;
+     }
+diff --git a/components/ts_webui/CMakeLists.txt b/components/ts_webui/CMakeLists.txt
+index b9383bd..666c0de 100644
+--- a/components/ts_webui/CMakeLists.txt
++++ b/components/ts_webui/CMakeLists.txt
+@@ -4,6 +4,7 @@ idf_component_register(
+         "src/ts_webui_api.c"
+         "src/ts_webui_ws.c"
+         "src/ts_ws_subscriptions.c"
++        "src/ts_ws_transport.c"
+     INCLUDE_DIRS
+         "include"
+     REQUIRES
+diff --git a/components/ts_webui/include/ts_ws_subscriptions.h b/components/ts_webui/include/ts_ws_subscriptions.h
+index 2248018..37bb0be 100644
+--- a/components/ts_webui/include/ts_ws_subscriptions.h
++++ b/components/ts_webui/include/ts_ws_subscriptions.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include "esp_err.h"
++#include "ts_ws_transport.h"
+ #include "ts_event.h"
+ #include "cJSON.h"
+ #include <stdint.h>
+@@ -27,33 +28,33 @@ esp_err_t ts_ws_subscriptions_init(void);
+ /**
+  * @brief 反初始化订阅管理器
+  */
+-void ts_ws_subscriptions_deinit(void);
++esp_err_t ts_ws_subscriptions_deinit(void);
+ 
+ /**
+  * @brief 处理订阅请求
+  * 
+- * @param fd 客户端文件描述符
++ * @param peer 已登记的 HTTPD 会话身份（不能只传 fd）
+  * @param topic 订阅主题 (e.g., "device.status", "ota.progress")
+  * @param params JSON 参数对象 (可选)
+  * @return ESP_OK on success
+  */
+-esp_err_t ts_ws_subscribe(int fd, const char *topic, cJSON *params);
++esp_err_t ts_ws_subscribe(ts_ws_peer_t peer, const char *topic, cJSON *params);
+ 
+ /**
+  * @brief 处理取消订阅请求
+  * 
+- * @param fd 客户端文件描述符
++ * @param peer 已登记的 HTTPD 会话身份（不能只传 fd）
+  * @param topic 订阅主题
+  * @return ESP_OK on success
+  */
+-esp_err_t ts_ws_unsubscribe(int fd, const char *topic);
++esp_err_t ts_ws_unsubscribe(ts_ws_peer_t peer, const char *topic);
+ 
+ /**
+  * @brief 客户端断开连接时清理订阅
+  * 
+- * @param fd 客户端文件描述符
++ * @param peer 已登记的 HTTPD 会话身份（不能只传 fd）
+  */
+-void ts_ws_client_disconnected(int fd);
++void ts_ws_client_disconnected(ts_ws_peer_t peer);
+ 
+ /**
+  * @brief 广播数据到订阅了特定 topic 的客户端
+diff --git a/components/ts_webui/src/ts_webui.c b/components/ts_webui/src/ts_webui.c
+index 3184c7b..80abb4a 100644
+--- a/components/ts_webui/src/ts_webui.c
++++ b/components/ts_webui/src/ts_webui.c
+@@ -87,8 +87,10 @@ esp_err_t ts_webui_deinit(void)
+ {
+     if (!s_initialized) return ESP_OK;
+     
+-    ts_webui_stop();
+-    ts_http_server_deinit();
++    esp_err_t ret = ts_webui_stop();
++    if (ret != ESP_OK) return ret;
++    ret = ts_http_server_deinit();
++    if (ret != ESP_OK) return ret;
+     
+     s_initialized = false;
+     return ESP_OK;
+@@ -96,7 +98,7 @@ esp_err_t ts_webui_deinit(void)
+ 
+ esp_err_t ts_webui_start(void)
+ {
+-    if (s_running) return ESP_OK;
++    if (s_running && ts_http_server_get_handle() && !ts_http_server_is_stopping()) return ESP_OK;
+     if (!s_initialized) {
+         esp_err_t ret = ts_webui_init();
+         if (ret != ESP_OK) return ret;
+@@ -120,6 +122,8 @@ esp_err_t ts_webui_start(void)
+     ret = ts_webui_ws_init();
+     if (ret != ESP_OK) {
+         TS_LOGW(TAG, "WebSocket init failed");
++        esp_err_t stop_ret = ts_http_server_stop();
++        return stop_ret != ESP_OK ? stop_ret : ret;
+     }
+ #endif
+     
+@@ -140,9 +144,9 @@ esp_err_t ts_webui_start(void)
+ 
+ esp_err_t ts_webui_stop(void)
+ {
+-    if (!s_running) return ESP_OK;
+     
+-    ts_http_server_stop();
++    esp_err_t ret = ts_http_server_stop();
++    if (ret != ESP_OK) return ret;
+     s_running = false;
+     
+     TS_LOGI(TAG, "WebUI stopped");
+@@ -151,5 +155,5 @@ esp_err_t ts_webui_stop(void)
+ 
+ bool ts_webui_is_running(void)
+ {
+-    return s_running;
++    return s_running && ts_http_server_get_handle() && !ts_http_server_is_stopping();
+ }
+diff --git a/components/ts_webui/src/ts_webui_ws.c b/components/ts_webui/src/ts_webui_ws.c
+index 96a44dc..c853e39 100644
+--- a/components/ts_webui/src/ts_webui_ws.c
++++ b/components/ts_webui/src/ts_webui_ws.c
+@@ -13,6 +13,9 @@
+ #include "ts_ssh_shell.h"
+ #include "ts_keystore.h"
+ #include "ts_ws_subscriptions.h"
++#include "ts_ws_transport.h"
++#include <stdatomic.h>
++#include "esp_timer.h"
+ // ts_var.h 已废弃，统一使用 ts_variable.h（ts_automation 变量系统）
+ #include "ts_variable.h"
+ #include "esp_http_server.h"
+@@ -52,15 +55,17 @@ typedef enum {
+ } ws_client_type_t;
+ 
+ typedef struct {
+-    bool active;
+-    int fd;
+-    httpd_handle_t hd;
+-    ws_client_type_t type;
+-    ts_log_level_t log_min_level;  // 日志客户端的最小级别过滤
++    atomic_bool active;
++    atomic_int fd;
++    _Atomic(httpd_handle_t) hd;
++    _Atomic(ws_client_type_t) type;
++    _Atomic(ts_log_level_t) log_min_level;  // 日志客户端的最小级别过滤
+ } ws_client_t;
+ 
+ static ws_client_t s_clients[MAX_WS_CLIENTS];
+-static httpd_handle_t s_server = NULL;
++static _Atomic(httpd_handle_t) s_server = NULL;
++static ts_ws_peer_t s_ssh_peer;
++static atomic_bool s_ws_stopping;
+ static SemaphoreHandle_t s_terminal_mutex = NULL;
+ static int s_terminal_client_fd = -1;  // 当前终端会话的 fd
+ 
+@@ -72,14 +77,15 @@ static SemaphoreHandle_t s_output_mutex = NULL;
+ /* SSH Shell 会话状态 */
+ static ts_ssh_session_t s_ssh_session = NULL;
+ static ts_ssh_shell_t s_ssh_shell = NULL;
+-static int s_ssh_client_fd = -1;
+-static TaskHandle_t s_ssh_poll_task = NULL;
+-static volatile bool s_ssh_running = false;
++static atomic_int s_ssh_client_fd = -1;
++static atomic_bool s_ssh_running = false;
++static atomic_bool s_ssh_poll_alive;
+ 
+ /* SSH Exec 流式执行状态 */
+ static ts_ssh_session_t s_exec_session = NULL;
+ static TaskHandle_t s_exec_task = NULL;
+-static volatile bool s_exec_running = false;
++static atomic_bool s_exec_running = false;
++static atomic_uint s_exec_creators;
+ static volatile bool s_exec_cancel_requested = false;  /* 实时匹配触发的取消请求 */
+ static volatile uint32_t s_exec_session_id = 0;
+ static TimerHandle_t s_exec_timeout_timer = NULL;      /* 超时定时器 */
+@@ -96,6 +102,8 @@ static const char *s_level_names[] = {"NONE", "ERROR", "WARN", "INFO", "DEBUG",
+ 
+ /* 前向声明 */
+ static void update_log_stream_state(void);
++esp_err_t ts_webui_ws_stop(httpd_handle_t server);
++void ts_webui_ws_stopped(httpd_handle_t server);
+ static bool has_log_clients(void);
+ 
+ /* 电压保护状态字符串 */
+@@ -159,16 +167,6 @@ static void ssh_send_output(const char *data, size_t len)
+ {
+     if (s_ssh_client_fd < 0 || !s_server || !data || len == 0) return;
+     
+-    // 查找客户端
+-    httpd_handle_t hd = NULL;
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (s_clients[i].active && s_clients[i].fd == s_ssh_client_fd) {
+-            hd = s_clients[i].hd;
+-            break;
+-        }
+-    }
+-    if (!hd) return;
+-    
+     // 构造消息（base64 可以处理二进制，但这里假设是文本）
+     cJSON *msg = cJSON_CreateObject();
+     cJSON_AddStringToObject(msg, "type", "ssh_output");
+@@ -192,7 +190,11 @@ static void ssh_send_output(const char *data, size_t len)
+             .payload = (uint8_t *)json,
+             .len = strlen(json)
+         };
+-        httpd_ws_send_frame_async(hd, s_ssh_client_fd, &ws_pkt);
++        ts_ws_message_t *owned = ts_ws_message_text((const char *)ws_pkt.payload, ws_pkt.len);
++        if (owned) {
++            ts_ws_transport_submit(s_ssh_peer, owned, 0, 0, NULL, NULL);
++            ts_ws_message_release(owned);
++        }
+         free(json);
+     }
+ }
+@@ -201,16 +203,7 @@ static void ssh_send_output(const char *data, size_t len)
+ static void ssh_send_status(const char *status, const char *message)
+ {
+     if (s_ssh_client_fd < 0 || !s_server) return;
+-    
+-    httpd_handle_t hd = NULL;
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (s_clients[i].active && s_clients[i].fd == s_ssh_client_fd) {
+-            hd = s_clients[i].hd;
+-            break;
+-        }
+-    }
+-    if (!hd) return;
+-    
++
+     cJSON *msg = cJSON_CreateObject();
+     cJSON_AddStringToObject(msg, "type", "ssh_status");
+     cJSON_AddStringToObject(msg, "status", status);
+@@ -227,7 +220,11 @@ static void ssh_send_status(const char *status, const char *message)
+             .payload = (uint8_t *)json,
+             .len = strlen(json)
+         };
+-        httpd_ws_send_frame_async(hd, s_ssh_client_fd, &ws_pkt);
++        ts_ws_message_t *owned = ts_ws_message_text((const char *)ws_pkt.payload, ws_pkt.len);
++        if (owned) {
++            ts_ws_transport_submit(s_ssh_peer, owned, 0, 0, NULL, NULL);
++            ts_ws_message_release(owned);
++        }
+         free(json);
+     }
+ }
+@@ -264,7 +261,6 @@ static void ssh_poll_task(void *arg)
+     }
+     
+     TS_LOGD(TAG, "SSH poll task ended");
+-    s_ssh_poll_task = NULL;
+     
+     // 如果是因为远程关闭而退出，需要清理 SSH 会话
+     if (need_cleanup && s_ssh_session) {
+@@ -279,19 +275,13 @@ static void ssh_poll_task(void *arg)
+             ts_ssh_session_destroy(s_ssh_session);
+             s_ssh_session = NULL;
+         }
+-        // 更新客户端类型
+-        if (s_ssh_client_fd >= 0) {
+-            for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-                if (s_clients[i].active && s_clients[i].fd == s_ssh_client_fd) {
+-                    s_clients[i].type = WS_CLIENT_TYPE_TERMINAL;
+-                    break;
+-                }
+-            }
+-            s_ssh_client_fd = -1;
+-        }
++        /* Legacy UI type is changed only by the HTTPD owner. A retired SSH
++         * worker must not change a replacement connection that reuses its fd. */
++        s_ssh_client_fd = -1;
+         TS_LOGD(TAG, "SSH session cleaned up after remote close");
+     }
+     
++    s_ssh_poll_alive = false;
+     vTaskDelete(NULL);
+ }
+ 
+@@ -300,9 +290,10 @@ static void ssh_cleanup(void)
+ {
+     s_ssh_running = false;
+     
+-    if (s_ssh_poll_task) {
+-        // 等待任务结束
+-        vTaskDelay(pdMS_TO_TICKS(100));
++    int64_t deadline = esp_timer_get_time() + 2000000;
++    while (s_ssh_poll_alive) {
++        if (esp_timer_get_time() >= deadline) return; /* retain resources for retry */
++        vTaskDelay(1);
+     }
+     
+     if (s_ssh_shell) {
+@@ -333,6 +324,11 @@ static void ssh_cleanup(void)
+ /* 处理 SSH Shell 连接请求 */
+ static void handle_ssh_connect(httpd_req_t *req, cJSON *params)
+ {
++    if (s_ssh_poll_alive) {
++        ssh_send_status("error", "Another SSH session is active");
++        return;
++    }
++
+     int fd = httpd_req_to_sockfd(req);
+     
+     // 检查是否已有 SSH 会话
+@@ -358,6 +354,7 @@ static void handle_ssh_connect(httpd_req_t *req, cJSON *params)
+     TS_LOGD(TAG, "SSH connect: %s@%s:%d", user->valuestring, host->valuestring, ssh_port);
+     
+     // 设置 SSH 客户端 fd
++    s_ssh_peer = *(ts_ws_peer_t *)req->sess_ctx;
+     s_ssh_client_fd = fd;
+     
+     // 更新客户端类型
+@@ -416,7 +413,12 @@ static void handle_ssh_connect(httpd_req_t *req, cJSON *params)
+     
+     // 启动轮询任务（栈需要足够大以容纳 libssh2 缓冲区，使用 PSRAM）
+     s_ssh_running = true;
+-    xTaskCreateWithCaps(ssh_poll_task, "ssh_poll", 4096, NULL, 5, &s_ssh_poll_task, MALLOC_CAP_SPIRAM);
++    s_ssh_poll_alive = true;
++    if (xTaskCreateWithCaps(ssh_poll_task, "ssh_poll", 4096, NULL, 5, NULL, MALLOC_CAP_SPIRAM) != pdPASS) {
++        s_ssh_poll_alive = false;
++        ssh_send_status("error", "Failed to create SSH session");
++        ssh_cleanup();
++    }
+ }
+ 
+ /* 处理 SSH Shell 输入 */
+@@ -484,76 +486,21 @@ static void terminal_output_cb(const char *data, size_t len, void *user_data)
+ /* 前向声明 */
+ static void cleanup_disconnected_client(int fd);
+ 
+-static void add_client(httpd_handle_t hd, int fd, ws_client_type_t type)
++static esp_err_t add_client(httpd_req_t *req, ws_client_type_t type)
+ {
+-    // 首先检查是否已存在相同 fd 的客户端（重连情况）
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (s_clients[i].active && s_clients[i].fd == fd) {
+-            // 已存在，更新类型
+-            s_clients[i].type = type;
+-            s_clients[i].hd = hd;
+-            TS_LOGD(TAG, "WebSocket client reconnected (fd=%d, type=%s)", 
+-                    fd, type == WS_CLIENT_TYPE_TERMINAL ? "terminal" : "event");
+-            return;
+-        }
+-    }
+-    
+-    // 查找空槽位
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (!s_clients[i].active) {
+-            s_clients[i].active = true;
+-            s_clients[i].fd = fd;
+-            s_clients[i].hd = hd;
+-            s_clients[i].type = type;
+-            TS_LOGD(TAG, "WebSocket client connected (fd=%d, type=%s)", 
+-                    fd, type == WS_CLIENT_TYPE_TERMINAL ? "terminal" : "event");
+-            return;
+-        }
+-    }
+-    
+-    // 没有空槽位，尝试清理可能已断开但未标记的连接
+-    TS_LOGW(TAG, "No free WebSocket slots, attempting to clean up stale connections...");
+-    int oldest_event_slot = -1;
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (s_clients[i].active) {
+-            // 检查 socket 状态（使用 recv 探测，MSG_PEEK | MSG_DONTWAIT）
+-            char probe;
+-            int result = recv(s_clients[i].fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+-            if (result == 0 || (result < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+-                // Socket 已关闭或错误
+-                int old_fd = s_clients[i].fd;
+-                TS_LOGI(TAG, "Cleaned up stale connection (fd=%d, recv=%d, errno=%d)", old_fd, result, errno);
+-                cleanup_disconnected_client(old_fd);
+-                // cleanup_disconnected_client 已经设置 active=false，现在可以使用这个槽位
+-                s_clients[i].active = true;
+-                s_clients[i].fd = fd;
+-                s_clients[i].hd = hd;
+-                s_clients[i].type = type;
+-                TS_LOGD(TAG, "WebSocket client connected after cleanup (fd=%d, type=%s)", 
+-                        fd, type == WS_CLIENT_TYPE_TERMINAL ? "terminal" : "event");
+-                return;
+-            }
+-            // 记录最旧的普通事件客户端槽位（非终端/SSH）
+-            if (s_clients[i].type == WS_CLIENT_TYPE_EVENT && oldest_event_slot < 0) {
+-                oldest_event_slot = i;
+-            }
+-        }
+-    }
+-    
+-    // 如果所有连接都活跃，且新连接是终端/SSH，抢占最旧的事件客户端
+-    if ((type == WS_CLIENT_TYPE_TERMINAL || type == WS_CLIENT_TYPE_SSH_SHELL) && oldest_event_slot >= 0) {
+-        int evicted_fd = s_clients[oldest_event_slot].fd;
+-        TS_LOGW(TAG, "All slots full, evicting oldest event client (fd=%d) for %s", 
+-                evicted_fd, type == WS_CLIENT_TYPE_TERMINAL ? "terminal" : "ssh");
+-        cleanup_disconnected_client(evicted_fd);
+-        s_clients[oldest_event_slot].active = true;
+-        s_clients[oldest_event_slot].fd = fd;
+-        s_clients[oldest_event_slot].hd = hd;
+-        s_clients[oldest_event_slot].type = type;
+-        return;
++    ts_ws_peer_t peer;
++    esp_err_t ret = ts_ws_peer_open(req, &peer);
++    if (ret != ESP_OK) return ret;
++    for (int i = 0; i < MAX_WS_CLIENTS; ++i) if (!s_clients[i].active) {
++        s_clients[i].fd = peer.fd;
++        s_clients[i].hd = peer.server;
++        s_clients[i].type = type;
++        s_clients[i].log_min_level = TS_LOG_NONE;
++        s_clients[i].active = true;
++        return ESP_OK;
+     }
+-    
+-    TS_LOGE(TAG, "All WebSocket slots are occupied by active connections");
++    ts_ws_peer_close(peer);
++    return ESP_ERR_NO_MEM;
+ }
+ 
+ /* 处理终端命令执行 */
+@@ -682,7 +629,7 @@ static void start_terminal_session(httpd_req_t *req)
+                     .payload = (uint8_t *)close_json,
+                     .len = strlen(close_json)
+                 };
+-                httpd_ws_send_frame_async(old_hd, s_terminal_client_fd, &ws_pkt);
++                ts_ws_transport_send(old_hd, s_terminal_client_fd, &ws_pkt);
+                 free(close_json);
+             }
+             
+@@ -734,7 +681,11 @@ static void cleanup_disconnected_client(int fd)
+     bool was_log_client = false;
+     
+     // 清理订阅（新增）
+-    ts_ws_client_disconnected(fd);
++    ts_ws_peer_t peer;
++    if (ts_ws_peer_get(s_server, fd, &peer)) {
++        ts_ws_peer_close(peer);
++        return;
++    }
+     
+     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+         if (s_clients[i].active && s_clients[i].fd == fd) {
+@@ -766,15 +717,26 @@ static void cleanup_disconnected_client(int fd)
+     }
+ }
+ 
++static void peer_closed(ts_ws_peer_t peer)
++{
++    ts_ws_client_disconnected(peer);
++    cleanup_disconnected_client(peer.fd);
++}
++
+ static esp_err_t ws_handler(httpd_req_t *req)
+ {
++    if (s_ws_stopping) return ESP_ERR_INVALID_STATE;
+     if (req->method == HTTP_GET) {
+         TS_LOGD(TAG, "WebSocket handshake");
+         // 初次连接时添加为事件客户端
+-        add_client(req->handle, httpd_req_to_sockfd(req), WS_CLIENT_TYPE_EVENT);
+-        return ESP_OK;
++        if (s_ws_stopping) return ESP_ERR_INVALID_STATE;
++        return add_client(req, WS_CLIENT_TYPE_EVENT);
+     }
+     
++    ts_ws_peer_t peer;
++    if (!req->sess_ctx || !ts_ws_peer_get(req->handle, httpd_req_to_sockfd(req), &peer) ||
++        !ts_ws_peer_equal(peer, *(ts_ws_peer_t *)req->sess_ctx)) return ESP_ERR_INVALID_STATE;
++
+     httpd_ws_frame_t ws_pkt;
+     memset(&ws_pkt, 0, sizeof(ws_pkt));
+     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+@@ -810,6 +772,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
+     
+     ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+     if (ret != ESP_OK) {
++        cleanup_disconnected_client(httpd_req_to_sockfd(req));
+         free(buf);
+         return ret;
+     }
+@@ -840,12 +803,11 @@ static esp_err_t ws_handler(httpd_req_t *req)
+             }
+             else if (strcmp(type->valuestring, "subscribe") == 0) {
+                 // 处理订阅请求（新增：topic 订阅）
+-                int fd = httpd_req_to_sockfd(req);
+                 cJSON *topic = cJSON_GetObjectItem(msg, "topic");
+                 cJSON *params = cJSON_GetObjectItem(msg, "params");
+                 
+                 if (topic && cJSON_IsString(topic)) {
+-                    esp_err_t ret = ts_ws_subscribe(fd, topic->valuestring, params);
++                    esp_err_t ret = ts_ws_subscribe(*(ts_ws_peer_t *)req->sess_ctx, topic->valuestring, params);
+                     
+                     // 发送确认消息
+                     cJSON *ack = cJSON_CreateObject();
+@@ -871,11 +833,10 @@ static esp_err_t ws_handler(httpd_req_t *req)
+             }
+             else if (strcmp(type->valuestring, "unsubscribe") == 0) {
+                 // 处理取消订阅请求（新增）
+-                int fd = httpd_req_to_sockfd(req);
+                 cJSON *topic = cJSON_GetObjectItem(msg, "topic");
+                 
+                 if (topic && cJSON_IsString(topic)) {
+-                    esp_err_t ret = ts_ws_unsubscribe(fd, topic->valuestring);
++                    esp_err_t ret = ts_ws_unsubscribe(*(ts_ws_peer_t *)req->sess_ctx, topic->valuestring);
+                     
+                     // 发送确认消息
+                     cJSON *ack = cJSON_CreateObject();
+@@ -919,6 +880,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
+                     for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+                         if (s_clients[i].active && s_clients[i].fd == fd) {
+                             s_clients[i].type = WS_CLIENT_TYPE_EVENT;
++                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, -1);
+                             break;
+                         }
+                     }
+@@ -971,6 +933,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
+                     if (s_clients[i].active && s_clients[i].fd == fd) {
+                         s_clients[i].type = WS_CLIENT_TYPE_LOG;
+                         s_clients[i].log_min_level = min_level;
++                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, min_level);
+                         client_found = true;
+                         TS_LOGI(TAG, "Client %d subscribed to logs (minLevel=%d)", i, min_level);
+                         break;
+@@ -1003,6 +966,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
+                 for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+                     if (s_clients[i].active && s_clients[i].fd == fd) {
+                         s_clients[i].type = WS_CLIENT_TYPE_EVENT;
++                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, -1);
+                         break;
+                     }
+                 }
+@@ -1018,6 +982,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
+                         if (s_clients[i].active && s_clients[i].fd == fd && 
+                             s_clients[i].type == WS_CLIENT_TYPE_LOG) {
+                             s_clients[i].log_min_level = (ts_log_level_t)level->valueint;
++                            ts_ws_peer_log_level(*(ts_ws_peer_t *)req->sess_ctx, level->valueint);
+                             break;
+                         }
+                     }
+@@ -1089,6 +1054,14 @@ esp_err_t ts_webui_ws_init(void)
+ {
+     TS_LOGI(TAG, "Initializing WebSocket with Terminal support");
+     
++    httpd_handle_t server = ts_http_server_get_handle();
++    if (!server) return ESP_ERR_INVALID_STATE;
++    if (s_server) return s_ws_stopping ? ESP_ERR_INVALID_STATE : ESP_OK;
++    esp_err_t transport_ret = ts_ws_transport_start(server, peer_closed);
++    if (transport_ret != ESP_OK) return transport_ret;
++    s_server = server;
++    s_ws_stopping = false;
++    ts_http_server_set_stop_hooks(ts_webui_ws_stop, ts_webui_ws_stopped);
+     memset(s_clients, 0, sizeof(s_clients));
+     s_terminal_client_fd = -1;
+     
+@@ -1109,6 +1082,8 @@ esp_err_t ts_webui_ws_init(void)
+         s_output_mutex = xSemaphoreCreateMutex();
+     }
+     
++    if (!s_terminal_mutex || !s_output_mutex) return ESP_ERR_NO_MEM;
++
+     // 分配终端输出缓冲区（优先使用 PSRAM）
+     if (!s_terminal_output_buf) {
+         s_terminal_output_buf = heap_caps_malloc(TERMINAL_OUTPUT_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+@@ -1128,7 +1103,6 @@ esp_err_t ts_webui_ws_init(void)
+     }
+     
+     // Get HTTP server handle
+-    httpd_handle_t server = ts_http_server_get_handle();
+     if (!server) {
+         TS_LOGE(TAG, "HTTP server not started");
+         return ESP_ERR_INVALID_STATE;
+@@ -1160,6 +1134,7 @@ esp_err_t ts_webui_ws_init(void)
+             TS_LOGI(TAG, "Power policy event handler registered");
+         } else {
+             TS_LOGW(TAG, "Failed to register power event handler: %s", esp_err_to_name(ret));
++            return ret;
+         }
+     }
+     
+@@ -1167,6 +1142,34 @@ esp_err_t ts_webui_ws_init(void)
+     return ESP_OK;
+ }
+ 
++esp_err_t ts_webui_ws_stop(httpd_handle_t server)
++{
++    if (ts_ws_transport_in_context() || ts_event_in_callback()) return ESP_ERR_INVALID_STATE;
++    s_ws_stopping = true;
++    esp_err_t ret = ts_ws_subscriptions_deinit();
++    if (ret != ESP_OK) return ret;
++    ret = ts_ws_transport_quiesce(server, 6000);
++    if (ret != ESP_OK) return ret;
++    if (s_power_event_handle) {
++        ret = ts_event_unregister_sync(s_power_event_handle, 6000);
++        if (ret != ESP_OK && ret != ESP_ERR_NOT_FOUND) return ret;
++        s_power_event_handle = NULL;
++    }
++    /* Do not destroy a running remote operation or replay it. Keep HTTPD alive
++     * and return busy; the control caller can retry after its normal completion. */
++    if (s_exec_creators || s_exec_running) return ESP_ERR_INVALID_STATE;
++    ssh_cleanup();
++    if (s_ssh_poll_alive) return ESP_ERR_TIMEOUT;
++    return ts_ws_transport_stop(server, 6000);
++}
++
++void ts_webui_ws_stopped(httpd_handle_t server)
++{
++    ts_ws_transport_stopped(server);
++    if (s_server == server) s_server = NULL;
++    /* Existing terminal buffer/mutex are stable reusable singleton resources. */
++}
++
+ esp_err_t ts_webui_broadcast(const char *message)
+ {
+     if (!message) return ESP_ERR_INVALID_ARG;
+@@ -1177,23 +1180,7 @@ esp_err_t ts_webui_broadcast(const char *message)
+         .len = strlen(message)
+     };
+     
+-    int sent = 0;
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (s_clients[i].active) {
+-            esp_err_t ret = httpd_ws_send_frame_async(s_clients[i].hd, s_clients[i].fd, &ws_pkt);
+-            if (ret == ESP_OK) {
+-                sent++;
+-            } else {
+-                // Client probably disconnected - cleanup resources
+-                int fd = s_clients[i].fd;
+-                TS_LOGW(TAG, "Client fd=%d send failed, cleaning up", fd);
+-                cleanup_disconnected_client(fd);
+-            }
+-        }
+-    }
+-    
+-    TS_LOGD(TAG, "Broadcast to %d clients", sent);
+-    return ESP_OK;
++    return ts_ws_transport_broadcast(&ws_pkt);
+ }
+ 
+ esp_err_t ts_webui_broadcast_event(const char *event_type, const char *data)
+@@ -1265,23 +1252,8 @@ static void log_ws_callback(const ts_log_entry_t *entry, void *user_data)
+         .len = strlen(json)
+     };
+     
+-    // 发送给所有日志订阅客户端（根据级别过滤）
+-    int sent_count = 0;
+-    for (int i = 0; i < MAX_WS_CLIENTS; i++) {
+-        if (s_clients[i].active && s_clients[i].type == WS_CLIENT_TYPE_LOG) {
+-            // 检查级别过滤
+-            if (entry->level <= s_clients[i].log_min_level) {
+-                httpd_ws_send_frame_async(s_clients[i].hd, s_clients[i].fd, &ws_pkt);
+-                sent_count++;
+-            }
+-        }
+-    }
+-    
+-    // Debug: Log if no clients received the message
+-    if (sent_count == 0) {
+-        TS_LOGD(TAG, "log_ws_callback: No clients received log (level=%d)", entry->level);
+-    }
+-    
++    ts_ws_transport_log(&ws_pkt, entry->level);
++
+     free(json);
+ }
+ 
+@@ -2034,7 +2006,7 @@ cleanup:
+     vTaskDelete(NULL);
+ }
+ 
+-esp_err_t ts_webui_ssh_exec_start(const char *host, uint16_t port, 
++static esp_err_t ts_webui_ssh_exec_start_impl(const char *host, uint16_t port,
+                                    const char *user, const char *keyid,
+                                    const char *password, const char *command,
+                                    uint32_t *session_id)
+@@ -2131,8 +2103,19 @@ esp_err_t ts_webui_ssh_exec_start(const char *host, uint16_t port,
+     return ESP_OK;
+ }
+ 
++esp_err_t ts_webui_ssh_exec_start(const char *host, uint16_t port,
++                                   const char *user, const char *keyid,
++                                   const char *password, const char *command,
++                                   uint32_t *session_id)
++{
++    unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
++    esp_err_t ret = (creators || s_ws_stopping) ? ESP_ERR_INVALID_STATE : ts_webui_ssh_exec_start_impl(host, port, user, keyid, password, command, session_id);
++    atomic_fetch_sub(&s_exec_creators, 1);
++    return ret;
++}
++
+ /* 带选项的扩展版本 */
+-esp_err_t ts_webui_ssh_exec_start_ex(const char *host, uint16_t port, 
++static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char *host, uint16_t port,
+                                       const char *user, const char *keyid,
+                                       const char *password, const char *command,
+                                       const ts_webui_ssh_options_t *options,
+@@ -2335,6 +2318,18 @@ esp_err_t ts_webui_ssh_exec_start_ex(const char *host, uint16_t port,
+     return ESP_OK;
+ }
+ 
++esp_err_t ts_webui_ssh_exec_start_ex(const char *host, uint16_t port,
++                                      const char *user, const char *keyid,
++                                      const char *password, const char *command,
++                                      const ts_webui_ssh_options_t *options,
++                                      uint32_t *session_id)
++{
++    unsigned creators = atomic_fetch_add(&s_exec_creators, 1);
++    esp_err_t ret = (creators || s_ws_stopping) ? ESP_ERR_INVALID_STATE : ts_webui_ssh_exec_start_ex_impl(host, port, user, keyid, password, command, options, session_id);
++    atomic_fetch_sub(&s_exec_creators, 1);
++    return ret;
++}
++
+ /* 释放结果结构 */
+ void ts_webui_ssh_result_free(ts_webui_ssh_result_t *result)
+ {
+diff --git a/components/ts_webui/src/ts_ws_subscriptions.c b/components/ts_webui/src/ts_ws_subscriptions.c
+index 8ad8f51..b492ef2 100644
+--- a/components/ts_webui/src/ts_ws_subscriptions.c
++++ b/components/ts_webui/src/ts_ws_subscriptions.c
+@@ -1,654 +1,414 @@
+-/**
+- * @file ts_ws_subscriptions.c
+- * @brief WebSocket Subscription Manager Implementation
+- */
+-
++/** Demand-driven display telemetry. Hardware sampling/control is not scheduled here. */
+ #include "ts_ws_subscriptions.h"
+-#include "ts_webui.h"
+-#include "ts_log.h"
+-#include "ts_event.h"
++#include "ts_ws_transport.h"
+ #include "ts_api.h"
++#include "ts_log.h"
+ #include "esp_timer.h"
+ #include "freertos/FreeRTOS.h"
+-#include "freertos/semphr.h"
++#include "freertos/task.h"
++#include <math.h>
+ #include <string.h>
+-
+-#define TAG "ws_subs"
++#include <limits.h>
+ 
+ #define MAX_SUBSCRIPTIONS 32
+-#define MAX_TOPIC_LEN 32
+-
++#define EVENT_SLOTS 4
++#define WORKER_STACK 8192
++#define STOP_TIMEOUT_MS 6000
++#define TAG "ws_subs"
++static const struct { const char *name; uint32_t interval; int metric; } topics[] = {
++    {"system.dashboard",1000,-1}, {"system.info",5000,2},
++    {"system.memory",5000,1}, {"system.cpu",1000,0},
++    {"network.status",5000,3}, {"power.status",5000,4},
++    {"fan.status",5000,5}, {"service.list",5000,6},
++    {"device.status",2000,-2}, {"ota.progress",1000,-2},
++    {"config.pack.validated",0,-2}
++};
++#define TOPIC_COUNT (sizeof(topics)/sizeof(topics[0]))
++static const char *metrics[] = {"system.cpu","system.memory","system.info",
++    "network.status","power.status","fan.status","service.list"};
++static const char *fields[] = {"cpu","memory","info","network","power","fan","services"};
++typedef enum { OFF, STARTING, RUNNING, STOPPING } lifecycle_t;
+ typedef struct {
+-    int fd;                          // 客户端文件描述符
+-    char topic[MAX_TOPIC_LEN];       // 订阅的主题
+-    uint32_t min_interval_ms;        // 最小推送间隔（去抖动）
+-    int64_t last_broadcast_time;     // 上次广播时间戳（微秒）
+-    bool active;                     // 订阅是否激活
++    ts_ws_peer_t peer;
++    uint64_t revision, pending;
++    int64_t last_success, next_attempt;
++    uint32_t interval;
++    unsigned topic;
++    bool active;
+ } subscription_t;
+-
+ typedef struct {
+-    const char *topic;                  // 主题名称
+-    ts_event_base_t event_base;         // 事件基础
+-    int32_t event_id;                   // 事件 ID
+-    uint32_t default_min_interval_ms;   // 默认最小间隔
+-} topic_mapping_t;
+-
+-/* 订阅数组 */
+-static subscription_t s_subscriptions[MAX_SUBSCRIPTIONS];
+-static SemaphoreHandle_t s_subs_mutex = NULL;
+-
+-/* 事件处理器句柄 */
+-static ts_event_handler_handle_t s_system_event_handle = NULL;
+-static ts_event_handler_handle_t s_device_event_handle = NULL;
+-static ts_event_handler_handle_t s_ota_event_handle = NULL;
+-
+-/* 定时器句柄 */
+-static esp_timer_handle_t s_system_info_timer = NULL;  /* 5s 间隔 */
+-static esp_timer_handle_t s_cpu_stats_timer = NULL;     /* 1s 间隔 */
+-static esp_timer_handle_t s_dashboard_timer = NULL;    /* 1s 间隔 - 聚合订阅 */
+-
+-/* 主题映射表 */
+-static const topic_mapping_t s_topic_map[] = {
+-    {"system.dashboard", TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 1000},  /* 聚合主题 */
+-    {"system.info",      TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 5000},
+-    {"system.memory",    TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 5000},
+-    {"system.cpu",       TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 1000},
+-    {"network.status",   TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 5000},
+-    {"power.status",     TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 5000},
+-    {"fan.status",       TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 5000},
+-    {"service.list",     TS_EVENT_BASE_SYSTEM,     TS_EVENT_SYSTEM_INFO_CHANGED, 5000},
+-    {"device.status",    TS_EVENT_BASE_DEVICE_MON, TS_EVENT_DEVICE_STATUS_CHANGED, 2000},
+-    {"ota.progress",     TS_EVENT_BASE_OTA,        TS_EVENT_OTA_PROGRESS_UPDATE, 1000},
+-    {"config.pack.validated", NULL,                0,                             0},     /* 推送驱动主题 */
+-};
+-#define TOPIC_MAP_SIZE (sizeof(s_topic_map) / sizeof(s_topic_map[0]))
+-
+-/* 前向声明 */
+-static void system_event_handler(const ts_event_t *event, void *user_data);
+-static void device_event_handler(const ts_event_t *event, void *user_data);
+-static void ota_event_handler(const ts_event_t *event, void *user_data);
+-
+-/*===========================================================================*/
+-/*                          辅助函数                                          */
+-/*===========================================================================*/
++    ts_ws_peer_t peer;
++    uint64_t revision, delivery;
++    unsigned topic;
++} target_t;
++typedef struct {
++    bool used, ready;
++    uint64_t order;
++    ts_ws_message_t *message;
++    uint64_t targets[MAX_SUBSCRIPTIONS];
++} event_item_t;
++/* Stable storage / spinlock survive init/deinit. Only short value mutations
++ * and task notifications under lock, never heap, API, JSON, queue or network. */
++static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
++static lifecycle_t s_state;
++static bool s_stop_owner;
++static TaskHandle_t s_worker;
++static unsigned s_entries, s_outstanding;
++static uint64_t s_sequence;
++static subscription_t s_subs[MAX_SUBSCRIPTIONS];
++static event_item_t s_events[EVENT_SLOTS];
++static ts_event_handler_handle_t s_handlers[3];
++static struct {
++    uint64_t api[7], batches[TOPIC_COUNT], serialized[TOPIC_COUNT];
++    uint64_t queued, success, failure, stale, event_dropped, idle_wait, capacity_wait;
++    uint32_t stack_low_water;
++} s_stats;
+ 
+-/* 查找主题映射 */
+-static const topic_mapping_t *find_topic_mapping(const char *topic)
++static int64_t after_ms(int64_t now, uint32_t ms)
+ {
+-    for (int i = 0; i < TOPIC_MAP_SIZE; i++) {
+-        if (strcmp(s_topic_map[i].topic, topic) == 0) {
+-            return &s_topic_map[i];
+-        }
+-    }
+-    return NULL;
++    int64_t delta = (int64_t)ms * 1000;
++    return now > INT64_MAX - delta ? INT64_MAX : now + delta;
+ }
+-
+-/* 检查是否需要广播（去抖动） */
+-static bool should_broadcast(subscription_t *sub)
++static void wake_locked(void) { if (s_worker) xTaskNotifyGive(s_worker); }
++void ts_ws_subscriptions_wake(void)
+ {
+-    int64_t now = esp_timer_get_time();
+-    int64_t elapsed_ms = (now - sub->last_broadcast_time) / 1000;
+-    return (elapsed_ms >= sub->min_interval_ms);
++    portENTER_CRITICAL(&s_lock);wake_locked();portEXIT_CRITICAL(&s_lock);
+ }
+-
+-/* 查找或分配订阅槽位 */
+-static subscription_t *find_or_alloc_subscription(int fd, const char *topic)
++static int topic_id(const char *name)
+ {
+-    subscription_t *free_slot = NULL;
+-    
+-    // 查找已存在的订阅
+-    for (int i = 0; i < MAX_SUBSCRIPTIONS; i++) {
+-        if (s_subscriptions[i].active && 
+-            s_subscriptions[i].fd == fd &&
+-            strcmp(s_subscriptions[i].topic, topic) == 0) {
+-            return &s_subscriptions[i];
+-        }
+-        if (!s_subscriptions[i].active && !free_slot) {
+-            free_slot = &s_subscriptions[i];
+-        }
+-    }
+-    
+-    return free_slot;
++    if (name) for (unsigned i=0;i<TOPIC_COUNT;i++) if (!strcmp(name,topics[i].name)) return i;
++    return -1;
+ }
+-
+-/* 统计某主题的活跃订阅数 */
+-static int count_active_subscriptions(const char *topic)
++static bool enter(void)
+ {
+-    int count = 0;
+-    for (int i = 0; i < MAX_SUBSCRIPTIONS; i++) {
+-        if (s_subscriptions[i].active && strcmp(s_subscriptions[i].topic, topic) == 0) {
+-            count++;
+-        }
+-    }
+-    return count;
++    portENTER_CRITICAL(&s_lock);
++    bool ok = s_state == RUNNING;
++    if (ok) s_entries++;
++    portEXIT_CRITICAL(&s_lock);
++    return ok;
+ }
+-
+-/*===========================================================================*/
+-/*                          事件处理器                                        */
+-/*===========================================================================*/
+-
+-static void system_event_handler(const ts_event_t *event, void *user_data)
++static void leave(void)
+ {
+-    // 调用 API 获取系统信息（只推送动态数据）
+-    ts_api_result_t result = {0};
+-    esp_err_t ret;
+-    
+-    // 获取系统基本信息（包含 uptime）
+-    ret = ts_api_call("system.info", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        TS_LOGD(TAG, "Broadcasting system.info");
+-        ts_ws_broadcast_to_topic("system.info", result.data);
+-    }
+-    
+-    // 获取内存信息（动态）
+-    ret = ts_api_call("system.memory", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        TS_LOGD(TAG, "Broadcasting system.memory");
+-        ts_ws_broadcast_to_topic("system.memory", result.data);
+-    }
+-    
+-    // 获取 CPU 统计（高频动态）
+-    ret = ts_api_call("system.cpu", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        TS_LOGD(TAG, "Broadcasting system.cpu");
+-        ts_ws_broadcast_to_topic("system.cpu", result.data);
+-    }
+-    
+-    // 获取网络状态（动态）
+-    ret = ts_api_call("network.status", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        TS_LOGD(TAG, "Broadcasting network.status");
+-        ts_ws_broadcast_to_topic("network.status", result.data);
+-    }
+-    
+-    // 获取电源状态（动态）
+-    ret = ts_api_call("power.status", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        TS_LOGD(TAG, "Broadcasting power.status");
+-        ts_ws_broadcast_to_topic("power.status", result.data);
+-    }
+-    
+-    // 获取风扇状态（动态）
+-    ret = ts_api_call("fan.status", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        TS_LOGD(TAG, "Broadcasting fan.status");
+-        ts_ws_broadcast_to_topic("fan.status", result.data);
+-    }
+-    
+-    // 获取服务列表（动态）
+-    ret = ts_api_call("service.list", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        TS_LOGD(TAG, "Broadcasting service.list");
+-        ts_ws_broadcast_to_topic("service.list", result.data);
+-    }
++    portENTER_CRITICAL(&s_lock); s_entries--; wake_locked(); portEXIT_CRITICAL(&s_lock);
+ }
+-
+-static void device_event_handler(const ts_event_t *event, void *user_data)
++static subscription_t *find_revision(uint64_t revision)
+ {
+-    if (!event->data || event->data_size == 0) {
+-        return;
+-    }
+-    
+-    // 解析 JSON 字符串
+-    cJSON *data = cJSON_Parse((const char *)event->data);
+-    if (data) {
+-        ts_ws_broadcast_to_topic("device.status", data);
+-        cJSON_Delete(data);
+-    }
++    for (unsigned i=0;i<MAX_SUBSCRIPTIONS;i++)
++        if (s_subs[i].active && s_subs[i].revision == revision) return &s_subs[i];
++    return NULL;
+ }
+-
+-static void ota_event_handler(const ts_event_t *event, void *user_data)
++static bool delivery_valid(uint64_t revision, uint64_t delivery)
+ {
+-    if (!event->data || event->data_size == 0) {
+-        return;
+-    }
+-    
+-    // 解析 JSON 字符串
+-    cJSON *data = cJSON_Parse((const char *)event->data);
+-    if (data) {
+-        ts_ws_broadcast_to_topic("ota.progress", data);
+-        cJSON_Delete(data);
+-    }
++    portENTER_CRITICAL(&s_lock);
++    subscription_t *s = find_revision(revision);
++    bool ok = s_state == RUNNING && s && s->pending == delivery;
++    portEXIT_CRITICAL(&s_lock);
++    return ok;
+ }
+-
+-/* 定时器回调：定期发送系统信息 */
+-static void system_info_timer_callback(void *arg)
++static void delivery_done(uint64_t revision, uint64_t delivery, esp_err_t result)
+ {
+-    // 发送系统信息事件
+-    ts_event_post(TS_EVENT_BASE_SYSTEM, TS_EVENT_SYSTEM_INFO_CHANGED, NULL, 0, 0);
++    int64_t now = esp_timer_get_time();
++    portENTER_CRITICAL(&s_lock);
++    subscription_t *s = find_revision(revision);
++    if (s && s->pending == delivery) {
++        s->pending = 0;
++        if (result == ESP_OK) s->last_success = now;
++        /* Failure is not success. No catch-up burst and no retry of an old frame. */
++        uint32_t delay = s->interval ? s->interval : (result == ESP_OK ? 0 : 1000);
++        s->next_attempt = after_ms(now, delay);
++    } else s_stats.stale++;
++    if (result == ESP_OK) s_stats.success++; else s_stats.failure++;
++    s_outstanding--;
++    wake_locked();
++    portEXIT_CRITICAL(&s_lock);
+ }
+-
+-/* 定时器回调：CPU 统计 */
+-static void cpu_stats_timer_callback(void *arg)
++static bool reserve(subscription_t *s, target_t *t)
+ {
+-    // 直接调用 API 并广播
+-    ts_api_result_t result = {0};
+-    esp_err_t ret = ts_api_call("system.cpu", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        ts_ws_broadcast_to_topic("system.cpu", result.data);
+-    }
++    if (s_sequence == UINT64_MAX) { s_state=STOPPING; wake_locked(); return false; } /* fail closed, never reuse IDs */
++    s->pending = ++s_sequence;
++    *t = (target_t){s->peer,s->revision,s->pending,s->topic};
++    s_outstanding++;
++    return true;
+ }
+-
+-/* 定时器回调：Dashboard 聚合数据 */
+-static void dashboard_timer_callback(void *arg)
++static void submit(target_t t, ts_ws_message_t *m)
+ {
+-    // 创建聚合 JSON 对象
+-    cJSON *dashboard = cJSON_CreateObject();
+-    if (!dashboard) {
+-        TS_LOGE(TAG, "Failed to create dashboard JSON");
+-        return;
+-    }
+-    
+-    ts_api_result_t result = {0};
+-    esp_err_t ret;
+-    
+-    // 1. CPU 统计（高频数据）
+-    ret = ts_api_call("system.cpu", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        cJSON_AddItemToObject(dashboard, "cpu", result.data);
+-        result.data = NULL;  // 所有权转移，防止重复释放
+-    }
+-    
+-    // 2. 内存信息
+-    ret = ts_api_call("system.memory", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        cJSON_AddItemToObject(dashboard, "memory", result.data);
+-        result.data = NULL;
+-    }
+-    
+-    // 3. 系统信息（uptime 等）
+-    ret = ts_api_call("system.info", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        cJSON_AddItemToObject(dashboard, "info", result.data);
+-        result.data = NULL;
+-    }
+-    
+-    // 4. 网络状态
+-    ret = ts_api_call("network.status", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        cJSON_AddItemToObject(dashboard, "network", result.data);
+-        result.data = NULL;
+-    }
+-    
+-    // 5. 电源状态
+-    ret = ts_api_call("power.status", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        cJSON_AddItemToObject(dashboard, "power", result.data);
+-        result.data = NULL;
+-    }
+-    
+-    // 6. 风扇状态
+-    ret = ts_api_call("fan.status", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        cJSON_AddItemToObject(dashboard, "fan", result.data);
+-        result.data = NULL;
+-    }
+-    
+-    // 7. 服务列表
+-    ret = ts_api_call("service.list", NULL, &result);
+-    if (ret == ESP_OK && result.code == 0 && result.data) {
+-        cJSON_AddItemToObject(dashboard, "services", result.data);
+-        result.data = NULL;
+-    }
+-    
+-    // 广播聚合数据（会复制一次数据）
+-    ts_ws_broadcast_to_topic("system.dashboard", dashboard);
+-    
+-    // 释放聚合对象（包含所有子对象）
+-    cJSON_Delete(dashboard);
++    esp_err_t ret = ESP_ERR_NO_MEM;
++    if (m && delivery_valid(t.revision,t.delivery))
++        ret = ts_ws_transport_submit(t.peer,m,t.revision,t.delivery,delivery_valid,delivery_done);
++    if (ret != ESP_OK) delivery_done(t.revision,t.delivery,ret);
++    else { portENTER_CRITICAL(&s_lock); s_stats.queued++; portEXIT_CRITICAL(&s_lock); }
+ }
+-
+-/*===========================================================================*/
+-/*                          公共 API                                          */
+-/*===========================================================================*/
+-
+-esp_err_t ts_ws_subscriptions_init(void)
++static bool metric_needed(target_t *targets, unsigned n, unsigned metric)
+ {
+-    if (s_subs_mutex) {
+-        return ESP_OK;  // 已初始化
+-    }
+-    
+-    // 创建互斥锁
+-    s_subs_mutex = xSemaphoreCreateMutex();
+-    if (!s_subs_mutex) {
+-        TS_LOGE(TAG, "Failed to create mutex");
+-        return ESP_ERR_NO_MEM;
+-    }
+-    
+-    // 清空订阅数组
+-    memset(s_subscriptions, 0, sizeof(s_subscriptions));
+-    
+-    // 创建定时器（5秒间隔推送系统信息）
+-    esp_timer_create_args_t timer_args = {
+-        .callback = system_info_timer_callback,
+-        .name = "system_info_timer"
+-    };
+-    esp_err_t ret = esp_timer_create(&timer_args, &s_system_info_timer);
+-    if (ret != ESP_OK) {
+-        TS_LOGE(TAG, "Failed to create system info timer: %s", esp_err_to_name(ret));
+-        vSemaphoreDelete(s_subs_mutex);
+-        s_subs_mutex = NULL;
+-        return ret;
+-    }
+-    
+-    // 创建 CPU 统计定时器（1秒间隔）
+-    esp_timer_create_args_t cpu_timer_args = {
+-        .callback = cpu_stats_timer_callback,
+-        .name = "cpu_stats_timer"
+-    };
+-    ret = esp_timer_create(&cpu_timer_args, &s_cpu_stats_timer);
+-    if (ret != ESP_OK) {
+-        TS_LOGE(TAG, "Failed to create CPU stats timer: %s", esp_err_to_name(ret));
+-        esp_timer_delete(s_system_info_timer);
+-        vSemaphoreDelete(s_subs_mutex);
+-        s_subs_mutex = NULL;
+-        return ret;
+-    }
+-    
+-    // 创建 Dashboard 聚合定时器（1秒间隔）
+-    esp_timer_create_args_t dashboard_timer_args = {
+-        .callback = dashboard_timer_callback,
+-        .name = "dashboard_timer"
+-    };
+-    ret = esp_timer_create(&dashboard_timer_args, &s_dashboard_timer);
+-    if (ret != ESP_OK) {
+-        TS_LOGE(TAG, "Failed to create dashboard timer: %s", esp_err_to_name(ret));
+-        esp_timer_delete(s_cpu_stats_timer);
+-        esp_timer_delete(s_system_info_timer);
+-        vSemaphoreDelete(s_subs_mutex);
+-        s_subs_mutex = NULL;
+-        return ret;
+-    }
+-    
+-    TS_LOGI(TAG, "Subscription manager initialized");
+-    return ESP_OK;
++    for (unsigned i=0;i<n;i++) if ((topics[targets[i].topic].metric == -1 ||
++        topics[targets[i].topic].metric == (int)metric) && delivery_valid(targets[i].revision,targets[i].delivery)) return true;
++    return false;
+ }
+-
+-void ts_ws_subscriptions_deinit(void)
++static void collect_batch(target_t *targets, unsigned n)
+ {
+-    if (!s_subs_mutex) return;
+-    
+-    // 停止并删除定时器
+-    if (s_system_info_timer) {
+-        esp_timer_stop(s_system_info_timer);
+-        esp_timer_delete(s_system_info_timer);
+-        s_system_info_timer = NULL;
+-    }
+-    
+-    if (s_cpu_stats_timer) {
+-        esp_timer_stop(s_cpu_stats_timer);
+-        esp_timer_delete(s_cpu_stats_timer);
+-        s_cpu_stats_timer = NULL;
+-    }
+-    
+-    // 取消所有事件处理器
+-    if (s_system_event_handle) {
+-        ts_event_unregister(s_system_event_handle);
+-        s_system_event_handle = NULL;
+-    }
+-    if (s_device_event_handle) {
+-        ts_event_unregister(s_device_event_handle);
+-        s_device_event_handle = NULL;
+-    }
+-    if (s_ota_event_handle) {
+-        ts_event_unregister(s_ota_event_handle);
+-        s_ota_event_handle = NULL;
++    cJSON *data[7] = {0};
++    for (unsigned i=0;i<7;i++) {
++        if (!metric_needed(targets,n,i)) continue;
++        ts_api_result_t r = {0};
++        portENTER_CRITICAL(&s_lock); s_stats.api[i]++; portEXIT_CRITICAL(&s_lock);
++        esp_err_t ret = ts_api_call(metrics[i],NULL,&r);
++        if (ret == ESP_OK && r.code == 0 && r.data) { data[i]=r.data; r.data=NULL; }
++        ts_api_result_free(&r);
++    }
++    for (unsigned topic=0;topic<8;topic++) {
++        bool needed=false;
++        for(unsigned i=0;i<n;i++) if(targets[i].topic==topic && delivery_valid(targets[i].revision,targets[i].delivery)) needed=true;
++        ts_ws_message_t *m=NULL;
++        cJSON *dashboard=NULL;
++        if (needed) {
++            const cJSON *payload=NULL;
++            if (topic==0) {
++                dashboard=cJSON_CreateObject();
++                bool ok=dashboard!=NULL, any=false;
++                for(unsigned i=0;i<7 && ok;i++) if(data[i]) {
++                    any=true;
++                    ok=ts_ws_json_reference(dashboard,fields[i],data[i]);
++                }
++                if(ok && any) payload=dashboard;
++            } else payload=data[topics[topic].metric];
++            if(payload) m=ts_ws_message_json(topics[topic].name,payload,esp_timer_get_time()/1000000);
++            portENTER_CRITICAL(&s_lock);
++            s_stats.batches[topic]++; if(m) s_stats.serialized[topic]++;
++            portEXIT_CRITICAL(&s_lock);
++        }
++        for(unsigned i=0;i<n;i++) if(targets[i].topic==topic) submit(targets[i],m);
++        ts_ws_message_release(m);
++        cJSON_Delete(dashboard);
+     }
+-    
+-    vSemaphoreDelete(s_subs_mutex);
+-    s_subs_mutex = NULL;
+-    
+-    TS_LOGI(TAG, "Subscription manager deinitialized");
++    for(unsigned i=0;i<7;i++) cJSON_Delete(data[i]);
+ }
+-
+-esp_err_t ts_ws_subscribe(int fd, const char *topic, cJSON *params)
++/* Called by the single worker; one bounded pass, no network wait under lock. */
++static void run_batch(void)
+ {
+-    if (!topic || !s_subs_mutex) return ESP_ERR_INVALID_ARG;
+-    
+-    const topic_mapping_t *mapping = find_topic_mapping(topic);
+-    if (!mapping) {
+-        TS_LOGW(TAG, "Unknown topic: %s", topic);
+-        return ESP_ERR_NOT_FOUND;
+-    }
+-    
+-    xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
+-    
+-    // 查找或分配订阅槽位
+-    subscription_t *sub = find_or_alloc_subscription(fd, topic);
+-    if (!sub) {
+-        xSemaphoreGive(s_subs_mutex);
+-        TS_LOGE(TAG, "No free subscription slots");
+-        return ESP_ERR_NO_MEM;
+-    }
+-    
+-    // 配置订阅
+-    sub->fd = fd;
+-    strncpy(sub->topic, topic, MAX_TOPIC_LEN - 1);
+-    sub->topic[MAX_TOPIC_LEN - 1] = '\0';
+-    sub->min_interval_ms = mapping->default_min_interval_ms;
+-    sub->last_broadcast_time = 0;
+-    sub->active = true;
+-    
+-    // 从参数中提取自定义间隔
+-    if (params) {
+-        cJSON *interval = cJSON_GetObjectItem(params, "interval");
+-        if (cJSON_IsNumber(interval) && interval->valueint > 0) {
+-            sub->min_interval_ms = interval->valueint;
+-        }
+-    }
+-    
+-    // 检查是否需要注册事件处理器（首个订阅该主题的客户端）
+-    int count = count_active_subscriptions(topic);
+-    bool first_subscriber = (count == 1);
+-    
+-    xSemaphoreGive(s_subs_mutex);
+-    
+-    if (first_subscriber) {
+-        // 注册事件处理器
+-        ts_event_handler_handle_t *handle = NULL;
+-        void (*handler)(const ts_event_t *, void *) = NULL;
+-        
+-        if (strcmp(topic, "system.memory") == 0 ||
+-            strcmp(topic, "network.status") == 0 ||
+-            strcmp(topic, "power.status") == 0 ||
+-            strcmp(topic, "fan.status") == 0 ||
+-            strcmp(topic, "service.list") == 0) {
+-            handle = &s_system_event_handle;
+-            handler = system_event_handler;
+-            
+-            // 启动定时器（5秒间隔）
+-            if (s_system_info_timer && !esp_timer_is_active(s_system_info_timer)) {
+-                esp_timer_start_periodic(s_system_info_timer, 5000000);  // 5秒
+-                TS_LOGI(TAG, "Started system data timer (5s interval)");
++    ts_ws_transport_flush();
++    target_t targets[MAX_SUBSCRIPTIONS];
++    unsigned n=0, capacity=ts_ws_message_capacity() ? ts_ws_transport_capacity() : 0;
++    int64_t now=esp_timer_get_time();
++    portENTER_CRITICAL(&s_lock);
++    if(s_state==RUNNING) for(unsigned i=0;i<MAX_SUBSCRIPTIONS && n<capacity;i++) {
++        subscription_t *s=&s_subs[i];
++        if(s->active && s->topic<8 && !s->pending && now>=s->next_attempt && reserve(s,&targets[n])) n++;
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if(n) { TS_WS_TEST_POINT("snapshot"); collect_batch(targets,n); }
++    /* Event FIFO per subscription. A slow target does not hold up other targets.
++     * Different operation results never overwrite each other. */
++    for(unsigned slot=0;slot<EVENT_SLOTS;slot++) {
++        ts_ws_message_t *release=NULL;
++        n=0; capacity=ts_ws_transport_capacity(); now=esp_timer_get_time();
++        portENTER_CRITICAL(&s_lock);
++        event_item_t *e=&s_events[slot];
++        if(e->ready) {
++            for(unsigned j=0;j<MAX_SUBSCRIPTIONS;j++) if(e->targets[j]) {
++                subscription_t *s=find_revision(e->targets[j]);
++                if(!s || s_state!=RUNNING) {e->targets[j]=0;continue;}
++                bool earlier=false;
++                for(unsigned k=0;k<EVENT_SLOTS;k++) if(s_events[k].used && s_events[k].order<e->order)
++                    for(unsigned l=0;l<MAX_SUBSCRIPTIONS;l++) if(s_events[k].targets[l]==s->revision) earlier=true;
++                if(!earlier && !s->pending && now>=s->next_attempt && n<capacity && reserve(s,&targets[n])) {
++                    n++;e->targets[j]=0;
++                }
+             }
+-        } else if (strcmp(topic, "system.cpu") == 0) {
+-            // CPU 统计使用独立的 1秒定时器
+-            if (s_cpu_stats_timer && !esp_timer_is_active(s_cpu_stats_timer)) {
+-                esp_timer_start_periodic(s_cpu_stats_timer, 1000000);  // 1秒
+-                TS_LOGI(TAG, "Started CPU stats timer (1s interval)");
+-            }
+-        } else if (strcmp(topic, "system.dashboard") == 0) {
+-            // Dashboard 聚合订阅使用独立的 1秒定时器
+-            if (s_dashboard_timer && !esp_timer_is_active(s_dashboard_timer)) {
+-                esp_timer_start_periodic(s_dashboard_timer, 1000000);  // 1秒
+-                TS_LOGI(TAG, "Started dashboard timer (1s interval)");
+-            }
+-        } else if (strcmp(topic, "device.status") == 0) {
+-            handle = &s_device_event_handle;
+-            handler = device_event_handler;
+-        } else if (strcmp(topic, "ota.progress") == 0) {
+-            handle = &s_ota_event_handle;
+-            handler = ota_event_handler;
++            bool remaining=false;
++            for(unsigned j=0;j<MAX_SUBSCRIPTIONS;j++) if(e->targets[j]) remaining=true;
++            if(!remaining) {release=e->message; e->ready=false; /* held until submits finish */}
+         }
+-        
+-        if (handle && handler) {
+-            esp_err_t ret = ts_event_register(
+-                mapping->event_base,
+-                mapping->event_id,
+-                handler,
+-                NULL,
+-                handle
+-            );
+-            if (ret == ESP_OK) {
+-                TS_LOGI(TAG, "Registered event handler for topic: %s", topic);
+-            } else {
+-                TS_LOGW(TAG, "Failed to register event handler: %s", esp_err_to_name(ret));
+-            }
++        ts_ws_message_t *m=e->message;
++        portEXIT_CRITICAL(&s_lock);
++        for(unsigned j=0;j<n;j++) submit(targets[j],m);
++        if(release) {
++            ts_ws_message_release(release);
++            portENTER_CRITICAL(&s_lock); memset(e,0,sizeof(*e)); portEXIT_CRITICAL(&s_lock);
+         }
+     }
+-    
+-    TS_LOGI(TAG, "Client %d subscribed to '%s' (interval: %lu ms)", 
+-            fd, topic, (unsigned long)sub->min_interval_ms);
+-    return ESP_OK;
+ }
+-
+-esp_err_t ts_ws_unsubscribe(int fd, const char *topic)
++static TickType_t wait_ticks(int64_t delta)
+ {
+-    if (!topic || !s_subs_mutex) return ESP_ERR_INVALID_ARG;
+-    
+-    xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
+-    
+-    // 查找并移除订阅
+-    bool found = false;
+-    for (int i = 0; i < MAX_SUBSCRIPTIONS; i++) {
+-        if (s_subscriptions[i].active &&
+-            s_subscriptions[i].fd == fd &&
+-            strcmp(s_subscriptions[i].topic, topic) == 0) {
+-            s_subscriptions[i].active = false;
+-            found = true;
+-            break;
+-        }
+-    }
+-    
+-    // 检查是否需要取消注册事件处理器（最后一个订阅者离开）
+-    int count = count_active_subscriptions(topic);
+-    bool last_subscriber = (count == 0);
+-    
+-    xSemaphoreGive(s_subs_mutex);
+-    
+-    if (last_subscriber) {
+-        // 取消注册事件处理器
+-        ts_event_handler_handle_t *handle = NULL;
+-        if (strcmp(topic, "system.memory") == 0 ||
+-            strcmp(topic, "network.status") == 0 ||
+-            strcmp(topic, "power.status") == 0 ||
+-            strcmp(topic, "fan.status") == 0 ||
+-            strcmp(topic, "service.list") == 0) {
+-            handle = &s_system_event_handle;
+-            
+-            // 检查是否还有其他 system.* 订阅
+-            int system_subs = count_active_subscriptions("system.memory") +
+-                            count_active_subscriptions("network.status") +
+-                            count_active_subscriptions("power.status") +
+-                            count_active_subscriptions("fan.status") +
+-                            count_active_subscriptions("service.list");
+-            
+-            // 如果所有 system.* topic 都没有订阅了，停止定时器
+-            if (system_subs == 0 && s_system_info_timer) {
+-                esp_timer_stop(s_system_info_timer);
+-                TS_LOGI(TAG, "Stopped system data timer");
+-            }
+-        } else if (strcmp(topic, "system.cpu") == 0) {
+-            // 停止 CPU 统计定时器
+-            if (s_cpu_stats_timer && count_active_subscriptions("system.cpu") == 0) {
+-                esp_timer_stop(s_cpu_stats_timer);
+-                TS_LOGI(TAG, "Stopped CPU stats timer");
+-            }
+-        } else if (strcmp(topic, "device.status") == 0) {
+-            handle = &s_device_event_handle;
+-        } else if (strcmp(topic, "ota.progress") == 0) {
+-            handle = &s_ota_event_handle;
+-        }
+-        
+-        if (handle && *handle) {
+-            ts_event_unregister(*handle);
+-            *handle = NULL;
+-            TS_LOGI(TAG, "Unregistered event handler for topic: %s", topic);
+-        }
+-    }
+-    
+-    if (found) {
+-        TS_LOGI(TAG, "Client %d unsubscribed from '%s'", fd, topic);
+-    }
+-    
+-    return found ? ESP_OK : ESP_ERR_NOT_FOUND;
++    if(delta<=0) return 1;
++    uint64_t tick_us=1000000/configTICK_RATE_HZ;
++    uint64_t ticks=((uint64_t)delta+tick_us-1)/tick_us;
++    if(ticks>=portMAX_DELAY) ticks=portMAX_DELAY-1;
++    return (TickType_t)ticks;
+ }
+-
+-void ts_ws_client_disconnected(int fd)
++static TickType_t next_wait(void)
+ {
+-    if (!s_subs_mutex) return;
+-    
+-    xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
+-    
+-    // 移除该客户端的所有订阅
+-    for (int i = 0; i < MAX_SUBSCRIPTIONS; i++) {
+-        if (s_subscriptions[i].active && s_subscriptions[i].fd == fd) {
+-            char topic[MAX_TOPIC_LEN];
+-            strncpy(topic, s_subscriptions[i].topic, MAX_TOPIC_LEN);
+-            s_subscriptions[i].active = false;
+-            
+-            xSemaphoreGive(s_subs_mutex);
+-            ts_ws_unsubscribe(fd, topic);  // 递归调用，处理事件取消注册
+-            xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
+-        }
+-    }
+-    
+-    xSemaphoreGive(s_subs_mutex);
+-    TS_LOGI(TAG, "Cleaned up subscriptions for client %d", fd);
++    if(ts_ws_transport_needs_flush()) return 1;
++    int64_t now=esp_timer_get_time(), nearest=INT64_MAX;
++    unsigned capacity=ts_ws_message_capacity() ? ts_ws_transport_capacity() : 0;
++    portENTER_CRITICAL(&s_lock);
++    for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) {
++        subscription_t *s=&s_subs[i];
++        if(!s->active || s->pending) continue;
++        bool wanted=s->topic<8;
++        for(unsigned j=0;j<EVENT_SLOTS && !wanted;j++) if(s_events[j].ready)
++            for(unsigned k=0;k<MAX_SUBSCRIPTIONS;k++) if(s_events[j].targets[k]==s->revision) wanted=true;
++        if(wanted && s->next_attempt<nearest) nearest=s->next_attempt;
++    }
++    if(nearest==INT64_MAX) s_stats.idle_wait++;
++    if(!capacity && nearest!=INT64_MAX) {nearest=after_ms(now,1000);s_stats.capacity_wait++;}
++    portEXIT_CRITICAL(&s_lock);
++    return nearest==INT64_MAX ? portMAX_DELAY : wait_ticks(nearest-now);
+ }
+-
+-void ts_ws_broadcast_to_topic(const char *topic, cJSON *data)
++static void telemetry_worker(void *arg)
+ {
+-    if (!topic || !data || !s_subs_mutex) return;
+-    
+-    xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
+-    
+-    // 构造 WebSocket 消息
+-    cJSON *msg = cJSON_CreateObject();
+-    cJSON_AddStringToObject(msg, "type", "data");
+-    cJSON_AddStringToObject(msg, "topic", topic);
+-    cJSON_AddItemToObject(msg, "data", cJSON_Duplicate(data, true));
+-    cJSON_AddNumberToObject(msg, "timestamp", esp_timer_get_time() / 1000000);
+-    
+-    char *json_str = cJSON_PrintUnformatted(msg);
+-    cJSON_Delete(msg);
+-    
+-    if (!json_str) {
+-        xSemaphoreGive(s_subs_mutex);
+-        return;
+-    }
+-    
+-    // 遍历订阅，发送给符合条件的客户端
+-    int sent_count = 0;
+-    for (int i = 0; i < MAX_SUBSCRIPTIONS; i++) {
+-        subscription_t *sub = &s_subscriptions[i];
+-        if (!sub->active || strcmp(sub->topic, topic) != 0) {
+-            continue;
+-        }
+-        
+-        // 检查去抖动
+-        if (!should_broadcast(sub)) {
+-            continue;
++    (void)arg;
++    for(;;) {
++        portENTER_CRITICAL(&s_lock); lifecycle_t state=s_state; portEXIT_CRITICAL(&s_lock);
++        if(state==STOPPING) break;
++        if(state==RUNNING) run_batch();
++        uint32_t water=uxTaskGetStackHighWaterMark(NULL);
++        portENTER_CRITICAL(&s_lock);s_stats.stack_low_water=water;portEXIT_CRITICAL(&s_lock);
++        /* Notification arriving between deadline calculation and wait is retained. */
++        ulTaskNotifyTake(pdTRUE,state==STARTING ? portMAX_DELAY : next_wait());
++    }
++    /* Handle is invalidated under same lock used by every notifier. */
++    portENTER_CRITICAL(&s_lock); s_worker=NULL; portEXIT_CRITICAL(&s_lock);
++    vTaskDelete(NULL);
++}
++static void event_handler(const ts_event_t *event, void *arg)
++{
++    unsigned topic=(unsigned)(uintptr_t)arg;
++    bool demand=false;
++    portENTER_CRITICAL(&s_lock);
++    if(s_state==RUNNING) for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++)
++        if(s_subs[i].active && (topic==0 ? s_subs[i].topic<8 : s_subs[i].topic==topic)) demand=true;
++    if(topic==0 && demand) wake_locked();
++    portEXIT_CRITICAL(&s_lock);
++    if(topic==0 || !demand) return;
++    if(!event || !event->data || !event->data_size) return;
++    /* Parse bounded event bytes, not an assumed NUL terminated buffer. */
++    cJSON *data=cJSON_ParseWithLength(event->data,event->data_size);
++    if(data) {ts_ws_broadcast_to_topic(topics[topic].name,data);cJSON_Delete(data);}
++}
++esp_err_t ts_ws_subscriptions_init(void)
++{
++    portENTER_CRITICAL(&s_lock);
++    if(s_state!=OFF) {esp_err_t ret=s_state==RUNNING?ESP_OK:ESP_ERR_INVALID_STATE;portEXIT_CRITICAL(&s_lock);return ret;}
++    s_state=STARTING;
++    portEXIT_CRITICAL(&s_lock);
++    const ts_event_base_t bases[]={TS_EVENT_BASE_SYSTEM,TS_EVENT_BASE_DEVICE_MON,TS_EVENT_BASE_OTA};
++    const int ids[]={TS_EVENT_SYSTEM_INFO_CHANGED,TS_EVENT_DEVICE_STATUS_CHANGED,TS_EVENT_OTA_PROGRESS_UPDATE};
++    const unsigned mapping[]={0,8,9};
++    esp_err_t ret=ESP_OK;
++    for(unsigned i=0;i<3;i++) {
++        ret=ts_event_register(bases[i],ids[i],event_handler,(void*)(uintptr_t)mapping[i],&s_handlers[i]);
++        if(ret!=ESP_OK) break;
++    }
++    if(ret==ESP_OK && xTaskCreate(telemetry_worker,"ws_telemetry",WORKER_STACK,NULL,2,&s_worker)!=pdPASS) ret=ESP_ERR_NO_MEM;
++    portENTER_CRITICAL(&s_lock);s_state=ret==ESP_OK?RUNNING:STOPPING;wake_locked();portEXIT_CRITICAL(&s_lock);
++    if(ret!=ESP_OK) {esp_err_t cleanup=ts_ws_subscriptions_deinit();if(cleanup!=ESP_OK)return cleanup;}
++    return ret;
++}
++esp_err_t ts_ws_subscriptions_deinit(void)
++{
++    if(ts_event_in_callback() || ts_ws_transport_in_context()) return ESP_ERR_INVALID_STATE;
++    portENTER_CRITICAL(&s_lock);
++    if(s_state==OFF) {portEXIT_CRITICAL(&s_lock);return ESP_OK;}
++    if(s_stop_owner || s_state==STARTING || s_worker==xTaskGetCurrentTaskHandle()) {portEXIT_CRITICAL(&s_lock);return ESP_ERR_INVALID_STATE;}
++    s_stop_owner=true;s_state=STOPPING;
++    for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) s_subs[i].active=false;
++    wake_locked();portEXIT_CRITICAL(&s_lock);
++    esp_err_t ret=ESP_OK;
++    for(unsigned i=0;i<3;i++) if(s_handlers[i]) {
++        ret=ts_event_unregister_sync(s_handlers[i],STOP_TIMEOUT_MS);
++        if(ret!=ESP_OK && ret!=ESP_ERR_NOT_FOUND) goto done;
++        s_handlers[i]=NULL;
++    }
++    int64_t deadline=after_ms(esp_timer_get_time(),STOP_TIMEOUT_MS);
++    for(;;) {
++        ts_ws_transport_cancel_topics();
++        ts_ws_transport_flush();
++        portENTER_CRITICAL(&s_lock); bool drained=!s_entries && !s_worker && !s_outstanding;portEXIT_CRITICAL(&s_lock);
++        if(drained) break;
++        if(esp_timer_get_time()>=deadline) {ret=ESP_ERR_TIMEOUT;goto done;}
++        vTaskDelay(1);
++    }
++    for(unsigned i=0;i<EVENT_SLOTS;i++) ts_ws_message_release(s_events[i].message);
++    portENTER_CRITICAL(&s_lock);
++    memset(s_events,0,sizeof(s_events));memset(s_subs,0,sizeof(s_subs));s_state=OFF;
++    portEXIT_CRITICAL(&s_lock);
++    ret=ESP_OK;
++done:
++    portENTER_CRITICAL(&s_lock);s_stop_owner=false;portEXIT_CRITICAL(&s_lock);
++    return ret;
++}
++esp_err_t ts_ws_subscribe(ts_ws_peer_t peer,const char *topic,cJSON *params)
++{
++    int id=topic_id(topic);if(id<0)return ESP_ERR_NOT_FOUND;
++    uint32_t interval=topics[id].interval;
++    cJSON *p=params?cJSON_GetObjectItemCaseSensitive(params,"interval"):NULL;
++    if(p) {
++        double v=p->valuedouble;
++        if(!cJSON_IsNumber(p)||!isfinite(v)||v<0||v>UINT32_MAX||floor(v)!=v||(v==0 && id<8)) return ESP_ERR_INVALID_ARG;
++        interval=(uint32_t)v;
++        if(id<8 && interval<topics[id].interval) interval=topics[id].interval;
++    }
++    ts_ws_peer_t current;
++    if(!ts_ws_peer_get(peer.server,peer.fd,&current)||!ts_ws_peer_equal(peer,current))return ESP_ERR_INVALID_STATE;
++    if(!enter()) return ESP_ERR_INVALID_STATE;
++    int64_t now=esp_timer_get_time();
++    esp_err_t ret=ESP_ERR_NO_MEM;
++    portENTER_CRITICAL(&s_lock);
++    subscription_t *slot=NULL;
++    for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) {
++        subscription_t *s=&s_subs[i];
++        if(s->active && s->topic==(unsigned)id && ts_ws_peer_equal(s->peer,peer)) {slot=s;break;}
++        if(!s->active && !slot) slot=s;
++    }
++    if(s_state==RUNNING && slot && s_sequence!=UINT64_MAX) {
++        if(!slot->active || slot->interval!=interval) {
++            int64_t last=slot->active?slot->last_success:0;
++            *slot=(subscription_t){.peer=peer,.revision=++s_sequence,.topic=id,.active=true,
++                .interval=interval,.last_success=last,
++                .next_attempt=id<8?after_ms(last?last:now,interval):now};
+         }
+-        
+-        // 更新时间戳
+-        sub->last_broadcast_time = esp_timer_get_time();
+-        
+-        // 发送消息（异步）
+-        // 注意：这里需要从 ts_webui_ws.c 导出发送函数，或使用 broadcast
+-        // 暂时使用 broadcast API
+-        xSemaphoreGive(s_subs_mutex);
+-        ts_webui_broadcast(json_str);  // TODO: 优化为只发送给订阅者
+-        xSemaphoreTake(s_subs_mutex, portMAX_DELAY);
+-        
+-        sent_count++;
+-    }
+-    
+-    xSemaphoreGive(s_subs_mutex);
+-    
+-    if (sent_count > 0) {
+-        TS_LOGD(TAG, "Broadcasted to %d subscribers of '%s'", sent_count, topic);
++        ret=ESP_OK;wake_locked();
+     }
+-    
+-    free(json_str);
++    portEXIT_CRITICAL(&s_lock);leave();return ret;
++}
++esp_err_t ts_ws_unsubscribe(ts_ws_peer_t peer,const char *topic)
++{
++    int id=topic_id(topic);if(id<0)return ESP_ERR_NOT_FOUND;
++    if(!enter())return ESP_ERR_INVALID_STATE;
++    esp_err_t ret=ESP_ERR_NOT_FOUND;
++    portENTER_CRITICAL(&s_lock);
++    for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) if(s_subs[i].active && s_subs[i].topic==(unsigned)id && ts_ws_peer_equal(s_subs[i].peer,peer)) {
++        s_subs[i].active=false;ret=ESP_OK;
++    }
++    wake_locked();portEXIT_CRITICAL(&s_lock);leave();return ret;
++}
++void ts_ws_client_disconnected(ts_ws_peer_t peer)
++{
++    portENTER_CRITICAL(&s_lock);
++    for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) if(s_subs[i].active && ts_ws_peer_equal(s_subs[i].peer,peer))s_subs[i].active=false;
++    wake_locked();portEXIT_CRITICAL(&s_lock);
++}
++void ts_ws_broadcast_to_topic(const char *topic,cJSON *data)
++{
++    int id=topic_id(topic);
++    if(id<0 || !data || !enter())return;
++    event_item_t *e=NULL;
++    portENTER_CRITICAL(&s_lock);
++    if(s_sequence!=UINT64_MAX) for(unsigned i=0;i<EVENT_SLOTS;i++) if(!s_events[i].used) {e=&s_events[i];break;}
++    if(e) {
++        memset(e,0,sizeof(*e));e->used=true;e->order=++s_sequence;
++        bool any=false;
++        for(unsigned i=0;i<MAX_SUBSCRIPTIONS;i++) if(s_subs[i].active && s_subs[i].topic==(unsigned)id) {e->targets[i]=s_subs[i].revision;any=true;}
++        if(!any) {e->used=false;e=NULL;}
++    } else s_stats.event_dropped++;
++    portEXIT_CRITICAL(&s_lock);
++    if(e) {
++        ts_ws_message_t *m=ts_ws_message_json(topic,data,esp_timer_get_time()/1000000);
++        portENTER_CRITICAL(&s_lock);
++        if(m) {e->message=m;e->ready=true;s_stats.serialized[id]++;wake_locked();}
++        else {memset(e,0,sizeof(*e));s_stats.event_dropped++;}
++        portEXIT_CRITICAL(&s_lock);
++        if(!m) TS_LOGW(TAG,"Topic event rejected: frame budget or allocation exhausted");
++    }
++    leave();
+ }
+diff --git a/tests/prompts/ownership.browser.test.cjs b/tests/prompts/ownership.browser.test.cjs
+index 0bea9b4..52510f7 100644
+--- a/tests/prompts/ownership.browser.test.cjs
++++ b/tests/prompts/ownership.browser.test.cjs
+@@ -271,3 +271,33 @@ test('R1: delayed sign-out does not clear a newer sign-in',async()=>{
+   });assert(r.clearedImmediately&&r.confirmed);assert.equal(r.token,'new');
+  }finally{await context.close();}
+ });
++
++for (const language of ['zh-CN','en-US']) {
++ test(`WS protocol: actual page subscription class, independent intervals and acknowledgements ${language}`,async()=>{
++  const first=await pageFor(language),second=await pageFor(language);
++  try {
++   await Promise.all([first.page.goto(base),second.page.goto(base)]);
++   await Promise.all([first.page.waitForFunction(()=>i18n.isReady()),second.page.waitForFunction(()=>i18n.isReady())]);
++   async function exercise(page,interval) {
++    return page.evaluate(interval=>{
++     const sent=[],received=[];
++     const mgr=new SubscriptionManager({send:message=>sent.push(message)});
++     const callback=message=>received.push(message.data);
++     mgr.subscribe('system.cpu',callback,{interval});
++     mgr.handleMessage({type:'subscribed',topic:'system.cpu',success:true});
++     mgr.handleMessage({type:'data',topic:'system.cpu',data:{usage:12},timestamp:1});
++     mgr.unsubscribe('system.cpu',callback);
++     mgr.handleMessage({type:'unsubscribed',topic:'system.cpu',success:true});
++     mgr.handleMessage({type:'data',topic:'system.cpu',data:{usage:99},timestamp:2});
++     return {sent,received,active:mgr.activeSubs.size};
++    },interval);
++   }
++   const [a,b]=await Promise.all([exercise(first.page,1000),exercise(second.page,10000)]);
++   assert.equal(a.sent[0].params.interval,1000);assert.equal(b.sent[0].params.interval,10000);
++   for(const result of [a,b]) {
++    assert.deepEqual(result.received,[{usage:12}]);assert.equal(result.active,0);
++    assert.deepEqual(result.sent[1],{type:'unsubscribe',topic:'system.cpu'});
++   }
++  }finally{await first.context.close();await second.context.close();}
++ });
++}
+diff --git a/components/ts_webui/include/ts_ws_transport.h b/components/ts_webui/include/ts_ws_transport.h
+new file mode 100644
+index 0000000..e7b53d4
+--- /dev/null
++++ b/components/ts_webui/include/ts_ws_transport.h
+@@ -0,0 +1,84 @@
++#pragma once
++/* Internal bounded delivery path. Session mutation and send execute in HTTPD. */
++#include "esp_http_server.h"
++#include "cJSON.h"
++#include <stdbool.h>
++#include <stdint.h>
++#define TS_WS_TOPIC_TX_SLOTS 32
++#define TS_WS_TX_SLOTS (TS_WS_TOPIC_TX_SLOTS + TS_WS_CONNECTIONS)
++#define TS_WS_MESSAGE_SLOTS 8
++#define TS_WS_FRAME_BYTES 32768
++#define TS_WS_LEGACY_BYTES (512 * 1024)
++#define TS_WS_TOTAL_BYTES (1024 * 1024)
++#ifdef CONFIG_TS_WEBUI_WS_MAX_CLIENTS
++#define TS_WS_CONNECTIONS CONFIG_TS_WEBUI_WS_MAX_CLIENTS
++#else
++#define TS_WS_CONNECTIONS 8
++#endif
++
++typedef struct {
++    httpd_handle_t server;
++    uint64_t epoch, connection;
++    int fd;
++} ts_ws_peer_t;
++typedef struct ts_ws_message ts_ws_message_t;
++typedef bool (*ts_ws_delivery_check_t)(uint64_t revision, uint64_t delivery);
++typedef void (*ts_ws_delivery_done_t)(uint64_t revision, uint64_t delivery, esp_err_t result);
++typedef void (*ts_ws_closed_t)(ts_ws_peer_t peer);
++esp_err_t ts_ws_transport_start(httpd_handle_t server, ts_ws_closed_t closed);
++esp_err_t ts_ws_transport_stop(httpd_handle_t server, uint32_t timeout_ms);
++bool ts_ws_transport_in_context(void);
++esp_err_t ts_ws_peer_open(httpd_req_t *req, ts_ws_peer_t *peer);
++/* HTTPD owner only. Values, not bare fd, cross task boundaries. */
++void ts_ws_peer_close(ts_ws_peer_t peer);
++bool ts_ws_peer_get(httpd_handle_t server, int fd, ts_ws_peer_t *peer);
++bool ts_ws_peer_equal(ts_ws_peer_t a, ts_ws_peer_t b);
++unsigned ts_ws_transport_capacity(void);
++ts_ws_message_t *ts_ws_message_json(const char *topic, const cJSON *data, int64_t timestamp);
++ts_ws_message_t *ts_ws_message_text(const char *text, size_t len);
++void ts_ws_message_release(ts_ws_message_t *message);
++esp_err_t ts_ws_transport_submit(ts_ws_peer_t peer, ts_ws_message_t *message,
++    uint64_t revision, uint64_t delivery, ts_ws_delivery_check_t check, ts_ws_delivery_done_t done);
++/* Compatibility bridge for existing global/stream senders; never coalesces. */
++esp_err_t ts_ws_transport_send(httpd_handle_t server, int fd, const httpd_ws_frame_t *frame);
++
++void ts_ws_transport_stopped(httpd_handle_t server);
++esp_err_t ts_ws_transport_broadcast(const httpd_ws_frame_t *frame);
++
++void ts_ws_peer_log_level(ts_ws_peer_t peer, int level);
++esp_err_t ts_ws_transport_log(const httpd_ws_frame_t *frame, int level);
++unsigned ts_ws_message_capacity(void);
++
++/* cJSON 1.7's AddItemReferenceToObject loses its newly allocated reference if
++ * key duplication fails. Own that reference explicitly; keys here are static. */
++static inline bool ts_ws_json_reference(cJSON *object, const char *key, const cJSON *data)
++{
++    if (!object || !data) return false;
++    cJSON *ref = cJSON_CreateNull();
++    if (!ref) return false;
++    *ref = *data;
++    ref->next = ref->prev = NULL;
++    ref->string = NULL;
++    ref->type = (ref->type & ~cJSON_StringIsConst) | cJSON_IsReference;
++    if (cJSON_AddItemToObjectCS(object, key, ref)) return true;
++    cJSON_Delete(ref);
++    return false;
++}
++
++typedef struct {
++    uint64_t queued, attempts, success, failed, stale, rejected;
++    uint32_t bytes, bytes_high, jobs, jobs_high;
++    int64_t max_send_us;
++} ts_ws_transport_stats_t;
++void ts_ws_transport_get_stats(ts_ws_transport_stats_t *stats);
++
++/* Deterministic host barriers; compiled out in firmware. */
++#ifndef TS_WS_TEST_POINT
++#define TS_WS_TEST_POINT(name) ((void)0)
++#endif
++
++esp_err_t ts_ws_transport_quiesce(httpd_handle_t server, uint32_t timeout_ms);
++
++void ts_ws_transport_flush(void);
++bool ts_ws_transport_needs_flush(void);
++void ts_ws_transport_cancel_topics(void);
+diff --git a/components/ts_webui/src/ts_ws_transport.c b/components/ts_webui/src/ts_ws_transport.c
+new file mode 100644
+index 0000000..e652895
+--- /dev/null
++++ b/components/ts_webui/src/ts_ws_transport.c
+@@ -0,0 +1,466 @@
++#include "ts_ws_transport.h"
++#include "esp_timer.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++
++/* Stable control storage: no caller can race destruction of a mutex. No I/O,
++ * allocation, JSON operation or completion callback runs under this spinlock. */
++static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
++static uint64_t s_sequence;
++static struct {
++    httpd_handle_t handle;
++    uint64_t epoch;
++    bool stopping, barrier_requested, quiesced, work_busy;
++    unsigned outstanding;
++    TaskHandle_t owner;
++    ts_ws_closed_t closed;
++} s_server;
++static ts_ws_peer_t s_peers[TS_WS_CONNECTIONS];
++static int s_log_levels[TS_WS_CONNECTIONS];
++struct ts_ws_message { unsigned refs; char *text; size_t len, capacity; };
++static ts_ws_transport_stats_t s_tx_stats;
++static ts_ws_message_t s_messages[TS_WS_MESSAGE_SLOTS];
++typedef enum {TX_FREE, TX_PREPARED, TX_QUEUED, TX_EXECUTING, TX_DONE, TX_CANCELED} tx_state_t;
++typedef struct {
++    unsigned refs;
++    tx_state_t state;
++    uint64_t order;
++    ts_ws_peer_t peer;
++    ts_ws_message_t *message;
++    uint64_t revision, delivery;
++    ts_ws_delivery_check_t check;
++    ts_ws_delivery_done_t done;
++} delivery_t;
++static delivery_t s_deliveries[TS_WS_TX_SLOTS];
++static uint64_t s_delivery_order;
++extern void ts_ws_subscriptions_wake(void);
++
++bool ts_ws_peer_equal(ts_ws_peer_t a, ts_ws_peer_t b)
++{
++    return a.server == b.server && a.epoch == b.epoch &&
++           a.fd == b.fd && a.connection == b.connection;
++}
++static bool peer_valid(ts_ws_peer_t peer)
++{
++    if (s_server.stopping || s_server.handle != peer.server || s_server.epoch != peer.epoch)
++        return false;
++    for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i)
++        if (s_peers[i].connection && ts_ws_peer_equal(s_peers[i], peer)) return true;
++    return false;
++}
++bool ts_ws_transport_in_context(void)
++{
++    portENTER_CRITICAL(&s_lock);
++    bool same = s_server.owner && s_server.owner == xTaskGetCurrentTaskHandle();
++    portEXIT_CRITICAL(&s_lock);
++    return same;
++}
++esp_err_t ts_ws_transport_start(httpd_handle_t server, ts_ws_closed_t closed)
++{
++    if (!server) return ESP_ERR_INVALID_ARG;
++    portENTER_CRITICAL(&s_lock);
++    esp_err_t ret = ESP_ERR_INVALID_STATE;
++    if (!s_server.handle && s_sequence != UINT64_MAX) {
++        s_server.handle = server;
++        s_server.epoch = ++s_sequence;
++        s_server.closed = closed;
++        s_server.stopping = false;
++        ret = ESP_OK;
++    }
++    portEXIT_CRITICAL(&s_lock);
++    return ret;
++}
++bool ts_ws_peer_get(httpd_handle_t server, int fd, ts_ws_peer_t *peer)
++{
++    bool found = false;
++    portENTER_CRITICAL(&s_lock);
++    for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i) {
++        if (!s_server.stopping && s_peers[i].connection && s_peers[i].server == server && s_peers[i].fd == fd) {
++            *peer = s_peers[i]; found = true; break;
++        }
++    }
++    portEXIT_CRITICAL(&s_lock);
++    return found;
++}
++void ts_ws_peer_close(ts_ws_peer_t peer)
++{
++    ts_ws_closed_t closed = NULL;
++    portENTER_CRITICAL(&s_lock);
++    for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i) {
++        if (s_peers[i].connection && ts_ws_peer_equal(s_peers[i], peer)) {
++            s_peers[i].connection = 0;
++            closed = s_server.closed;
++            break;
++        }
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if (closed) closed(peer);
++}
++static void session_free(void *ctx)
++{
++    ts_ws_peer_t *peer = ctx;
++    ts_ws_peer_close(*peer);
++    free(peer);
++}
++esp_err_t ts_ws_peer_open(httpd_req_t *req, ts_ws_peer_t *peer)
++{
++    /* No authentication / TLS context is replaced. Current /ws owns no context. */
++    if (req->sess_ctx) return ESP_ERR_INVALID_STATE;
++    ts_ws_peer_t *ctx = malloc(sizeof(*ctx));
++    if (!ctx) return ESP_ERR_NO_MEM;
++    esp_err_t ret = ESP_ERR_NO_MEM;
++    portENTER_CRITICAL(&s_lock);
++    s_server.owner = xTaskGetCurrentTaskHandle();
++    if (!s_server.stopping && req->handle == s_server.handle && s_sequence != UINT64_MAX) {
++        for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i) if (!s_peers[i].connection) {
++            *ctx = (ts_ws_peer_t){req->handle, s_server.epoch, ++s_sequence, httpd_req_to_sockfd(req)};
++            s_peers[i] = *ctx; s_log_levels[i] = -1; *peer = *ctx; ret = ESP_OK; break;
++        }
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if (ret != ESP_OK) { free(ctx); return ret; }
++    req->sess_ctx = ctx;
++    req->free_ctx = session_free; /* RST, LRU and httpd_stop also release this. */
++    return ESP_OK;
++}
++static ts_ws_message_t *message_alloc(size_t capacity, bool telemetry)
++{
++    ts_ws_message_t *m = NULL;
++    portENTER_CRITICAL(&s_lock);
++    for (unsigned i = telemetry ? 0 : TS_WS_MESSAGE_SLOTS - 2; capacity <= TS_WS_TOTAL_BYTES - s_tx_stats.bytes &&
++         i < TS_WS_MESSAGE_SLOTS - (telemetry ? 2 : 0); ++i) if (!s_messages[i].refs) {
++        m = &s_messages[i]; m->refs = 1; m->capacity = capacity;
++        s_tx_stats.bytes += capacity;
++        if(s_tx_stats.bytes > s_tx_stats.bytes_high) s_tx_stats.bytes_high=s_tx_stats.bytes;
++        break;
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if (m) {
++        m->text = malloc(capacity);
++        if (!m->text) { ts_ws_message_release(m); return NULL; }
++    }
++    return m;
++}
++void ts_ws_message_release(ts_ws_message_t *m)
++{
++    if (!m) return;
++    char *text = NULL;
++    bool reclaim = false;
++    portENTER_CRITICAL(&s_lock);
++    if (--m->refs == 0) {
++        /* Keep this slot and its byte reservation until free has completed. */
++        m->refs = 1;
++        text = m->text;
++        reclaim = true;
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if (!reclaim) return;
++    free(text);
++    portENTER_CRITICAL(&s_lock);
++    m->text = NULL;
++    m->len = 0;
++    s_tx_stats.bytes -= m->capacity;
++    m->refs = 0;
++    portEXIT_CRITICAL(&s_lock);
++}
++
++ts_ws_message_t *ts_ws_message_text(const char *text, size_t len)
++{
++    if (!text || len >= TS_WS_LEGACY_BYTES) return NULL;
++    ts_ws_message_t *m = message_alloc(len + 1, false);
++    if (m) { memcpy(m->text, text, len); m->text[len] = 0; m->len = len; }
++    return m;
++}
++ts_ws_message_t *ts_ws_message_json(const char *topic, const cJSON *data, int64_t timestamp)
++{
++    ts_ws_message_t *m = message_alloc(TS_WS_FRAME_BYTES, true);
++    if (!m) return NULL;
++    cJSON *root = cJSON_CreateObject();
++    /* Reference is local to this call; bounded print copies before return. */
++    bool ok = root && cJSON_AddStringToObject(root, "type", "data") &&
++        cJSON_AddStringToObject(root, "topic", topic) &&
++        cJSON_AddNumberToObject(root, "timestamp", timestamp) &&
++        ts_ws_json_reference(root, "data", (cJSON *)data) &&
++        cJSON_PrintPreallocated(root, m->text, TS_WS_FRAME_BYTES, false);
++    cJSON_Delete(root);
++    if (!ok) { ts_ws_message_release(m); return NULL; }
++    m->len = strlen(m->text);
++    return m;
++}
++unsigned ts_ws_transport_capacity(void)
++{
++    unsigned n = 0;
++    portENTER_CRITICAL(&s_lock);
++    if (!s_server.stopping && s_server.handle)
++        for (unsigned i = 0; i < TS_WS_TOPIC_TX_SLOTS; ++i) n += !s_deliveries[i].refs;
++    portEXIT_CRITICAL(&s_lock);
++    return n;
++}
++static void delivery_release(delivery_t *d)
++{
++    ts_ws_message_t *m = NULL;
++    portENTER_CRITICAL(&s_lock);
++    if (--d->refs == 0) {
++        m = d->message;
++        d->state=TX_FREE;
++        s_server.outstanding--;
++        s_tx_stats.jobs--;
++    }
++    portEXIT_CRITICAL(&s_lock);
++    ts_ws_message_release(m);
++}
++static void deliver(void *arg)
++{
++    delivery_t *d = arg;
++    portENTER_CRITICAL(&s_lock);
++    s_server.owner = xTaskGetCurrentTaskHandle();
++    d->state=TX_EXECUTING;
++    bool valid = peer_valid(d->peer);
++    portEXIT_CRITICAL(&s_lock);
++    esp_err_t ret = ESP_ERR_INVALID_STATE;
++    /* HTTPD session destruction/handshake/unsubscribe and this send are ordered
++     * on this same task. The stop owner keeps the server alive until refs drain. */
++    if (valid && (!d->check || d->check(d->revision, d->delivery)) &&
++        httpd_ws_get_fd_info(d->peer.server, d->peer.fd) == HTTPD_WS_CLIENT_WEBSOCKET) {
++        httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT,
++            .payload = (uint8_t *)d->message->text, .len = d->message->len};
++        int64_t start = esp_timer_get_time();
++        ret = httpd_ws_send_frame_async(d->peer.server, d->peer.fd, &frame);
++        int64_t elapsed = esp_timer_get_time() - start;
++        portENTER_CRITICAL(&s_lock);
++        s_tx_stats.attempts++;
++        if(ret==ESP_OK) s_tx_stats.success++; else s_tx_stats.failed++;
++        if(elapsed>s_tx_stats.max_send_us) s_tx_stats.max_send_us=elapsed;
++        portEXIT_CRITICAL(&s_lock);
++        if (ret != ESP_OK) {
++            /* Owner context: invalidate this socket without taking over close()
++             * ownership. HTTPD will observe EOF and invoke the session hook. */
++            shutdown(d->peer.fd, SHUT_RDWR);
++            ts_ws_peer_close(d->peer);
++        }
++    } else {
++        portENTER_CRITICAL(&s_lock); s_tx_stats.stale++; portEXIT_CRITICAL(&s_lock);
++    }
++    TS_WS_TEST_POINT("sent");
++    if (d->done) d->done(d->revision, d->delivery, ret);
++    portENTER_CRITICAL(&s_lock);
++    d->state=TX_DONE;
++    s_server.work_busy=false;
++    portEXIT_CRITICAL(&s_lock);
++    delivery_release(d);
++    ts_ws_subscriptions_wake();
++}
++/* One SDK control work item at a time. Accepted descriptors stay in our bounded
++ * FIFO, not the six-entry lwIP UDP control mailbox. Completion only wakes the
++ * telemetry worker; it never recursively queues another network operation. */
++static esp_err_t publish_delivery(delivery_t *d)
++{
++    esp_err_t ret=httpd_queue_work(d->peer.server,deliver,d);
++    portENTER_CRITICAL(&s_lock);
++    if(ret==ESP_OK)s_tx_stats.queued++;
++    else {s_tx_stats.rejected++;s_server.work_busy=false;d->state=TX_CANCELED;}
++    portEXIT_CRITICAL(&s_lock);
++    if(ret!=ESP_OK){
++        if(d->done)d->done(d->revision,d->delivery,ret);
++        delivery_release(d); /* work reference */
++        ts_ws_subscriptions_wake();
++    }
++    delivery_release(d); /* publication reference, may outlive the callback */
++    return ret;
++}
++void ts_ws_transport_flush(void)
++{
++    delivery_t *next=NULL;
++    portENTER_CRITICAL(&s_lock);
++    if(!s_server.stopping && !s_server.work_busy) {
++        for(unsigned i=0;i<TS_WS_TX_SLOTS;i++)
++            if(s_deliveries[i].state==TX_PREPARED && (!next || s_deliveries[i].order<next->order))next=&s_deliveries[i];
++        if(next){next->state=TX_QUEUED;next->refs++;s_server.work_busy=true;}
++    }
++    portEXIT_CRITICAL(&s_lock);
++    if(next)publish_delivery(next);
++}
++bool ts_ws_transport_needs_flush(void)
++{
++    bool ready=false;
++    portENTER_CRITICAL(&s_lock);
++    if(!s_server.stopping && !s_server.work_busy)
++        for(unsigned i=0;i<TS_WS_TX_SLOTS;i++)if(s_deliveries[i].state==TX_PREPARED)ready=true;
++    portEXIT_CRITICAL(&s_lock);
++    return ready;
++}
++static void cancel_ready(bool topics_only)
++{
++    for(unsigned i=0;i<TS_WS_TX_SLOTS;i++){
++        delivery_t *d=&s_deliveries[i];
++        portENTER_CRITICAL(&s_lock);
++        bool cancel=d->state==TX_PREPARED && (!topics_only || d->done);
++        if(cancel){d->state=TX_CANCELED;s_tx_stats.stale++;} /* take its existing work reference */
++        portEXIT_CRITICAL(&s_lock);
++        if(cancel){if(d->done)d->done(d->revision,d->delivery,ESP_ERR_INVALID_STATE);delivery_release(d);}
++    }
++}
++void ts_ws_transport_cancel_topics(void){cancel_ready(true);}
++esp_err_t ts_ws_transport_submit(ts_ws_peer_t peer, ts_ws_message_t *message,
++    uint64_t revision, uint64_t delivery, ts_ws_delivery_check_t check, ts_ws_delivery_done_t done)
++{
++    if(!message)return ESP_ERR_INVALID_ARG;
++    delivery_t *d=NULL;
++    portENTER_CRITICAL(&s_lock);
++    if(peer_valid(peer) && s_delivery_order!=UINT64_MAX)
++        for(unsigned i=done?0:TS_WS_TOPIC_TX_SLOTS;i<(done?TS_WS_TOPIC_TX_SLOTS:TS_WS_TX_SLOTS);i++)if(!s_deliveries[i].refs){
++            d=&s_deliveries[i];
++            *d=(delivery_t){.refs=2,.state=TX_PREPARED,.order=++s_delivery_order,.peer=peer,
++                .message=message,.revision=revision,.delivery=delivery,.check=check,.done=done};
++            message->refs++;s_server.outstanding++;s_tx_stats.jobs++;
++            if(s_tx_stats.jobs>s_tx_stats.jobs_high)s_tx_stats.jobs_high=s_tx_stats.jobs;
++            break;
++        }
++    if(!d)s_tx_stats.rejected++;
++    portEXIT_CRITICAL(&s_lock);
++    if(!d)return ESP_ERR_NO_MEM;
++    /* Accepted into the local FIFO. Queue/send failures are settled through done,
++     * exactly once. The producer reference prevents early completion reuse. */
++    ts_ws_transport_flush();
++    delivery_release(d);
++    ts_ws_subscriptions_wake();
++    return ESP_OK;
++}
++esp_err_t ts_ws_transport_send(httpd_handle_t server, int fd, const httpd_ws_frame_t *frame)
++{
++    ts_ws_peer_t peer;
++    if (!ts_ws_peer_get(server, fd, &peer)) return ESP_ERR_INVALID_STATE;
++    if(ts_ws_transport_in_context()) {
++        /* Current HTTP request owns the session until it returns; HTTPD stop
++         * waits for that request. Keep synchronous terminal takeover ordering. */
++        return httpd_ws_send_frame_async(server,fd,(httpd_ws_frame_t *)frame);
++    }
++    ts_ws_message_t *m = ts_ws_message_text((const char *)frame->payload, frame->len);
++    if (!m) return ESP_ERR_NO_MEM;
++    esp_err_t ret = ts_ws_transport_submit(peer, m, 0, 0, NULL, NULL);
++    ts_ws_message_release(m);
++    return ret;
++}
++esp_err_t ts_ws_transport_stop(httpd_handle_t server, uint32_t timeout_ms)
++{
++    if (ts_ws_transport_in_context()) return ESP_ERR_INVALID_STATE;
++    int64_t now = esp_timer_get_time(), delta = (int64_t)timeout_ms * 1000;
++    int64_t deadline = now > INT64_MAX - delta ? INT64_MAX : now + delta;
++    for (;;) {
++        portENTER_CRITICAL(&s_lock);
++        if (!s_server.handle) { portEXIT_CRITICAL(&s_lock); return ESP_OK; }
++        if (server != s_server.handle) { portEXIT_CRITICAL(&s_lock); return ESP_ERR_INVALID_ARG; }
++        s_server.stopping = true;
++        portEXIT_CRITICAL(&s_lock);
++        cancel_ready(false);
++        portENTER_CRITICAL(&s_lock);
++        unsigned outstanding=s_server.outstanding;
++        portEXIT_CRITICAL(&s_lock);
++        if (!outstanding) return ESP_OK;
++        if (esp_timer_get_time() >= deadline) return ESP_ERR_TIMEOUT;
++        vTaskDelay(1);
++    }
++}
++/* Called only after actual HTTPD stop has freed all sessions. */
++void ts_ws_transport_stopped(httpd_handle_t server)
++{
++    portENTER_CRITICAL(&s_lock);
++    if (s_server.handle == server && s_server.stopping && !s_server.outstanding) {
++        memset(&s_server, 0, sizeof(s_server));
++        memset(s_peers, 0, sizeof(s_peers));
++    }
++    portEXIT_CRITICAL(&s_lock);
++}
++
++static bool log_allowed(uint64_t connection, uint64_t level)
++{
++    bool allowed=false;
++    portENTER_CRITICAL(&s_lock);
++    for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)
++        if(s_peers[i].connection==connection && s_log_levels[i]>=0 && level<=(unsigned)s_log_levels[i]) allowed=true;
++    portEXIT_CRITICAL(&s_lock);
++    return allowed;
++}
++static esp_err_t broadcast_filtered(const httpd_ws_frame_t *frame, int level)
++{
++    ts_ws_peer_t peers[TS_WS_CONNECTIONS];
++    unsigned n=0;
++    portENTER_CRITICAL(&s_lock);
++    if(!s_server.stopping) for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)
++        if(s_peers[i].connection && (level < 0 || level <= s_log_levels[i])) peers[n++]=s_peers[i];
++    portEXIT_CRITICAL(&s_lock);
++    if(!n) return ESP_OK;
++    ts_ws_message_t *m=ts_ws_message_text((const char*)frame->payload,frame->len);
++    if(!m) return ESP_ERR_NO_MEM;
++    esp_err_t ret=ESP_OK;
++    for(unsigned i=0;i<n;i++) {
++        esp_err_t result=ts_ws_transport_submit(peers[i],m,peers[i].connection,level,level<0?NULL:log_allowed,NULL);
++        if(result!=ESP_OK)ret=result;
++    }
++    ts_ws_message_release(m);
++    return ret;
++}
++
++void ts_ws_peer_log_level(ts_ws_peer_t peer, int level)
++{
++    portENTER_CRITICAL(&s_lock);
++    for(unsigned i=0;i<TS_WS_CONNECTIONS;i++)
++        if(s_peers[i].connection && ts_ws_peer_equal(s_peers[i],peer)) s_log_levels[i]=level;
++    portEXIT_CRITICAL(&s_lock);
++}
++esp_err_t ts_ws_transport_broadcast(const httpd_ws_frame_t *frame) {return broadcast_filtered(frame,-1);}
++esp_err_t ts_ws_transport_log(const httpd_ws_frame_t *frame, int level) {return broadcast_filtered(frame,level);}
++unsigned ts_ws_message_capacity(void)
++{
++    unsigned n=0;
++    portENTER_CRITICAL(&s_lock);
++    if(s_tx_stats.bytes <= TS_WS_TOTAL_BYTES - TS_WS_FRAME_BYTES)
++        for(unsigned i=0;i<TS_WS_MESSAGE_SLOTS-2;i++) n+=!s_messages[i].refs;
++    portEXIT_CRITICAL(&s_lock);
++    return n;
++}
++
++void ts_ws_transport_get_stats(ts_ws_transport_stats_t *stats)
++{
++    if(!stats)return;
++    portENTER_CRITICAL(&s_lock);*stats=s_tx_stats;portEXIT_CRITICAL(&s_lock);
++}
++
++/* Admission has already been closed by WebUI. Reaching this work item proves
++ * the currently executing HTTP handler has returned; it does NOT drain TX. */
++static void quiesce_work(void *arg)
++{
++    (void)arg;
++    portENTER_CRITICAL(&s_lock);
++    s_server.owner=xTaskGetCurrentTaskHandle();
++    s_server.quiesced=true;
++    s_server.outstanding--;
++    portEXIT_CRITICAL(&s_lock);
++}
++esp_err_t ts_ws_transport_quiesce(httpd_handle_t server, uint32_t timeout_ms)
++{
++    if(ts_ws_transport_in_context())return ESP_ERR_INVALID_STATE;
++    portENTER_CRITICAL(&s_lock);
++    if(s_server.handle!=server){portEXIT_CRITICAL(&s_lock);return ESP_ERR_INVALID_STATE;}
++    bool publish=!s_server.barrier_requested;
++    if(publish){s_server.barrier_requested=true;s_server.outstanding+=2;}
++    portEXIT_CRITICAL(&s_lock);
++    if(publish){
++        esp_err_t ret=httpd_queue_work(server,quiesce_work,NULL);
++        portENTER_CRITICAL(&s_lock);
++        if(ret!=ESP_OK){s_server.barrier_requested=false;s_server.outstanding--;}
++        s_server.outstanding--;
++        portEXIT_CRITICAL(&s_lock);
++        if(ret!=ESP_OK)return ret;
++    }
++    int64_t start=esp_timer_get_time();
++    for(;;){
++        portENTER_CRITICAL(&s_lock);bool ready=s_server.quiesced;portEXIT_CRITICAL(&s_lock);
++        if(ready)return ESP_OK;
++        if(esp_timer_get_time()-start >= (int64_t)timeout_ms*1000)return ESP_ERR_TIMEOUT;
++        vTaskDelay(1);
++    }
++}
+diff --git a/tests/ws_subscriptions/README.md b/tests/ws_subscriptions/README.md
+new file mode 100644
+index 0000000..cbf7aac
+--- /dev/null
++++ b/tests/ws_subscriptions/README.md
+@@ -0,0 +1,19 @@
++# WebSocket host regressions
++
++Run from the repository root:
++
++```sh
++./tests/ws_subscriptions/run_baseline.sh
++./tests/ws_subscriptions/run_host.sh
++```
++
++`IDF_PATH` selects the SDK cJSON source; the local fallback is the existing ESP-IDF v5.5.2 installation. No device, socket server, firmware write, remote operation or git mutation is performed.
++
++- Baseline script obtains the pinned historical **source and header** using `git show`, compiles them in a temporary directory, and expects business assertions to fail. T02/T05 execute the original dashboard callback; T07 counts actual calls to the global broadcast boundary (the 3-client fanout is an explicitly labelled boundary calculation). The event test runs the original dispatcher and ASan detects its self-unregister UAF. The current checkout is never replaced.
++- Manager test compiles/includes the entire current `ts_ws_subscriptions.c` and `ts_ws_transport.c`, plus SDK cJSON. Only platform boundaries are replaced. No duplicated scheduler / delivery implementation is used.
++- Clock and HTTPD execution are deterministic. Worker entry is real C, but the host does not emulate full FreeRTOS scheduling. Four barriers (snapshot, API, queued work, send-before-completion) each exercise cancellation, resubscription, disconnect, fd reuse and stop/restart exclusion. The current in-flight frame is allowed to finish at the final barrier.
++- Event test compiles/includes current `ts_event.c`, using real pthread mutex/condition barriers for concurrent dispatch/unregister. It covers self-unregister, retiring another selected node, synchronous drain, timeout/retry, and unrelated handlers. ASan/UBSan are enabled. TSan was also run separately on this event test; that is not a TSan proof of the mocked RTOS scheduler.
++- Lifecycle tests extract the unmodified bodies of production WebSocket init/stop and HTTP/WebUI stop/deinit/status functions at test time; HTTPD stop and hooks are controlled boundaries. They verify actual failure propagation and route-copy ownership, not a logic copy.
++- The 32-service escaped-name payload is a size stress fixture for the production serializer, not a replacement implementation of the service API. The 512 KiB legacy-frame boundary and total bytes / descriptor ceilings are tested separately.
++
++Mock success of `httpd_ws_send_frame_async` means only success at that API boundary. It is not proof of browser delivery, TCP timing, device heap, CPU utilization, or stack high-water on ESP32-S3. See `docs/repair/ws-subscriptions/README.md` for the acceptance matrix and device checklist.
+diff --git a/tests/ws_subscriptions/run_baseline.sh b/tests/ws_subscriptions/run_baseline.sh
+new file mode 100755
+index 0000000..93ac5be
+--- /dev/null
++++ b/tests/ws_subscriptions/run_baseline.sh
+@@ -0,0 +1,29 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++build=$(mktemp -d /tmp/ts-ws-baseline.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++# Fixed evidence baseline only. Never overwrites the working tree.
++git show 35238b4645ae5e9e0e99555d4fb64080d945565c:components/ts_webui/src/ts_ws_subscriptions.c > "$build/ts_ws_subscriptions.c"
++git show 35238b4645ae5e9e0e99555d4fb64080d945565c:components/ts_webui/include/ts_ws_subscriptions.h > "$build/ts_ws_subscriptions.h"
++cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
++export DEVELOPER_DIR=/Library/Developer/CommandLineTools
++cc -Wno-deprecated-declarations -g -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -I"$build" -Icomponents/ts_webui/include -I"$cjson" tests/ws_subscriptions/test_baseline.c "$cjson/cJSON.c" -o "$build/test"
++for case in T02 T05 T07; do
++ set +e
++ ASAN_OPTIONS=detect_leaks=0 "$build/test" "$case"
++ result=$?
++ set -e
++ if [ "$result" != 1 ]; then echo "Unexpected baseline outcome $result"; exit 2; fi
++ echo "Expected business assertion failure: $case"
++done
++
++git show 35238b4645ae5e9e0e99555d4fb64080d945565c:components/ts_core/ts_event/src/ts_event.c > "$build/ts_event.c"
++cc -std=gnu11 -DBASELINE_EVENT -g -fsanitize=address,undefined -I"$build" -Icomponents/ts_core/ts_event/include -Itests/ws_subscriptions/stubs -I"$cjson" tests/ws_subscriptions/test_event.c -o "$build/event"
++set +e
++"$build/event" > "$build/event.log" 2>&1
++result=$?
++set -e
++if [ "$result" = 0 ] || ! rg -q 'heap-use-after-free' "$build/event.log"; then cat "$build/event.log"; exit 2; fi
++rg -m 1 'ERROR: AddressSanitizer:' "$build/event.log"
++echo 'Expected T32 baseline failure: actual dispatch accesses self-unregistered freed node'
+diff --git a/tests/ws_subscriptions/run_host.sh b/tests/ws_subscriptions/run_host.sh
+new file mode 100755
+index 0000000..f3971e8
+--- /dev/null
++++ b/tests/ws_subscriptions/run_host.sh
+@@ -0,0 +1,40 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/../.."
++build=$(mktemp -d /tmp/ts-ws-host.XXXXXX)
++trap 'rm -rf "$build"' EXIT
++export DEVELOPER_DIR=/Library/Developer/CommandLineTools
++cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
++cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" tests/ws_subscriptions/test_manager.c "$cjson/cJSON.c" -o "$build/manager"
++"$build/manager"
++cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Icomponents/ts_core/ts_event/include -Itests/ws_subscriptions/stubs -Icomponents/ts_core/ts_event/src -I"$cjson" tests/ws_subscriptions/test_event.c -o "$build/event"
++"$build/event"
++python3 - "$build" <<'PY'
++from pathlib import Path
++import re,sys
++for source,names,out in [
++ ('components/ts_net/src/ts_http_server.c',['ts_http_server_stop','ts_http_server_deinit'],'http_stop.inc'),
++ ('components/ts_webui/src/ts_webui.c',['ts_webui_stop','ts_webui_deinit','ts_webui_is_running'],'webui_stop.inc')]:
++ s=Path(source).read_text();parts=[]
++ for name in names:
++  m=re.search(r'^(?:esp_err_t|bool) '+name+r'\(void\)\s*\{',s,re.M);assert m,name
++  parts.append(s[m.start():s.index('\n}',m.start())+2])
++ Path(sys.argv[1],out).write_text('\n'.join(parts))
++PY
++cc -std=gnu11 -g -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -I"$cjson" -I"$build" tests/ws_subscriptions/test_lifecycle.c -o "$build/lifecycle"
++"$build/lifecycle"
++python3 - "$build" <<'PY'
++from pathlib import Path
++import sys
++s=Path('components/ts_webui/src/ts_webui_ws.c').read_text()
++a=s.index('esp_err_t ts_webui_ws_init(void)');b=s.index('\n}',a)+2
++Path(sys.argv[1],'ws_init.inc').write_text(s[a:b])
++a=s.index('esp_err_t ts_webui_ws_stop(httpd_handle_t server)\n{');b=s.index('\n}',a)+2
++Path(sys.argv[1],'ws_stop.inc').write_text(s[a:b])
++parts=[]
++for name in ['ts_webui_ssh_exec_start','ts_webui_ssh_exec_start_ex']:
++ a=s.index('esp_err_t '+name+'(');b=s.index('\n}',a)+2;parts.append(s[a:b])
++Path(sys.argv[1],'ws_creators.inc').write_text('\n'.join(parts))
++PY
++cc -std=gnu11 -g -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -I"$cjson" -I"$build" tests/ws_subscriptions/test_init.c -o "$build/init"
++"$build/init"
+diff --git a/tests/ws_subscriptions/stubs/esp_err.h b/tests/ws_subscriptions/stubs/esp_err.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/esp_err.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/esp_heap_caps.h b/tests/ws_subscriptions/stubs/esp_heap_caps.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/esp_heap_caps.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/esp_http_server.h b/tests/ws_subscriptions/stubs/esp_http_server.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/esp_http_server.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/esp_log.h b/tests/ws_subscriptions/stubs/esp_log.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/esp_log.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/esp_timer.h b/tests/ws_subscriptions/stubs/esp_timer.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/esp_timer.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/freertos/FreeRTOS.h b/tests/ws_subscriptions/stubs/freertos/FreeRTOS.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/freertos/FreeRTOS.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/freertos/queue.h b/tests/ws_subscriptions/stubs/freertos/queue.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/freertos/queue.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/freertos/semphr.h b/tests/ws_subscriptions/stubs/freertos/semphr.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/freertos/semphr.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/freertos/task.h b/tests/ws_subscriptions/stubs/freertos/task.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/freertos/task.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/platform.h b/tests/ws_subscriptions/stubs/platform.h
+new file mode 100644
+index 0000000..25b7b31
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/platform.h
+@@ -0,0 +1,119 @@
++#pragma once
++#include <stdint.h>
++#include <stdbool.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <assert.h>
++#include <pthread.h>
++#include "cJSON.h"
++typedef int esp_err_t;
++#define ESP_OK 0
++#define ESP_FAIL -1
++#define ESP_ERR_NO_MEM 0x101
++#define ESP_ERR_INVALID_ARG 0x102
++#define ESP_ERR_INVALID_STATE 0x103
++#define ESP_ERR_INVALID_SIZE 0x104
++#define ESP_ERR_NOT_FOUND 0x105
++#define ESP_ERR_TIMEOUT 0x106
++#define ESP_ERR_NOT_SUPPORTED 0x107
++#define TS_LOGD(...) ((void)0)
++#define TS_LOGI(...) ((void)0)
++#define TS_LOGW(...) ((void)0)
++#define TS_LOGE(...) ((void)0)
++#define portMAX_DELAY UINT32_MAX
++#define pdTRUE 1
++#define pdPASS 1
++#define pdMS_TO_TICKS(ms) (ms)
++#define portTICK_PERIOD_MS 1
++#define configTICK_RATE_HZ 1000
++typedef unsigned TickType_t;
++typedef int BaseType_t;
++typedef unsigned UBaseType_t;
++typedef pthread_mutex_t portMUX_TYPE;
++#define portMUX_INITIALIZER_UNLOCKED PTHREAD_MUTEX_INITIALIZER
++#define portENTER_CRITICAL(p) pthread_mutex_lock(p)
++#define portEXIT_CRITICAL(p) pthread_mutex_unlock(p)
++typedef pthread_mutex_t *SemaphoreHandle_t;
++static inline SemaphoreHandle_t xSemaphoreCreateMutex(void) { SemaphoreHandle_t p=malloc(sizeof(*p)); pthread_mutex_init(p,0); return p; }
++static inline int xSemaphoreTake(SemaphoreHandle_t p,unsigned t) { (void)t; return !pthread_mutex_lock(p); }
++static inline int xSemaphoreGive(SemaphoreHandle_t p) { return !pthread_mutex_unlock(p); }
++static inline void vSemaphoreDelete(SemaphoreHandle_t p) { pthread_mutex_destroy(p);free(p); }
++static inline const char *esp_err_to_name(int e) {(void)e;return "error";}
++extern int64_t test_now;
++static inline int64_t esp_timer_get_time(void) {return test_now;}
++typedef struct test_timer {void (*callback)(void*); bool active;} *esp_timer_handle_t;
++typedef struct {void (*callback)(void*);const char*name;} esp_timer_create_args_t;
++static inline int esp_timer_create(const esp_timer_create_args_t*a,esp_timer_handle_t*p) {*p=calloc(1,sizeof(**p));(*p)->callback=a->callback;return 0;}
++static inline int esp_timer_start_periodic(esp_timer_handle_t p,uint64_t us) {(void)us;p->active=true;return 0;}
++static inline int esp_timer_stop(esp_timer_handle_t p) {p->active=false;return 0;}
++static inline int esp_timer_delete(esp_timer_handle_t p) {free(p);return 0;}
++static inline bool esp_timer_is_active(esp_timer_handle_t p) {return p->active;}
++#ifndef TEST_REAL_EVENT
++typedef const char *ts_event_base_t;
++typedef void *ts_event_handler_handle_t;
++typedef struct {void*data;size_t data_size;} ts_event_t;
++#define TS_EVENT_BASE_SYSTEM "system"
++#define TS_EVENT_BASE_DEVICE_MON "device"
++#define TS_EVENT_BASE_OTA "ota"
++#define TS_EVENT_SYSTEM_INFO_CHANGED 1
++#define TS_EVENT_DEVICE_STATUS_CHANGED 2
++#define TS_EVENT_OTA_PROGRESS_UPDATE 3
++#ifdef TEST_FAIL_EVENTS
++extern int test_event_fail_at, test_event_registers;
++#endif
++static inline int ts_event_register(const char*b,int i,void(*h)(const ts_event_t*,void*),void*u,void**out) {(void)b;(void)i;(void)h;(void)u;
++#ifdef TEST_FAIL_EVENTS
++if(++test_event_registers==test_event_fail_at)return ESP_ERR_NO_MEM;
++#endif
++*out=(void*)1;return 0;}
++static inline int ts_event_unregister(void*h) {(void)h;return 0;}
++static inline int ts_event_post(const char*b,int i,const void*d,size_t s,unsigned t) {(void)b;(void)i;(void)d;(void)s;(void)t;return 0;}
++#endif
++typedef struct {int code;cJSON*data;char*message;} ts_api_result_t;
++int ts_api_call(const char*,const cJSON*,ts_api_result_t*);
++#ifdef TEST_ALLOC
++extern int test_result_frees;
++#endif
++static inline void ts_api_result_free(ts_api_result_t*r) {
++#ifdef TEST_ALLOC
++test_result_frees++;
++#endif
++cJSON_Delete(r->data);free(r->message);memset(r,0,sizeof(*r));}
++int ts_webui_broadcast(const char*);
++typedef void *TaskHandle_t;
++TaskHandle_t xTaskGetCurrentTaskHandle(void);
++int xTaskCreate(void(*fn)(void*),const char*,unsigned,void*,unsigned,TaskHandle_t*);
++void xTaskNotifyGive(TaskHandle_t);
++unsigned ulTaskNotifyTake(int,TickType_t);
++void vTaskDelete(TaskHandle_t);
++void vTaskDelay(TickType_t);
++#ifndef TEST_REAL_EVENT
++static inline bool ts_event_in_callback(void) {return false;}
++static inline int ts_event_unregister_sync(void*h,unsigned t) {(void)h;(void)t;return 0;}
++#endif
++typedef void *httpd_handle_t;
++typedef struct {httpd_handle_t handle;void*sess_ctx;void(*free_ctx)(void*);int fd;} httpd_req_t;
++typedef struct {int type;uint8_t*payload;size_t len;} httpd_ws_frame_t;
++#define HTTPD_WS_TYPE_TEXT 1
++#define HTTPD_WS_CLIENT_WEBSOCKET 2
++static inline int httpd_req_to_sockfd(httpd_req_t*r) {return r->fd;}
++int httpd_ws_get_fd_info(httpd_handle_t,int);
++int httpd_ws_send_frame_async(httpd_handle_t,int,httpd_ws_frame_t*);
++int httpd_queue_work(httpd_handle_t,void(*)(void*),void*);
++#define ESP_LOGI(...) ((void)0)
++#define ESP_LOGD(...) ((void)0)
++#define ESP_LOGW(...) ((void)0)
++#define ESP_LOGE(...) ((void)0)
++#define MALLOC_CAP_SPIRAM 1
++#define MALLOC_CAP_8BIT 2
++static inline void*heap_caps_calloc(size_t n,size_t s,unsigned c) {(void)c;return calloc(n,s);}
++typedef void*QueueHandle_t;
++static inline QueueHandle_t xQueueCreate(unsigned n,unsigned s) {(void)n;(void)s;return malloc(1);}
++static inline void vQueueDelete(void*p) {free(p);}
++static inline int xQueueSend(void*q,const void*d,unsigned t) {(void)q;(void)d;(void)t;return pdTRUE;}
++static inline int xQueueSendFromISR(void*q,const void*d,int*t) {(void)q;(void)d;(void)t;return pdTRUE;}
++static inline int xQueueReceive(void*q,void*d,unsigned t) {(void)q;(void)d;(void)t;return 0;}
++static inline unsigned uxQueueMessagesWaiting(void*q) {(void)q;return 0;}
++
++static inline unsigned uxTaskGetStackHighWaterMark(TaskHandle_t t){(void)t;return 8192;}
+diff --git a/tests/ws_subscriptions/stubs/ts_api.h b/tests/ws_subscriptions/stubs/ts_api.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/ts_api.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/ts_event.h b/tests/ws_subscriptions/stubs/ts_event.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/ts_event.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/ts_log.h b/tests/ws_subscriptions/stubs/ts_log.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/ts_log.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/stubs/ts_webui.h b/tests/ws_subscriptions/stubs/ts_webui.h
+new file mode 100644
+index 0000000..948df4b
+--- /dev/null
++++ b/tests/ws_subscriptions/stubs/ts_webui.h
+@@ -0,0 +1 @@
++#include "platform.h"
+diff --git a/tests/ws_subscriptions/test_baseline.c b/tests/ws_subscriptions/test_baseline.c
+new file mode 100644
+index 0000000..fbbafa4
+--- /dev/null
++++ b/tests/ws_subscriptions/test_baseline.c
+@@ -0,0 +1,25 @@
++#include "platform.h"
++#include "ts_ws_subscriptions.c"
++int64_t test_now=10000000;
++static int reads,broadcasts;
++int ts_api_call(const char*m,const cJSON*p,ts_api_result_t*r) {(void)m;(void)p;reads++;r->code=0;r->data=cJSON_CreateObject();return 0;}
++int ts_webui_broadcast(const char*s) {(void)s;broadcasts++;return 0;}
++int main(int argc,char**argv) {
++ assert(argc==2);assert(ts_ws_subscriptions_init()==0);
++ cJSON*p=cJSON_Parse("{\"interval\":10000}");
++ ts_ws_subscribe(1,"system.dashboard",p);cJSON_Delete(p);
++ if (!strcmp(argv[1],"T02")) {
++  ts_ws_unsubscribe(1,"system.dashboard");
++  if(s_dashboard_timer->active)s_dashboard_timer->callback(NULL);
++  printf("T02 no subscribers: API reads=%d (expected 0)\n",reads);return reads?1:0;
++ }
++ if (!strcmp(argv[1],"T05")) {
++  dashboard_timer_callback(NULL);reads=0;test_now+=1000000;
++  dashboard_timer_callback(NULL);
++  printf("T05 before next deadline: API reads=%d (expected 0)\n",reads);return reads?1:0;
++ }
++ ts_ws_subscribe(2,"system.dashboard",NULL);
++ cJSON*d=cJSON_CreateObject();ts_ws_broadcast_to_topic("system.dashboard",d);cJSON_Delete(d);
++ printf("T06/T07 2 targets, 3 connected: global broadcast calls=%d => %d frames (expected 2 targeted frames)\n",broadcasts,broadcasts*3);
++ return broadcasts?1:0;
++}
+diff --git a/tests/ws_subscriptions/test_event.c b/tests/ws_subscriptions/test_event.c
+new file mode 100644
+index 0000000..878078b
+--- /dev/null
++++ b/tests/ws_subscriptions/test_event.c
+@@ -0,0 +1,59 @@
++#define TEST_REAL_EVENT
++#include "platform.h"
++#include <stdatomic.h>
++#include "ts_event.c"
++int64_t test_now;
++TaskHandle_t xTaskGetCurrentTaskHandle(void) {return (void*)pthread_self();}
++int xTaskCreate(void(*fn)(void*),const char*n,unsigned s,void*a,unsigned p,TaskHandle_t*out) {(void)fn;(void)n;(void)s;(void)a;(void)p;*out=(void*)1;return pdPASS;}
++void vTaskDelete(TaskHandle_t t) {(void)t;}
++static pthread_mutex_t barrier=PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t cv=PTHREAD_COND_INITIALIZER;
++static bool entered, release_callback, drain_waiting;
++static atomic_bool drained;
++void vTaskDelay(TickType_t t) {(void)t;pthread_mutex_lock(&barrier);drain_waiting=true;pthread_cond_broadcast(&cv);pthread_mutex_unlock(&barrier);sched_yield();}
++static ts_event_handler_handle_t self_handle, blocked_handle, other_handle;
++static int other_calls,self_calls;
++static void self_cancel(const ts_event_t*e,void*u) {(void)e;(void)u;self_calls++;assert(ts_event_unregister(self_handle)==0);}
++static void other(const ts_event_t*e,void*u) {(void)e;(void)u;other_calls++;}
++static void blocked(const ts_event_t*e,void*u) {(void)e;(void)u;
++#ifndef BASELINE_EVENT
++ assert(ts_event_unregister_sync(blocked_handle,10)==ESP_ERR_INVALID_STATE);
++#endif
++ pthread_mutex_lock(&barrier);entered=true;pthread_cond_broadcast(&cv);while(!release_callback)pthread_cond_wait(&cv,&barrier);pthread_mutex_unlock(&barrier);
++}
++static void*post(void*p) {(void)p;ts_event_post_sync("test",1,NULL,0);return NULL;}
++#ifndef BASELINE_EVENT
++static void*drain(void*p) {(void)p;assert(ts_event_unregister_sync(blocked_handle,100)==0);drained=true;return NULL;}
++#endif
++int main(void) {
++ s_event_ctx.initialized=true;s_event_ctx.running=true;s_event_ctx.mutex=xSemaphoreCreateMutex();
++ assert(ts_event_register("test",1,self_cancel,NULL,&self_handle)==0);
++ ts_event_post_sync("test",1,NULL,0);assert(self_calls==1);
++ assert(ts_event_register("test",1,other,NULL,&other_handle)==0);
++ assert(ts_event_register("test",1,blocked,NULL,&blocked_handle)==0);
++ pthread_t dispatch;pthread_create(&dispatch,NULL,post,NULL);
++ pthread_mutex_lock(&barrier);while(!entered)pthread_cond_wait(&cv,&barrier);pthread_mutex_unlock(&barrier);
++ assert(ts_event_unregister(other_handle)==0); /* selected snapshot but not yet invoked */
++#ifndef BASELINE_EVENT
++ pthread_t waiter;pthread_create(&waiter,NULL,drain,NULL);
++ pthread_mutex_lock(&barrier);while(!drain_waiting)pthread_cond_wait(&cv,&barrier);assert(!drained);release_callback=true;pthread_cond_broadcast(&cv);pthread_mutex_unlock(&barrier);
++ pthread_join(waiter,NULL);assert(drained);
++#else
++ ts_event_unregister(blocked_handle);
++ pthread_mutex_lock(&barrier);release_callback=true;pthread_cond_broadcast(&cv);pthread_mutex_unlock(&barrier);
++#endif
++ pthread_join(dispatch,NULL);assert(other_calls==0);assert(!s_event_ctx.handlers);
++ assert(ts_event_register("test",1,other,NULL,&other_handle)==0);ts_event_post_sync("test",1,NULL,0);assert(other_calls==1);assert(ts_event_unregister(other_handle)==0);
++#ifndef BASELINE_EVENT
++ entered=false;release_callback=false;
++ assert(ts_event_register("test",1,blocked,NULL,&blocked_handle)==0);
++ pthread_create(&dispatch,NULL,post,NULL);
++ pthread_mutex_lock(&barrier);while(!entered)pthread_cond_wait(&cv,&barrier);pthread_mutex_unlock(&barrier);
++ assert(ts_event_unregister_sync(blocked_handle,0)==ESP_ERR_TIMEOUT);
++ pthread_mutex_lock(&barrier);release_callback=true;pthread_cond_broadcast(&cv);pthread_mutex_unlock(&barrier);
++ pthread_join(dispatch,NULL);assert(s_event_ctx.handlers); /* retained for drain retry */
++ assert(ts_event_unregister_sync(blocked_handle,0)==0);assert(!s_event_ctx.handlers);
++#endif
++ vSemaphoreDelete(s_event_ctx.mutex);
++ puts("PASS T32: self unregister, selected-node retirement, in-flight synchronous drain, unrelated handler retained");
++}
+diff --git a/tests/ws_subscriptions/test_init.c b/tests/ws_subscriptions/test_init.c
+new file mode 100644
+index 0000000..42c0e46
+--- /dev/null
++++ b/tests/ws_subscriptions/test_init.c
+@@ -0,0 +1,81 @@
++#include "platform.h"
++#include <stdatomic.h>
++#include "ts_ws_transport.h"
++#define MAX_WS_CLIENTS 8
++#define TERMINAL_OUTPUT_BUF_SIZE 32768
++#define TS_EVENT_BASE_POWER "power"
++#define TS_EVENT_ANY_ID -1
++#define HTTP_GET 0
++static struct {int active;} s_clients[MAX_WS_CLIENTS];
++static httpd_handle_t s_server;
++static bool s_ws_stopping;
++static int s_terminal_client_fd;
++static SemaphoreHandle_t s_terminal_mutex,s_output_mutex;
++static char*s_terminal_output_buf;
++static size_t s_terminal_output_len;
++static ts_event_handler_handle_t s_power_event_handle;
++static int fail_stage,mutex_calls;
++static httpd_handle_t ts_http_server_get_handle(void){return fail_stage==1?NULL:(void*)11;}
++static void peer_closed(ts_ws_peer_t peer){(void)peer;}
++esp_err_t ts_ws_transport_start(httpd_handle_t server,ts_ws_closed_t fn){(void)server;(void)fn;return fail_stage==2?ESP_ERR_NO_MEM:ESP_OK;}
++static int ts_ws_subscriptions_init(void){return fail_stage==3?ESP_ERR_NO_MEM:ESP_OK;}
++static esp_err_t ts_webui_ws_stop(httpd_handle_t server);
++static int manager_stop_result,barrier_result,tx_stop_result,tx_stop_calls;
++static bool owner_context,s_exec_running,s_ssh_poll_alive,cleanup_finishes;
++static atomic_uint s_exec_creators;
++bool ts_ws_transport_in_context(void){return owner_context;}
++static esp_err_t ts_ws_subscriptions_deinit(void){return manager_stop_result;}
++esp_err_t ts_ws_transport_quiesce(httpd_handle_t server,uint32_t timeout){(void)server;(void)timeout;return barrier_result;}
++esp_err_t ts_ws_transport_stop(httpd_handle_t server,uint32_t timeout){(void)server;(void)timeout;tx_stop_calls++;return tx_stop_result;}
++static void ssh_cleanup(void){if(cleanup_finishes)s_ssh_poll_alive=false;}
++static void ts_webui_ws_stopped(httpd_handle_t server){(void)server;}
++static void ts_http_server_set_stop_hooks(esp_err_t(*a)(httpd_handle_t),void(*b)(httpd_handle_t)){(void)a;(void)b;}
++static SemaphoreHandle_t create_mutex(void){mutex_calls++;if(fail_stage==3+mutex_calls)return NULL;return xSemaphoreCreateMutex();}
++static void*buffer_alloc(size_t n){if(fail_stage==6)return NULL;return malloc(n);}
++static void*heap_alloc(size_t n,unsigned caps){(void)caps;return buffer_alloc(n);}
++static int ws_handler(httpd_req_t*r){(void)r;return 0;}
++static void power_policy_event_handler(const ts_event_t*e,void*u){(void)e;(void)u;}
++typedef struct {const char*uri;int method;int(*handler)(httpd_req_t*);void*user_ctx;bool is_websocket,handle_ws_control_frames;} httpd_uri_t;
++static int httpd_register_uri_handler(httpd_handle_t h,const httpd_uri_t*u){(void)h;(void)u;return fail_stage==7?ESP_FAIL:0;}
++static int register_event(const char*b,int id,void(*fn)(const ts_event_t*,void*),void*u,void**out){(void)b;(void)id;(void)fn;(void)u;if(fail_stage==8)return ESP_ERR_NO_MEM;*out=(void*)1;return 0;}
++#define xSemaphoreCreateMutex create_mutex
++#define malloc buffer_alloc
++#define heap_caps_malloc heap_alloc
++#define ts_event_register register_event
++#include "ws_init.inc"
++#undef xSemaphoreCreateMutex
++#undef malloc
++#undef heap_caps_malloc
++#undef ts_event_register
++#include "ws_stop.inc"
++
++typedef struct {int unused;} ts_webui_ssh_options_t;
++esp_err_t ts_webui_ssh_exec_start(const char*,uint16_t,const char*,const char*,const char*,const char*,uint32_t*);
++static int creator_calls;
++static esp_err_t ts_webui_ssh_exec_start_impl(const char*h,uint16_t p,const char*u,const char*k,const char*w,const char*c,uint32_t*i){
++ (void)h;(void)p;(void)u;(void)k;(void)w;(void)c;(void)i;creator_calls++;
++ assert(ts_webui_ssh_exec_start("fixture",22,"u",NULL,NULL,"fixture",NULL)==ESP_ERR_INVALID_STATE);
++ return ESP_OK;
++}
++static esp_err_t ts_webui_ssh_exec_start_ex_impl(const char*h,uint16_t p,const char*u,const char*k,const char*w,const char*c,const ts_webui_ssh_options_t*o,uint32_t*i){(void)o;return ts_webui_ssh_exec_start_impl(h,p,u,k,w,c,i);}
++#include "ws_creators.inc"
++static void reset(void){
++ if(s_terminal_mutex)vSemaphoreDelete(s_terminal_mutex);if(s_output_mutex)vSemaphoreDelete(s_output_mutex);free(s_terminal_output_buf);
++ s_terminal_mutex=s_output_mutex=NULL;s_terminal_output_buf=NULL;s_server=NULL;s_power_event_handle=NULL;mutex_calls=0;s_ws_stopping=false;
++}
++int main(void){
++ for(fail_stage=1;fail_stage<=8;fail_stage++){assert(ts_webui_ws_init()!=ESP_OK);reset();}
++ fail_stage=0;assert(ts_webui_ws_init()==0);assert(ts_webui_ws_init()==0);s_ws_stopping=true;assert(ts_webui_ws_init()==ESP_ERR_INVALID_STATE);reset();
++ manager_stop_result=ESP_ERR_TIMEOUT;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(!tx_stop_calls);
++ manager_stop_result=0;barrier_result=ESP_ERR_TIMEOUT;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(!tx_stop_calls);barrier_result=0;
++ s_exec_creators=1;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);s_exec_creators=0;
++ s_exec_running=true;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);s_exec_running=false;
++ s_ssh_poll_alive=true;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);assert(!tx_stop_calls);
++ cleanup_finishes=true;tx_stop_result=ESP_ERR_TIMEOUT;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_TIMEOUT);tx_stop_result=0;assert(ts_webui_ws_stop((void*)11)==0);
++ owner_context=true;assert(ts_webui_ws_stop((void*)11)==ESP_ERR_INVALID_STATE);
++ puts("PASS actual WebSocket stop: manager/barrier failures propagate, active SSH creation/execution retained, poller timeout retained, transport drain retry and HTTPD self-wait rejected");
++ s_ws_stopping=false;assert(ts_webui_ssh_exec_start("fixture",22,"u",NULL,NULL,"fixture",NULL)==0);assert(creator_calls==1&&!s_exec_creators);
++ s_ws_stopping=true;assert(ts_webui_ssh_exec_start("fixture",22,"u",NULL,NULL,"fixture",NULL)==ESP_ERR_INVALID_STATE);assert(creator_calls==1&&!s_exec_creators);
++ puts("PASS actual SSH creation wrappers: concurrent builder rejected and stop admission closes without invoking the remote-operation implementation");
++ puts("PASS actual WebSocket initializer: server/transport/manager/two mutexes/buffer/URI/power-handler failures are not reported as success; duplicate/retry-state guards");
++}
+diff --git a/tests/ws_subscriptions/test_lifecycle.c b/tests/ws_subscriptions/test_lifecycle.c
+new file mode 100644
+index 0000000..f30a8eb
+--- /dev/null
++++ b/tests/ws_subscriptions/test_lifecycle.c
+@@ -0,0 +1,35 @@
++#include "platform.h"
++#include <stdatomic.h>
++static httpd_handle_t s_server=(void*)11;
++static bool s_initialized=true;
++static atomic_bool s_stopping;
++static atomic_flag s_stop_busy=ATOMIC_FLAG_INIT;
++static _Atomic(TaskHandle_t) s_http_task;
++static int s_route_count=4;
++static struct {void *owned_copy;} s_registered_routes[64];
++static int hook_result,stop_result,stop_calls,after_calls;
++static esp_err_t before(httpd_handle_t h){assert(h==(void*)11);return hook_result;}
++static void after(httpd_handle_t h){assert(h==(void*)11);after_calls++;}
++static esp_err_t(*s_before_stop)(httpd_handle_t)=before;
++static void(*s_after_stop)(httpd_handle_t)=after;
++TaskHandle_t xTaskGetCurrentTaskHandle(void){return (void*)1;}
++static int httpd_stop(httpd_handle_t h){assert(h==(void*)11);stop_calls++;return stop_result;}
++#include "http_stop.inc"
++static httpd_handle_t ts_http_server_get_handle(void){return s_server;}
++static bool ts_http_server_is_stopping(void){return s_stopping;}
++#define s_initialized webui_initialized
++static bool s_initialized=true;
++static bool s_running=true;
++esp_err_t ts_webui_stop(void);
++#include "webui_stop.inc"
++#undef s_initialized
++int main(void){
++ s_registered_routes[0].owned_copy=malloc(16);
++ hook_result=ESP_ERR_TIMEOUT;assert(ts_webui_stop()==ESP_ERR_TIMEOUT);assert(stop_calls==0&&s_server&&s_running&&s_registered_routes[0].owned_copy);assert(!ts_webui_is_running());
++ assert(ts_webui_deinit()==ESP_ERR_TIMEOUT);assert(s_initialized&&webui_initialized);
++ hook_result=0;stop_result=ESP_FAIL;assert(ts_webui_stop()==ESP_FAIL);assert(s_server&&s_stopping&&after_calls==0);
++ stop_result=0;s_http_task=(void*)1;assert(ts_webui_stop()==ESP_ERR_INVALID_STATE);s_http_task=NULL;
++ assert(ts_webui_stop()==0);assert(!s_server&&!s_stopping&&!s_running&&after_calls==1&&!s_registered_routes[0].owned_copy);
++ assert(ts_webui_deinit()==0);assert(!s_initialized&&!webui_initialized);assert(ts_webui_stop()==0);
++ puts("PASS actual HTTP/WebUI stop/deinit: hook timeout, HTTPD failure, self-stop rejection, truthful state, retained ownership and retry");
++}
+diff --git a/tests/ws_subscriptions/test_manager.c b/tests/ws_subscriptions/test_manager.c
+new file mode 100644
+index 0000000..5493a20
+--- /dev/null
++++ b/tests/ws_subscriptions/test_manager.c
+@@ -0,0 +1,207 @@
++#define TEST_ALLOC
++#define TEST_FAIL_EVENTS
++#include "platform.h"
++static void *tracked_malloc(size_t n);
++static void tracked_free(void *p);
++#define malloc tracked_malloc
++#define free tracked_free
++static void capacity_done(uint64_t r,uint64_t d,esp_err_t e){(void)r;(void)d;(void)e;}
++static void test_point(const char *name);
++#define TS_WS_TEST_POINT(name) test_point(name)
++#define shutdown test_shutdown
++#define s_lock transport_lock
++#define s_server transport_server
++#define s_sequence transport_sequence
++#include "ts_ws_transport.c"
++#undef shutdown
++#undef s_lock
++#undef s_server
++#undef s_sequence
++#include "ts_ws_subscriptions.c"
++#undef malloc
++#undef free
++static unsigned allocations, live_allocations;
++static int fail_allocation;
++static void *tracked_malloc(size_t n) {
++ allocations++; if(fail_allocation>0 && allocations==(unsigned)fail_allocation)return NULL;
++ void*p=malloc(n);if(p)live_allocations++;return p;
++}
++static void tracked_free(void*p) {if(p){assert(live_allocations);live_allocations--;free(p);}}
++int test_result_frees, test_event_fail_at, test_event_registers;
++int64_t test_now=10000000;
++static TaskHandle_t current=(void*)1;
++static void(*worker_fn)(void*);
++static void(*delay_hook)(void);
++static void(*api_hook)(void);
++static bool queue_fail, immediate, send_fail, task_fail, api_business_error;
++static unsigned shutdowns;
++int test_shutdown(int fd,int how){(void)how;assert(fd>0);shutdowns++;return 0;}
++static void(*wait_hook)(void);
++static const char *barrier_name;
++static void(*barrier_action)(void);
++static void test_point(const char *name) {if(barrier_action && !strcmp(name,barrier_name)){void(*fn)(void)=barrier_action;barrier_action=NULL;fn();}}
++static unsigned reads[7], frames[32], notifications, queued;
++static char payloads[64][TS_WS_FRAME_BYTES];
++static struct {void(*fn)(void*);void*arg;} queue[64];
++TaskHandle_t xTaskGetCurrentTaskHandle(void) {return current;}
++int xTaskCreate(void(*fn)(void*),const char*n,unsigned stack,void*a,unsigned p,TaskHandle_t*out) {(void)n;(void)stack;(void)a;(void)p;if(task_fail)return 0;worker_fn=fn;*out=(void*)2;return pdPASS;}
++void xTaskNotifyGive(TaskHandle_t t) {assert(t==(void*)2);notifications++;}
++unsigned ulTaskNotifyTake(int clear,TickType_t ticks) {(void)clear;(void)ticks;assert(wait_hook);wait_hook();unsigned n=notifications;notifications=0;return n;}
++void vTaskDelete(TaskHandle_t t) {(void)t;}
++void vTaskDelay(TickType_t t) {test_now+=(int64_t)t*1000;if(delay_hook)delay_hook();}
++int httpd_ws_get_fd_info(httpd_handle_t h,int fd) {(void)h;(void)fd;return HTTPD_WS_CLIENT_WEBSOCKET;}
++int httpd_ws_send_frame_async(httpd_handle_t h,int fd,httpd_ws_frame_t*f) {(void)h;assert(fd>=0&&fd<32);frames[fd]++;memcpy(payloads[fd],f->payload,f->len);payloads[fd][f->len]=0;return send_fail?ESP_FAIL:0;}
++int httpd_queue_work(httpd_handle_t h,void(*fn)(void*),void*a) {(void)h;if(queue_fail)return ESP_FAIL;if(immediate) {TaskHandle_t saved=current;current=(void*)3;fn(a);current=saved;}else{assert(queued<64);queue[queued++]=(typeof(queue[0])){fn,a};}return 0;}
++int ts_api_call(const char*method,const cJSON*p,ts_api_result_t*r) {(void)p;for(int i=0;i<7;i++)if(!strcmp(metrics[i],method))reads[i]++;if(api_hook)api_hook();r->data=cJSON_CreateObject();r->message=malloc(8);r->code=api_business_error?1:0;return 0;}
++static void pump(void) {
++ while(queued || ts_ws_transport_needs_flush()){
++  current=(void*)1;ts_ws_transport_flush();
++  if(!queued)break;
++  assert(queued<=2); /* at most one TX control item plus a lifecycle barrier */
++  current=(void*)3;typeof(queue[0]) q=queue[0];memmove(queue,queue+1,--queued*sizeof(queue[0]));q.fn(q.arg);
++ }
++ current=(void*)1;
++}
++static void worker_exit(void) {if(s_worker){current=(void*)2;worker_fn(NULL);current=(void*)1;}}
++static void closed(ts_ws_peer_t peer) {ts_ws_client_disconnected(peer);}
++static httpd_req_t reqs[32];
++static ts_ws_peer_t open_peer(int fd) {current=(void*)3;reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};ts_ws_peer_t p;assert(ts_ws_peer_open(&reqs[fd],&p)==0);current=(void*)1;return p;}
++static void close_peer(int fd) {current=(void*)3;reqs[fd].free_ctx(reqs[fd].sess_ctx);reqs[fd].sess_ctx=NULL;current=(void*)1;}
++static void start(void) {assert(ts_ws_transport_start((void*)11,closed)==0);assert(ts_ws_subscriptions_init()==0);}
++static void stop(void) {delay_hook=worker_exit;assert(ts_ws_subscriptions_deinit()==0);delay_hook=NULL;pump();assert(ts_ws_transport_stop((void*)11,5)==0);for(int i=0;i<32;i++)if(reqs[i].sess_ctx)close_peer(i);ts_ws_transport_stopped((void*)11);assert(!s_outstanding);for(int i=0;i<TS_WS_MESSAGE_SLOTS;i++)assert(!s_messages[i].refs);}
++static void subscribe(ts_ws_peer_t p,const char*t,int interval) {cJSON*j=cJSON_CreateObject();if(interval>=0)cJSON_AddNumberToObject(j,"interval",interval);assert(ts_ws_subscribe(p,t,j)==0);cJSON_Delete(j);}
++static unsigned total_reads(void) {unsigned n=0;for(int i=0;i<7;i++)n+=reads[i];return n;}
++static ts_ws_peer_t cancel_peer;
++static void stop_during_api(void) {api_hook=NULL;assert(ts_ws_subscriptions_deinit()==ESP_ERR_TIMEOUT);assert(s_state==STOPPING);assert(ts_ws_subscriptions_init()==ESP_ERR_INVALID_STATE);}
++static void wake_at_wait(void) {wait_hook=NULL;subscribe(cancel_peer,"system.cpu",1000);assert(notifications);s_state=STOPPING;}
++static void resub_at_barrier(void) {ts_ws_unsubscribe(cancel_peer,"system.cpu");subscribe(cancel_peer,"system.cpu",10000);}
++static void reuse_at_barrier(void) {close_peer(1);cancel_peer=open_peer(1);subscribe(cancel_peer,"system.cpu",10000);}
++static int cross_action;
++static void cross_mutation(void) {
++ api_hook=NULL;
++ if(cross_action==0)ts_ws_unsubscribe(cancel_peer,"system.cpu");
++ if(cross_action==1)resub_at_barrier();
++ if(cross_action==2)close_peer(1);
++ if(cross_action==3)reuse_at_barrier();
++ if(cross_action==4){TaskHandle_t saved=current;current=(void*)1;assert(ts_ws_subscriptions_deinit()==ESP_ERR_TIMEOUT);assert(ts_ws_subscriptions_init()==ESP_ERR_INVALID_STATE);current=saved;}
++}
++static void cancel_during_api(void) {api_hook=NULL;ts_ws_unsubscribe(cancel_peer,"system.dashboard");}
++int main(void) {
++ cJSON_Hooks hooks={tracked_malloc,tracked_free};cJSON_InitHooks(&hooks);
++ start();run_batch();assert(total_reads()==0);assert(next_wait()==portMAX_DELAY);
++ ts_ws_peer_t a=open_peer(1),b=open_peer(2);open_peer(3);
++ subscribe(a,"system.dashboard",1000);subscribe(b,"system.dashboard",10000);
++ run_batch();assert(total_reads()==0);test_now+=1000000;run_batch();assert(total_reads()==7);assert(queued==1);pump();assert(frames[1]==1&&frames[2]==0&&frames[3]==0);
++ unsigned n=total_reads();run_batch();assert(total_reads()==n);
++ subscribe(a,"system.dashboard",1000);run_batch();assert(total_reads()==n); /* idempotent */
++ ts_ws_unsubscribe(a,"system.dashboard");test_now+=1000000;run_batch();assert(total_reads()==n);
++ ts_ws_unsubscribe(b,"system.dashboard");test_now+=10000000;run_batch();assert(total_reads()==n);assert(next_wait()==portMAX_DELAY);
++ puts("PASS T01 T02 T05 T06 T07 T08: demand, independent intervals, targeted fanout");
++ subscribe(a,"system.dashboard",1000);subscribe(b,"system.cpu",1000);test_now+=1000000;unsigned cpu=reads[0];run_batch();assert(reads[0]==cpu+1);assert(queued==1 && s_outstanding==2);
++ ts_ws_unsubscribe(a,"system.dashboard");subscribe(a,"system.dashboard",10000);pump();assert(frames[1]==1&&frames[2]==1);assert(!s_subs[0].pending);
++ puts("PASS T09 T12 T16: shared batch, old revision cannot send or update new state");
++ ts_ws_unsubscribe(a,"system.dashboard");ts_ws_unsubscribe(b,"system.cpu");
++ subscribe(a,"system.info",5000);test_now+=5000000;run_batch();assert(queued==1);close_peer(1);a=open_peer(1);pump();assert(frames[1]==1);
++ puts("PASS T11 T14: standalone info, queued delivery cannot cross fd reuse");
++ subscribe(a,"system.dashboard",1000);cancel_peer=a;api_hook=cancel_during_api;test_now+=1000000;n=total_reads();run_batch();assert(total_reads()==n+1);assert(queued==0);
++ puts("PASS T13: cancellation during API skips remaining metrics");
++ subscribe(a,"system.cpu",1000);test_now+=1000000;queue_fail=true;run_batch();assert(!s_outstanding);n=total_reads();run_batch();assert(total_reads()==n);queue_fail=false;
++ test_now+=1000000;immediate=true;run_batch();assert(!s_outstanding);immediate=false;assert(frames[1]==2);
++ puts("PASS T17 T19 T20: queue failure backoff, completion-before-return ownership");
++ ts_ws_unsubscribe(a,"system.cpu");subscribe(a,"config.pack.validated",0);
++ cJSON*j=cJSON_Parse("{\"path\":\"first\"}");ts_ws_broadcast_to_topic("config.pack.validated",j);cJSON_SetValuestring(cJSON_GetObjectItem(j,"path"),"second");ts_ws_broadcast_to_topic("config.pack.validated",j);cJSON_Delete(j);
++ run_batch();assert(queued==1);pump();assert(strstr(payloads[1],"first"));run_batch();pump();assert(strstr(payloads[1],"second"));
++ puts("PASS T23: ordered operation events own borrowed data");
++ const char*bad[]={"0","-1","1.5","\"1000\"","4294967296"};for(unsigned i=0;i<5;i++){j=cJSON_CreateObject();cJSON_AddItemToObject(j,"interval",cJSON_Parse(bad[i]));assert(ts_ws_subscribe(a,"system.cpu",j)==ESP_ERR_INVALID_ARG);cJSON_Delete(j);}
++ assert(wait_ticks(1)==1);assert(wait_ticks(INT64_MAX)>0);assert(wait_ticks(INT64_MAX)<portMAX_DELAY);
++ puts("PASS T10 T34: interval validation and nonzero capped monotonic waits");
++ stop();assert(live_allocations==0);start();a=open_peer(1);b=open_peer(2);open_peer(3);
++ subscribe(a,"system.cpu",1000);test_now+=1000000;run_batch();unsigned before=frames[1];
++ assert(ts_ws_subscriptions_deinit()==ESP_ERR_TIMEOUT);assert(s_state==STOPPING && s_worker);
++ assert(ts_ws_transport_stop((void*)11,2)==ESP_ERR_TIMEOUT);assert(transport_server.handle==(void*)11);
++ pump();assert(frames[1]==before);delay_hook=worker_exit;assert(ts_ws_subscriptions_deinit()==0);delay_hook=NULL;
++ assert(ts_ws_transport_stop((void*)11,2)==0);for(int i=1;i<=3;i++)close_peer(i);ts_ws_transport_stopped((void*)11);
++ start();ts_ws_peer_t old=a;a=open_peer(1);ts_ws_peer_close(old);assert(ts_ws_peer_get(a.server,1,&b)&&ts_ws_peer_equal(a,b));
++ assert(ts_ws_transport_start((void*)12,closed)==ESP_ERR_INVALID_STATE);
++ puts("PASS T15 T27 T28: no second HTTP owner, reused handle epoch isolation, stop timeout retains live resources and retries");
++ current=(void*)3;assert(ts_ws_subscriptions_deinit()==ESP_ERR_INVALID_STATE);current=(void*)2;assert(ts_ws_subscriptions_deinit()==ESP_ERR_INVALID_STATE);current=(void*)1;
++ subscribe(a,"system.dashboard",1000);test_now+=1000000;api_hook=stop_during_api;run_batch();assert(!s_outstanding);stop();assert(live_allocations==0);
++ puts("PASS T27 T30: stop during API rejects new instance; worker/HTTPD self-wait refused");
++ start();a=open_peer(1);subscribe(a,"system.dashboard",1000);
++ for(unsigned point=1;point<180;point++) {
++   test_now+=1000000;allocations=0;fail_allocation=point;run_batch();fail_allocation=0;pump();if(live_allocations!=1)fprintf(stderr,"point=%u live=%u alloc=%u\n",point,live_allocations,allocations);assert(live_allocations==1); /* session context only */
++ }
++ assert(test_result_frees>100);stop();assert(live_allocations==0);
++ puts("PASS T21 T22: allocation failure sweep across production JSON/TX paths; per-call results freed; allocation baseline restored");
++ start();a=open_peer(1);b=open_peer(2);open_peer(3);
++ subscribe(a,"device.status",2000);const char raw[]={ '{','"','x','"',':','1','}' };
++ ts_event_t ev={.data=(void*)raw,.data_size=sizeof(raw)};event_handler(&ev,(void*)8);event_handler(&ev,(void*)8);
++ run_batch();pump();before=frames[1];run_batch();assert(!queued);test_now+=2000000;run_batch();pump();assert(frames[1]==before+1);
++ httpd_ws_frame_t global={.payload=(uint8_t*)"{\"alarm\":true}",.len=14};unsigned f1=frames[1],f2=frames[2],f3=frames[3];assert(ts_ws_transport_broadcast(&global)==0);pump();assert(frames[1]==f1+1&&frames[2]==f2+1&&frames[3]==f3+1);
++ puts("PASS T24 T25: bounded non-NUL event parse, retained paced events, original global recipient set");
++ ts_ws_unsubscribe(a,"device.status");subscribe(a,"config.pack.validated",0);
++ j=cJSON_CreateObject();uint64_t dropped=s_stats.event_dropped;for(int i=0;i<EVENT_SLOTS+1;i++)ts_ws_broadcast_to_topic("config.pack.validated",j);assert(s_stats.event_dropped==dropped+1);cJSON_Delete(j);
++ for(int i=0;i<EVENT_SLOTS;i++){run_batch();pump();}stop();assert(!live_allocations);
++ puts("PASS T23: bounded event FIFO full is counted, accepted results remain ordered");
++ assert(ts_ws_transport_start((void*)11,closed)==0);task_fail=true;assert(ts_ws_subscriptions_init()==ESP_ERR_NO_MEM);task_fail=false;assert(s_state==OFF);
++ test_event_registers=0;test_event_fail_at=2;assert(ts_ws_subscriptions_init()==ESP_ERR_NO_MEM);test_event_fail_at=0;assert(s_state==OFF);assert(ts_ws_subscriptions_init()==0);stop();assert(!live_allocations);
++ puts("PASS T26: task and partial handler registration rollback permit retry");
++ start();cancel_peer=open_peer(1);notifications=0;wait_hook=wake_at_wait;current=(void*)2;worker_fn(NULL);current=(void*)1;assert(!s_worker);stop();assert(!live_allocations);
++ puts("PASS T29 T33: repeated lifecycle and notification at wait boundary");
++ start();a=open_peer(1);b=open_peer(2);
++ subscribe(a,"system.cpu",1000);
++ ts_ws_message_t *held[TS_WS_MESSAGE_SLOTS];j=cJSON_CreateObject();
++ for(int i=0;i<TS_WS_MESSAGE_SLOTS-2;i++){held[i]=ts_ws_message_json("system.cpu",j,0);assert(held[i]);}
++ test_now+=1000000;n=total_reads();run_batch();assert(total_reads()==n);assert(next_wait()>=1000);
++ ts_ws_message_t *alarm=ts_ws_message_text("{}",2);assert(alarm);assert(ts_ws_transport_submit(b,alarm,0,0,NULL,NULL)==0);ts_ws_message_release(alarm);pump();
++ for(int i=0;i<TS_WS_MESSAGE_SLOTS-2;i++)ts_ws_message_release(held[i]);cJSON_Delete(j);
++ run_batch();assert(queued==1);test_now+=10000000;pump();n=total_reads();run_batch();assert(total_reads()==n);test_now+=1000000;run_batch();pump();
++ char *big=malloc(TS_WS_LEGACY_BYTES);memset(big,'x',TS_WS_LEGACY_BYTES);
++ ts_ws_message_t *large=ts_ws_message_text(big,TS_WS_LEGACY_BYTES-1);assert(large);assert(!ts_ws_message_text(big,TS_WS_LEGACY_BYTES));ts_ws_message_release(large);free(big);
++ ts_ws_message_t *one=ts_ws_message_text("{}",2);assert(one);
++ for(int i=0;i<TS_WS_TOPIC_TX_SLOTS;i++)assert(ts_ws_transport_submit(a,one,0,0,NULL,capacity_done)==0);
++ for(int i=0;i<TS_WS_CONNECTIONS;i++)assert(ts_ws_transport_submit(a,one,0,0,NULL,NULL)==0);
++ assert(ts_ws_transport_submit(a,one,0,0,NULL,NULL)==ESP_ERR_NO_MEM);
++ ts_ws_message_release(one);pump();
++ ts_ws_transport_stats_t stats;ts_ws_transport_get_stats(&stats);assert(!stats.jobs&&!stats.bytes);assert(stats.jobs_high==TS_WS_TX_SLOTS);assert(stats.bytes_high<=TS_WS_TOTAL_BYTES);assert(stats.queued>stats.success);
++ stop();assert(!live_allocations);
++ puts("PASS T18 T19 T20: bounded slots/bytes, reserved global capacity, delayed completion cadence, separate queue/send counters");
++ for(int point=0;point<2;point++)for(int action=0;action<2;action++) {
++  start();cancel_peer=open_peer(1);subscribe(cancel_peer,"system.cpu",1000);test_now+=1000000;
++  n=total_reads();before=frames[1];barrier_name=point?"sent":"snapshot";barrier_action=action?reuse_at_barrier:resub_at_barrier;
++  run_batch();pump();assert(total_reads()==n+(point?1:0));assert(frames[1]==before+(point?1:0));
++  subscription_t *current_sub=NULL;for(int i=0;i<MAX_SUBSCRIPTIONS;i++)if(s_subs[i].active)current_sub=&s_subs[i];
++  assert(current_sub && current_sub->interval==10000 && !current_sub->pending && current_sub->last_success==0);
++  stop();assert(!live_allocations);
++ }
++ puts("PASS T09 T14 T16: snapshot-before-collection and send-before-completion barriers with resubscribe/fd reuse");
++ assert(after_ms(INT64_MAX-100,UINT32_MAX)==INT64_MAX);
++ start();a=open_peer(1);queue_fail=true;assert(ts_ws_transport_quiesce(a.server,1)==ESP_FAIL);queue_fail=false;assert(!transport_server.outstanding);
++ assert(ts_ws_transport_quiesce(a.server,1)==ESP_ERR_TIMEOUT);assert(queued==1&&transport_server.outstanding==1);assert(ts_ws_transport_quiesce(a.server,1)==ESP_ERR_TIMEOUT);assert(queued==1);pump();assert(ts_ws_transport_quiesce(a.server,1)==0);stop();
++ start();a=open_peer(1);immediate=true;assert(ts_ws_transport_quiesce(a.server,1)==0);immediate=false;assert(!transport_server.outstanding);stop();assert(!live_allocations);
++ puts("PASS T17 T28: HTTP handler barrier publication, timeout retention, single retry and callback-before-return");
++ start();a=open_peer(1);subscribe(a,"system.dashboard",1000);api_business_error=true;test_now+=1000000;run_batch();assert(!queued&&!s_outstanding&&live_allocations==1);api_business_error=false;
++ test_now+=1000000;run_batch();send_fail=true;pump();send_fail=false;assert(shutdowns==1);assert(!ts_ws_peer_get(a.server,a.fd,&b));close_peer(1);stop();assert(!live_allocations);
++ puts("PASS T04 T20 T21: business-error results freed; send failure shuts down only the pinned session and invalidates demand");
++ for(int point=0;point<4;point++)for(cross_action=0;cross_action<5;cross_action++) {
++  start();cancel_peer=open_peer(1);subscribe(cancel_peer,"system.cpu",1000);test_now+=1000000;
++  before=frames[1];n=total_reads();
++  if(point==0||point==3){barrier_name=point==0?"snapshot":"sent";barrier_action=cross_mutation;}
++  if(point==1)api_hook=cross_mutation;
++  run_batch();if(point==2)cross_mutation();pump();
++  assert(frames[1]==before+(point==3?1:0));assert(total_reads()==n+(point==0?0:1));
++  stop();assert(!live_allocations);
++ }
++ puts("PASS cross matrix: 4 barriers x 5 mutations (cancel, resubscribe, disconnect, fd reuse, stop/restart exclusion); restart succeeds after every drain");
++
++ j=cJSON_CreateObject();cJSON *services=cJSON_AddObjectToObject(j,"services"),*array=cJSON_AddArrayToObject(services,"services");
++ char service_name[32];memset(service_name,1,31);service_name[31]=0;
++ for(int i=0;i<32;i++){cJSON *item=cJSON_CreateObject();cJSON_AddStringToObject(item,"name",service_name);cJSON_AddStringToObject(item,"state","STARTING");cJSON_AddStringToObject(item,"phase","SECURITY");cJSON_AddBoolToObject(item,"healthy",true);cJSON_AddNumberToObject(item,"start_time_ms",UINT32_MAX);cJSON_AddNumberToObject(item,"start_duration_ms",UINT32_MAX);cJSON_AddItemToArray(array,item);}
++ ts_ws_message_t *max_services=ts_ws_message_json("system.dashboard",j,INT64_MAX/1000000);assert(max_services);printf("PASS T18 configured 32-service escaped-name fixture: %zu bytes within %u-byte frame budget\n",max_services->len,TS_WS_FRAME_BYTES);ts_ws_message_release(max_services);cJSON_Delete(j);assert(!live_allocations);
++
++
++
++
++
++ return 0;
++}

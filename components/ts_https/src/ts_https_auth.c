@@ -1,3 +1,4 @@
+#include "ts_cert_time.h"
 /**
  * @file ts_https_auth.c
  * @brief mTLS Authentication and Role Extraction
@@ -134,25 +135,13 @@ esp_err_t ts_https_auth_from_cert(const mbedtls_x509_crt *cert, ts_https_auth_t 
         ESP_LOGW(TAG, "No OU field in certificate, defaulting to viewer");
     }
     
-    // Calculate days until expiry
-    // cert->valid_to is mbedtls_x509_time struct
-    // For simplicity, we'll use a rough calculation
+    int64_t expiry;
     time_t now = time(NULL);
-    struct tm cert_tm = {
-        .tm_year = cert->valid_to.year - 1900,
-        .tm_mon = cert->valid_to.mon - 1,
-        .tm_mday = cert->valid_to.day,
-        .tm_hour = cert->valid_to.hour,
-        .tm_min = cert->valid_to.min,
-        .tm_sec = cert->valid_to.sec
-    };
-    time_t expiry = mktime(&cert_tm);
-    if (expiry > now) {
-        auth->cert_days_remaining = (int)((expiry - now) / (24 * 60 * 60));
-    } else {
-        auth->cert_days_remaining = 0;
-    }
-    
+    auth->cert_days_remaining = 0;
+    if (now != (time_t)-1 && ts_cert_time_utc(cert->valid_to.year, cert->valid_to.mon,
+            cert->valid_to.day, cert->valid_to.hour, cert->valid_to.min, cert->valid_to.sec, &expiry))
+        auth->cert_days_remaining = ts_cert_time_days(expiry - (int64_t)now);
+
     ESP_LOGI(TAG, "Authenticated: %s (%s), role=%s, expires in %d days",
              auth->username, auth->organization,
              ts_https_role_to_str(auth->role),

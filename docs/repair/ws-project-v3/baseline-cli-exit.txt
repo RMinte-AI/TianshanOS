@@ -1,0 +1,3 @@
+CLI exit: active=1 interrupt=1
+Assertion failed: (!ts_ssh_shell_is_active(shell) && cli_interrupts==1), function main, file test_shell_driver.c, line 27.
+tests/ws_subscriptions/run_shell_driver.sh: line 19: 80391 Abort trap: 6           "$build/adapter" "$@"
