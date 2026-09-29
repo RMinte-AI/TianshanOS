@@ -1,0 +1,186 @@
+{
+ "v": 3,
+ "createdOnFiles": {
+  "v": 1,
+  "at": "2026-09-29T09:04:02Z"
+ },
+ "title": "TianshanOS 界面优化稿",
+ "launch": {
+  "view": "canvas"
+ },
+ "pages": [],
+ "boards": {
+  "Main.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1320,
+   "title": "系统页 目标稿"
+  },
+  "Modal.dc.html": {
+   "x": 1520,
+   "y": 0,
+   "w": 1440,
+   "h": 1320,
+   "title": "内存详情弹窗 目标稿"
+  },
+  "Sheets1.dc.html": {
+   "x": 0,
+   "y": 5560,
+   "w": 1440,
+   "h": 1746,
+   "title": "系统页弹窗 目标稿"
+  },
+  "Net.dc.html": {
+   "x": 0,
+   "y": 1460,
+   "w": 1440,
+   "h": 940,
+   "title": "网络页 目标稿"
+  },
+  "Files.dc.html": {
+   "x": 1520,
+   "y": 1460,
+   "w": 1440,
+   "h": 560,
+   "title": "文件页 目标稿"
+  },
+  "Term.dc.html": {
+   "x": 3040,
+   "y": 1460,
+   "w": 1440,
+   "h": 860,
+   "title": "终端页 目标稿"
+  },
+  "Auto.dc.html": {
+   "x": 0,
+   "y": 2540,
+   "w": 1440,
+   "h": 900,
+   "title": "自动化页 目标稿"
+  },
+  "Cmds.dc.html": {
+   "x": 1520,
+   "y": 2540,
+   "w": 1440,
+   "h": 760,
+   "title": "指令页 目标稿"
+  },
+  "Ota.dc.html": {
+   "x": 3040,
+   "y": 2540,
+   "w": 1440,
+   "h": 1000,
+   "title": "固件升级页 目标稿"
+  },
+  "Sec.dc.html": {
+   "x": 0,
+   "y": 3680,
+   "w": 1440,
+   "h": 1740,
+   "title": "安全页 目标稿"
+  },
+  "Spec.dc.html": {
+   "x": 1520,
+   "y": 3680,
+   "w": 1440,
+   "h": 1240,
+   "title": "控件与材质规范"
+  },
+  "Sheets2.dc.html": {
+   "x": 1520,
+   "y": 5560,
+   "w": 1440,
+   "h": 1136,
+   "title": "其它弹窗 目标稿"
+  },
+  "SheetsAuto.dc.html": {
+   "x": 3040,
+   "y": 5560,
+   "w": 1440,
+   "h": 1837,
+   "title": "自动化弹窗 目标稿"
+  },
+  "SheetsLed.dc.html": {
+   "x": 0,
+   "y": 7537,
+   "w": 1440,
+   "h": 3434,
+   "title": "LED · 网络 · 日志 · 登录 弹窗 目标稿"
+  },
+  "SheetsSec.dc.html": {
+   "x": 1520,
+   "y": 7537,
+   "w": 1440,
+   "h": 2734,
+   "title": "安全页弹窗 目标稿"
+  },
+  "SheetsStates.dc.html": {
+   "x": 1520,
+   "y": 12454,
+   "w": 1440,
+   "h": 790,
+   "title": "菜单、提示与状态 目标稿"
+  },
+  "SheetsTypes.dc.html": {
+   "x": 3040,
+   "y": 7537,
+   "w": 1440,
+   "h": 4777,
+   "title": "数据源与动作模板：各类型参数区 目标稿"
+  },
+  "SheetsMore.dc.html": {
+   "x": 0,
+   "y": 12454,
+   "w": 1440,
+   "h": 1372,
+   "title": "指令编辑与表单规范 目标稿"
+  },
+  "Resp.dc.html": {
+   "x": 3040,
+   "y": 12454,
+   "w": 1440,
+   "h": 1290,
+   "title": "响应式与英文 目标稿"
+  }
+ },
+ "order": [
+  "Main.dc.html",
+  "Modal.dc.html",
+  "Net.dc.html",
+  "Files.dc.html",
+  "Term.dc.html",
+  "Auto.dc.html",
+  "Cmds.dc.html",
+  "Ota.dc.html",
+  "Sec.dc.html",
+  "Spec.dc.html",
+  "Sheets1.dc.html",
+  "Sheets2.dc.html",
+  "SheetsAuto.dc.html",
+  "SheetsLed.dc.html",
+  "SheetsSec.dc.html",
+  "SheetsTypes.dc.html",
+  "SheetsMore.dc.html",
+  "SheetsStates.dc.html",
+  "Resp.dc.html"
+ ],
+ "notes": {
+  "t1": {
+   "x": 0,
+   "y": -260,
+   "text": "TianshanOS 界面优化稿",
+   "kind": "title1",
+   "maxW": 4480
+  }
+ },
+ "designSystems": [
+  {
+   "title": "TianshanOS Design System",
+   "namespace": "tianshanos",
+   "artifact": "https://claude.ai/artifact/PSF9XZ7niMQXYVX8K4fSfR",
+   "version": "1790672469-c8d2",
+   "copiedAt": "2026-09-29T09:04:02Z"
+  }
+ ]
+}
