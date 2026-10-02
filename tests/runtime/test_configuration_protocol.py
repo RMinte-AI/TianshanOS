@@ -14,11 +14,12 @@ s=s.replace('strcpy(out->host,"192.0.2.8");','strcpy(out->host,configured_host);
 s=s.replace('out->port=22;return ESP_OK;}', 'out->port=22;if(interleave)host_interleave();return ESP_OK;}')
 s=s.replace('(*out)->config=*cfg;++ssh_live;', '(*out)->config=*cfg;strcpy(connected_host,cfg->host);++ssh_live;')
 s+='''
-static esp_err_t host_add_impl(const ts_ssh_host_config_t *cfg) {strcpy(configured_host,cfg->host);return ESP_OK;}
+static esp_err_t host_add_impl(const ts_ssh_host_config_t *cfg,bool sync_sdcard) {strcpy(configured_host,cfg->host);return ESP_OK;}
 static esp_err_t command_add_impl(const ts_ssh_command_config_t *cfg,char*out,size_t len) {command=*cfg;return ESP_OK;}
 static int storage_fail;
 static esp_err_t command_remove_impl(const char *id) {uint32_t pin;assert(!ts_ssh_service_start_admissible(id));assert(ts_ssh_service_pin(&command,"192.0.2.8",22,&pin)==ESP_ERR_INVALID_STATE);if(storage_fail)return ESP_FAIL;command.id[0]=0;return ESP_OK;}
 '''
+s+=extract('components/ts_security/src/ts_ssh_hosts_config.c','host_add_guarded')+'\n'
 s+=extract('components/ts_security/src/ts_ssh_hosts_config.c','ts_ssh_hosts_config_add')+'\n'
 for name in ['ts_ssh_commands_config_add','ts_ssh_commands_config_remove']:
  s+=extract('components/ts_security/src/ts_ssh_commands_config.c',name)+'\n'

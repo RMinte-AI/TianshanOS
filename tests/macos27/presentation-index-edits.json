@@ -1,0 +1,17 @@
+[
+  {
+    "before": "type=\"submit\" class=\"btn btn-service-style\" data-i18n=\"login.loginButton\"",
+    "after": "type=\"submit\" class=\"btn btn-primary\" data-i18n=\"login.loginButton\"",
+    "reason": "V01: primary completion button class only; event, type, disabled state and translation unchanged"
+  },
+  {
+    "before": "class=\"btn btn-service-style\" id=\"file-picker-confirm\"",
+    "after": "class=\"btn btn-primary\" id=\"file-picker-confirm\"",
+    "reason": "V01: primary completion button class only; event, type, disabled state and translation unchanged"
+  },
+  {
+    "before": "class=\"btn btn-service-style btn-sm\" onclick=\"saveShutdownSettings()\"",
+    "after": "class=\"btn btn-primary btn-sm\" onclick=\"saveShutdownSettings()\"",
+    "reason": "V01: primary completion button class only; event, type, disabled state and translation unchanged"
+  }
+]

@@ -104,10 +104,10 @@ def minify_css(source: str) -> str:
     # 移除多余空白
     result = re.sub(r'\s+', ' ', result)
     # 移除 { } ; : , 前后多余空格
-    result = re.sub(r'\s*([{}:;,>~+])\s*', r'\1', result)
+    result = re.sub(r'\s*([{}:;,>~])\s*', r'\1', result)
     # 恢复某些必要的空格（如 "and (" in media queries）
     result = re.sub(r'\band\(', 'and (', result)
-    result = re.sub(r'\bnot\(', 'not (', result)
+    result = re.sub(r'(?<!:)\bnot\(', 'not (', result)
     # 移除末尾分号（在 } 前）
     result = result.replace(';}', '}')
     return result.strip()

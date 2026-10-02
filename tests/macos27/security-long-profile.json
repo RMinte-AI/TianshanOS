@@ -1,0 +1,110 @@
+{
+  "key/list": {
+    "keys": [
+      {
+        "id": "fixture-key-0",
+        "type": "ed25519",
+        "comment": "long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_0",
+        "alias": "",
+        "hidden": false,
+        "exportable": true,
+        "has_pubkey": true,
+        "created": 1790611200
+      },
+      {
+        "id": "fixture-key-1",
+        "type": "ed25519",
+        "comment": "long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_1",
+        "alias": "long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_",
+        "hidden": true,
+        "exportable": true,
+        "has_pubkey": true,
+        "created": 1790611200
+      },
+      {
+        "id": "fixture-key-2",
+        "type": "ed25519",
+        "comment": "long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_2",
+        "alias": "",
+        "hidden": false,
+        "exportable": false,
+        "has_pubkey": true,
+        "created": 1790611200
+      },
+      {
+        "id": "fixture-key-3",
+        "type": "ed25519",
+        "comment": "long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_3",
+        "alias": "",
+        "hidden": false,
+        "exportable": true,
+        "has_pubkey": false,
+        "created": 1790611200
+      }
+    ]
+  },
+  "ssh/hosts/list": {
+    "hosts": [
+      {
+        "id": "fixture-host-0-long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_",
+        "host": "192.0.2.30",
+        "port": 22,
+        "username": "fixture-user-0",
+        "keyid": "fixture-key-0"
+      },
+      {
+        "id": "fixture-host-1-long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_",
+        "host": "192.0.2.31",
+        "port": 22,
+        "username": "fixture-user-1",
+        "keyid": "fixture-key-1"
+      },
+      {
+        "id": "fixture-host-2-long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_",
+        "host": "192.0.2.32",
+        "port": 22,
+        "username": "fixture-user-2",
+        "keyid": "fixture-key-2"
+      },
+      {
+        "id": "fixture-host-3-long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_long_fixture_name_长名称_",
+        "host": "192.0.2.33",
+        "port": 22,
+        "username": "fixture-user-3",
+        "keyid": "fixture-key-3"
+      }
+    ]
+  },
+  "hosts/list": {
+    "hosts": [
+      {
+        "host": "fixture-0.long-host-label.long-host-label.long-host-label.long-host-label.invalid",
+        "port": 22,
+        "type": "ssh-ed25519",
+        "fingerprint": "SHA256:aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/",
+        "added": 1790611200
+      },
+      {
+        "host": "fixture-1.long-host-label.long-host-label.long-host-label.long-host-label.invalid",
+        "port": 22,
+        "type": "ssh-ed25519",
+        "fingerprint": "SHA256:aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/",
+        "added": 1790611200
+      },
+      {
+        "host": "fixture-2.long-host-label.long-host-label.long-host-label.long-host-label.invalid",
+        "port": 22,
+        "type": "ssh-ed25519",
+        "fingerprint": "SHA256:aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/",
+        "added": 1790611200
+      },
+      {
+        "host": "fixture-3.long-host-label.long-host-label.long-host-label.long-host-label.invalid",
+        "port": 22,
+        "type": "ssh-ed25519",
+        "fingerprint": "SHA256:aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/aB0/",
+        "added": 1790611200
+      }
+    ]
+  }
+}

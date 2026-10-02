@@ -1,0 +1,299 @@
+{
+ "system/info": {
+  "chip": {
+   "model": "ESP32-S3",
+   "cores": 2
+  },
+  "app": {
+   "version": "v0.5.2",
+   "idf_version": "5.5.2"
+  },
+  "uptime_ms": 3600000
+ },
+ "fan/status": {
+  "temperature": 44.0,
+  "temp_valid": true,
+  "fans": [
+   {
+    "id": 0,
+    "mode": "auto",
+    "duty": 40,
+    "target_duty": 40,
+    "rpm": 1840,
+    "auto_state": "baseline",
+    "guard_temperature": 44,
+    "predicted_temperature": 43
+   },
+   {
+    "id": 1,
+    "mode": "auto",
+    "duty": 40,
+    "target_duty": 40,
+    "rpm": 1840,
+    "auto_state": "baseline",
+    "guard_temperature": 44,
+    "predicted_temperature": 43
+   }
+  ]
+ },
+ "automation/variables/list": {
+  "variables": [
+   {
+    "name": "fixture.value",
+    "value": 42,
+    "type": "number",
+    "age_ms": 1000
+   }
+  ]
+ },
+ "automation/rules/list": {
+  "rules": [
+   {
+    "id": "r1",
+    "name": "启动工作站",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 1,
+    "actions_count": 1,
+    "trigger_count": 2
+   },
+   {
+    "id": "r2",
+    "name": "节能模式",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 1,
+    "actions_count": 1,
+    "trigger_count": 2
+   },
+   {
+    "id": "r3",
+    "name": "设备温度",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 1,
+    "actions_count": 1,
+    "trigger_count": 2
+   },
+   {
+    "id": "r4",
+    "name": "输入功率",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 1,
+    "actions_count": 1,
+    "trigger_count": 2
+   }
+  ],
+  "loaded": true
+ },
+ "ui/widgets/get": {
+  "widgets": [
+   {
+    "id": "w-ring",
+    "type": "ring",
+    "label": "环形",
+    "expression": "${fixture.value}",
+    "min": 0,
+    "max": 100,
+    "decimals": 0,
+    "unit": "",
+    "thresholds": [
+     0,
+     50,
+     80
+    ]
+   },
+   {
+    "id": "w-temp",
+    "type": "temp",
+    "label": "温度",
+    "expression": "${fixture.value}",
+    "min": 0,
+    "max": 100,
+    "decimals": 0,
+    "unit": "",
+    "thresholds": [
+     0,
+     50,
+     80
+    ]
+   },
+   {
+    "id": "w-bar",
+    "type": "bar",
+    "label": "进度条",
+    "expression": "${fixture.value}",
+    "min": 0,
+    "max": 100,
+    "decimals": 0,
+    "unit": "",
+    "thresholds": [
+     0,
+     50,
+     80
+    ]
+   },
+   {
+    "id": "w-status",
+    "type": "status",
+    "label": "状态",
+    "expression": "${fixture.value}",
+    "min": 0,
+    "max": 100,
+    "decimals": 0,
+    "unit": "",
+    "thresholds": [
+     0,
+     50,
+     80
+    ]
+   },
+   {
+    "id": "w-log",
+    "type": "log",
+    "label": "日志",
+    "expression": "${fixture.value}",
+    "min": 0,
+    "max": 100,
+    "decimals": 0,
+    "unit": "",
+    "thresholds": [
+     0,
+     50,
+     80
+    ],
+    "maxLines": 15
+   }
+  ],
+  "refresh_interval": 5000,
+  "source": "sdcard"
+ },
+ "ssh/commands/list": {
+  "commands": [
+   {
+    "id": "restart_nginx",
+    "host_id": "fixture-host",
+    "name": "重启服务",
+    "command": "sudo systemctl restart nginx",
+    "icon": "ri-play-line",
+    "timeout": 30
+   },
+   {
+    "id": "fixture-orphan",
+    "host_id": "missing-fixture-host",
+    "name": "孤儿指令",
+    "command": "sudo systemctl restart nginx",
+    "icon": "ri-play-line",
+    "timeout": 30,
+    "orphan": true
+   }
+  ]
+ },
+ "config/pack/list": {
+  "files": []
+ },
+ "fan/config": {
+  "curve": [
+   {
+    "temp": 40,
+    "duty": 30
+   },
+   {
+    "temp": 60,
+    "duty": 55
+   },
+   {
+    "temp": 80,
+    "duty": 100
+   }
+  ],
+  "hysteresis": 2,
+  "min_interval": 2000,
+  "min_duty": 20,
+  "max_duty": 100
+ },
+ "temp/bind": {
+  "bound_variables": [],
+  "bound_variable": ""
+ },
+ "system/memory_detail": {
+  "dram": {
+   "total": 327680,
+   "used": 294912,
+   "free": 32768,
+   "used_percent": 90,
+   "largest_block": 4096,
+   "fragmentation": 65.0,
+   "min_free_ever": 28672
+  },
+  "psram": {
+   "total": 8388608,
+   "used": 6291456,
+   "free": 2097152,
+   "used_percent": 75,
+   "largest_block": 1048576,
+   "fragmentation": 45.0,
+   "min_free_ever": 0
+  },
+  "dma": {
+   "total": 32768,
+   "free": 16384,
+   "largest_block": 4096
+  },
+  "tips": [],
+  "history": {
+   "min_free_heap_ever": 28672
+  },
+  "task_count": 0
+ },
+ "automation/rules/get": {
+  "id": "fixture-rule",
+  "name": "夜间节能",
+  "enabled": true,
+  "logic": "and",
+  "cooldown_ms": 5000,
+  "icon": "ri-moon-line",
+  "manual_trigger": false,
+  "show_on_dashboard": true,
+  "allow_manual_trigger": true,
+  "conditions": [
+   {
+    "variable": "fixture.value",
+    "operator": "gt",
+    "value": 5
+   }
+  ],
+  "actions": [
+   {
+    "template_id": "fixture-action",
+    "delay_ms": 0,
+    "repeat_mode": "once",
+    "repeat_count": 1,
+    "repeat_interval_ms": 1000
+   }
+  ]
+ },
+ "automation/actions/get": {
+  "id": "fixture-action",
+  "name": "示例动作",
+  "description": "仅用于回归测试",
+  "type": "cli",
+  "delay_ms": 0,
+  "async": false,
+  "cli": {
+   "command": "gpio --set 48 1",
+   "var_name": "",
+   "timeout_ms": 5000
+  }
+ },
+ "automation/actions/delete": {}
+}

@@ -620,19 +620,9 @@ static void fan_update_callback(void *arg)
     ts_temp_data_t temp_data = {0};
     bool have_temp_data = false;
     bool basic_temp_data_valid = false;
-    bool needs_temp_data = false;
-
-    for (int i = 0; i < TS_FAN_MAX; i++) {
-        if (s_fans[i].initialized &&
-            (s_fans[i].mode == TS_FAN_MODE_CURVE ||
-             s_fans[i].mode == TS_FAN_MODE_AUTO)) {
-            needs_temp_data = true;
-            break;
-        }
-    }
     
-    /* 主动获取最新温度（确保曲线模式能及时响应温度变化） */
-    if (s_auto_temp_enabled && needs_temp_data) {
+    /* 温度监控独立于风扇模式，手动/关闭模式下也保持有效温度快照更新。 */
+    if (s_auto_temp_enabled) {
         int16_t current_temp = ts_temp_get_effective_nonblocking(&temp_data);
         have_temp_data = true;
         basic_temp_data_valid = is_temp_data_basic_valid(&temp_data);
@@ -647,9 +637,7 @@ static void fan_update_callback(void *arg)
         
         if (basic_temp_data_valid) {
             for (int i = 0; i < TS_FAN_MAX; i++) {
-                if (s_fans[i].initialized && 
-                    (s_fans[i].mode == TS_FAN_MODE_CURVE ||
-                     s_fans[i].mode == TS_FAN_MODE_AUTO)) {
+                if (s_fans[i].initialized) {
                     s_fans[i].temperature = current_temp;
                 }
             }

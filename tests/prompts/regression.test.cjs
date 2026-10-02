@@ -1,7 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {harness}=require('./harness.cjs');
-async function setup(lang){const h=harness(lang);await h.ready();h.load();return h;}
+async function setup(lang){const h=harness(lang);await h.ready();h.load();h.ctx.confirmSheet=async()=>h.ctx.confirm();return h;}
 for(const lang of ['zh-CN','en-US']) {
  test(`${lang}: actual inline translator, cold language, missing/objects/parameters and confirmations`, async()=>{
     const h=await setup(lang),{ctx,run}=h;
@@ -9,11 +9,11 @@ for(const lang of ['zh-CN','en-US']) {
     assert(!ctx.t('ui.confirmRollback').includes('ui.'));
     for(const [key,params]of [['missing.key',{}],['common',{}],['toast.ledConfigSavedWithAnim',{device:'matrix'}]]) {
         assert.equal(ctx.t(key,params),ctx.i18n.unavailable());let confirmations=0;ctx.confirm=()=>{confirmations++;return true;};
-        assert.equal(ctx.confirmAction(ctx.t(key,params)),false);assert.equal(confirmations,0);
+        assert.equal(await ctx.confirmAction(ctx.t(key,params)),false);assert.equal(confirmations,0);
     }
     assert(!ctx.t('toast.ledConfigSavedWithAnim',{device:'matrix',animation:'rainbow'}).includes('{animation}'));
     assert(ctx.t('dataWidget.dataExpressionHint').includes('${'));
-    assert.equal(ctx.confirmAction(ctx.t('ui.confirmRollback')),true);
+    assert.equal(await ctx.confirmAction(ctx.t('ui.confirmRollback')),true);
  });
  test(`${lang}: REST business failure remains returned; strict operation rejects with original metadata`,async()=>{
     const h=await setup(lang),{ctx,run}=h;
@@ -134,8 +134,8 @@ for(const lang of ['zh-CN','en-US']) {
  });
  test(`${lang}: key deployment requires successful business code and distinguishes verification`,async()=>{
   const h=await setup(lang);for(const id of ['deploy-host','deploy-user','deploy-port','deploy-password','deploy-result','deploy-btn'])h.el(id).value='fixture';
-  h.run("currentDeployKeyId='key';loadSshHostsData=async()=>{};");
-  for(const [result,key]of [[{code:0,data:{deployed:true,verified:true}},'keyVerified'],[{code:0,data:{deployed:true,verified:false}},'keyUnverified'],[{code:3,error:'denied',data:{deployed:true,verified:true}},null]]){
+  h.run("currentDeployKeyId='key';refreshSshHostsList=async()=>({ok:true,hosts:[]});");
+  for(const [result,key]of [[{code:0,data:{deployed:true,verified:true,registered:true}},'keyVerified'],[{code:0,data:{deployed:true,verified:false,registered:true}},'keyUnverified'],[{code:3,error:'denied',data:{deployed:true,verified:true}},null]]){
    h.ctx.fixture=result;h.run('api.sshCopyid=async()=>fixture;');await h.run('deployKey()');
    if(key)assert.equal(h.el('deploy-result').textContent,h.ctx.t('promptRepair.'+key,{id:'key',target:'fixture@fixture'}));
    else assert(h.el('deploy-result').classList.contains('error'));
@@ -153,9 +153,9 @@ for(const lang of ['zh-CN','en-US']) {
 for(const lang of ['zh-CN','en-US']) {
  test(`${lang}: widget dynamic families render real labels and literal braces in names remain valid`,async()=>{
   const h=await setup(lang);h.el('dw-manager-main');h.ctx.showAddWidgetPanel();
-  assert(!h.el('dw-manager-main').innerHTML.includes(h.ctx.i18n.unavailable()));
-  assert(!/dataWidget\.(?:type|preset)/.test(h.el('dw-manager-main').innerHTML));
-  assert(h.ctx.confirmAction(h.ctx.t('ui.confirmDeleteCmd',{name:'file{my_name}'})));
+  assert(!h.el('widget-add-modal').innerHTML.includes(h.ctx.i18n.unavailable()));
+  assert(!/dataWidget\.(?:type|preset)/.test(h.el('widget-add-modal').innerHTML));
+  assert(await h.ctx.confirmAction(h.ctx.t('ui.confirmDeleteCmd',{name:'file{my_name}'})));
   for(const phase of ['PLATFORM','HAL','DRIVER','NETWORK','UNKNOWN'])assert(!h.ctx.servicePhaseLabel(phase).includes('promptRepair.'));
  });
  test(`${lang}: unknown stop result never escalates to forced termination`,async()=>{

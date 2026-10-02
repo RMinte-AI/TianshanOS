@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>内存详情弹窗 目标稿</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="spec.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>body{margin:0}</style>
+</helmet>
+<div class="dc" style="width:1440px;height:1320px;position:relative;overflow:hidden">
+<dc-import name="Main" hint-size="1440px,1320px"></dc-import>
+<div style="position:absolute;inset:0;background:rgba(20,30,45,.20)"></div>
+<div class="m-float" style="position:absolute;left:360px;top:160px;width:720px;border-radius:32px;padding:24px 28px 20px">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"><span style="font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.3px">内存详情</span><button class="btn sm icon round" aria-label="关闭" style="border-color:transparent;background:var(--fill-2)"><svg class="i" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px"><div><div style="display:flex;justify-content:space-between;align-items:baseline"><span class="t-label">DRAM</span><span class="state warn">90% 已用</span></div>
+<div style="display:flex;align-items:baseline;gap:6px;margin:6px 0 10px"><span class="t-big">288</span><span class="t-unit">/ 320 KB</span></div><div class="bar"><i style="width:90%;background:var(--warn-dot)"></i></div></div><div><div style="display:flex;justify-content:space-between;align-items:baseline"><span class="t-label">PSRAM</span><span class="state ">75% 已用</span></div>
+<div style="display:flex;align-items:baseline;gap:6px;margin:6px 0 10px"><span class="t-big">6.0</span><span class="t-unit">/ 8.0 MB</span></div><div class="bar"><i style="width:75%;background:var(--accent)"></i></div></div></div>
+<div style="margin-top:24px"><div class="t-section" style="margin-bottom:8px">堆内存</div>
+<div style="display:grid;grid-template-columns:1.1fr 1fr 1fr 1fr;gap:12px;padding-bottom:8px" class="t-note"><span>类型</span><span>最大块</span><span>碎片率</span><span>历史最低</span></div>
+<div style="display:grid;grid-template-columns:1.1fr 1fr 1fr 1fr;gap:12px;padding:10px 0;border-top:1px solid var(--hair)" class="t-body num"><span style="font-weight:500">DRAM</span><span>4.0 KB</span><span>65.0%</span><span>28.0 KB</span></div><div style="display:grid;grid-template-columns:1.1fr 1fr 1fr 1fr;gap:12px;padding:10px 0;border-top:1px solid var(--hair)" class="t-body num"><span style="font-weight:500">PSRAM</span><span>1.00 MB</span><span>45.0%</span><span>0 B</span></div><div style="display:grid;grid-template-columns:1.1fr 1fr 1fr 1fr;gap:12px;padding:10px 0;border-top:1px solid var(--hair)" class="t-body num"><span style="font-weight:500">DMA</span><span>4.0 KB</span><span>-</span><span>-</span></div></div>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-top:20px;padding-top:16px;border-top:1px solid var(--hair)"><span class="t-note num">更新于 16:55:23</span><div style="display:flex;gap:8px"><button class="btn lg">关闭</button><button class="btn lg primary"><svg class="i" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3"/></svg>刷新</button></div></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1900}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

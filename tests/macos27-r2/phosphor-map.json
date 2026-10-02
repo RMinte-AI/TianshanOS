@@ -1,0 +1,351 @@
+{
+ "_说明": "82 个内联精灵图标 → Phosphor Regular 的对应表。id（ri-…）不变，只换图形；phosphor 为 null 表示保留现有自绘。由 icons_from_phosphor.py 读取。",
+ "package": "@phosphor-icons/core",
+ "version": "2.1.1",
+ "weight": "regular",
+ "license": "MIT",
+ "icons": {
+  "ri-add-line": {
+   "phosphor": "plus",
+   "use": "添加"
+  },
+  "ri-alert-line": {
+   "phosphor": "warning",
+   "use": "警告提示"
+  },
+  "ri-apps-line": {
+   "phosphor": "squares-four",
+   "use": "组件管理按钮"
+  },
+  "ri-arrow-down-line": {
+   "phosphor": "arrow-down",
+   "use": "组件下移"
+  },
+  "ri-arrow-up-line": {
+   "phosphor": "arrow-up",
+   "use": "组件上移"
+  },
+  "ri-bar-chart-line": {
+   "phosphor": "chart-bar",
+   "use": "小组件类型「柱状图」"
+  },
+  "ri-box-3-line": {
+   "phosphor": "cube",
+   "use": "规则图标候选"
+  },
+  "ri-brain-line": {
+   "phosphor": "memory",
+   "use": "内存（小组件预设）"
+  },
+  "ri-broadcast-line": {
+   "phosphor": "broadcast",
+   "use": "网络页瓦片"
+  },
+  "ri-check-line": {
+   "phosphor": "check",
+   "use": "确认 / 状态「是」"
+  },
+  "ri-checkbox-blank-circle-fill": {
+   "phosphor": null,
+   "use": "开关状态圆点（实心）",
+   "note": "实心圆点，保留自绘"
+  },
+  "ri-close-line": {
+   "phosphor": "x",
+   "use": "关闭 / 状态「否」"
+  },
+  "ri-color-filter-line": {
+   "phosphor": "palette",
+   "use": "LED「滤镜效果」",
+   "note": "用户选定 palette（调色板）"
+  },
+  "ri-computer-line": {
+   "phosphor": "desktop",
+   "use": "配置模块「设备」"
+  },
+  "ri-contrast-line": {
+   "phosphor": "circle-half",
+   "use": "LED「色彩校正」"
+  },
+  "ri-cpu-line": {
+   "phosphor": "cpu",
+   "use": "CPU 小组件"
+  },
+  "ri-dashboard-3-line": {
+   "phosphor": "circuitry",
+   "use": "LED「主板灯带」类型",
+   "note": "LED「主板灯带」类型 → circuitry（电路板）；该 id 只有这一处用法"
+  },
+  "ri-delete-bin-line": {
+   "phosphor": "trash",
+   "use": "删除"
+  },
+  "ri-download-line": {
+   "phosphor": "download-simple",
+   "use": "下载 / 导出"
+  },
+  "ri-edit-line": {
+   "phosphor": "pencil-simple",
+   "use": "编辑"
+  },
+  "ri-eject-line": {
+   "phosphor": "eject",
+   "use": "卸载 SD 卡"
+  },
+  "ri-emotion-line": {
+   "phosphor": "smiley",
+   "use": "小组件类型「图标」"
+  },
+  "ri-error-warning-line": {
+   "phosphor": "warning-circle",
+   "use": "空状态警示"
+  },
+  "ri-eye-line": {
+   "phosphor": "eye",
+   "use": "显示密码"
+  },
+  "ri-file-copy-line": {
+   "phosphor": "copy",
+   "use": "复制到剪贴板"
+  },
+  "ri-file-list-line": {
+   "phosphor": "list-bullets",
+   "use": "「日志」（小组件 / 按钮）",
+   "note": "「日志」→ list-bullets"
+  },
+  "ri-file-text-line": {
+   "phosphor": "file-text",
+   "use": "文件 / 文本"
+  },
+  "ri-focus-line": {
+   "phosphor": "gauge",
+   "use": "小组件类型「仪表」",
+   "note": "小组件类型「仪表」→ gauge（表盘）；注：旧数据里 🎯 表情也映射到这个 id"
+  },
+  "ri-folder-add-line": {
+   "phosphor": "folder-plus",
+   "use": "新建文件夹"
+  },
+  "ri-folder-line": {
+   "phosphor": "folder",
+   "use": "文件夹"
+  },
+  "ri-folder-open-line": {
+   "phosphor": "folder-open",
+   "use": "浏览"
+  },
+  "ri-gamepad-line": {
+   "phosphor": "graphics-card",
+   "use": "GPU 小组件",
+   "note": "GPU 小组件：原 Remix 用游戏手柄，不贴切 → graphics-card（显卡）"
+  },
+  "ri-global-line": {
+   "phosphor": "globe",
+   "use": "语言切换"
+  },
+  "ri-hard-drive-line": {
+   "phosphor": "hard-drive",
+   "use": "磁盘小组件"
+  },
+  "ri-home-line": {
+   "phosphor": "house",
+   "use": "根目录"
+  },
+  "ri-image-line": {
+   "phosphor": "image",
+   "use": "图片文件"
+  },
+  "ri-information-line": {
+   "phosphor": "info",
+   "use": "提示"
+  },
+  "ri-key-line": {
+   "phosphor": "key",
+   "use": "生成密钥"
+  },
+  "ri-lightbulb-flash-line": {
+   "phosphor": "lightbulb-filament",
+   "use": "LED「触摸灯」"
+  },
+  "ri-lightbulb-line": {
+   "phosphor": "lightbulb",
+   "use": "电流小组件 / 灯"
+  },
+  "ri-line-chart-line": {
+   "phosphor": "chart-line",
+   "use": "风扇曲线",
+   "note": "原先画成了柱状 → chart-line（折线）"
+  },
+  "ri-lock-line": {
+   "phosphor": "lock",
+   "use": "隐藏项 / 锁"
+  },
+  "ri-movie-line": {
+   "phosphor": "film-strip",
+   "use": "GIF 文件"
+  },
+  "ri-music-line": {
+   "phosphor": "music-notes",
+   "use": "规则图标候选"
+  },
+  "ri-network-line": {
+   "phosphor": "network",
+   "use": "网络页瓦片（以太网）"
+  },
+  "ri-notification-line": {
+   "phosphor": "bell",
+   "use": "规则图标候选"
+  },
+  "ri-numbers-line": {
+   "phosphor": "number-square-one",
+   "use": "小组件类型「数字」",
+   "note": "用户选定 number-square-one"
+  },
+  "ri-pause-line": {
+   "phosphor": "pause",
+   "use": "暂停"
+  },
+  "ri-percent-line": {
+   "phosphor": "percent",
+   "use": "小组件类型「百分比」"
+  },
+  "ri-play-line": {
+   "phosphor": "play",
+   "use": "开始 / 播放"
+  },
+  "ri-plug-line": {
+   "phosphor": "plug",
+   "use": "电压小组件"
+  },
+  "ri-progress-6-line": {
+   "phosphor": "chart-donut",
+   "use": "小组件类型「环形」"
+  },
+  "ri-qr-code-line": {
+   "phosphor": "qr-code",
+   "use": "LED 矩阵「内容」",
+   "note": "原先画成了四个方块 → qr-code"
+  },
+  "ri-question-line": {
+   "phosphor": "question",
+   "use": "未知状态"
+  },
+  "ri-record-circle-fill": {
+   "phosphor": "record",
+   "use": "小组件类型「状态」"
+  },
+  "ri-refresh-line": {
+   "phosphor": "arrow-clockwise",
+   "use": "刷新"
+  },
+  "ri-restart-line": {
+   "phosphor": "arrow-counter-clockwise",
+   "use": "重启设备",
+   "note": "重启设备；与「刷新」的顺时针箭头区分，用逆时针"
+  },
+  "ri-rocket-line": {
+   "phosphor": "rocket",
+   "use": "指令默认图标"
+  },
+  "ri-router-line": {
+   "phosphor": null,
+   "use": "DHCP 模块（Phosphor 没有路由器）",
+   "note": "Phosphor 2.1.1 没有路由器图标，保留自绘（16 栅格，描边 1.0 与 Regular 一致）"
+  },
+  "ri-save-line": {
+   "phosphor": "floppy-disk",
+   "use": "保存"
+  },
+  "ri-scan-line": {
+   "phosphor": "scan",
+   "use": "扫描 WiFi",
+   "note": "原先画成了刷新箭头，名实不符 → scan（取景框）"
+  },
+  "ri-search-line": {
+   "phosphor": "magnifying-glass",
+   "use": "搜索"
+  },
+  "ri-server-line": {
+   "phosphor": "hard-drives",
+   "use": "SSH 主机"
+  },
+  "ri-settings-line": {
+   "phosphor": "gear",
+   "use": "系统模块 / 设置"
+  },
+  "ri-shield-keyhole-line": {
+   "phosphor": "shield-check",
+   "use": "安装 CA 证书",
+   "note": "安装 CA 证书 → shield-check"
+  },
+  "ri-shield-line": {
+   "phosphor": "shield",
+   "use": "规则图标候选 / 安全"
+  },
+  "ri-shut-down-line": {
+   "phosphor": "power",
+   "use": "电源状态行"
+  },
+  "ri-signal-wifi-3-line": {
+   "phosphor": "wifi-high",
+   "use": "WiFi 瓦片"
+  },
+  "ri-smartphone-line": {
+   "phosphor": "device-mobile",
+   "use": "规则图标候选"
+  },
+  "ri-stop-circle-line": {
+   "phosphor": "stop-circle",
+   "use": "LED 停止效果"
+  },
+  "ri-stop-fill": {
+   "phosphor": "stop",
+   "use": "停止进程"
+  },
+  "ri-stop-line": {
+   "phosphor": "stop",
+   "use": "停止 / 规则图标候选"
+  },
+  "ri-sun-line": {
+   "phosphor": "sun",
+   "use": "LED 亮度"
+  },
+  "ri-temp-hot-line": {
+   "phosphor": "thermometer-simple",
+   "use": "温度小组件",
+   "note": "温度 → thermometer-simple（Phosphor 的 thermometer 带度数小圈，16px 下偏碎）"
+  },
+  "ri-text": {
+   "phosphor": "text-t",
+   "use": "LED「文字」"
+  },
+  "ri-thunderstorms-line": {
+   "phosphor": "lightning",
+   "use": "功率小组件 / 规则图标"
+  },
+  "ri-time-line": {
+   "phosphor": "clock",
+   "use": "同步时间"
+  },
+  "ri-timer-line": {
+   "phosphor": "timer",
+   "use": "运行时间"
+  },
+  "ri-tools-line": {
+   "phosphor": "wrench",
+   "use": "规则图标候选"
+  },
+  "ri-tornado-line": {
+   "phosphor": "fan",
+   "use": "风扇模块"
+  },
+  "ri-upload-line": {
+   "phosphor": "upload-simple",
+   "use": "上传 / 选择文件"
+  },
+  "ri-wifi-line": {
+   "phosphor": "wifi-high",
+   "use": "WiFi 模块"
+  }
+ }
+}

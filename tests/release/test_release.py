@@ -13,7 +13,8 @@ spec.loader.exec_module(module)
 
 class ReleaseTests(unittest.TestCase):
     def test_current_notes_match_version(self):
-        self.assertEqual(module.validate('v0.5.2', '0.5.2+fixture.1234', ROOT).name, 'v0.5.2.md')
+        version = (ROOT / 'version.txt').read_text().strip()
+        self.assertEqual(module.validate(f'v{version}', f'{version}+fixture.1234', ROOT).name, f'v{version}.md')
 
     def test_mismatch_and_missing_notes_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -47,7 +48,7 @@ class ReleaseTests(unittest.TestCase):
             github = SimpleNamespace(repository=repo, event_name=event, ref=ref)
             with self.subTest(repo=repo, event=event, ref=ref):
                 self.assertEqual(eval(expression, {'__builtins__': {}}, {'github': github, 'startsWith': str.startswith}), expected)
-        self.assertIn('needs: [build, web-tests]', release)
+        self.assertIn('needs: [build, web-tests, runtime-tests]', release)
         self.assertIn('target_commitish: ${{ github.sha }}', release)
         self.assertIn('body_path: docs/releases/${{ steps.release_tag.outputs.tag }}.md', release)
         self.assertIn('generate_release_notes: false', release)
