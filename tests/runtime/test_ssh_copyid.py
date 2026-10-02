@@ -15,6 +15,7 @@ def extract(path, name):
     return source[match.start():source.index('\n}', match.start()) + 2] + '\n'
 
 code = r'''
+#define _POSIX_C_SOURCE 200809L
 #include "platform.h"
 #include "ts_api.h"
 #include "ts_ssh_client.h"
