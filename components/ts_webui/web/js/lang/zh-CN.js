@@ -66,8 +66,14 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         "filterFadeOut": "淡出",
         "filterColorShift": "色彩偏移",
 
-        "keyVerified": "密钥“{id}”已部署到 {target}，并已验证可使用公钥登录。",
-        "keyUnverified": "密钥“{id}”已部署到 {target}，但尚未确认能否使用公钥登录。",
+        "keyVerified": "密钥“{id}”已部署到 {target}，主机已登记，并已验证可使用公钥登录。",
+        "keyUnverified": "密钥“{id}”已部署到 {target}，主机已登记，但尚未确认能否使用公钥登录。",
+        "keyRegistrationFailed": "密钥“{id}”已部署到 {target}，但主机登记失败：{reason}",
+        "keyRegistrationUnconfirmed": "密钥“{id}”已部署到 {target}，但尚未确认主机登记成功。请先检查主机列表，不要重复部署。",
+        "hostRegistrationBusy": "主机绑定受到服务保护，暂时无法登记。",
+        "hostRegistrationFull": "主机登记容量或可用内存不足。",
+        "hostRegistrationStorage": "主机记录未取得保存成功确认（{detail}）。",
+        "deployedHostsRefreshFailed": "已部署主机列表加载失败，请刷新列表核对；不要因此重复部署公钥。",
         "packApplied": "配置包已应用。",
         "filesSelected": "已选择 {count} 个文件",
         "fileErrors": "{count} 个文件读取失败：{message}",
@@ -259,6 +265,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
 
     // 通用
     common: {
+        params: '参数',
+        customTimezoneShort: '自定义时区',
+        timezoneExampleShort: '例如 CST-8',
         confirm: '确认',
         cancel: '取消',
         save: '保存',
@@ -431,6 +440,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 导航菜单
     nav: {
+        commands: '指令',
         home: '首页',
         system: '系统',
         led: 'LED 控制',
@@ -447,6 +457,24 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 首页/系统总览
     system: {
+        resourceMonitorOob: '带外管理芯片资源监控',
+        memoryDetailTitle: '内存详情',
+        lowVoltageLabel: '低电压阈值',
+        lowVoltageNote: '电压低于此值开始关机倒计时（默认 12.6 V）',
+        recoveryVoltageLabel: '恢复电压阈值',
+        shutdownDelayLabel: '关机倒计时',
+        shutdownDelayNote: '低电压后等待多久执行关机（默认 60 秒，范围 10–600 秒）',
+        recoveryHoldLabel: '恢复保持时间',
+        fanStopDelayLabel: '风扇停止延迟',
+        restoreDefaults: '恢复默认',
+        agxPowerName: 'AGX 电源',
+        lpmuPowerName: 'LPMU 电源',
+        powerRunning: '运行中',
+        powerOff: '已关闭',
+        lpmuOnline: '在线',
+        lpmuOffline: '离线',
+        lpmuUnknown: '未知',
+        cpuUsage: 'CPU 平均使用率',
         title: '系统总览',
         resourceMonitor: '资源监控',
         detail: '详情',
@@ -621,6 +649,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // LED 控制
     led: {
+        settingsTitle: 'LED 设置',
         title: 'LED 控制',
         devices: 'LED 设备',
         brightness: '亮度',
@@ -715,6 +744,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 文件管理
     files: {
+        pickImageTitle: '选择图片',
+        rootDir: '根目录',
+        pickOrDrop: '选择文件，或拖放到此处',
+        selectedBrief: '已选 {n} 项',
         title: '文件管理',
         browser: '文件浏览器',
         currentPath: '当前路径',
@@ -761,6 +794,20 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // SSH 命令
     ssh: {
+        cmdIdPlaceholderShort: '例如：restart_nginx',
+        runMode: '运行方式',
+        nohupShort: '后台运行 (nohup)',
+        serviceModeNote: '开启后可设置下方就绪判定',
+        readyMatch: '就绪匹配',
+        readyMatchPh: '例如：Running on',
+        failMatchPh: '例如：error|failed',
+        readyTimeoutSec: '就绪超时 (秒)',
+        pollIntervalMs: '检测间隔 (毫秒)',
+        outputMatchTitle: '输出匹配与变量',
+        expectMatch: '期望匹配',
+        extractRegex: '提取正则',
+        stopOnHit: '命中即停止',
+        timeoutSec: '超时 (秒)',
         title: 'SSH 命令',
         hosts: '主机列表',
         commands: '指令',
@@ -887,6 +934,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 安全
     security: {
+        logoutBtn: '退出登录',
         title: '安全设置',
         authentication: '身份认证',
         currentPassword: '当前密码',
@@ -915,6 +963,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // OTA 升级
     ota: {
+        includeWww: '同时升级 www',
+        skipCertVerify: '跳过证书校验',
+        fromFile: '从文件升级',
         title: 'OTA 升级',
         firmwareUpgrade: '固件升级',
         currentVersion: '当前版本',
@@ -962,6 +1013,21 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 自动化
     automation: {
+        ruleShowPanel: '显示在面板',
+        ruleAllowManualTrigger: '允许手动触发',
+        cooldownShort: '冷却时间',
+        authHeaderShort: 'Authorization 头',
+        jsonPathNoteRest: '留空取整个响应；点击上方字段自动填入',
+        jsonPathNoteWs: '留空取整个消息',
+        jsonPathNoteSio: '留空取整个事件数据',
+        sioConfigTitleFull: 'Socket.IO 配置（v4，使用 HTTP/HTTPS 地址）',
+        eventNameShort: '留空自动发现',
+        autoDiscoverShort: '自动发现所有 JSON 字段',
+        sshHostNote: '在安全页添加',
+        cmdRow: '指令',
+        cmdRowNote: '在指令页创建',
+        cmdDetailTitle: '指令详情（选择指令后显示）',
+        optionalTag: '可选',
         title: '自动化引擎',
         status: '引擎状态',
         sources: '数据源',
@@ -1215,6 +1281,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 登录
     login: {
+        dialogTitle: '登录 TianshanOS',
         title: '登录',
         welcome: 'TianshanOS',
         username: '用户名',
@@ -1746,6 +1813,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 网络页面
     networkPage: {
+        wifiScanTitle: 'WiFi 扫描',
+        noClientBrief: '暂无客户端',
+        ifaceLabel: '接口',
+        lpmuAccessBtn: '通过 LPMU 接入',
         scanning: '扫描中...',
         noNetwork: '未发现网络',
         hiddenNetwork: '(隐藏网络)',
@@ -2222,6 +2293,25 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 安全页面
     securityPage: {
+        previewRowLabel: '配置内容',
+        previewAfterSelect: '选择文件后显示预览',
+        hideShort: '隐藏',
+        deployKeyBrief: '部署公钥',
+        sshLoginPassword: 'SSH 登录密码',
+        orgBrief: '组织',
+        deptBrief: '部门',
+        csrPemLabel: 'CSR (PEM)',
+        csrPlaceholder: '生成后显示在此',
+        csrGenerateTitle: '生成证书签名请求',
+        genHttpsKeyDescFull: '为设备生成 ECDSA P-256 密钥对，用于 mTLS 身份验证。',
+        mismatchTitle: '安全警告：主机指纹不匹配！',
+        mismatchAdvice: '建议：如果您确认服务器已重装或密钥已更新，可以点击「更新主机密钥」移除旧记录，然后重新连接以信任新密钥。',
+        packExportPick: '选择要导出的文件',
+        dirShort: '目录',
+        recipientCert: '接收方设备证书',
+        tscfgLabel: '配置包 (.tscfg)',
+        noPacks: '暂无配置包',
+        adminPasswordDescBrief: '设置 admin 新密码不会影响当前已登录会话。',
         pageTitle: '安全与连接',
         httpsServerKey: 'HTTPS 服务器密钥',
         generateCsr: '生成证书签名请求',
@@ -2674,6 +2764,19 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 自动化页面
     automationPage: {
+        actionCliHintShort: '支持 gpio、device、fan、led、net 等',
+        quickAgxOn: 'AGX 开机',
+        quickAgxRestart: 'AGX 重启',
+        quickLedEffect: 'LED 动画',
+        actionIdHintShort: '字母、数字和下划线',
+        actionIdPh: '如: restart_agx',
+        asyncHintShort: 'API 立即返回，动作在后台队列执行',
+        ctrlFill: '填充',
+        ctrlTypeHint: '灯带：填充 · 动画 · 亮度 · 关闭；矩阵屏另有文本 · 图像 · QR 码 · 滤镜 · 停止滤镜 · 停止文本',
+        logMsgHintShort: '支持变量：${变量名}',
+        uptimeSecsBrief: '{n} 秒',
+        uptimeMinSecBrief: '{m} 分 {s} 秒',
+        uptimeHrMinBrief: '{h} 时 {m} 分',
         // 状态
         stateRunning: '运行中',
         statePaused: '已暂停',
@@ -2984,6 +3087,27 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 风扇控制
     fanPage: {
+        modeSmart: '智能',
+        autoStateSmart: '智能模式',
+        smartHelpTitle: 'Tianshan Thermal Intelligence 智能热控模式',
+        smartHelpBody: '结合温度趋势与调速历史，动态调整散热需求。升温风险增加时及时响应，温度趋稳时减少不必要的加速，让调节更平稳。智能模式不会在普通调节中低于基础曲线或突破配置上限；触发高温保护或温度数据失效时，按相应的独立策略运行。',
+        fanRow: '风扇',
+        tempVarBindingTitle: '温度变量绑定',
+        unbindBtn: '解除绑定',
+        curveNodes: '曲线节点',
+        addNode: '添加节点',
+        nodeN: '节点 {n}',
+        deleteNode: '删除节点',
+        limits: '限制',
+        minSpeed: '最小转速',
+        maxSpeed: '最大转速',
+        tempDiff: '温度回差',
+        minIntervalShort: '最小调节间隔',
+        saveCurve: '保存曲线',
+        autoHelpBrief: '「自动」按内置温度—转速映射运行；「曲线」使用你在曲线管理中定义的节点，并可绑定温度变量。',
+        autoHelpGotIt: '知道了',
+        guardTempBrief: '安全参考',
+        predictedTempBrief: '45 秒预测',
         unavailable: '风扇状态不可用',
         noFans: '无可用风扇',
         selectVariable: '-- 选择变量 --',
@@ -3088,6 +3212,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // 数据监控组件
     dataWidget: {
+        addWidget: '添加组件',
+        editWidget: '编辑组件',
         // 组件类型
         typeRing: '环形进度',
         typeRingDesc: '圆环百分比，适合 CPU/内存/磁盘使用率',
@@ -3216,6 +3342,34 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
 
     // LED 控制
     ledPage: {
+        filterGroup: '滤镜',
+        autoPosNote: '打开自动位置时不可用',
+        animationGroup: '动画',
+        qrTabSp: 'QR 码',
+        contentGroup: '内容',
+        styleGroup: '样式',
+        textGroup: '文本',
+        alignShortLeft: '左',
+        alignShortCenter: '中',
+        alignShortRight: '右',
+        scrollDirNone: '无',
+        ccWhiteBalanceTitle: '白平衡（RGB 缩放）· 默认 1.0，小于 1.0 减弱该通道',
+        ccRed: '红 R',
+        ccGreen: '绿 G',
+        ccBlue: '蓝 B',
+        ccAdjust: '调整',
+        ccGammaNote: '1.0 线性；大于 1.0 中间调变暗',
+        ccBrightnessNote: '整体亮度缩放',
+        ccSaturationNote: '0 为灰度，1.0 不变',
+        ccBackup: '备份',
+        ccConfigFile: '配置文件',
+        ccExportSd: '导出到 SD 卡',
+        ccImportSd: '从 SD 卡导入',
+        paramsRow: '参数',
+        paramsVary: '随滤镜变化',
+        descBoard: '主板状态灯带 (28 颗 WS2812)',
+        descTouch: '触摸指示灯 (1 颗 WS2812)',
+        descMatrix: 'LED 矩阵屏 (16×16)',
         // 页面标题
         title: 'LED 控制',
         refresh: '刷新',
@@ -3378,6 +3532,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // PKI/安全配置
     pkiRepair: {
+        colon: '：',
         "unknown": "未知／待确认",
         "none": "未安装设备证书",
         "invalid": "证书无法解析",
@@ -3472,6 +3627,20 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
 
     // UI 动态文本
     ui: {
+        exportWithHostBody: '是否同时导出该指令依赖的主机配置？推荐一起导出。',
+        unmount: '卸载',
+        exportAnyway: '仍要导出',
+        rollbackReboot: '回滚并重启',
+        abortUpgrade: '中止升级',
+        trustConnect: '信任并连接',
+        copyBtn: '复制',
+        fingerprintTitle: '主机指纹',
+        exportWithHost: '导出（含主机）',
+        exportCmdOnly: '仅导出指令',
+        fingerprintLabel: '指纹 (SHA256)',
+        wifiConnectTitle: '连接 {ssid}',
+        wifiPasswordPh: '输入 WiFi 密码',
+        variablesTitle: '变量：{name}',
         // 语言
         chinese: '中文',
         english: 'EN',
@@ -3663,6 +3832,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
 
     // 终端页面
     terminal: {
+        terminalHintBrief: '提示：输入 <code>help</code> 查看命令 · <code>Ctrl+C</code> 中断 · <code>Ctrl+L</code> 清屏 · <code>↑↓</code> 历史',
         sshCapacity: "结果通知通道暂时繁忙，本次 SSH 连接未启动，请稍后重试。",
         sshCreateFailed: "未能创建 SSH 会话，请稍后重试。",
         sshOpenFailed: "未能启动远端交互式终端，请检查远端是否允许此类连接。",
@@ -3724,6 +3894,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
 
     // 内存页面
     memoryPage: {
+        heapShort: '堆内存',
+        updatedAt: '更新于 {time}',
         staticMemory: '静态内存占用 (编译时固定)',
         dataDesc: '初始化全局变量',
         bssDesc: '未初始化全局变量',

@@ -55,6 +55,7 @@ static struct {
     bool initialized;
     nvs_handle_t nvs;
     SemaphoreHandle_t mutex;
+    SemaphoreHandle_t sd_mutex; /* Serialize restore input with backup output. */
 } s_state = {0};
 
 /*===========================================================================*/
@@ -76,6 +77,7 @@ static uint32_t get_current_time(void)
 /* 前向声明 - SD 卡操作 */
 static bool is_sdcard_mounted(void);
 static void delete_host_file(const char *id);
+static esp_err_t host_add_guarded(const ts_ssh_host_config_t *cfg, bool sync_sdcard);
 
 /*===========================================================================*/
 /*                          Initialization                                    */
@@ -84,8 +86,6 @@ static void delete_host_file(const char *id);
 /** 延迟导出标志 */
 static bool s_hosts_pending_export = false;
 
-/** 正在从 SD 卡加载中（禁止触发同步） */
-static bool s_loading_from_sdcard = false;
 static TaskHandle_t initial_loader;
 
 /**
@@ -110,7 +110,7 @@ static void hosts_deferred_export_task(void *arg)
     /* 
      * 配置加载优先级：SD 卡 (.tscfg > .json) > NVS
      * 
-     * 如果 SD 卡有配置文件，以 SD 卡为权威来源（清空 NVS 后导入）
+     * 如果 SD 卡有配置文件，逐条合并（保留其他 NVS 记录）
      * 如果 SD 卡没有配置文件，保留 NVS 数据并导出到 SD 卡
      */
     ESP_LOGI(TAG, "Deferred: checking SD card for config (NVS has %d hosts)...", (int)nvs_count);
@@ -133,17 +133,8 @@ static void hosts_deferred_export_task(void *arg)
     }
     
     if (sdcard_has_config) {
-        /* SD 卡有配置，清空 NVS 后导入（SD 卡为权威来源） */
-        ESP_LOGI(TAG, "SD card has config, clearing NVS and importing...");
-        esp_err_t cleared = ts_ssh_hosts_config_clear();
-        if (cleared != ESP_OK) {
-            s_loading_from_sdcard = false;
-            initial_loader = NULL;
-            vTaskDelete(NULL);
-            return;
-        }
-
-        esp_err_t import_ret = ts_ssh_hosts_config_import_from_sdcard(false);
+        ESP_LOGI(TAG, "SD card has config, merging into NVS...");
+        esp_err_t import_ret = ts_ssh_hosts_config_import_from_sdcard(true);
         size_t count = ts_ssh_hosts_config_count();
         
         if (import_ret == ESP_OK) {
@@ -179,10 +170,17 @@ esp_err_t ts_ssh_hosts_config_init(void)
         return ESP_ERR_NO_MEM;
     }
     
+    s_state.sd_mutex = xSemaphoreCreateMutex();
+    if (!s_state.sd_mutex) {
+        vSemaphoreDelete(s_state.mutex);
+        return ESP_ERR_NO_MEM;
+    }
+
     /* 打开 NVS */
     esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &s_state.nvs);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(ret));
+        vSemaphoreDelete(s_state.sd_mutex);
         vSemaphoreDelete(s_state.mutex);
         return ret;
     }
@@ -215,6 +213,7 @@ void ts_ssh_hosts_config_deinit(void)
     }
     
     nvs_close(s_state.nvs);
+    vSemaphoreDelete(s_state.sd_mutex);
     vSemaphoreDelete(s_state.mutex);
     s_state.initialized = false;
 }
@@ -228,7 +227,7 @@ bool ts_ssh_hosts_config_is_initialized(void)
 /*                          CRUD Operations                                   */
 /*===========================================================================*/
 
-static esp_err_t host_add_impl(const ts_ssh_host_config_t *config) {
+static esp_err_t host_add_impl(const ts_ssh_host_config_t *config, bool sync_sdcard) {
     if (!s_state.initialized || !config || !config->id[0] || !config->host[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -252,8 +251,11 @@ static esp_err_t host_add_impl(const ts_ssh_host_config_t *config) {
                 existing_index = i;
                 break;
             }
-        } else if (free_index < 0) {
-            free_index = i;
+        } else if (ret == ESP_ERR_NVS_NOT_FOUND) {
+            if (free_index < 0) free_index = i;
+        } else {
+            xSemaphoreGive(s_state.mutex);
+            return ret == ESP_OK ? ESP_ERR_INVALID_SIZE : ret;
         }
     }
     
@@ -290,8 +292,8 @@ static esp_err_t host_add_impl(const ts_ssh_host_config_t *config) {
                  existing_index >= 0 ? "Updated" : "Added",
                  config->id, config->username, config->host, entry.port);
         
-        /* 同步到 SD 卡（加载期间不触发，避免文件描述符用尽） */
-        if (!s_loading_from_sdcard) {
+        /* Only this import's writes skip backup; concurrent normal adds still sync. */
+        if (sync_sdcard) {
             ts_ssh_hosts_config_sync_to_sdcard();
         }
     }
@@ -352,21 +354,25 @@ esp_err_t ts_ssh_hosts_config_get(const char *id, ts_ssh_host_config_t *config)
     for (int i = 0; i < TS_SSH_HOSTS_MAX; i++) {
         make_nvs_key(i, key, sizeof(key));
         len = sizeof(entry);
-        if (nvs_get_blob(s_state.nvs, key, &entry, &len) == ESP_OK && len == sizeof(entry)) {
-            if (strcmp(entry.id, id) == 0) {
-                memset(config, 0, sizeof(*config));
-                strncpy(config->id, entry.id, sizeof(config->id) - 1);
-                strncpy(config->host, entry.host, sizeof(config->host) - 1);
-                config->port = entry.port;
-                strncpy(config->username, entry.username, sizeof(config->username) - 1);
-                config->auth_type = (ts_ssh_host_auth_type_t)entry.auth_type;
-                strncpy(config->keyid, entry.keyid, sizeof(config->keyid) - 1);
-                config->created_time = entry.created_time;
-                config->last_used_time = entry.last_used_time;
-                config->enabled = entry.enabled != 0;
-                ret = ESP_OK;
-                break;
-            }
+        esp_err_t read_ret = nvs_get_blob(s_state.nvs, key, &entry, &len);
+        if (read_ret == ESP_ERR_NVS_NOT_FOUND) continue;
+        if (read_ret != ESP_OK || len != sizeof(entry)) {
+            ret = read_ret == ESP_OK ? ESP_ERR_INVALID_SIZE : read_ret;
+            break;
+        }
+        if (strcmp(entry.id, id) == 0) {
+            memset(config, 0, sizeof(*config));
+            strncpy(config->id, entry.id, sizeof(config->id) - 1);
+            strncpy(config->host, entry.host, sizeof(config->host) - 1);
+            config->port = entry.port;
+            strncpy(config->username, entry.username, sizeof(config->username) - 1);
+            config->auth_type = (ts_ssh_host_auth_type_t)entry.auth_type;
+            strncpy(config->keyid, entry.keyid, sizeof(config->keyid) - 1);
+            config->created_time = entry.created_time;
+            config->last_used_time = entry.last_used_time;
+            config->enabled = entry.enabled != 0;
+            ret = ESP_OK;
+            break;
         }
     }
     
@@ -567,9 +573,9 @@ esp_err_t ts_ssh_hosts_config_iterate(ts_ssh_host_iterator_cb_t callback,
     if (!s_state.initialized || !callback) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
-    
+
     char key[16];
     nvs_host_entry_t entry;
     ts_ssh_host_config_t cfg;
@@ -577,43 +583,48 @@ esp_err_t ts_ssh_hosts_config_iterate(ts_ssh_host_iterator_cb_t callback,
     size_t total = 0;       /* 总有效条目数 */
     size_t returned = 0;    /* 实际返回给回调的数量 */
     size_t skipped = 0;     /* 跳过的条目数（offset） */
-    
+
     for (int i = 0; i < TS_SSH_HOSTS_MAX; i++) {
         make_nvs_key(i, key, sizeof(key));
         len = sizeof(entry);
-        if (nvs_get_blob(s_state.nvs, key, &entry, &len) == ESP_OK && len == sizeof(entry)) {
-            total++;
-            
-            /* 处理分页偏移 */
-            if (skipped < offset) {
-                skipped++;
-                continue;
-            }
-            
-            /* 处理分页限制 */
-            if (limit > 0 && returned >= limit) {
-                continue;  /* 继续计数但不回调 */
-            }
-            
-            /* 转换并回调 */
-            host_entry_to_config(&entry, &cfg);
-            bool cont = callback(&cfg, returned, user_data);
-            returned++;
-            
-            if (!cont) {
-                break;  /* 回调请求停止 */
-            }
+        esp_err_t ret = nvs_get_blob(s_state.nvs, key, &entry, &len);
+        if (ret == ESP_ERR_NVS_NOT_FOUND) continue;
+        if (ret != ESP_OK || len != sizeof(entry)) {
+            xSemaphoreGive(s_state.mutex);
+            return ret == ESP_OK ? ESP_ERR_INVALID_SIZE : ret;
+        }
+        total++;
+
+        /* 处理分页偏移 */
+        if (skipped < offset) {
+            skipped++;
+            continue;
+        }
+
+        /* 处理分页限制 */
+        if (limit > 0 && returned >= limit) {
+            continue;  /* 继续计数但不回调 */
+        }
+
+        /* 转换并回调 */
+        host_entry_to_config(&entry, &cfg);
+        bool cont = callback(&cfg, returned, user_data);
+        returned++;
+
+        if (!cont) {
+            break;  /* 回调请求停止 */
         }
     }
-    
+
     xSemaphoreGive(s_state.mutex);
-    
+
     if (total_count) {
         *total_count = total;
     }
-    
+
     return ESP_OK;
 }
+
 
 /*===========================================================================*/
 /*                    SD Card Export/Import (持久化备份)                       */
@@ -896,6 +907,7 @@ static esp_err_t load_hosts_from_dir(void)
     
     int loaded = 0;
     int skipped = 0;
+    esp_err_t first_error = ESP_OK;
     struct dirent *entry;
     
     /* 使用堆分配避免栈溢出 */
@@ -931,6 +943,9 @@ static esp_err_t load_hosts_from_dir(void)
         
         /* 限制文件名长度避免缓冲区溢出 */
         if (len > 60) {
+            skipped++;
+            if (first_error == ESP_OK) first_error = ESP_ERR_INVALID_SIZE;
+            ESP_LOGW(TAG, "Host filename too long: %s", entry->d_name);
             continue;
         }
         
@@ -952,6 +967,9 @@ static esp_err_t load_hosts_from_dir(void)
             filepath, &content, &content_len, &used_tscfg);
         
         if (ret != ESP_OK) {
+            skipped++;
+            if (first_error == ESP_OK) first_error = ret;
+            ESP_LOGW(TAG, "Failed to load host file %s: %s", filepath, esp_err_to_name(ret));
             continue;
         }
         
@@ -962,22 +980,26 @@ static esp_err_t load_hosts_from_dir(void)
         if (!root) {
             ESP_LOGW(TAG, "Failed to parse JSON from %s", filepath);
             skipped++;
+            if (first_error == ESP_OK) first_error = ESP_ERR_INVALID_ARG;
             continue;
         }
         
         /* 解析并添加 */
         memset(cfg, 0, sizeof(ts_ssh_host_config_t));
-        if (json_to_host(root, cfg) == ESP_OK && cfg->host[0] && cfg->username[0]) {
-            esp_err_t add_ret = ts_ssh_hosts_config_add(cfg);
-            if (add_ret == ESP_OK) {
-                loaded++;
-                ESP_LOGD(TAG, "Loaded host from file: %s%s", cfg->id, 
-                         used_tscfg ? " (encrypted)" : "");
-            } else {
-                skipped++;
-            }
+        ret = json_to_host(root, cfg);
+        if (ret == ESP_OK && (!cfg->id[0] || !cfg->host[0] || !cfg->username[0]))
+            ret = ESP_ERR_INVALID_ARG;
+        if (ret == ESP_OK)
+            ret = host_add_guarded(cfg, false);
+        if (ret == ESP_OK) {
+            loaded++;
+            ESP_LOGD(TAG, "Loaded host from file: %s%s", cfg->id,
+                     used_tscfg ? " (encrypted)" : "");
         } else {
             skipped++;
+            if (first_error == ESP_OK) first_error = ret;
+            ESP_LOGW(TAG, "Failed to import host %s from %s: %s",
+                     cfg->id, filepath, esp_err_to_name(ret));
         }
         
         cJSON_Delete(root);
@@ -986,13 +1008,10 @@ static esp_err_t load_hosts_from_dir(void)
     free(cfg);
     closedir(dir);
     
-    if (loaded > 0) {
-        ESP_LOGI(TAG, "Loaded %d SSH hosts from directory: %s (skipped %d)", 
-                 loaded, TS_SSH_HOSTS_SDCARD_DIR, skipped);
-        return ESP_OK;
-    }
-    
-    return ESP_ERR_NOT_FOUND;
+    ESP_LOGI(TAG, "SSH host import: loaded %d, failed %d, first error %s",
+             loaded, skipped, esp_err_to_name(first_error));
+    if (first_error != ESP_OK) return first_error;
+    return loaded > 0 ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
 /**
@@ -1022,15 +1041,20 @@ esp_err_t ts_ssh_hosts_config_export_to_sdcard(void)
         return ESP_ERR_NOT_FOUND;
     }
     
+    /* Lock order: SD -> NVS for backup, SD -> binding -> NVS for import.
+     * Normal registration only queues backup, never waits for this lock. */
+    xSemaphoreTake(s_state.sd_mutex, portMAX_DELAY);
     /* 确保独立文件目录存在 */
     esp_err_t ret = ensure_hosts_dir();
     if (ret != ESP_OK) {
+        xSemaphoreGive(s_state.sd_mutex);
         return ret;
     }
     
     /* 只导出到独立文件（不再生成主配置文件） */
     int count = 0;
     ret = ts_ssh_hosts_config_iterate(host_export_iterator_cb, &count, 0, 0, NULL);
+    xSemaphoreGive(s_state.sd_mutex);
     
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "Exported %d SSH hosts to %s/", count, TS_SSH_HOSTS_SDCARD_DIR);
@@ -1049,24 +1073,19 @@ esp_err_t ts_ssh_hosts_config_import_from_sdcard(bool merge)
         return ESP_ERR_NOT_FOUND;
     }
     
-    /* 设置加载标志，禁止 add 函数触发同步 */
-    s_loading_from_sdcard = true;
-    
+    xSemaphoreTake(s_state.sd_mutex, portMAX_DELAY);
     /* 如果不是合并模式，先清空现有配置 */
     if (!merge) {
         esp_err_t cleared = ts_ssh_hosts_config_clear();
         if (cleared != ESP_OK) {
-            s_loading_from_sdcard = false;
+            xSemaphoreGive(s_state.sd_mutex);
             return cleared;
         }
     }
     
     /* 只从目录加载独立文件（.tscfg 优先于 .json） */
     esp_err_t ret = load_hosts_from_dir();
-    
-    /* 清除加载标志 */
-    s_loading_from_sdcard = false;
-    
+    xSemaphoreGive(s_state.sd_mutex);
     return ret;
 }
 
@@ -1093,20 +1112,29 @@ void ts_ssh_hosts_config_sync_to_sdcard(void)
     xTaskCreate(hosts_async_sync_task, "ssh_host_sync", 8192, NULL, 2, NULL);
 }
 
-esp_err_t ts_ssh_hosts_config_add(const ts_ssh_host_config_t *cfg) {
+static esp_err_t host_add_guarded(const ts_ssh_host_config_t *cfg, bool sync_sdcard) {
     if (!cfg)
         return ESP_ERR_INVALID_ARG;
     ts_ssh_binding_lock();
     ts_ssh_host_config_t old;
     esp_err_t got = ts_ssh_hosts_config_get(cfg->id, &old);
+    if (got != ESP_OK && got != ESP_ERR_NOT_FOUND) {
+        ts_ssh_binding_unlock();
+        return got;
+    }
     bool changed =
         got == ESP_OK && (strcmp(old.host, cfg->host) || old.port != cfg->port ||
                           strcmp(old.username, cfg->username) || strcmp(old.keyid, cfg->keyid) ||
                           old.auth_type != cfg->auth_type);
-    esp_err_t ret = (changed || got == ESP_ERR_NOT_FOUND) && ts_ssh_service_host_protected(cfg->id) ? ESP_ERR_INVALID_STATE
-                                                                      : host_add_impl(cfg);
+    bool protected = got == ESP_ERR_NOT_FOUND
+                         ? ts_ssh_service_host_runtime_protected(cfg->id)
+                         : changed && ts_ssh_service_host_protected(cfg->id);
+    esp_err_t ret = protected ? ESP_ERR_INVALID_STATE : host_add_impl(cfg, sync_sdcard);
     ts_ssh_binding_unlock();
     return ret;
+}
+esp_err_t ts_ssh_hosts_config_add(const ts_ssh_host_config_t *cfg) {
+    return host_add_guarded(cfg, true);
 }
 esp_err_t ts_ssh_hosts_config_remove(const char *id) {
     if (!id)

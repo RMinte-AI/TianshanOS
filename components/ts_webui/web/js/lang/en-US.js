@@ -66,8 +66,14 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         "filterFadeOut": "Fade out",
         "filterColorShift": "Color shift",
 
-        "keyVerified": "Key “{id}” was deployed to {target}; public-key sign-in was verified.",
-        "keyUnverified": "Key “{id}” was deployed to {target}, but public-key sign-in is unconfirmed.",
+        "keyVerified": "Key “{id}” was deployed to {target}; the host was registered and public-key sign-in was verified.",
+        "keyUnverified": "Key “{id}” was deployed to {target}; the host was registered, but public-key sign-in is unconfirmed.",
+        "keyRegistrationFailed": "Key “{id}” was deployed to {target}, but host registration failed: {reason}",
+        "keyRegistrationUnconfirmed": "Key “{id}” was deployed to {target}, but host registration is unconfirmed. Check the host list before deploying again.",
+        "hostRegistrationBusy": "The host binding is protected by a service and cannot be registered right now.",
+        "hostRegistrationFull": "Host registration capacity or available memory is insufficient.",
+        "hostRegistrationStorage": "Saving the host record was not confirmed ({detail}).",
+        "deployedHostsRefreshFailed": "The deployed-host list could not be loaded. Refresh it to check; do not deploy the public key again because of this error.",
         "packApplied": "The configuration package was applied.",
         "filesSelected": "{count} files selected",
         "fileErrors": "{count} files could not be read: {message}",
@@ -259,6 +265,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
 
     // Common
     common: {
+        params: 'Parameters',
+        customTimezoneShort: 'Custom timezone',
+        timezoneExampleShort: 'e.g. CST-8',
         confirm: 'Confirm',
         cancel: 'Cancel',
         save: 'Save',
@@ -431,6 +440,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Navigation
     nav: {
+        commands: 'SSH Commands',
         home: 'Home',
         system: 'System',
         led: 'LED Control',
@@ -447,6 +457,24 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // System Overview
     system: {
+        resourceMonitorOob: 'Management Chip Resources',
+        memoryDetailTitle: 'Memory Details',
+        lowVoltageLabel: 'Low voltage threshold',
+        lowVoltageNote: 'Shutdown countdown starts when voltage falls below this value (default 12.6 V)',
+        recoveryVoltageLabel: 'Recovery voltage threshold',
+        shutdownDelayLabel: 'Shutdown countdown',
+        shutdownDelayNote: 'How long to wait after low voltage before shutting down (default 60 s, range 10–600 s)',
+        recoveryHoldLabel: 'Recovery hold time',
+        fanStopDelayLabel: 'Fan stop delay',
+        restoreDefaults: 'Restore defaults',
+        agxPowerName: 'AGX Power',
+        lpmuPowerName: 'LPMU Power',
+        powerRunning: 'Running',
+        powerOff: 'Off',
+        lpmuOnline: 'Online',
+        lpmuOffline: 'Offline',
+        lpmuUnknown: 'Unknown',
+        cpuUsage: 'Average CPU usage',
         title: 'System Overview',
         resourceMonitor: 'Resource Monitor',
         detail: 'Details',
@@ -621,6 +649,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // LED Control
     led: {
+        settingsTitle: 'LED Settings',
         title: 'LED Control',
         devices: 'LED Devices',
         brightness: 'Brightness',
@@ -715,6 +744,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // File Manager
     files: {
+        pickImageTitle: 'Select Image',
+        rootDir: 'Root',
+        pickOrDrop: 'Choose files, or drop them here',
+        selectedBrief: '{n} selected',
         title: 'File Manager',
         browser: 'File Browser',
         currentPath: 'Current Path',
@@ -761,6 +794,20 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // SSH Commands
     ssh: {
+        cmdIdPlaceholderShort: 'e.g. restart_nginx',
+        runMode: 'Run mode',
+        nohupShort: 'Run in background (nohup)',
+        serviceModeNote: 'Enable to configure the readiness checks below',
+        readyMatch: 'Ready match',
+        readyMatchPh: 'e.g. Running on',
+        failMatchPh: 'e.g. error|failed',
+        readyTimeoutSec: 'Ready timeout (s)',
+        pollIntervalMs: 'Check interval (ms)',
+        outputMatchTitle: 'Output match & variable',
+        expectMatch: 'Expected match',
+        extractRegex: 'Extract regex',
+        stopOnHit: 'Stop on match',
+        timeoutSec: 'Timeout (s)',
         restartToTakeEffect: "Restart the system to apply the changes.",
         note: "Notes",
         useConfigHost: "Use the host from the configuration",
@@ -907,6 +954,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Security
     security: {
+        logoutBtn: 'Log out',
         title: 'Security Settings',
         authentication: 'Authentication',
         currentPassword: 'Current Password',
@@ -935,6 +983,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // OTA Update
     ota: {
+        includeWww: 'Also upgrade www',
+        skipCertVerify: 'Skip certificate check',
+        fromFile: 'Upgrade from file',
         title: 'OTA Update',
         firmwareUpgrade: 'Firmware Upgrade',
         currentVersion: 'Current Version',
@@ -982,6 +1033,21 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Automation
     automation: {
+        ruleShowPanel: 'Show on panel',
+        ruleAllowManualTrigger: 'Allow manual trigger',
+        cooldownShort: 'Cooldown',
+        authHeaderShort: 'Authorization header',
+        jsonPathNoteRest: 'Leave empty for the whole response; click a field above to fill',
+        jsonPathNoteWs: 'Leave empty for the whole message',
+        jsonPathNoteSio: 'Leave empty for the whole event data',
+        sioConfigTitleFull: 'Socket.IO config (v4, HTTP/HTTPS address)',
+        eventNameShort: 'Leave empty to auto-discover',
+        autoDiscoverShort: 'Auto-discover all JSON fields',
+        sshHostNote: 'Add on the Security page',
+        cmdRow: 'Command',
+        cmdRowNote: 'Create on the Commands page',
+        cmdDetailTitle: 'Command details (shown after choosing a command)',
+        optionalTag: 'Optional',
         displayQrCode: "Display QR code",
         displayImage: "Display image",
         programEffect: "Animation",
@@ -1066,6 +1132,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         packTypeSource: 'Data source',
         packTypeRule: 'Automation rule',
         packTypeAction: 'Action template',
+        selectCommand: 'Select Command',
         // Add source modal
         addSourceTitle: 'Add External Data Source',
         restTab: 'REST API',
@@ -1256,6 +1323,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Login
     login: {
+        dialogTitle: 'Log in to TianshanOS',
         title: 'Login',
         welcome: 'TianshanOS',
         username: 'Username',
@@ -1785,6 +1853,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Network Page
     networkPage: {
+        wifiScanTitle: 'WiFi Scan',
+        noClientBrief: 'No clients yet',
+        ifaceLabel: 'Interface',
+        lpmuAccessBtn: 'Access via LPMU',
         scanning: 'Scanning...',
         noNetwork: 'No networks found',
         hiddenNetwork: '(Hidden Network)',
@@ -2261,6 +2333,25 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Security Page
     securityPage: {
+        previewRowLabel: 'Config content',
+        previewAfterSelect: 'Preview appears after selecting a file',
+        hideShort: 'Hidden',
+        deployKeyBrief: 'Deploy Public Key',
+        sshLoginPassword: 'SSH login password',
+        orgBrief: 'Organization',
+        deptBrief: 'Department',
+        csrPemLabel: 'CSR (PEM)',
+        csrPlaceholder: 'Shown here after generation',
+        csrGenerateTitle: 'Generate Certificate Signing Request',
+        genHttpsKeyDescFull: 'Generate ECDSA P-256 key pair for mTLS authentication.',
+        mismatchTitle: 'Security Warning: Host Key Mismatch!',
+        mismatchAdvice: 'Suggestion: If you confirm the server was reinstalled or key was updated, click "Update Host Key" to remove old record, then reconnect to trust new key.',
+        packExportPick: 'Select files to export',
+        dirShort: 'Directory',
+        recipientCert: 'Recipient device certificate',
+        tscfgLabel: 'Config pack (.tscfg)',
+        noPacks: 'No config packs',
+        adminPasswordDescBrief: 'Setting a new admin password does not affect currently active sessions.',
         pageTitle: 'Security & Connectivity',
         httpsServerKey: 'HTTPS Server Key',
         generateCsr: 'Generate Certificate Signing Request',
@@ -2711,6 +2802,19 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Automation Page
     automationPage: {
+        actionCliHintShort: 'Supports gpio, device, fan, led, net, etc.',
+        quickAgxOn: 'AGX Power On',
+        quickAgxRestart: 'AGX Restart',
+        quickLedEffect: 'LED Effect',
+        actionIdHintShort: 'Letters, digits and underscores',
+        actionIdPh: 'e.g. restart_agx',
+        asyncHintShort: 'API returns immediately; the action runs in the background queue',
+        ctrlFill: 'Fill',
+        ctrlTypeHint: 'Strips: fill · effect · brightness · off; matrix also: text · image · QR code · filter · stop filter · stop text',
+        logMsgHintShort: 'Supports variables: ${var_name}',
+        uptimeSecsBrief: '{n} s',
+        uptimeMinSecBrief: '{m} min {s} s',
+        uptimeHrMinBrief: '{h} h {m} min',
         // States
         stateRunning: 'Running',
         statePaused: 'Paused',
@@ -3021,6 +3125,27 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Fan Control
     fanPage: {
+        modeSmart: 'Smart',
+        autoStateSmart: 'Smart Mode',
+        smartHelpTitle: 'Tianshan Thermal Intelligence · Smart Thermal Control',
+        smartHelpBody: 'Combines temperature trends with speed-adjustment history to dynamically tune cooling demand. It responds promptly when the risk of a temperature rise increases, and avoids unnecessary speed-ups once the temperature settles, so adjustments stay smooth. During normal adjustment, Smart mode never drops below the base curve or exceeds the configured limit; when over-temperature protection triggers or temperature data becomes invalid, the fan runs under the corresponding independent policy.',
+        fanRow: 'Fan',
+        tempVarBindingTitle: 'Temperature variable binding',
+        unbindBtn: 'Unbind',
+        curveNodes: 'Curve nodes',
+        addNode: 'Add node',
+        nodeN: 'Node {n}',
+        deleteNode: 'Delete node',
+        limits: 'Limits',
+        minSpeed: 'Minimum speed',
+        maxSpeed: 'Maximum speed',
+        tempDiff: 'Temperature hysteresis',
+        minIntervalShort: 'Minimum interval',
+        saveCurve: 'Save curve',
+        autoHelpBrief: '“Auto” follows the built-in temperature-to-speed map; “Curve” uses the nodes you define in curve management and can bind temperature variables.',
+        autoHelpGotIt: 'Got it',
+        guardTempBrief: 'Safety reference',
+        predictedTempBrief: '45 s forecast',
         unavailable: 'Fan status unavailable',
         noFans: 'No available fans',
         selectVariable: '-- Select Variable --',
@@ -3125,6 +3250,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // Data Monitoring Widgets
     dataWidget: {
+        addWidget: 'Add widget',
+        editWidget: 'Edit widget',
         // Widget types
         typeRing: 'Ring Progress',
         typeRingDesc: 'Circular percentage, ideal for CPU/memory/disk usage',
@@ -3253,6 +3380,34 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
 
     // LED Control
     ledPage: {
+        filterGroup: 'Filter',
+        autoPosNote: 'Unavailable while auto position is on',
+        animationGroup: 'Animations',
+        qrTabSp: 'QR code',
+        contentGroup: 'Content',
+        styleGroup: 'Style',
+        textGroup: 'Text',
+        alignShortLeft: 'Left',
+        alignShortCenter: 'Center',
+        alignShortRight: 'Right',
+        scrollDirNone: 'None',
+        ccWhiteBalanceTitle: 'White balance (RGB scale) · default 1.0, below 1.0 weakens the channel',
+        ccRed: 'Red R',
+        ccGreen: 'Green G',
+        ccBlue: 'Blue B',
+        ccAdjust: 'Adjust',
+        ccGammaNote: '1.0 is linear; above 1.0 darkens midtones',
+        ccBrightnessNote: 'Overall brightness scale',
+        ccSaturationNote: '0 is grayscale, 1.0 unchanged',
+        ccBackup: 'Backup',
+        ccConfigFile: 'Config file',
+        ccExportSd: 'Export to SD card',
+        ccImportSd: 'Import from SD card',
+        paramsRow: 'Parameters',
+        paramsVary: 'Varies by filter',
+        descBoard: 'Board strip (28 × WS2812)',
+        descTouch: 'Touch indicator (1 × WS2812)',
+        descMatrix: 'LED matrix (16×16)',
         // Page title
         title: 'LED Control',
         refresh: 'Refresh',
@@ -3415,6 +3570,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // PKI/Security Config
     pkiRepair: {
+        colon: ': ',
         "unknown": "Unknown / unconfirmed",
         "none": "No device certificate",
         "invalid": "Certificate cannot be parsed",
@@ -3509,6 +3665,20 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
 
     // UI Dynamic Text
     ui: {
+        exportWithHostBody: 'Also export the host configuration this command depends on? Exporting both is recommended.',
+        unmount: 'Unmount',
+        exportAnyway: 'Export anyway',
+        rollbackReboot: 'Roll back & reboot',
+        abortUpgrade: 'Abort upgrade',
+        trustConnect: 'Trust & connect',
+        copyBtn: 'Copy',
+        fingerprintTitle: 'Host fingerprint',
+        exportWithHost: 'Export (with host)',
+        exportCmdOnly: 'Export command only',
+        fingerprintLabel: 'Fingerprint (SHA256)',
+        wifiConnectTitle: 'Connect to {ssid}',
+        wifiPasswordPh: 'Enter WiFi password',
+        variablesTitle: 'Variables: {name}',
         confirmDeleteRule: "Delete rule “{id}”? This cannot be undone.",
         confirmDeleteSource: "Delete data source “{id}”? This cannot be undone.",
         confirmDeleteAction: "Delete action template “{id}”?",
@@ -3699,6 +3869,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
 
     // Terminal Page
     terminal: {
+        terminalHintBrief: 'Tip: type <code>help</code> for commands · <code>Ctrl+C</code> interrupt · <code>Ctrl+L</code> clear · <code>↑↓</code> history',
         sshCapacity: "The result channel is busy. SSH was not started; try again shortly.",
         sshCreateFailed: "The SSH session could not be created. Try again shortly.",
         sshOpenFailed: "The remote shell could not be opened. Check whether the server permits interactive sessions.",
@@ -3760,6 +3931,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
 
     // Memory Page
     memoryPage: {
+        heapShort: 'Heap',
+        updatedAt: 'Updated at {time}',
         staticMemory: 'Static Memory (Compile-time Fixed)',
         dataDesc: 'Initialized global variables',
         bssDesc: 'Uninitialized global variables',

@@ -1,0 +1,1425 @@
+[
+  {
+    "owner": "loadTerminalPage",
+    "before": ".log-toolbar {\n                display: flex;\n                justify-content: space-between;\n                align-items: center;\n                gap: 15px;\n                padding: 12px 15px;\n                background: var(--bg-card);\n                border-radius: var(--radius);\n                flex-wrap: wrap;\n            }",
+    "after": ".log-toolbar {\n                display: flex;\n                justify-content: space-between;\n                align-items: center;\n                gap: 15px;\n                padding: 12px 15px;\n                background: #ffffff40;\n                border-radius: var(--radius);\n                flex-wrap: wrap;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".toolbar-item label {\n                font-size: 0.85em;\n                color: var(--text-secondary);\n                white-space: nowrap;\n            }",
+    "after": ".toolbar-item label {\n                font-size: 12px;\n                color: var(--text-secondary);\n                white-space: nowrap;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".log-stats {\n                font-size: 0.85em;\n                color: var(--text-secondary);\n            }",
+    "after": ".log-stats {\n                font-size: 12px;\n                color: var(--text-secondary);\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".auto-scroll-toggle {\n                display: flex;\n                align-items: center;\n                gap: 4px;\n                font-size: 0.85em;\n                color: var(--text-secondary);\n                cursor: pointer;\n            }",
+    "after": ".auto-scroll-toggle {\n                display: flex;\n                align-items: center;\n                gap: 4px;\n                font-size: 12px;\n                color: var(--text-secondary);\n                cursor: pointer;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".log-time {\n                color: var(--text-muted);\n                font-size: 0.9em;\n                flex-shrink: 0;\n            }",
+    "after": ".log-time {\n                color: #b8c2d0;\n                font-size: 0.9em;\n                flex-shrink: 0;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".log-time {\n                color: #b8c2d0;\n                font-size: 0.9em;\n                flex-shrink: 0;\n            }",
+    "after": ".log-time {\n                color: #b8c2d0;\n                font-size: 12px;\n                flex-shrink: 0;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".log-task {\n                color: var(--text-muted);\n                font-size: 0.85em;\n                flex-shrink: 0;\n            }",
+    "after": ".log-task {\n                color: #b8c2d0;\n                font-size: 0.85em;\n                flex-shrink: 0;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".log-task {\n                color: #b8c2d0;\n                font-size: 0.85em;\n                flex-shrink: 0;\n            }",
+    "after": ".log-task {\n                color: #b8c2d0;\n                font-size: 12px;\n                flex-shrink: 0;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": ".log-empty {\n                display: flex;\n                flex-direction: column;\n                align-items: center;\n                justify-content: center;\n                height: 200px;\n                color: var(--text-muted);\n            }",
+    "after": ".log-empty {\n                display: flex;\n                flex-direction: column;\n                align-items: center;\n                justify-content: center;\n                height: 200px;\n                color: #b8c2d0;\n            }",
+    "reason": "Log controls material or readable auxiliary text; log data and ANSI unchanged"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .host-card {\n            background: var(--bg-card);\n            border: 2px solid var(--border);\n            border-radius: var(--radius);\n            padding: 12px 16px;\n            cursor: pointer;\n            transition: all 0.2s;\n            min-width: 180px;\n            display: flex;\n            align-items: center;\n            gap: 10px;\n        }",
+    "after": "        .host-card {\n            background: var(--bg-muted);\n            border: 1px solid var(--ui-control-line);\n            border-radius: var(--radius);\n            padding: 12px 16px;\n            cursor: pointer;\n            transition: border-color var(--t-fast), background-color var(--t-fast);\n            min-width: min(180px, 100%);\n            max-width: 100%;\n            overflow-wrap: anywhere;\n            display: flex;\n            align-items: center;\n            gap: 10px;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .host-card:hover {\n            border-color: var(--blue-500);\n            transform: translateY(-2px);\n        }",
+    "after": "        .host-card:hover {\n            border-color: var(--blue-500);\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .host-card.selected {\n            border-color: transparent;\n            background: var(--emerald-50);\n        }",
+    "after": "        .host-card.selected {\n            border-color: var(--ui-accent-text);\n            background: var(--blue-50);\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .host-card .host-info {\n            font-size: 0.85em;\n            color: var(--text-muted);\n        }",
+    "after": "        .host-card .host-info {\n            font-size: 12px;\n            color: var(--text-muted);\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .commands-list {\n            display: grid;\n            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));\n            gap: 12px;\n            min-height: 220px;\n        }",
+    "after": "        .commands-list {\n            display: grid;\n            grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));\n            gap: 12px;\n            min-height: 220px;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .command-card {\n            background: var(--bg-card);\n            border: 1px solid var(--border);\n            border-radius: var(--radius);\n            padding: 12px;\n            display: flex;\n            flex-direction: column;\n            gap: 8px;\n        }",
+    "after": "        .command-card {\n            background: var(--bg-muted);\n            border: 1px solid transparent;\n            border-radius: 16px;\n            padding: 12px;\n            display: flex;\n            flex-direction: column;\n            gap: 8px;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .command-card .cmd-desc {\n            color: var(--text-muted);\n            font-size: 0.85em;\n            line-height: 1.3;\n            display: -webkit-box;\n            -webkit-line-clamp: 2;\n            -webkit-box-orient: vertical;\n            overflow: hidden;\n        }",
+    "after": "        .command-card .cmd-desc {\n            color: var(--text-muted);\n            font-size: 12px;\n            line-height: 1.3;\n            display: -webkit-box;\n            -webkit-line-clamp: 2;\n            -webkit-box-orient: vertical;\n            overflow: hidden;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .command-card .cmd-code {\n            font-family: monospace;\n            font-size: 0.8em;\n            color: var(--text-muted);\n            background: var(--bg-muted);\n            padding: 4px 8px;\n            border-radius: var(--radius);\n            overflow: hidden;\n            text-overflow: ellipsis;\n            white-space: nowrap;\n        }",
+    "after": "        .command-card .cmd-code {\n            font-family: monospace;\n            font-size: 12px;\n            color: var(--text-muted);\n            background: var(--bg-card);\n            padding: 4px 8px;\n            border-radius: var(--radius);\n            overflow: hidden;\n            text-overflow: ellipsis;\n            white-space: nowrap;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .command-card .cmd-actions {\n            display: flex;\n            gap: 6px;\n            margin-top: auto;\n        }",
+    "after": "        .command-card .cmd-actions {\n            display: flex;\n            gap: 6px;\n            flex-wrap: wrap;\n            margin-top: auto;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .advanced-content small {\n            display: block;\n            color: var(--text-muted);\n            font-size: 0.8em;\n            margin-top: 4px;\n        }",
+    "after": "        .advanced-content small {\n            display: block;\n            color: var(--text-muted);\n            font-size: 12px;\n            margin-top: 4px;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        .match-var {\n            display: block;\n            font-size: 0.75em;\n            color: var(--text-muted);\n            background: var(--bg-muted);\n            padding: 2px 6px;\n            border-radius: var(--radius-sm);\n        }",
+    "after": "        .match-var {\n            display: block;\n            font-size: 12px;\n            color: var(--text-muted);\n            background: var(--bg-muted);\n            padding: 2px 6px;\n            border-radius: var(--radius-sm);\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "        #command-modal .config-section.config-section-icon {\n            border: 1px solid var(--border);\n            border-radius: var(--radius);\n            padding: 14px;\n            margin-bottom: 16px;\n            background: var(--bg-muted);\n        }",
+    "after": "        #command-modal .config-section.config-section-icon {\n            border: 1px solid #ffffff59;\n            border-radius: var(--radius);\n            padding: 14px;\n            margin-bottom: 16px;\n            background: #ffffff26;\n        }",
+    "reason": "Reviewed command-page CSS only; retains selectors, content, events, and execution result colors"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .ota-main-card {\n            background: var(--bg-card);\n            border-radius: var(--radius-lg);\n            padding: 20px;\n            box-shadow: var(--shadow);\n            margin-bottom: 15px;\n        }",
+    "after": "        .ota-main-card {\n            background: var(--bg-muted);\n            border-radius: var(--radius-lg);\n            padding: 20px;\n            box-shadow: var(--shadow);\n            margin-bottom: 15px;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .ota-current-version {\n            display: flex;\n            align-items: baseline;\n            gap: 12px;\n            margin-bottom: 4px;\n        }",
+    "after": "        .ota-current-version {\n            display: flex;\n            align-items: baseline;\n            gap: 12px;\n            flex-wrap: wrap;\n            margin-bottom: 4px;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .version-meta {\n            font-size: 0.85em;\n            color: var(--text-muted);\n            margin-bottom: 16px;\n            padding-bottom: 16px;\n            border-bottom: 1px solid var(--border);\n        }",
+    "after": "        .version-meta {\n            font-size: 12px;\n            color: var(--text-muted);\n            margin-bottom: 16px;\n            padding-bottom: 16px;\n            border-bottom: 1px solid var(--border);\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .server-input-group .form-input {\n            flex: 1;\n            padding: 10px 12px;\n            border: 1px solid var(--border);\n            border-radius: var(--radius-sm);\n            font-size: 0.95em;\n            min-width: 0;\n        }",
+    "after": "        .server-input-group .form-input {\n            flex: 1;\n            padding: 10px 12px;\n            border: 1px solid var(--ui-control-line);\n            border-radius: var(--radius-sm);\n            font-size: 0.95em;\n            min-width: 0;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .ota-section {\n            background: var(--bg-card);\n            border-radius: var(--radius);\n            margin-bottom: 10px;\n            box-shadow: var(--shadow-sm);\n        }",
+    "after": "        .ota-section {\n            background: var(--bg-muted);\n            border-radius: 18px;\n            margin-bottom: 10px;\n            box-shadow: none;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .ota-methods {\n            display: grid;\n            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n            gap: 15px;\n            padding: 15px;\n        }",
+    "after": "        .ota-methods {\n            display: grid;\n            grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));\n            gap: 15px;\n            padding: 15px;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .ota-method {\n            border: 1px solid var(--border);\n            border-radius: var(--radius);\n            padding: 15px;\n        }",
+    "after": "        .ota-method {\n            border: 1px solid transparent;\n            border-radius: var(--radius);\n            padding: 15px;\n            background: #ffffff80;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .method-content .form-input {\n            padding: 8px 10px;\n            border: 1px solid var(--border);\n            border-radius: var(--radius-sm);\n            font-size: 0.9em;\n        }",
+    "after": "        .method-content .form-input {\n            padding: 8px 10px;\n            border: 1px solid var(--ui-control-line);\n            border-radius: var(--radius-sm);\n            font-size: 0.9em;\n            min-width: 0;\n            width: 100%;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .method-options {\n            display: flex;\n            gap: 15px;\n            font-size: 0.85em;\n            color: var(--text-secondary);\n        }",
+    "after": "        .method-options {\n            display: flex;\n            gap: 15px;\n            flex-wrap: wrap;\n            font-size: 12px;\n            color: var(--text-secondary);\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .ota-partitions {\n            padding: 15px;\n            display: grid;\n            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));\n            gap: 12px;\n        }",
+    "after": "        .ota-partitions {\n            padding: 15px;\n            display: grid;\n            grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));\n            gap: 12px;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .partition-card {\n            border: 2px solid var(--border);\n            border-radius: var(--radius);\n            padding: 15px;\n            background: var(--bg-muted);\n            display: flex;\n            flex-direction: column;\n        }",
+    "after": "        .partition-card {\n            border: 1px solid var(--border);\n            border-radius: var(--radius);\n            padding: 15px;\n            background: var(--bg-muted);\n            display: flex;\n            flex-direction: column;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .progress-footer {\n            display: flex;\n            justify-content: space-between;\n            font-size: 0.85em;\n            color: var(--text-secondary);\n            margin-top: 8px;\n        }",
+    "after": "        .progress-footer {\n            display: flex;\n            justify-content: space-between;\n            font-size: 12px;\n            color: var(--text-secondary);\n            margin-top: 8px;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .partition-badge {\n            font-size: 0.75em;\n            padding: 3px 10px;\n            border-radius: var(--radius-full);\n            color: white;\n            font-weight: 500;\n        }",
+    "after": "        .partition-badge {\n            font-size: 12px;\n            padding: 3px 10px;\n            border-radius: var(--radius-full);\n            color: white;\n            font-weight: 500;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .partition-info {\n            font-size: 0.85em;\n            color: var(--text-secondary);\n            margin-bottom: 12px;\n        }",
+    "after": "        .partition-info {\n            font-size: 12px;\n            color: var(--text-secondary);\n            margin-bottom: 12px;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "        .partition-action-desc {\n            font-size: 0.8em;\n            color: var(--text-muted);\n            margin-top: 6px;\n            text-align: center;\n        }",
+    "after": "        .partition-action-desc {\n            font-size: 12px;\n            color: var(--text-muted);\n            margin-top: 6px;\n            text-align: center;\n        }",
+    "reason": "Reviewed OTA CSS only; firmware, progress, verification and partition semantics unchanged"
+  },
+  {
+    "owner": "showImportSourceModal",
+    "before": "style=\"background:#fff;padding:15px;border-radius:8px;margin-top:15px;border:1px solid #eee\"",
+    "after": "style=\"background:#ffffff40;padding:15px;border-radius:14px;margin-top:15px;border:1px solid #ffffff59\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showImportRuleModal",
+    "before": "style=\"background:#fff;padding:15px;border-radius:8px;margin-top:15px;border:1px solid #eee\"",
+    "after": "style=\"background:#ffffff40;padding:15px;border-radius:14px;margin-top:15px;border:1px solid #ffffff59\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showImportActionModal",
+    "before": "style=\"background:#fff;padding:15px;border-radius:8px;margin-top:15px;border:1px solid #eee\"",
+    "after": "style=\"background:#ffffff40;padding:15px;border-radius:14px;margin-top:15px;border:1px solid #ffffff59\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showImportSshCommandModal",
+    "before": "style=\"background:#f8f9fa;padding:15px;border-radius:8px;margin-top:15px\"",
+    "after": "style=\"background:#ffffff40;padding:15px;border-radius:14px;margin-top:15px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showImportSshHostModal",
+    "before": "style=\"background:#f8f9fa;padding:15px;border-radius:8px;margin-top:15px\"",
+    "after": "style=\"background:#ffffff40;padding:15px;border-radius:14px;margin-top:15px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "previewSourceImport",
+    "before": "style=\"color:#9ca3af;font-size:0.85em\"",
+    "after": "style=\"color:var(--text-secondary);font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "previewRuleImport",
+    "before": "style=\"color:#9ca3af;font-size:0.85em\"",
+    "after": "style=\"color:var(--text-secondary);font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "previewActionImport",
+    "before": "style=\"color:#9ca3af;font-size:0.85em\"",
+    "after": "style=\"color:var(--text-secondary);font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "previewSshCommandImport",
+    "before": "style=\"color:#9ca3af;font-size:0.85em\"",
+    "after": "style=\"color:var(--text-secondary);font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "previewSshHostImport",
+    "before": "style=\"color:#9ca3af;font-size:0.85em\"",
+    "after": "style=\"color:var(--text-secondary);font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showExportSourceModal",
+    "before": "style=\"width:100%;height:120px;font-family:monospace;font-size:11px\"",
+    "after": "style=\"width:100%;height:120px;font-family:monospace;font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showExportRuleModal",
+    "before": "style=\"width:100%;height:120px;font-family:monospace;font-size:11px\"",
+    "after": "style=\"width:100%;height:120px;font-family:monospace;font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showExportActionModal",
+    "before": "style=\"width:100%;height:120px;font-family:monospace;font-size:11px\"",
+    "after": "style=\"width:100%;height:120px;font-family:monospace;font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "showExportSshCommandModal",
+    "before": "style=\"width:100%;height:120px;font-family:monospace;font-size:11px\"",
+    "after": "style=\"width:100%;height:120px;font-family:monospace;font-size:12px\"",
+    "reason": "Import/export presentation only: translucent preview group or readable certificate/metadata text"
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": "            .log-level {\n                font-weight: 600;\n                font-size: 0.85em;",
+    "after": "            .log-level {\n                font-weight: 600;\n                font-size: 12px;",
+    "reason": "Keep populated log level labels at readable 12px; preserve semantic colors"
+  },
+  {
+    "owner": "showImportSshCommandModal",
+    "before": "style=\"color:#9ca3af\"",
+    "after": "style=\"color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "style=\"color:#9ca3af\"",
+    "after": "style=\"color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "refreshSecurityPage",
+    "before": "style=\"color:#9ca3af\"",
+    "after": "style=\"color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "refreshSecurityPage",
+    "before": "style=\"color:#9ca3af\"",
+    "after": "style=\"color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "refreshSecurityPage",
+    "before": "style=\"color:#9ca3af\"",
+    "after": "style=\"color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "refreshSecurityPage",
+    "before": "style=\"text-align:center;color:#9ca3af\"",
+    "after": "style=\"text-align:center;color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "showPubkeyModal",
+    "before": "style=\"margin-top:10px;color:#9ca3af\"",
+    "after": "style=\"margin-top:10px;color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "showPrivkeyModal",
+    "before": "style=\"margin-top:10px;color:#9ca3af\"",
+    "after": "style=\"margin-top:10px;color:var(--text-secondary)\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "displayPartitionsCompact",
+    "before": "style=\"color:#9ca3af;padding:10px\"",
+    "after": "style=\"color:var(--text-secondary);padding:10px\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "refreshOtaProgress",
+    "before": "style=\"color:#9ca3af;margin-top:5px\"",
+    "after": "style=\"color:var(--text-secondary);margin-top:5px\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "startWwwOta",
+    "before": "style=\"color:#9ca3af;margin-top:5px\"",
+    "after": "style=\"color:var(--text-secondary);margin-top:5px\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "upgradeViaProxy",
+    "before": "style=\"color:#9ca3af;margin-top:5px\"",
+    "after": "style=\"color:var(--text-secondary);margin-top:5px\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "style=\"font-size:0.8em;color:#9ca3af;font-weight:normal\"",
+    "after": "style=\"font-size:12px;color:var(--text-secondary);font-weight:normal\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "style=\"font-size:0.85em;color:#9ca3af;margin-top:4px\"",
+    "after": "style=\"font-size:12px;color:var(--text-secondary);margin-top:4px\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "addActionTemplateRow",
+    "before": "style=\"padding:2px 6px;font-size:11px;\"",
+    "after": "style=\"padding:2px 6px;font-size:12px;\"",
+    "reason": "Audited non-data hint/empty-state text contrast or minimum readable font size; widget values and state colors preserved"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "style=\"font-weight:normal;font-size:0.7em;color:var(--text-muted)\"",
+    "after": "style=\"font-weight:normal;font-size:12px;color:var(--text-muted)\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "style=\"display:flex;align-items:center;gap:4px;font-size:0.85em;color:var(--text-muted)\"",
+    "after": "style=\"display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted)\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "style=\"font-size:0.85em;color:var(--text-muted);display:flex;align-items:center\"",
+    "after": "style=\"font-size:12px;color:var(--text-muted);display:flex;align-items:center\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "showExportSshCommandModal",
+    "before": "style=\"font-size:0.85em;color:#6b7280;margin-top:4px\"",
+    "after": "style=\"font-size:12px;color:#6b7280;margin-top:4px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "showExportSshCommandModal",
+    "before": "style=\"font-size:0.85em;color:#6b7280;margin-top:4px\"",
+    "after": "style=\"font-size:12px;color:#6b7280;margin-top:4px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "refreshKnownHostsList",
+    "before": "style=\"font-size:0.8em;word-break:break-all\"",
+    "after": "style=\"font-size:12px;word-break:break-all\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "style=\"font-size:0.85em;color:#6b7280;margin-top:8px\"",
+    "after": "style=\"font-size:12px;color:#6b7280;margin-top:8px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "testSioConnection",
+    "before": "style=\"color:var(--text-secondary);font-size:0.85em\"",
+    "after": "style=\"color:var(--text-secondary);font-size:12px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "showAddRuleModal",
+    "before": "style=\"width:140px;text-align:center;font-size:0.85em\"",
+    "after": "style=\"width:140px;text-align:center;font-size:12px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "showExportSourceModal",
+    "before": "style=\"font-size:0.85em;color:#6b7280;margin-top:4px\"",
+    "after": "style=\"font-size:12px;color:#6b7280;margin-top:4px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "showExportRuleModal",
+    "before": "style=\"font-size:0.85em;color:#6b7280;margin-top:4px\"",
+    "after": "style=\"font-size:12px;color:#6b7280;margin-top:4px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "showExportActionModal",
+    "before": "style=\"font-size:0.85em;color:#6b7280;margin-top:4px\"",
+    "after": "style=\"font-size:12px;color:#6b7280;margin-top:4px\"",
+    "reason": "Reviewed help, fingerprint, log control or repeat separator text uses 12px rather than inherited sub-12px size"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "style=\"padding:2px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg-muted);color:var(--text-primary);font-size:0.9em\"",
+    "after": "style=\"padding:2px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg-muted);color:var(--text-primary);font-size:12px\"",
+    "reason": "Nested log interval selector must not shrink below 12px after its label uses explicit 12px"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<h3 style=\"margin:0\">",
+    "after": "<h3 class=\"settings-heading\" style=\"margin:0\"><i class=\"ri-service-line\" aria-hidden=\"true\"></i>",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<h3 style=\"margin:0\">",
+    "after": "<h3 class=\"settings-heading\" style=\"margin:0\"><i class=\"ri-computer-line\" aria-hidden=\"true\"></i>",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<h3 style=\"margin:0\">",
+    "after": "<h3 class=\"settings-heading\" style=\"margin:0\"><i class=\"ri-server-line\" aria-hidden=\"true\"></i>",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<h2>",
+    "after": "<h2 class=\"settings-heading\"><i class=\"ri-apps-line\" aria-hidden=\"true\"></i>",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<h2>",
+    "after": "<h2 class=\"settings-heading\"><i class=\"ri-dashboard-line\" aria-hidden=\"true\"></i>",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "align-items:center;margin-bottom:10px",
+    "after": "align-items:center;margin-bottom:18px",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "class=\"progress-bar\" style=\"height:12px\"",
+    "after": "class=\"progress-bar\" style=\"height:5px\"",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "updateCpuInfo",
+    "before": "class=\"progress-bar\" style=\"height:10px\"",
+    "after": "class=\"progress-bar\" style=\"height:5px\"",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<button class=\"btn btn-sm btn-gray\" onclick=\"showMemoryDetailModal()\" style=\"font-size:12px;padding:2px 8px\" title=\"${t('system.memoryDetail')}\">",
+    "after": "<button class=\"btn btn-sm btn-gray\" onclick=\"showMemoryDetailModal()\" style=\"font-size:13px;padding:2px 8px\" title=\"${t('system.memoryDetail')}\">",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<button class=\"btn btn-small btn-gray\" onclick=\"showShutdownSettingsModal()\" style=\"font-size:12px\" title=\"${t('system.shutdownSettings')}\">",
+    "after": "<button class=\"btn btn-small btn-gray\" onclick=\"showShutdownSettingsModal()\" style=\"font-size:13px\" title=\"${t('system.shutdownSettings')}\">",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<button id=\"usb-mux-btn\" class=\"btn btn-small btn-gray\" onclick=\"toggleUsbMux()\" style=\"font-size:12px\">",
+    "after": "<button id=\"usb-mux-btn\" class=\"btn btn-small btn-gray\" onclick=\"toggleUsbMux()\" style=\"font-size:13px\">",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<button class=\"btn btn-small btn-service-style\" onclick=\"confirmReboot()\" style=\"font-size:12px\">",
+    "after": "<button class=\"btn btn-small btn-service-style\" onclick=\"confirmReboot()\" style=\"font-size:13px\">",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<button class=\"btn btn-small btn-service-style\" onclick=\"router.navigate('/ota')\" style=\"font-size:12px\">",
+    "after": "<button class=\"btn btn-small btn-service-style\" onclick=\"router.navigate('/ota')\" style=\"font-size:13px\">",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<button type=\"button\" class=\"btn btn-small btn-gray time-sync-btn\" onclick=\"syncTimeFromBrowser()\" style=\"font-size:12px;padding:4px 8px\">",
+    "after": "<button type=\"button\" class=\"btn btn-small btn-gray time-sync-btn\" onclick=\"syncTimeFromBrowser()\" style=\"font-size:13px;padding:4px 8px\">",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<button class=\"btn btn-small btn-gray\" onclick=\"showTimezoneModal()\" style=\"font-size:12px;padding:4px 8px\">",
+    "after": "<button class=\"btn btn-small btn-gray\" onclick=\"showTimezoneModal()\" style=\"font-size:13px;padding:4px 8px\">",
+    "reason": "2026-09-29 revision: approved heading/control typography and progress geometry; fields and handlers unchanged"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": ".page-commands .section h2, .page-commands .section-header h2 { font-size: 1rem; }\n        .page-commands .commands-list .empty-state {\n            text-align: center;\n            min-height: 200px;\n            display: flex;\n            flex-direction: column;\n            align-items: center;\n            justify-content: center;\n            gap: 12px;\n            grid-column: 1 / -1;\n        }",
+    "after": ".page-commands .section h2, .page-commands .section-header h2 { font-size: 20px; }\n        .page-commands .commands-list .empty-state {\n            text-align: center;\n            min-height: 200px;\n            display: flex;\n            flex-direction: column;\n            align-items: center;\n            justify-content: center;\n            gap: 12px;\n            grid-column: 1 / -1;\n        }",
+    "reason": "2026-09-29 approved v3 component typography, spacing and neutral grouping"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": ".host-card .host-name {\n            font-weight: bold;\n            margin-bottom: 4px;\n        }",
+    "after": ".host-card .host-name {\n            font-weight: 600;\n            margin-bottom: 4px;\n        }",
+    "reason": "2026-09-29 approved v3 component typography, spacing and neutral grouping"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": ".command-card {\n            background: var(--bg-muted);\n            border: 1px solid transparent;\n            border-radius: 16px;\n            padding: 12px;\n            display: flex;\n            flex-direction: column;\n            gap: 8px;\n        }",
+    "after": ".command-card {\n            background: var(--bg-muted);\n            border: 1px solid transparent;\n            border-radius: 16px;\n            padding: 18px;\n            display: flex;\n            flex-direction: column;\n            gap: 12px;\n        }",
+    "reason": "2026-09-29 approved v3 component typography, spacing and neutral grouping"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": ".command-card .cmd-name {\n            font-weight: bold;\n            font-size: 1em;\n            flex: 1;\n            overflow: hidden;\n            text-overflow: ellipsis;\n            white-space: nowrap;\n        }",
+    "after": ".command-card .cmd-name {\n            font-weight: 600;\n            font-size: 15px;\n            flex: 1;\n            overflow: hidden;\n            text-overflow: ellipsis;\n            white-space: nowrap;\n        }",
+    "reason": "2026-09-29 approved v3 component typography, spacing and neutral grouping"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": ".page-ota h1 {\n            margin: 0 0 15px 0;\n            font-size: 1.4em;\n        }",
+    "after": ".page-ota h1 {\n            margin: 0 0 15px 0;\n            font-size: 25px;\n            font-weight: 600;\n            letter-spacing: -0.6px;\n        }",
+    "reason": "2026-09-29 approved v3 component typography, spacing and neutral grouping"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": ".version-number {\n            font-size: 1em;\n            font-weight: 700;\n            color: var(--text-primary);\n            font-family: 'SF Mono', 'Courier New', monospace;\n            letter-spacing: -0.5px;\n        }",
+    "after": ".version-number {\n            font-size: 20px;\n            font-weight: 400;\n            color: var(--text-primary);\n            font-family: inherit;\n            font-variant-numeric: tabular-nums;\n            letter-spacing: -0.5px;\n        }",
+    "reason": "2026-09-29 approved v3 component typography, spacing and neutral grouping"
+  },
+  {
+    "owner": "loadSystemPage",
+    "before": "<div style=\"margin-top:8px;display:flex;gap:5px\">",
+    "after": "<div style=\"margin-top:8px;display:flex;flex-wrap:wrap;gap:5px\">",
+    "reason": "Allow time actions to wrap in their original order within narrow system card"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": ".command-card .btn-exec {\n            background: var(--success);\n            color: white;\n            flex: 1;\n        }",
+    "after": ".command-card .btn-exec {\n            background: var(--emerald-50);\n            color: #047857;\n            flex: 1;\n        }",
+    "reason": "Command actions use readable semantic control colors and 13px icons; handlers preserved"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": ".command-card .btn-sm {\n            padding: 4px 8px;\n            font-size: 0.85em;\n        }",
+    "after": ".command-card .btn-sm {\n            padding: 4px 8px;\n            font-size: 13px;\n        }",
+    "reason": "Command actions use readable semantic control colors and 13px icons; handlers preserved"
+  },
+  {
+    "owner": "refreshCommandsList",
+    "before": "style=\"background:#f43f5e;color:white\"",
+    "after": "style=\"background:var(--rose-50);color:#be123c\"",
+    "reason": "Command actions use readable semantic control colors and 13px icons; handlers preserved"
+  },
+  {
+    "owner": "showTimezoneModal",
+    "before": "<div class=\"modal-content\" style=\"max-width:400px\">",
+    "after": "<div class=\"modal-content timezone-settings\" style=\"max-width:440px\">",
+    "reason": "V10: local form sizing, no control or value changes"
+  },
+  {
+    "owner": "showTimezoneModal",
+    "before": "class=\"btn btn-service-style\" onclick=\"applyTimezone()\"",
+    "after": "class=\"btn btn-primary\" onclick=\"applyTimezone()\"",
+    "reason": "V01: apply is the primary action, handler unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "                <table class=\"data-table\">",
+    "after": "                <div class=\"security-table-scroll\">\n                <table class=\"data-table\">",
+    "reason": "V04: wrap three security tables without changing table semantics, ids or descendants"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "                    <tbody id=\"keys-table-body\"></tbody>\n                </table>",
+    "after": "                    <tbody id=\"keys-table-body\"></tbody>\n                </table>\n                </div>",
+    "reason": "V04: close local table scroll container; tbody identity unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "                    <tbody id=\"ssh-hosts-table-body\"></tbody>\n                </table>",
+    "after": "                    <tbody id=\"ssh-hosts-table-body\"></tbody>\n                </table>\n                </div>",
+    "reason": "V04: close local table scroll container; tbody identity unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "                    <tbody id=\"known-hosts-table-body\"></tbody>\n                </table>",
+    "after": "                    <tbody id=\"known-hosts-table-body\"></tbody>\n                </table>\n                </div>",
+    "reason": "V04: close local table scroll container; tbody identity unchanged"
+  },
+  {
+    "owner": "loadCommandsPage",
+    "before": "class=\"btn btn-service-style\" onclick=\"saveCommand()\"",
+    "after": "class=\"btn btn-primary\" onclick=\"saveCommand()\"",
+    "reason": "V01: command save primary role; submit type and handler unchanged"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "/* 新建指令模态框 - 输入栏加大以便用户查看 */",
+    "after": "/* Command form controls share the settings field metrics. */",
+    "reason": "V11: document common control metrics"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": "            padding: 12px 16px;\n            font-size: 0.95rem;\n            min-height: 48px;",
+    "after": "            padding: 9px 12px;\n            font-size: 14px;\n            line-height: 20px;\n            min-height: 40px;",
+    "reason": "V11/V13: command form text and control metrics; no field value or event changes"
+  },
+  {
+    "owner": "showPasswordChangeReminder",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"submitPasswordChange(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"submitPasswordChange(",
+    "reason": "V01: reviewed primary completion action submitPasswordChange; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showFanCurveModal",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"applyFanCurve(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"applyFanCurve(",
+    "reason": "V01: reviewed primary completion action applyFanCurve; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showWidgetEditPanel",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"saveWidgetEdit(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"saveWidgetEdit(",
+    "reason": "V01: reviewed primary completion action saveWidgetEdit; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "openColorModal",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"applyColorFromModal(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"applyColorFromModal(",
+    "reason": "V01: reviewed primary completion action applyColorFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "generateLedModalContent",
+    "before": "<button class=\"btn btn-service-style btn-sm\" onclick=\"applyEffectFromModal(",
+    "after": "<button class=\"btn btn-primary btn-sm\" onclick=\"applyEffectFromModal(",
+    "reason": "V01: reviewed primary completion action applyEffectFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "generateLedModalContent",
+    "before": "<button class=\"btn btn-service-style btn-sm\" onclick=\"displayImageFromModal(",
+    "after": "<button class=\"btn btn-primary btn-sm\" onclick=\"displayImageFromModal(",
+    "reason": "V01: reviewed primary completion action displayImageFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "generateLedModalContent",
+    "before": "<button class=\"btn btn-service-style btn-sm\" onclick=\"generateQrCodeFromModal(",
+    "after": "<button class=\"btn btn-primary btn-sm\" onclick=\"generateQrCodeFromModal(",
+    "reason": "V01: reviewed primary completion action generateQrCodeFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "generateLedModalContent",
+    "before": "<button class=\"btn btn-service-style btn-sm\" onclick=\"displayTextFromModal(",
+    "after": "<button class=\"btn btn-primary btn-sm\" onclick=\"displayTextFromModal(",
+    "reason": "V01: reviewed primary completion action displayTextFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "generateLedModalContent",
+    "before": "<button class=\"btn btn-service-style btn-sm\" id=\"modal-apply-filter-btn\" onclick=\"applyFilterFromModal(",
+    "after": "<button class=\"btn btn-primary btn-sm\" id=\"modal-apply-filter-btn\" onclick=\"applyFilterFromModal(",
+    "reason": "V01: reviewed primary completion action applyFilterFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "generateLedModalContent",
+    "before": "<button class=\"btn btn-sm btn-service-style\" onclick=\"applyColorCorrection(",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"applyColorCorrection(",
+    "reason": "V01: reviewed primary completion action applyColorCorrection; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadFilePickerDirectory",
+    "before": "<button class=\"btn btn-sm btn-service-style\" onclick=\"createAndOpenDir(",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"createAndOpenDir(",
+    "reason": "V01: reviewed primary completion action createAndOpenDir; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadNetworkPage",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"applyApConfig(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"applyApConfig(",
+    "reason": "V01: reviewed primary completion action applyApConfig; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadFilesPage",
+    "before": "<button class=\"btn btn-service-style btn-sm\" onclick=\"uploadFiles(",
+    "after": "<button class=\"btn btn-primary btn-sm\" onclick=\"uploadFiles(",
+    "reason": "V01: reviewed primary completion action uploadFiles; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadFilesPage",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"createNewFolder(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"createNewFolder(",
+    "reason": "V01: reviewed primary completion action createNewFolder; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadFilesPage",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"doRename(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"doRename(",
+    "reason": "V01: reviewed primary completion action doRename; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showExportSshCommandModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"export-ssh-cmd-btn\" onclick=\"doExportSshCommandFromModal(",
+    "after": "<button class=\"btn btn-primary\" id=\"export-ssh-cmd-btn\" onclick=\"doExportSshCommandFromModal(",
+    "reason": "V01: reviewed primary completion action doExportSshCommandFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showImportSshCommandModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"import-ssh-cmd-btn\" onclick=\"confirmSshCommandImport(",
+    "after": "<button class=\"btn btn-primary\" id=\"import-ssh-cmd-btn\" onclick=\"confirmSshCommandImport(",
+    "reason": "V01: reviewed primary completion action confirmSshCommandImport; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" onclick=\"submitRootPasswordSet(",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"submitRootPasswordSet(",
+    "reason": "V01: reviewed primary completion action submitRootPasswordSet; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" onclick=\"submitAdminPasswordSet(",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"submitAdminPasswordSet(",
+    "reason": "V01: reviewed primary completion action submitAdminPasswordSet; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" onclick=\"importConfigPack(",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"importConfigPack(",
+    "reason": "V01: reviewed primary completion action importConfigPack; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" id=\"btn-pack-export-generate\" onclick=\"exportConfigPack(",
+    "after": "<button class=\"btn btn-sm btn-primary\" id=\"btn-pack-export-generate\" onclick=\"exportConfigPack(",
+    "reason": "V01: reviewed primary completion action exportConfigPack; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" onclick=\"generateKey(",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"generateKey(",
+    "reason": "V01: reviewed primary completion action generateKey; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" id=\"deploy-btn\" onclick=\"deployKey(",
+    "after": "<button class=\"btn btn-sm btn-primary\" id=\"deploy-btn\" onclick=\"deployKey(",
+    "reason": "V01: reviewed primary completion action deployKey; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" id=\"cert-genkey-btn\" onclick=\"generateCertKeypair(",
+    "after": "<button class=\"btn btn-sm btn-primary\" id=\"cert-genkey-btn\" onclick=\"generateCertKeypair(",
+    "reason": "V01: reviewed primary completion action generateCertKeypair; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" id=\"csr-gen-btn\" onclick=\"generateCSR(",
+    "after": "<button class=\"btn btn-sm btn-primary\" id=\"csr-gen-btn\" onclick=\"generateCSR(",
+    "reason": "V01: reviewed primary completion action generateCSR; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" id=\"cert-install-submit\" onclick=\"installCertificate(",
+    "after": "<button class=\"btn btn-sm btn-primary\" id=\"cert-install-submit\" onclick=\"installCertificate(",
+    "reason": "V01: reviewed primary completion action installCertificate; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<button class=\"btn btn-sm btn-service-style\" id=\"cert-ca-submit\" onclick=\"installCAChain(",
+    "after": "<button class=\"btn btn-sm btn-primary\" id=\"cert-ca-submit\" onclick=\"installCAChain(",
+    "reason": "V01: reviewed primary completion action installCAChain; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showExportSshHostModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"export-ssh-host-btn\" onclick=\"doExportSshHostFromModal(",
+    "after": "<button class=\"btn btn-primary\" id=\"export-ssh-host-btn\" onclick=\"doExportSshHostFromModal(",
+    "reason": "V01: reviewed primary completion action doExportSshHostFromModal; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showImportSshHostModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"import-ssh-host-btn\" onclick=\"confirmSshHostImport(",
+    "after": "<button class=\"btn btn-primary\" id=\"import-ssh-host-btn\" onclick=\"confirmSshHostImport(",
+    "reason": "V01: reviewed primary completion action confirmSshHostImport; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"checkForUpdates(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"checkForUpdates(",
+    "reason": "V01: reviewed primary completion action checkForUpdates; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "<button class=\"btn btn-service-style btn-small\" onclick=\"otaFromUrl(",
+    "after": "<button class=\"btn btn-primary btn-small\" onclick=\"otaFromUrl(",
+    "reason": "V01: reviewed primary completion action otaFromUrl; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": "<button class=\"btn btn-service-style btn-small\" onclick=\"otaFromFile(",
+    "after": "<button class=\"btn btn-primary btn-small\" onclick=\"otaFromFile(",
+    "reason": "V01: reviewed primary completion action otaFromFile; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "startWwwOta",
+    "before": "<button class=\"btn btn-service-style btn-small\" onclick=\"startWwwOta(",
+    "after": "<button class=\"btn btn-primary btn-small\" onclick=\"startWwwOta(",
+    "reason": "V01: reviewed primary completion action startWwwOta; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showAddActionModal",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"submitAction(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"submitAction(",
+    "reason": "V01: reviewed primary completion action submitAction; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showAddSourceModal",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"submitAddSource(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"submitAddSource(",
+    "reason": "V01: reviewed primary completion action submitAddSource; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showAddRuleModal",
+    "before": "<button class=\"btn btn-service-style\" onclick=\"submitAddRule(",
+    "after": "<button class=\"btn btn-primary\" onclick=\"submitAddRule(",
+    "reason": "V01: reviewed primary completion action submitAddRule; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showExportSourceModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"export-source-btn\" onclick=\"doExportSource(",
+    "after": "<button class=\"btn btn-primary\" id=\"export-source-btn\" onclick=\"doExportSource(",
+    "reason": "V01: reviewed primary completion action doExportSource; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showImportSourceModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"import-source-btn\" onclick=\"confirmSourceImport(",
+    "after": "<button class=\"btn btn-primary\" id=\"import-source-btn\" onclick=\"confirmSourceImport(",
+    "reason": "V01: reviewed primary completion action confirmSourceImport; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showExportRuleModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"export-rule-btn\" onclick=\"doExportRule(",
+    "after": "<button class=\"btn btn-primary\" id=\"export-rule-btn\" onclick=\"doExportRule(",
+    "reason": "V01: reviewed primary completion action doExportRule; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showImportRuleModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"import-rule-btn\" onclick=\"confirmRuleImport(",
+    "after": "<button class=\"btn btn-primary\" id=\"import-rule-btn\" onclick=\"confirmRuleImport(",
+    "reason": "V01: reviewed primary completion action confirmRuleImport; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showExportActionModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"export-action-btn\" onclick=\"doExportAction(",
+    "after": "<button class=\"btn btn-primary\" id=\"export-action-btn\" onclick=\"doExportAction(",
+    "reason": "V01: reviewed primary completion action doExportAction; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "showImportActionModal",
+    "before": "<button class=\"btn btn-service-style\" id=\"import-action-btn\" onclick=\"confirmActionImport(",
+    "after": "<button class=\"btn btn-primary\" id=\"import-action-btn\" onclick=\"confirmActionImport(",
+    "reason": "V01: reviewed primary completion action confirmActionImport; handler, disabled state and all fields unchanged"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:15px\">",
+    "after": "<div class=\"security-section-toolbar\">",
+    "reason": "V06: local security settings layout class; IDs, fields, order, hidden states and handlers preserved"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "id=\"cert-status-card\" class=\"info-card\"",
+    "after": "id=\"cert-status-card\" class=\"info-card security-status-card\"",
+    "reason": "V06: local security settings layout class; IDs, fields, order, hidden states and handlers preserved"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "id=\"config-pack-status-card\" class=\"info-card\"",
+    "after": "id=\"config-pack-status-card\" class=\"info-card security-status-card\"",
+    "reason": "V06: local security settings layout class; IDs, fields, order, hidden states and handlers preserved"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<div style=\"display:grid;grid-template-columns:repeat(2, 1fr);gap:8px\">",
+    "after": "<div class=\"security-metadata\">",
+    "reason": "V06: local security settings layout class; IDs, fields, order, hidden states and handlers preserved"
+  },
+  {
+    "owner": "addCommandsPageStyles",
+    "before": ".command-card .btn-exec {\n            background: var(--emerald-50);\n            color: #047857;",
+    "after": ".command-card .btn-exec {\n            background: var(--ui-success-tint);\n            color: var(--ui-success-text);",
+    "reason": "V15: command run/stop/delete semantic control colors only; no execution/data colors changed"
+  },
+  {
+    "owner": "refreshCommandsList",
+    "before": "style=\"background:var(--rose-50);color:#be123c\"",
+    "after": "style=\"background:var(--ui-danger-tint);color:var(--ui-danger-text)\"",
+    "reason": "V15: command run/stop/delete semantic control colors only; no execution/data colors changed"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": ".partition-card.running {\n            border-color: var(--emerald-500);\n            background: var(--emerald-50);\n        }\n        \n        .partition-card.bootable {\n            border-color: var(--amber-500);\n            background: var(--amber-50);\n        }\n        \n        .partition-header {",
+    "after": "\n        \n        .partition-header {",
+    "reason": "V12/V16: neutral content groups and readable semantic badges; status condition and text retained"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": ".partition-badge.running { background: var(--emerald-500); }",
+    "after": ".partition-badge.running { background: var(--ui-success-tint); color: var(--ui-success-text); }",
+    "reason": "V12/V16: neutral content groups and readable semantic badges; status condition and text retained"
+  },
+  {
+    "owner": "loadOtaPage",
+    "before": ".partition-badge.bootable { background: var(--amber-500); }",
+    "after": ".partition-badge.bootable { background: var(--ui-warning-tint); color: var(--ui-warning-text); }",
+    "reason": "V12/V16: neutral content groups and readable semantic badges; status condition and text retained"
+  },
+  {
+    "owner": "refreshRules",
+    "before": "<span class=\"badge\" style=\"background:var(--emerald-500);font-size:12px\">",
+    "after": "<span class=\"badge badge-light\" style=\"font-size:12px\">",
+    "reason": "V12/V16: neutral content groups and readable semantic badges; status condition and text retained"
+  },
+  {
+    "owner": "loadAutomationPage",
+    "before": "<button class=\"btn btn-success btn-sm\" onclick=\"showAddSourceModal()\">",
+    "after": "<button class=\"btn btn-gray btn-sm\" onclick=\"showAddSourceModal()\">",
+    "reason": "V01/V15: creation launcher is a neutral toolbar action; success green reserved for runtime state. Modal submit remains primary."
+  },
+  {
+    "owner": "loadAutomationPage",
+    "before": "<button class=\"btn btn-success btn-sm\" onclick=\"showAddRuleModal()\">",
+    "after": "<button class=\"btn btn-gray btn-sm\" onclick=\"showAddRuleModal()\">",
+    "reason": "V01/V15: creation launcher is a neutral toolbar action; success green reserved for runtime state. Modal submit remains primary."
+  },
+  {
+    "owner": "loadAutomationPage",
+    "before": "<button class=\"btn btn-success btn-sm\" onclick=\"showAddActionModal()\">",
+    "after": "<button class=\"btn btn-gray btn-sm\" onclick=\"showAddActionModal()\">",
+    "reason": "V01/V15: creation launcher is a neutral toolbar action; success green reserved for runtime state. Modal submit remains primary."
+  },
+  {
+    "owner": "refreshSources",
+    "before": "<td><span class=\"btn-service-style\" style=\"display:inline-block;font-size:12px\">",
+    "after": "<td><span class=\"badge badge-light\">",
+    "reason": "V12/V17: source type is metadata, not an unpadded pseudo-button; value unchanged."
+  },
+  {
+    "owner": "refreshActions",
+    "before": "<span class=\"badge badge-warning\">",
+    "after": "<span class=\"badge badge-light\">",
+    "reason": "V12/V15: asynchronous execution is a mode, not a warning; retain full mode label and condition."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<div style=\"background:#e3f2fd;border:1px solid #2196f3;border-radius:4px;padding:10px;margin:15px 0\">",
+    "after": "<div style=\"background:var(--bg-muted);border-radius:9px;padding:10px;margin:15px 0\">",
+    "reason": "V14/V17: informational deployment explanation uses neutral inset surface; warning and destructive flows unchanged."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<textarea id=\"cert-view-pem\" readonly",
+    "after": "<textarea id=\"cert-view-pem\" class=\"input\" readonly",
+    "reason": "V11/V13: use existing input metrics for standalone readonly output; monospace, contents and readonly preserved."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<textarea id=\"csr-pem-output\" readonly",
+    "after": "<textarea id=\"csr-pem-output\" class=\"input\" readonly",
+    "reason": "V11/V13: use existing input metrics for standalone readonly output; monospace, contents and readonly preserved."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<textarea id=\"pack-export-tscfg\" readonly",
+    "after": "<textarea id=\"pack-export-tscfg\" class=\"input\" readonly",
+    "reason": "V11/V13: use existing input metrics for standalone readonly output; monospace, contents and readonly preserved."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<div class=\"modal-content\" style=\"width:800px;max-width:90vw;height:auto;min-height:600px;max-height:90vh;overflow-y:auto\">",
+    "after": "<div class=\"modal-content\" style=\"width:800px\">",
+    "reason": "V09: remove export-specific minimum height and competing viewport cap; shared modal cap and scroll remain."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<div style=\"display:flex;gap:8px;margin-bottom:8px\">",
+    "after": "<div class=\"pack-file-toolbar\">",
+    "reason": "V13: export file actions wrap in their existing order; path gets a readable flex basis. Two exact local rows."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "id=\"pack-export-browse-path\" value=\"/sdcard/config\" style=\"flex:1\" readonly",
+    "after": "id=\"pack-export-browse-path\" value=\"/sdcard/config\" readonly",
+    "reason": "V13: move export path sizing into its local wrapping toolbar rule."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<table class=\"data-table hidden\" id=\"pack-list-table\">",
+    "after": "<div class=\"security-table-scroll\">\n                    <table class=\"data-table hidden\" id=\"pack-list-table\">",
+    "reason": "V04: configuration pack table keeps table display and scrolls inside its original modal region."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<tbody id=\"pack-list-tbody\"></tbody>\n                    </table>",
+    "after": "<tbody id=\"pack-list-tbody\"></tbody>\n                    </table>\n                    </div>",
+    "reason": "V04: close configuration pack table wrapper without changing descendants or selectors."
+  },
+  {
+    "owner": "showPubkeyModal",
+    "before": "<textarea id=\"pubkey-content\" readonly style=\"width:100%;height:150px;font-family:monospace;font-size:12px;resize:vertical\">",
+    "after": "<textarea id=\"pubkey-content\" class=\"input\" readonly style=\"width:100%;height:150px;font-family:monospace;font-size:13px;resize:vertical\">",
+    "reason": "V11/V13: shared output field metrics and readable technical text; key bytes and actions unchanged."
+  },
+  {
+    "owner": "showPrivkeyModal",
+    "before": "<textarea id=\"privkey-content\" readonly style=\"width:100%;height:200px;font-family:monospace;resize:vertical;background:#2d2d2d;color:#00ff00\">",
+    "after": "<textarea id=\"privkey-content\" class=\"input\" readonly style=\"width:100%;height:200px;font-family:monospace;font-size:13px;resize:vertical\">",
+    "reason": "V11/V15: plaintext key output is not an ANSI terminal or user-selected color; neutral shared output surface, no data change."
+  },
+  {
+    "owner": "showConfigPackApplyConfirm",
+    "before": "<button class=\"btn btn-service-style\" id=\"config-pack-apply-button\">",
+    "after": "<button class=\"btn btn-primary\" id=\"config-pack-apply-button\">",
+    "reason": "V01: applying a verified configuration is the explicit primary action; later stays secondary, event assignment unchanged."
+  },
+  {
+    "owner": "showConfigPackApplyConfirm",
+    "before": "<div style=\"background:rgba(16,185,129,0.06);padding:12px;border-radius:6px;margin-bottom:15px\">",
+    "after": "<div style=\"background:var(--bg-muted);padding:12px;border-radius:9px;margin-bottom:15px\">",
+    "reason": "V16/V17: keep verification state in status text, neutral metadata group."
+  },
+  {
+    "owner": "showConfigPackApplyConfirm",
+    "before": "<div style=\"color:#059669;font-weight:bold;margin-bottom:8px\">",
+    "after": "<div style=\"color:var(--ui-success-text);font-weight:500;margin-bottom:8px\">",
+    "reason": "V12/V15: readable success role without redundant bold emphasis."
+  },
+  {
+    "owner": "showImageSelectModal",
+    "before": "<div class=\"modal-content\" style=\"max-width:500px;\">",
+    "after": "<div class=\"modal-content cc-compact selection-modal\" style=\"max-width:500px;\">",
+    "reason": "Selection shell uses the existing header/body structure and single main scroll; mounting and handlers unchanged"
+  },
+  {
+    "owner": "showImageSelectModal",
+    "before": "<div id=\"image-select-list\" style=\"display:none;max-height:400px;overflow-y:auto;\"></div>",
+    "after": "<div id=\"image-select-list\" style=\"display:none;\"></div>",
+    "reason": "Selection list scroll belongs to the modal body; no field or item removed"
+  },
+  {
+    "owner": "showVariableSelectModal",
+    "before": "<div class=\"modal-content\" style=\"max-width:550px;\">",
+    "after": "<div class=\"modal-content cc-compact selection-modal\" style=\"max-width:550px;\">",
+    "reason": "Selection shell uses the existing header/body structure and single main scroll; mounting and handlers unchanged"
+  },
+  {
+    "owner": "showVariableSelectModal",
+    "before": "<div id=\"variable-select-list\" style=\"display:none;max-height:400px;overflow-y:auto;\"></div>",
+    "after": "<div id=\"variable-select-list\" style=\"display:none;\"></div>",
+    "reason": "Selection list scroll belongs to the modal body; no field or item removed"
+  },
+  {
+    "owner": "openConditionVarSelector",
+    "before": "<div class=\"modal-content\" style=\"max-width:550px;\">",
+    "after": "<div class=\"modal-content cc-compact selection-modal\" style=\"max-width:550px;\">",
+    "reason": "Selection shell uses the existing header/body structure and single main scroll; mounting and handlers unchanged"
+  },
+  {
+    "owner": "openConditionVarSelector",
+    "before": "<div id=\"variable-select-list\" style=\"display:none;max-height:400px;overflow-y:auto;\"></div>",
+    "after": "<div id=\"variable-select-list\" style=\"display:none;\"></div>",
+    "reason": "Selection list scroll belongs to the modal body; no field or item removed"
+  },
+  {
+    "owner": "showVariableSelectModalForCondition",
+    "before": "<div class=\"modal-content\" style=\"max-width:550px;\">",
+    "after": "<div class=\"modal-content cc-compact selection-modal\" style=\"max-width:550px;\">",
+    "reason": "Selection shell uses the existing header/body structure and single main scroll; mounting and handlers unchanged"
+  },
+  {
+    "owner": "showVariableSelectModalForCondition",
+    "before": "<div id=\"variable-select-list\" style=\"display:none;max-height:400px;overflow-y:auto;\"></div>",
+    "after": "<div id=\"variable-select-list\" style=\"display:none;\"></div>",
+    "reason": "Selection list scroll belongs to the modal body; no field or item removed"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "<div class=\"modal-content\" style=\"max-width:1400px;width:90%\">",
+    "after": "<div class=\"modal-content cc-compact quick-log-modal\" style=\"max-width:1400px;width:90%\">",
+    "reason": "Consistent log shell with stable header/footer; same event and ID paths"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "<div class=\"modal-footer\" style=\"display:flex;gap:10px;padding:10px 15px;justify-content:space-between;align-items:center\">",
+    "after": "<div class=\"modal-footer quick-log-footer\">",
+    "reason": "Log footer wraps controls without shrinking labels"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "<div style=\"display:flex;gap:8px;align-items:center\">",
+    "after": "<div class=\"quick-log-controls\">",
+    "reason": "Named local wrapper permits natural wrapping; order unchanged"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "style=\"display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted)\"",
+    "after": "style=\"display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted);white-space:nowrap\"",
+    "reason": "Keep interval label together"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "style=\"padding:2px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg-muted);color:var(--text-primary);font-size:12px\"",
+    "after": "style=\"padding:4px 8px;min-height:32px;border-radius:8px;border:1px solid var(--border);background:var(--bg-muted);color:var(--text-primary);font-size:13px\"",
+    "reason": "Compact native select sizing"
+  },
+  {
+    "owner": "quickActionViewLog",
+    "before": "<span style=\"color:var(--emerald-600)\">",
+    "after": "<span style=\"color:var(--ui-success-text)\">",
+    "reason": "Readable semantic status text only, not log data"
+  },
+  {
+    "owner": "startQuickLogTail",
+    "before": "<span style=\"color:#059669\">",
+    "after": "<span style=\"color:var(--ui-success-text)\">",
+    "reason": "Same readable status role on dynamic update"
+  },
+  {
+    "owner": "showWidgetManager",
+    "before": "<select id=\"dw-refresh-interval\" onchange=\"updateRefreshInterval()\" style=\"flex:1;\">",
+    "after": "<select id=\"dw-refresh-interval\" class=\"input\" onchange=\"updateRefreshInterval()\" style=\"flex:1;\">",
+    "reason": "Native Safari confirmed this bare select bypassed the common form control sizing; handlers and options unchanged"
+  },
+  {
+    "owner": "loadNetworkPage",
+    "before": "<button class=\"btn btn-sm\" onclick=\"setHostname()\">",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"setHostname()\">",
+    "reason": "Primary submit of its existing hostname or NAT settings block; handler, label, order and permissions unchanged."
+  },
+  {
+    "owner": "loadNetworkPage",
+    "before": "<button class=\"btn btn-sm\" onclick=\"saveNatConfig()\">",
+    "after": "<button class=\"btn btn-sm btn-primary\" onclick=\"saveNatConfig()\">",
+    "reason": "Primary submit of its existing hostname or NAT settings block; handler, label, order and permissions unchanged."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "                <div class=\"security-table-scroll\">\n                <table class=\"data-table\">",
+    "after": "                <div class=\"security-table-scroll\" onfocusin=\"event.target.scrollIntoView({block: 'nearest', inline: 'nearest'})\">\n                <table class=\"data-table\">",
+    "reason": "Three new security table scroll wrappers must fully reveal the focused descendant. Scroll only; no focus reassignment, click, cancellation, request or business-handler change. Verified native Tab clipping in candidate and isolated fix."
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": "            .log-entry {\n                padding: 3px 8px;\n                border-radius: var(--radius-sm);\n                margin: 2px 0;\n                display: flex;\n                align-items: baseline;\n                gap: 8px;\n            }\n            .log-entry:hover {\n                background: rgba(255,255,255,0.05);\n            }\n            .log-time {\n                color: #b8c2d0;\n                font-size: 12px;\n                flex-shrink: 0;\n            }\n            .log-level {\n                font-weight: 600;\n                font-size: 12px;\n                padding: 1px 6px;\n                border-radius: var(--radius-sm);\n                flex-shrink: 0;\n                min-width: 55px;\n                text-align: center;\n            }\n            .log-tag {\n                color: var(--cyan-500);\n                flex-shrink: 0;\n                max-width: 150px;\n                overflow: hidden;\n                text-overflow: ellipsis;\n            }\n            .log-message {\n                flex: 1;\n                word-break: break-word;\n            }\n            .log-task {\n                color: #b8c2d0;\n                font-size: 12px;\n                flex-shrink: 0;\n            }\n            \n            /* 日志级别颜色 */\n            .level-error { border-left: 3px solid var(--rose-500); }\n            .level-error .log-level { background: var(--rose-500); color: #fff; }\n            .level-warn { border-left: 3px solid var(--amber-500); }\n            .level-warn .log-level { background: var(--amber-500); color: var(--text-primary); }\n            .level-info { border-left: 3px solid var(--emerald-500); }\n            .level-info .log-level { background: var(--emerald-50); color: var(--emerald-600); }\n            .level-debug { border-left: 3px solid var(--blue-500); }\n            .level-debug .log-level { background: var(--blue-50); color: var(--blue-600); }\n            .level-verbose { border-left: 3px solid var(--text-muted); }\n            .level-verbose .log-level { background: var(--bg-muted); color: var(--text-muted); }\n            \n",
+    "after": "            .log-entry {\n                padding: 3px 8px;\n                border-radius: var(--radius-sm);\n                margin: 2px 0;\n                display: flex;\n                flex-wrap: wrap;\n                align-items: baseline;\n                gap: 8px;\n            }\n            .log-entry:hover {\n                background: rgba(255,255,255,0.05);\n            }\n            .log-time {\n                color: #b8c2d0;\n                font-size: 12px;\n                flex-shrink: 0;\n            }\n            .log-level {\n                font-weight: 600;\n                font-size: 12px;\n                padding: 1px 6px;\n                border-radius: var(--radius-sm);\n                flex-shrink: 0;\n                min-width: 55px;\n                text-align: center;\n            }\n            .log-tag {\n                color: var(--cyan-500);\n                min-width: 0;\n                max-width: 150px;\n                overflow-wrap: anywhere;\n            }\n            .log-message {\n                flex: 1 1 240px;\n                min-width: 0;\n                overflow-wrap: anywhere;\n            }\n            .log-task {\n                color: #b8c2d0;\n                font-size: 12px;\n                min-width: 0;\n                max-width: 100%;\n                overflow-wrap: anywhere;\n            }\n            \n            /* 日志级别颜色 */\n            .level-error { border-left: 3px solid var(--rose-500); }\n            .level-error .log-level { background: var(--ui-danger-text); color: #fff; }\n            .level-warn { border-left: 3px solid var(--amber-500); }\n            .level-warn .log-level { background: var(--amber-500); color: var(--text-primary); }\n            .level-info { border-left: 3px solid var(--emerald-500); }\n            .level-info .log-level { background: var(--emerald-50); color: #70dfa0; }\n            .level-debug { border-left: 3px solid var(--blue-500); }\n            .level-debug .log-level { background: var(--blue-50); color: #90baff; }\n            .level-verbose { border-left: 3px solid var(--text-muted); }\n            .level-verbose .log-level { background: var(--bg-muted); color: var(--text-muted); }\n            \n",
+    "reason": "V28: allow log entry wrapping with usable message basis; retain field order, renderer and all business code. Readable text badge variants on dark viewer; level border hues retained."
+  },
+  {
+    "owner": "loadTerminalPage",
+    "before": "            /* 日志面板 */\n            .log-panel {\n                flex: 1;\n                background: var(--bg-card);\n                border-radius: var(--radius);\n                overflow: hidden;\n                display: flex;\n                flex-direction: column;\n            }\n            \n            .log-viewer {\n                flex: 1;\n                font-family: 'SF Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;\n                font-size: 12px;\n                line-height: 1.6;\n                background: #1e293b;\n                color: #eee;\n                padding: 12px;\n                overflow-y: auto;\n                min-height: 400px;\n            }\n            \n",
+    "after": "            /* 日志面板 */\n            .log-panel {\n                flex: 1;\n                min-height: 100px;\n                background: var(--bg-card);\n                border-radius: var(--radius);\n                overflow: hidden;\n                display: flex;\n                flex-direction: column;\n            }\n            \n            .log-viewer {\n                flex: 1;\n                font-family: 'SF Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;\n                font-size: 12px;\n                line-height: 1.6;\n                background: #1e293b;\n                color: #eee;\n                padding: 12px;\n                overflow-y: auto;\n                min-height: 0;\n            }\n            \n",
+    "reason": "V28 low-height: remove child 400px minimum that exceeds clipping parent; keep panel usable while body may scroll."
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<div style=\"color:#6b7280;font-size:0.9em;margin-top:4px\">",
+    "after": "<div style=\"color:var(--text-secondary);font-size:0.9em;margin-top:4px\">",
+    "reason": "Security explanatory text uses existing readable secondary role; no business or data color changes"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<p style=\"color:#6b7280;margin:0\"><i class=\"ri-information-line\"></i>",
+    "after": "<p style=\"color:var(--text-secondary);margin:0\"><i class=\"ri-information-line\"></i>",
+    "reason": "Security explanatory text uses existing readable secondary role; no business or data color changes"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<p style=\"color:#6b7280;margin-bottom:15px;font-size:0.9em\"><i class=\"ri-information-line\"></i>",
+    "after": "<p style=\"color:var(--text-secondary);margin-bottom:15px;font-size:0.9em\"><i class=\"ri-information-line\"></i>",
+    "reason": "Security explanatory text uses existing readable secondary role; no business or data color changes"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<div id=\"cert-no-key-hint\" style=\"display:none;color:#6b7280;font-style:italic\">",
+    "after": "<div id=\"cert-no-key-hint\" style=\"display:none;color:var(--text-secondary);font-style:italic\">",
+    "reason": "Security explanatory text uses existing readable secondary role; no business or data color changes"
+  },
+  {
+    "owner": "loadSecurityPage",
+    "before": "<p style=\"color:#6b7280;margin-top:10px\">",
+    "after": "<p style=\"color:var(--text-secondary);margin-top:10px\">",
+    "reason": "Security explanatory text uses existing readable secondary role; no business or data color changes"
+  },
+  {
+    "owner": "refreshSecurityPage",
+    "before": "<div style=\"color:#999;margin-top:2px\">",
+    "after": "<div style=\"color:var(--text-secondary);margin-top:2px\">",
+    "reason": "Security explanatory text uses existing readable secondary role; no business or data color changes"
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<strong style=\"color:",
+    "after": "<strong style=\"color:color-mix(in srgb, ",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "\">",
+    "after": " 72%, black)\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<span style=\"color:",
+    "after": "<span style=\"color:color-mix(in srgb, ",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "\">",
+    "after": " 72%, black)\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<span style=\"color:",
+    "after": "<span style=\"color:color-mix(in srgb, ",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "\">",
+    "after": " 72%, black)\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<strong style=\"color:#059669\">",
+    "after": "<strong style=\"color:var(--ui-success-text)\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved"
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<span class=\"iram-value\" style=\"color:#059669\">",
+    "after": "<span class=\"iram-value\" style=\"color:var(--ui-success-text)\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved"
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<p style=\"font-size:12px;color:#6b7280;margin-top:8px\">",
+    "after": "<p style=\"font-size:12px;color:var(--text-secondary);margin-top:8px\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved"
+  },
+  {
+    "owner": "renderTaskRows",
+    "before": "<td style=\"color:",
+    "after": "<td style=\"color:color-mix(in srgb, ",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "renderTaskRows",
+    "before": ";font-weight:bold\">",
+    "after": " 72%, black);font-weight:bold\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "renderTaskRows",
+    "before": "<span style=\"color:",
+    "after": "<span style=\"color:color-mix(in srgb, ",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "renderTaskRows",
+    "before": "\">",
+    "after": " 72%, black)\">",
+    "reason": "Darken memory text only; original threshold expressions and chart colors preserved",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "renderTaskRows",
+    "before": " 72%, black)",
+    "after": " 65%, black)",
+    "reason": "Composed memory background measured below 4.5; deepen text only, preserve thresholds",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": " 72%, black)",
+    "after": " 65%, black)",
+    "reason": "Composed memory background measured below 4.5; deepen text only, preserve thresholds",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "color:var(--ui-success-text)",
+    "after": "color:color-mix(in srgb, var(--ui-success-text) 88%, black)",
+    "reason": "Composed memory background measured below 4.5; deepen text only, preserve thresholds",
+    "preserveFragmentEdges": true
+  },
+  {
+    "owner": "updateProtectionUI",
+    "before": "var(--emerald-600)",
+    "after": "var(--ui-success-text)",
+    "reason": "Readable enabled status text; icon and running condition unchanged"
+  },
+  {
+    "owner": "loadHostSelector",
+    "before": "<div class=\"host-info\" style=\"color:#d97706\">",
+    "after": "<div class=\"host-info\" style=\"color:var(--ui-warning-text)\">",
+    "reason": "Readable orphan host warning text; warning meaning and original count unchanged"
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<table class=\"memory-table task-table sortable-table\" id=\"task-memory-table\">",
+    "after": "<div class=\"memory-task-scroll\">\n                <table class=\"memory-table task-table sortable-table\" id=\"task-memory-table\">",
+    "reason": "Task table only: local horizontal scroll wrapper preserves table id, descendants, sorting and all fields; verified against exact template quasi."
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "                    </tbody>\n                </table>\n                ",
+    "after": "                    </tbody>\n                </table>\n                </div>\n                ",
+    "reason": "Task table only: local horizontal scroll wrapper preserves table id, descendants, sorting and all fields; verified against exact template quasi."
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<div class=\"memory-task-scroll\">",
+    "after": "<div class=\"memory-task-scroll\" tabindex=\"0\" role=\"region\" aria-labelledby=\"memory-task-heading\">",
+    "reason": "Make local horizontal scroll container focusable for keyboard users; accessible name reuses existing heading."
+  },
+  {
+    "owner": "refreshMemoryDetail",
+    "before": "<div class=\"memory-tasks\">\n                <h4>",
+    "after": "<div class=\"memory-tasks\">\n                <h4 id=\"memory-task-heading\">",
+    "reason": "Stable id for scroll-region accessible name; existing translated heading retained."
+  },
+  {
+    "owner": "refreshConfigPackList",
+    "before": "<span style=\"color:green\">",
+    "after": "<span style=\"color:color-mix(in srgb, var(--ui-success-text) 88%, black)\">",
+    "reason": "Valid config pack status uses readable semantic success text; preserve branch, label and action. Glass table background requires darker success text; base semantic token measured 4.04:1."
+  },
+  {
+    "owner": "refreshConfigPackList",
+    "before": "<span style=\"color:red\">",
+    "after": "<span style=\"color:var(--ui-danger-text)\">",
+    "reason": "Invalid config pack status uses readable semantic danger text; preserve branch, label and action."
+  }
+]

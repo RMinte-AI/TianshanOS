@@ -13,6 +13,34 @@ before(async()=>{
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));base=`http://127.0.0.1:${server.address().port}`;
  browser=await chromium.launch({channel:'chrome',headless:true});
 });
+for (const language of ['zh-CN', 'en-US']) {
+ test(`${language}: new confirmation sheet cancels writes and guards dangerous keyboard actions`, async()=>{
+  const {page,context,errors}=await pageFor(language);
+  try {
+   await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+   await page.evaluate(()=>{
+    closeLoginModal();window.deleteCalls=0;
+    api.storageDelete=async()=>{deleteCalls++;return {code:0};};
+    refreshFilesPage=async()=>{};
+    window.pendingDelete=deleteFile('/sdcard/fixture.txt');
+   });
+   const sheet=page.locator('.confirm-sheet');
+   await sheet.waitFor();
+   assert.equal(await page.evaluate(()=>document.activeElement.dataset.r),'0');
+   await page.evaluate(()=>document.querySelector('.confirm-sheet').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})));
+   assert.equal(await page.evaluate(()=>deleteCalls),0);
+   assert.equal(await sheet.count(),1);
+   await page.keyboard.press('Escape');await page.evaluate(()=>pendingDelete);
+   assert.equal(await page.evaluate(()=>deleteCalls),0);
+   assert.equal(await sheet.count(),0);
+   await page.evaluate(()=>{window.pendingDelete=deleteFile('/sdcard/fixture.txt');});
+   await sheet.locator('button[data-r="1"]').click();await page.evaluate(()=>pendingDelete);
+   assert.equal(await page.evaluate(()=>deleteCalls),1);
+   assert.equal(await sheet.count(),0);
+   assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+}
 after(async()=>{await browser?.close();await new Promise(resolve=>server?.close(resolve));});
 async function pageFor(language='en-US',handler){
  const context=await browser.newContext({locale:language,viewport:{width:1280,height:900}});

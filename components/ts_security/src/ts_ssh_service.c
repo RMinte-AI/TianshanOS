@@ -508,6 +508,17 @@ static bool protect_host(const ts_ssh_command_config_t *cmd, size_t index, void 
         *busy = true;
     return !*busy;
 }
+bool ts_ssh_service_host_runtime_protected(const char *host_id) {
+    if (!binding_gate || !mutex || !services || !host_id)
+        return true;
+    bool busy = false;
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    for (unsigned i = 0; i < TS_SSH_COMMANDS_MAX; ++i)
+        if (services[i].id[0] && !strcmp(services[i].host_id, host_id) && occupied(&services[i]))
+            busy = true;
+    xSemaphoreGive(mutex);
+    return busy;
+}
 bool ts_ssh_service_host_protected(const char *host_id) {
     bool busy = false;
     xSemaphoreTake(mutex, portMAX_DELAY);

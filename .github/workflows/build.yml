@@ -43,10 +43,29 @@ jobs:
       - run: npm ci --prefix tests/prompts
       - run: npm test --prefix tests/prompts
       - run: python3 tests/release/test_release.py
+      - run: python3 tests/release/test_web_minify.py
       - name: Install Chrome for actual-page regressions
         working-directory: tests/prompts
         run: npx playwright install --with-deps chrome
       - run: npm run test:browser --prefix tests/prompts
+
+  runtime-tests:
+    name: Runtime and fan regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch matching ESP-IDF cJSON sources for host tests
+        run: |
+          export IDF_PATH="$RUNNER_TEMP/runtime-idf"
+          echo "IDF_PATH=$IDF_PATH" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch "$IDF_VERSION" --filter=blob:none --sparse https://github.com/espressif/esp-idf.git "$IDF_PATH"
+          git -C "$IDF_PATH" sparse-checkout set components/json
+          git -C "$IDF_PATH" submodule update --init --depth 1 components/json/cJSON
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: bash tests/runtime/run_all.sh
+      - run: bash tests/fan_monitor/run_host.sh
 
   build:
     name: Build ESP32-S3 Firmware
@@ -154,7 +173,7 @@ jobs:
   # 编译成功后自动创建或更新 Release：tag 推送、main 推送或手动发布 Release
   release:
     name: Create or Update Release
-    needs: [build, web-tests]
+    needs: [build, web-tests, runtime-tests]
     if: github.repository == 'RMinte-AI/TianshanOS' && (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event_name == 'push'))
     runs-on: ubuntu-latest
     permissions:

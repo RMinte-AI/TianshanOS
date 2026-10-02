@@ -678,6 +678,9 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
  * 2. 验证主机指纹（Known Hosts）
  * 3. 部署公钥到 authorized_keys
  * 4. 使用公钥认证验证部署是否成功
+ * 5. 登记主机到 NVS；登记失败保留 deployed/verified 并返回业务错误
+ *
+ * Result data adds host_id, registered (NVS committed), registration_error (on failure).
  * 
  * Params: { 
  *   "host": "192.168.1.100", 
@@ -846,10 +849,11 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     
     free(pubkey_data);
     
-    /* 部署成功后，自动注册到 SSH 主机配置（无论验证是否成功） */
-    if (deploy_ok) {
+    /* Registration is independent of remote deployment and login verification. */
+    esp_err_t add_ret;
+    char auto_id[TS_SSH_HOST_ID_MAX];
+    {
         /* 生成主机 ID：user@host:port */
-        char auto_id[TS_SSH_HOST_ID_MAX];
         if (ssh_port == 22) {
             snprintf(auto_id, sizeof(auto_id), "%s@%s", 
                      user->valuestring, host->valuestring);
@@ -868,9 +872,12 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
         strncpy(host_config.username, user->valuestring, sizeof(host_config.username) - 1);
         strncpy(host_config.keyid, keyid->valuestring, sizeof(host_config.keyid) - 1);
         
-        esp_err_t add_ret = ts_ssh_hosts_config_add(&host_config);
+        add_ret = ts_ssh_hosts_config_add(&host_config);
         if (add_ret == ESP_OK) {
             TS_LOGI(TAG, "Auto-registered SSH host: %s", auto_id);
+        } else {
+            TS_LOGW(TAG, "Public key deployed but host %s registration failed: %s",
+                    auto_id, esp_err_to_name(add_ret));
         }
     }
     
@@ -882,8 +889,20 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     cJSON_AddNumberToObject(data, "port", ssh_port);
     cJSON_AddStringToObject(data, "user", user->valuestring);
     cJSON_AddStringToObject(data, "keyid", keyid->valuestring);
+    cJSON_AddStringToObject(data, "host_id", auto_id);
+    cJSON_AddBoolToObject(data, "registered", add_ret == ESP_OK);
     
-    ts_api_result_ok(result, data);
+    if (add_ret == ESP_OK) {
+        ts_api_result_ok(result, data);
+    } else {
+        cJSON_AddStringToObject(data, "registration_error", esp_err_to_name(add_ret));
+        ts_api_result_code_t code = add_ret == ESP_ERR_INVALID_STATE ? TS_API_ERR_BUSY
+                                 : add_ret == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM
+                                 : TS_API_ERR_INTERNAL;
+        ts_api_result_error(result, code, "host_registration_failed");
+        result->data = data;
+    }
+    /* Keep partial-result data in the existing HTTP response serializer. */
     return ESP_OK;
 }
 

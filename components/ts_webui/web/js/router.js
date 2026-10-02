@@ -105,7 +105,7 @@ class Router {
         // 更新导航高亮
         document.querySelectorAll('.nav-link').forEach(link => {
             const href = link.getAttribute('href');
-            if (href === '#' + hash || (hash === '/' && href === '#/')) {
+            if (href === '#' + hash || ((hash === '/' || hash === '/ota') && href === '#/')) {
                 link.classList.add('active');
             } else {
                 link.classList.remove('active');

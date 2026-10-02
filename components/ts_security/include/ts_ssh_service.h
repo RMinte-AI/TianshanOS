@@ -36,6 +36,8 @@ bool ts_ssh_service_start_admissible(const char *id);
 
 bool ts_ssh_service_command_protected(const char *id);
 bool ts_ssh_service_host_protected(const char *host_id);
+/* Missing-host recovery: inspect runtime ownership, not historical command references. */
+bool ts_ssh_service_host_runtime_protected(const char *host_id);
 
 void ts_ssh_service_cancel_observation(const char *id, uint32_t generation);
 bool ts_ssh_service_any_in_use(void);

@@ -1,0 +1,251 @@
+{
+ "system/info": {
+  "chip": {
+   "model": "ESP32-S3",
+   "cores": 2
+  },
+  "app": {
+   "version": "0.5.2+ac109b00d.09301547",
+   "idf_version": "5.5.2",
+   "compile_date": "Sep 30 2026",
+   "compile_time": "15:47:33"
+  },
+  "uptime_ms": 1260000
+ },
+ "fan/status": {
+  "temperature": 25.0,
+  "temp_valid": true,
+  "fans": [
+   {
+    "id": 0,
+    "mode": "manual",
+    "duty": 19,
+    "target_duty": 19,
+    "rpm": 0,
+    "auto_state": "baseline"
+   }
+  ]
+ },
+ "automation/variables/list": {
+  "variables": [
+   {
+    "name": "fixture.value",
+    "value": 42,
+    "type": "number",
+    "age_ms": 1000
+   }
+  ]
+ },
+ "automation/rules/list": {
+  "loaded": true,
+  "rules": [
+   {
+    "id": "rule0",
+    "name": "Qwen3.6-35B-A3B",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 0,
+    "actions_count": 1,
+    "trigger_count": 0
+   },
+   {
+    "id": "rule1",
+    "name": "Qwen3-Embedding-0.6B",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 0,
+    "actions_count": 1,
+    "trigger_count": 0
+   },
+   {
+    "id": "rule2",
+    "name": "Qwen3-Reranker-0.6B",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 0,
+    "actions_count": 1,
+    "trigger_count": 0
+   },
+   {
+    "id": "rule3",
+    "name": "清理显存",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 0,
+    "actions_count": 1,
+    "trigger_count": 0
+   },
+   {
+    "id": "rule4",
+    "name": "Qwen3.8-27B-Quark-INT4",
+    "enabled": true,
+    "manual_trigger": true,
+    "allow_manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 0,
+    "actions_count": 1,
+    "trigger_count": 0
+   }
+  ]
+ },
+ "ui/widgets/get": {
+  "widgets": [
+   {
+    "id": "w-temp",
+    "type": "temp",
+    "label": "温度",
+    "expression": "${agx.temp}",
+    "min": 0,
+    "max": 100,
+    "decimals": 0,
+    "unit": "°C",
+    "thresholds": [
+     0,
+     50,
+     80
+    ]
+   },
+   {
+    "id": "w-gpu",
+    "type": "ring",
+    "label": "GPU",
+    "expression": "${agx.gpu}",
+    "min": 0,
+    "max": 100,
+    "decimals": 0,
+    "unit": "%",
+    "thresholds": [
+     0,
+     50,
+     80
+    ]
+   }
+  ],
+  "refresh_interval": 5000,
+  "source": "sdcard"
+ },
+ "ssh/commands/list": {
+  "commands": [
+   {
+    "id": "Qwen3-6-35B-A3B",
+    "host_id": "agx0",
+    "name": "Qwen3.6-35B-A3B",
+    "command": "vllm serve",
+    "icon": "ri-rocket-line",
+    "nohup": true,
+    "serviceMode": true,
+    "timeout": 30
+   }
+  ]
+ },
+ "config/pack/list": {
+  "files": []
+ },
+ "fan/config": {
+  "curve": [
+   {
+    "temp": 40,
+    "duty": 30
+   },
+   {
+    "temp": 60,
+    "duty": 55
+   },
+   {
+    "temp": 80,
+    "duty": 100
+   }
+  ],
+  "hysteresis": 2,
+  "min_interval": 2000,
+  "min_duty": 20,
+  "max_duty": 100
+ },
+ "temp/bind": {
+  "bound_variables": [],
+  "bound_variable": ""
+ },
+ "system/memory_detail": {
+  "dram": {
+   "total": 327680,
+   "used": 294912,
+   "free": 32768,
+   "used_percent": 90,
+   "largest_block": 4096,
+   "fragmentation": 65.0,
+   "min_free_ever": 28672
+  },
+  "psram": {
+   "total": 8388608,
+   "used": 6291456,
+   "free": 2097152,
+   "used_percent": 75,
+   "largest_block": 1048576,
+   "fragmentation": 45.0,
+   "min_free_ever": 0
+  },
+  "dma": {
+   "total": 32768,
+   "free": 16384,
+   "largest_block": 4096
+  },
+  "tips": [],
+  "history": {
+   "min_free_heap_ever": 28672
+  },
+  "task_count": 0
+ },
+ "automation/rules/get": {
+  "id": "rule0",
+  "name": "Qwen3.6-35B-A3B",
+  "enabled": true,
+  "manual_trigger": true,
+  "allow_manual_trigger": true,
+  "show_on_dashboard": true,
+  "revision": 1,
+  "conditions": [],
+  "actions": [
+   {
+    "template_id": "tpl0"
+   }
+  ]
+ },
+ "automation/actions/get": {
+  "id": "tpl0",
+  "name": "tpl0",
+  "type": "ssh_cmd_ref",
+  "ssh_ref": {
+   "cmd_id": "Qwen3-6-35B-A3B"
+  }
+ },
+ "automation/actions/delete": {},
+ "time/info": {
+  "synced": false,
+  "source": "none",
+  "timezone": "UTC0",
+  "year": 2026,
+  "datetime": "2026-09-30 16:09:43"
+ },
+ "automation/services/status": {
+  "state": "unknown"
+ },
+ "ssh/hosts/list": {
+  "hosts": [
+   {
+    "id": "agx0",
+    "host": "10.10.99.98",
+    "port": 22,
+    "username": "root",
+    "keyid": "ZJ"
+   }
+  ]
+ }
+}

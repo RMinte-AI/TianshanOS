@@ -1,0 +1,1774 @@
+[
+  {
+    "id": "B-01",
+    "legacy": "**记录真实执行版本**。记录仓库、分支、HEAD、未提交变更和构建版本；不能把参考 SHA 当执行时最新版本。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-02",
+    "legacy": "**盘点真实加载链**。入口、脚本顺序、动态脚本/语言包/字体均与运行 Network 对应。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-03",
+    "legacy": "**完整功能库存**。所有路由、子标签、动态/条件入口、字段、菜单和模态框逐项建档，不只写七个页面。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-04",
+    "legacy": "**冻结模块位置**。记录父板块、相对顺序、默认展开/显示和高频操作位置。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-05",
+    "legacy": "**冻结权限与可见条件**。未登录、普通用户、root 及其他原权限条件分别登记。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-06",
+    "legacy": "**冻结字段契约**。ID/name/type/default/min/max/step/required/单位与提交方式逐项登记。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-07",
+    "legacy": "**冻结本地持久化**。语言、排序、主题及其他已有存储键/值不变，不覆盖用户设置。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-08",
+    "legacy": "**冻结运行行为**。API、订阅、周期、超时、重试、清理和请求成功判定与原来一致。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "B-09",
+    "legacy": "**分离基线问题**。既有错误有复现与来源，不归因换肤也不顺便修掉。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "原模态 Esc/焦点问题保留记录；构建选择器和 calc 错误已明确定位，并在用户授权后修复。"
+  },
+  {
+    "id": "B-10",
+    "legacy": "**无仓库或设备写操作越权**。准备文档和测试不自动提交、推送、刷机或控制真实设备。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-01",
+    "legacy": "**七个主入口完整**。系统、网络、文件、终端、自动化、指令、安全的顺序、路由、名称和权限保持。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-02",
+    "legacy": "**公共账户与语言区保留**。登录/退出、语言菜单、账户、连接状态和版权均保留，原功能仍找得到。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-03",
+    "legacy": "**CPU 与内存详情保留**。原指标、图表、详情入口、单位与数值含义不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-04",
+    "legacy": "**所有 LED 实体保留**。板载、触摸、矩阵及当前实际实例的控制与预览分别保留。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-05",
+    "legacy": "**LED 数据颜色不变**。颜色输入、灯效参数、色轮、校正与画面不被主题去色/改值。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-06",
+    "legacy": "**供电保护完整**。所有阈值、恢复、倒计时、告警、原设置字段与 min/max/step 未改变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-07",
+    "legacy": "**多风扇与设备控制保留**。每个风扇/设备实例的操作和反馈仍独立存在。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-08",
+    "legacy": "**GPIO 与存储板块保留**。原父区域、输出项、状态及管理操作没有合并或搬迁。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-09",
+    "legacy": "**服务与设备监测保留**。原列表、服务状态/开关、监测、条件出现的指纹等入口保留。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-10",
+    "legacy": "**网络所有原类型和字段保留**。不减连接类型，不改校验、保存、读回、连接/断开语义。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-11",
+    "legacy": "**文件全部原操作保留**。路径、行操作、批量操作、排序/筛选及原上传下载/取消/预览均逐项验证。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "F-12",
+    "legacy": "**终端完整**。输入、粘贴、历史、选择复制、ANSI、尺寸、会话退出与原快捷键不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "F-13",
+    "legacy": "**自动化所有子标签保留**。每个原标签、列表、字段、规则/变量/动作与编辑/执行入口原样保留。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-14",
+    "legacy": "**指令完整**。主机/认证选择、参数、执行/取消、日志、结果与原判定不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "F-15",
+    "legacy": "**安全完整**。所有基线安全分类、认证、密码/密钥/证书和条件入口不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "F-16",
+    "legacy": "**公共模态框完整**。LED/文件选择/内存/变量/保护及其他动态弹窗均保留原形式和操作。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-17",
+    "legacy": "**拖拽排序不变**。原手柄、排序结果、刷新后持久化与用户顺序保持。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-18",
+    "legacy": "**一对一映射无合并**。全部基线功能有实施后独立对应，不允许多个原板块压成一个。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-19",
+    "legacy": "**没有隐藏原入口**。未新增更多/高级分组隐藏原动作，不能只保留代码而无 UI。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "F-20",
+    "legacy": "**位置仅局部调整**。顶部导航、主体、状态栏不迁移，原模块顺序/父区域不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "V-01",
+    "legacy": "**页面底色正确**。浅色底色采用 #E9EEEB 或批准令牌计算值，不偏蓝紫。",
+    "disposition": "REPLACED",
+    "current": "改为批准第三版暖金与浅蓝静态渐变；旧雾银背景不再适用。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-02",
+    "legacy": "**内容面板实体**。正文、表格、表单、图表使用实体 #FBFCFA/对应暗色，不整页玻璃化。",
+    "disposition": "REPLACED",
+    "current": "正文/表格/图表保持稳定近白承载面；弹窗内分组允许低透明度，避免双层白板。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-03",
+    "legacy": "**强调色克制**。主要交互采用 #4A6355 与浅灰绿，不把所有卡片做强调底。",
+    "disposition": "REPLACED",
+    "current": "主动作与选中状态改为系统蓝；成功/警告/危险保留语义。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-04",
+    "legacy": "**禁用装饰性 AI 常见渐变**。无紫/粉/荧光蓝/蓝紫渐变/霓虹卡片；功能数据颜色除外。",
+    "disposition": "REPLACED",
+    "current": "允许批准背景渐变；仍禁止无关霓虹装饰，不改变功能数据颜色。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-05",
+    "legacy": "**次要文字够深**。正文次要字用 muted，不用 faint 或整体 opacity 造成对比不足。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-06",
+    "legacy": "**成功警告危险有区分**。保留真实语义和文字/图标，不把所有状态染成绿色。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-07",
+    "legacy": "**装饰线与控件线区别**。必要控件轮廓可见，不能以装饰分隔线颜色替代。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-08",
+    "legacy": "**浅深色完整性**。基线若有深色，原入口/默认/键/值保留，所有页和弹窗均适配。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "N/A",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "基线无深色主题入口或主题存储，本次不新增主题。"
+  },
+  {
+    "id": "V-09",
+    "legacy": "**主题属性不冲突**。不把承载 light/dark 的旧 data-theme 覆盖成 mist。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "N/A",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "基线没有主题 data-theme 合同；没有引入 mist 属性。"
+  },
+  {
+    "id": "V-10",
+    "legacy": "**关键 CSS 同步**。入口与主 CSS 同一基础色/尺寸，首次无旧蓝闪烁和高度跳变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "V-11",
+    "legacy": "**真实叠加对比合格**。普通字 ≥4.5:1，适用大字 ≥3:1，必要非文本 ≥3:1。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "V-12",
+    "legacy": "**没有全局改数据颜色**。图片/LED/ANSI/用户色值不被 filter、正则、全局 SVG 样式误伤。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/stage1/material-audit.json",
+      "output/macos27-20260929-card-revision/control-contrast.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-01",
+    "legacy": "**字体零新增请求**。使用系统回退，不加载新的远程或本地打包字体。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-02",
+    "legacy": "**字体层级统一**。正文 14px，次要信息原则 ≥12px；同级标题一致，避免原型微小字。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-03",
+    "legacy": "**不改变技术值格式**。数值精度、时间、单位、0/空值/未知语义保持原样。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-04",
+    "legacy": "**技术字段等宽**。命令/IP/路径等合理等宽，不把中文正文全部等宽化。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-05",
+    "legacy": "**数字稳定**。使用等宽数字时不截断，更新不导致大幅布局跳动。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-06",
+    "legacy": "**圆角层级**。主面板 18px、紧凑 14px、控件 10px、短标签 6px按映射使用，不处处胶囊。",
+    "disposition": "REPLACED",
+    "current": "采用主要面18–23px、子组12–16px、控件8–12px、浮层24–28px的层级。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-07",
+    "legacy": "**细线一致**。常规分隔 1px；图标保持原体系，品牌几何例外不可改。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-08",
+    "legacy": "**阴影轻量**。内容面板单层轻阴影，无霓虹/多层厚阴影或全局 will-change。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "T-09",
+    "legacy": "**长文本不藏**。英文长标题、路径、证书与错误文字可读可达，不能缩成 9px 或隐藏关键内容。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/built-form-parity.json",
+      "output/macos27-20260929-card-revision/contract.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "L-01",
+    "legacy": "**源文件身份一致**。原型副本 SHA-256 与文档值一致，不用其他方向/重绘图标。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/stage1.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "L-02",
+    "legacy": "**准确 viewBox**。品牌 SVG viewBox 为 0 0 30 30。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/stage1.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "L-03",
+    "legacy": "**两个 path 几何一致**。两个 d 与批准文件完全一致，不使用 favicon 的其他山形。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/stage1.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "L-04",
+    "legacy": "**线宽和连接一致**。外轮廓 1.8、内线 1.2、原连接/线帽保持，禁止统一线宽。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/stage1.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "L-05",
+    "legacy": "**比例与位置保持**。原品牌位置等比显示，不拉伸，不挤压原导航。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/stage1.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "L-06",
+    "legacy": "**可访问品牌名正确**。相邻品牌文字保留，图形装饰性隐藏无障碍重复朗读；不改版权/设备品牌。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/built/stage1.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "G-01",
+    "legacy": "**默认实体**。未有充分通过证据前生产玻璃关闭。",
+    "disposition": "REPLACED",
+    "current": "普通支持环境默认交付玻璃；未测性能不等于通过，不得静默关闭。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "G-02",
+    "legacy": "**不新增玻璃产品入口**。不新增开关、Dock、窗口或偏好存储；原外观功能保持。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "G-03",
+    "legacy": "**玻璃范围窄**。仅原顶部控制层；表格/图表/表单/终端/告警不玻璃化。",
+    "disposition": "REPLACED",
+    "current": "玻璃用于原导航/控制层、菜单/Popover及适合的模态外壳；正文保持稳定。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "G-04",
+    "legacy": "**模糊保守**。试验 blur 不超过 8px，不复制 15px 或引入折射/位移滤镜。",
+    "disposition": "REPLACED",
+    "current": "22px/18px blur与1.35/1.45饱和度为批准起始值，以渲染与实测决定局部调整。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "G-05",
+    "legacy": "**降级完整**。无 supports、减少透明度、高对比及手机默认均得到实体表面。",
+    "disposition": "REPLACED",
+    "current": "无支持/减少透明度/高对比实体回退；小屏不自动禁用批准玻璃。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "G-06",
+    "legacy": "**开关布局一致**。启用/停用仅材质变化，操作和位置无变化。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "N/A",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "未新增玻璃开关，因此不存在产品开关布局比较。"
+  },
+  {
+    "id": "G-07",
+    "legacy": "**玻璃不挡操作**。层叠、fixed、菜单、拖拽、色轮与表格滚动无回退。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "G-08",
+    "legacy": "**动效短且局部**。hover/按下/浮层 ≤200ms，不延迟业务结果或挡操作。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "G-09",
+    "legacy": "**不新增永久动效**。没有持续 rAF、背景动画、数字滚动库、全局 will-change。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "G-10",
+    "legacy": "**减少动效功能正常**。只停止本次装饰过渡，不让原业务依赖的结束事件失效。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/stage1.json",
+      "output/macos27-20260929-card-revision/built/material-audit.json",
+      "output/macos27-20260929-card-revision/final-browser.json"
+    ],
+    "result": "按已批准第三版替换旧视觉约束；当前实际生产截图及对应范围检查为依据，不沿用旧版本 PASS。"
+  },
+  {
+    "id": "I-01",
+    "legacy": "**按钮完整状态**。normal/hover/focus/active/disabled/原loading均明确且原条件不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "I-02",
+    "legacy": "**保存反馈真实**。不引入假成功、乐观写回或setTimeout演示结果。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-03",
+    "legacy": "**危险操作不弱化**。危险文字、权限、确认及原保护含义保持。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-04",
+    "legacy": "**错误空态不混淆**。失败不显示为空数据，断连不显示正常，0不被误作缺失。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-05",
+    "legacy": "**输入合同保持**。字段值、约束、单位、required 和按钮 type 未变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-06",
+    "legacy": "**滑块发送频率不变**。拖动与保存时机沿用原机制，不每帧追加请求。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-07",
+    "legacy": "**模态形式保持**。原模态不换抽屉，按钮次序、取消/关闭方式不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-08",
+    "legacy": "**图表内容不变**。系列/图例/轴/阈值/历史/tooltip原值不变，不新增插值或采样。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-09",
+    "legacy": "**终端尺寸敏感样式正确**。字体、行高、宽度和 resize 按原机制适配，不套全局正文 transform。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "I-10",
+    "legacy": "**下拉焦点与层级正常**。菜单不被玻璃、圆角、overflow、状态栏挡住。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-01",
+    "legacy": "**实际引擎确认**。以 index 与运行网络确认内联引擎和实际注册语言包，不改错未加载 i18n.js。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-02",
+    "legacy": "**支持语言不变**。当前 zh-CN/en-US 或执行基线实际支持表原样保留，不增删语言。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-03",
+    "legacy": "**原导出接口保持**。t/translateDOM/registerLanguage等实际接口、事件名不被替换。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-04",
+    "legacy": "**默认回退存储保持**。初始选择、ts_language、回退与lang属性行为不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-05",
+    "legacy": "**设备语言同步保持**。原system.language同步既不删除也不重复触发。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "N-06",
+    "legacy": "**翻译节点不吞图标**。data-i18n放纯文本节点；图标/控件与其分离。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-07",
+    "legacy": "**动态参数不改**。所有key类型和占位符名字/数量保持，新增key各实际语言对应完整。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-08",
+    "legacy": "**动态界面覆盖**。菜单、弹窗、校验、Toast、错误、图例、状态栏及无障碍名称均核对。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "N-09",
+    "legacy": "**不硬编码新业务文字**。CSS content或模板不新增未翻译的业务标签。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-10",
+    "legacy": "**技术内容不翻译**。命令/JSONkey/枚举/路径/ID/指纹/用户文本保持原值。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-11",
+    "legacy": "**语言切换状态不退步**。原当前页面/子标签/输入/认证恢复不比基线差。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "N-12",
+    "legacy": "**加载失败不恶化**。语言包失败不新增阻塞/重试风暴，原行为保留并记录旧缺陷。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-13",
+    "legacy": "**切换不增加重复加载**。语言/图标资源按原缓存机制，未重渲染一次就请求一次。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "N-14",
+    "legacy": "**文字展开无截断**。所有实际语言和测试长文本不隐藏功能或破坏点击区。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/language-failure.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "R-01",
+    "legacy": "**关键宽度覆盖**。390/768/1024/1440与320可达性逐项测试，记录CSS视口。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "R-02",
+    "legacy": "**200%与横屏**。浏览器200%缩放和手机横屏不丢入口、输入和按钮。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "R-03",
+    "legacy": "**表格不删列**。小屏区域滚动但原列、行操作与批量入口全在。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "R-04",
+    "legacy": "**键盘遮挡处理**。输入和保存区不被软键盘或固定栏永久遮住。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "NOT_RUN",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "实际移动软键盘／IME／手机或设备热缓存环境未运行；桌面视口及本地 fixture 不代替。"
+  },
+  {
+    "id": "R-05",
+    "legacy": "**键盘与焦点**。原功能可操作，Tab顺序保持，focus可见不被圆角裁剪。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "R-06",
+    "legacy": "**触控命中**。主要触控区域优选44px，至少满足AA尺寸/例外；不靠hover发现。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "R-07",
+    "legacy": "**高对比读屏**。必要label与名称保持，状态不是只靠颜色，不高频播报每次采样。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "R-08",
+    "legacy": "**输入兼容**。中文IME、粘贴、原快捷键和自动填充不退步。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "NOT_RUN",
+    "evidence": [
+      "output/macos27-20260929-card-revision/built/regression-summary.json",
+      "output/macos27-20260929-card-revision/after/zoom-profile.json",
+      "output/macos27-20260929-card-revision/target-size.json",
+      "output/macos27-20260929-card-revision/keyboard-auth.json"
+    ],
+    "result": "实际移动软键盘／IME／手机或设备热缓存环境未运行；桌面视口及本地 fixture 不代替。"
+  },
+  {
+    "id": "S-01",
+    "legacy": "**路由清理不变**。原监测/图表/终端的停止与销毁链保持。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-02",
+    "legacy": "**无重复监听**。反复进入/退出、切换语言、开关弹窗不积累监听或残留节点。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "生命周期测试与驻留 DOM/监听计数提供局部证据，不能覆盖所有分支或证明完全无泄漏。"
+  },
+  {
+    "id": "S-03",
+    "legacy": "**通信契约不变**。方法/URL/body/header/auth/timeout/retry/订阅不变。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-04",
+    "legacy": "**状态类未误伤**。hidden/active/disabled/权限类维持原语义，非广义选择器覆盖。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-05",
+    "legacy": "**无重复ID**。新增包裹和图标不导致生产实例重复ID或引用错对象。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-06",
+    "legacy": "**非可信文本安全**。不把原textContent改innerHTML；用户数据继续转义。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-07",
+    "legacy": "**安全策略保持**。不复制演示CSP，不削弱现有认证/权限/下载安全边界。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-08",
+    "legacy": "**无数据外传**。无外部域名、埋点、指纹识别、新增存储/ServiceWorker。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-09",
+    "legacy": "**不自动写真实设备**。测试不自动关机/改GPIO/删文件/写保护/OTA/执行SSH。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "S-10",
+    "legacy": "**证据脱敏**。截图/日志/快照不含真实密码、Token、密钥或私人数据。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/contract.json",
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/lifecycle-input.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "P-01",
+    "legacy": "**后端变量固定**。A/B使用同一后端固件与配置，不借用户的后端优化掩盖前端开销。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "A/B 同一严格本地接口替身、数据、视口、Chrome；A 原产物，B 包含授权的构建修复。共享主机影响已记录，未以其代表硬件环境。"
+  },
+  {
+    "id": "P-02",
+    "legacy": "**测试环境可比**。设备/浏览器/视口/数据/网络/缓存状态完全记录。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "A/B 同一严格本地接口替身、数据、视口、Chrome；A 原产物，B 包含授权的构建修复。共享主机影响已记录，未以其代表硬件环境。"
+  },
+  {
+    "id": "P-03",
+    "legacy": "**无新增运行依赖**。框架、图表库、图标库、远程字体增量为0。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "P-04",
+    "legacy": "**无新增常驻任务**。新增轮询/永久动画/全树观察器为0。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "P-05",
+    "legacy": "**首访请求不增长**。同路由语言的必要资源请求数不大于A。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "P-06",
+    "legacy": "**压缩传输不增长**。实际发布产物同场景传输总字节不大于A，不用估计gzip冒充。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "P-07",
+    "legacy": "**镜像占用不增长**。Web资源实际镜像占用不大于A，分区不改。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "FAIL",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "实际 SPIFFS 数据与索引页占用比原版增加 14592 字节；分区未改，未获得放宽不增长要求的授权。"
+  },
+  {
+    "id": "P-08",
+    "legacy": "**热缓存不退步**。重复访问没有新的cachebust或全量下载。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "NOT_RUN",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "实际移动软键盘／IME／手机或设备热缓存环境未运行；桌面视口及本地 fixture 不代替。"
+  },
+  {
+    "id": "P-09",
+    "legacy": "**业务消息无变化**。同场景请求/订阅/频率/payload不增加、不漏掉。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "P-10",
+    "legacy": "**首屏和路由时延**。测真实可用而非仅DOMContentLoaded；无可归因回退。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "P-11",
+    "legacy": "**交互与滚动无回退**。中位数/p95按足够样本记录，不主观挑选最好结果。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "P-12",
+    "legacy": "**长时间与循环稳定**。30分钟停留和50次路由/弹窗循环无新增内存/监听增长。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "P-13",
+    "legacy": "**设备内存与响应**。观察内部堆、PSRAM和控制响应，不只看浏览器GPU。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/device-readonly.json"
+    ],
+    "result": "Safari 已只读观察实机 CPU、DRAM、PSRAM、任务数；新版未部署，固件身份不同，不能推导新版设备性能。"
+  },
+  {
+    "id": "P-14",
+    "legacy": "**手机实际验证**。至少一个真实手机浏览器，不能只用桌面设备模拟。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "NOT_RUN",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "实际移动软键盘／IME／手机或设备热缓存环境未运行；桌面视口及本地 fixture 不代替。"
+  },
+  {
+    "id": "P-15",
+    "legacy": "**玻璃实测再决定**。未支持/未测/出现回退就关闭；不得放宽5%/10%额度。",
+    "disposition": "REPLACED",
+    "current": "必须实测批准玻璃最终配置；失败局部优化，无法满足时标FAIL/BLOCKED，不擅自关闭全部玻璃。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "P-16",
+    "legacy": "**不确定不算通过**。无设备/噪声/样本不足标NOT_RUN/BLOCKED/INCONCLUSIVE。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/performance/summary.json",
+      "output/macos27-20260929-card-revision/asset-transfer.json",
+      "output/macos27-20260929-card-revision/build-evidence.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "D-01",
+    "legacy": "**原构建流程保持**。现有minify/gzip/SPIFFS与脚本加载顺序保留，不换打包体系。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "保留 minify/gzip/SPIFFS 构建链；用户 2026-09-29 明确授权修复 minify_web.py 两行 CSS 错误。"
+  },
+  {
+    "id": "D-02",
+    "legacy": "**版本同步**。TS_ASSET_VERSION、静态引用、动态语言包版本一致，旧缓存不会混用。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "D-03",
+    "legacy": "**压缩资源正确**。每个gzip可解压，与对应真实资源匹配；压缩后JS能运行。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  },
+  {
+    "id": "D-04",
+    "legacy": "**完整回归证据**。验收矩阵所有适用项目有环境/步骤/实际/证据，不空口通过。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "D-05",
+    "legacy": "**功能映射完整**。库存映射100%，无模块合并，动态/条件功能已覆盖。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "INCONCLUSIVE",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "已有本地证据，但该条完整要求包含未覆盖状态、真实设备行为、噪声归因或长期内存判断，不能整体判 PASS。"
+  },
+  {
+    "id": "D-06",
+    "legacy": "**完整diff独立复查**。无非视觉逻辑改动、后端修复或其他人的代码被覆盖。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "分阶段完整读取生产 diff 及后续差异，审查新增测试/报告工具和授权的两行构建修复；当前代理自查，不冒充独立人工审签。"
+  },
+  {
+    "id": "D-07",
+    "legacy": "**回滚范围正确**。仅撤回本次视觉，不重置配置、不回滚用户同期后端工作。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "视觉逆补丁与构建修复逆补丁分开；组合逆应用仅在临时副本执行并恢复全部四文件基线哈希。"
+  },
+  {
+    "id": "D-08",
+    "legacy": "**最终状态真实**。明确玻璃默认值、未测项、基线问题及是否获得提交/部署授权。",
+    "disposition": "KEEP",
+    "current": "保留该项功能/验证要求；视觉色值按 GOAL-PROMPT 执行。",
+    "status": "PASS",
+    "evidence": [
+      "output/macos27-20260929-card-revision/source-integrity.json",
+      "output/macos27-20260929-card-revision/build-evidence.json",
+      "output/macos27-20260929-card-revision/built-contract.json",
+      "output/macos27-20260929-card-revision/built/regression-summary.json"
+    ],
+    "result": "当前修订版源码契约、实际本地浏览器和构建检查范围内成立；不代表设备部署或未执行的业务路径。"
+  }
+]

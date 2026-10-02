@@ -44,7 +44,7 @@ class SubscriptionManager {
         this.subscriptions = new Map(); // topic -> Set(callbacks)
         this.activeSubs = new Set();    // 已激活的 topic
     }
-    
+
     /**
      * 订阅主题
      * @param {string} topic - 主题名称 (system.info, device.status, ota.progress)
@@ -57,7 +57,7 @@ class SubscriptionManager {
             this.subscriptions.set(topic, new Set());
         }
         this.subscriptions.get(topic).add(callback);
-        
+
         // 发送订阅消息（只在首次订阅时）
         if (!this.activeSubs.has(topic)) {
             this.ws.send({
@@ -69,7 +69,7 @@ class SubscriptionManager {
             console.log(`[SubscriptionMgr] Subscribed to: ${topic}`, params);
         }
     }
-    
+
     /**
      * 取消订阅
      * @param {string} topic - 主题名称
@@ -77,7 +77,7 @@ class SubscriptionManager {
      */
     unsubscribe(topic, callback = null) {
         if (!this.subscriptions.has(topic)) return;
-        
+
         if (callback) {
             // 移除特定回调
             this.subscriptions.get(topic).delete(callback);
@@ -85,7 +85,7 @@ class SubscriptionManager {
             // 移除所有回调
             this.subscriptions.get(topic).clear();
         }
-        
+
         // 如果没有回调了，发送取消订阅消息
         if (this.subscriptions.get(topic).size === 0) {
             this.subscriptions.delete(topic);
@@ -99,7 +99,7 @@ class SubscriptionManager {
             }
         }
     }
-    
+
     /**
      * 处理 WebSocket 消息
      * @param {object} msg - WebSocket 消息
@@ -114,7 +114,7 @@ class SubscriptionManager {
             }
             return;
         }
-        
+
         // 分发数据到订阅回调
         if (msg.type === 'data' && msg.topic) {
             const callbacks = this.subscriptions.get(msg.topic);
@@ -130,7 +130,7 @@ class SubscriptionManager {
             // 没有回调时静默丢弃（页面切换时的正常行为）
         }
     }
-    
+
     /**
      * 清理所有订阅
      */
@@ -152,7 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化认证 UI
     updateAuthUI();
     validateStoredSession();
-    
+
     // 仅当 localStorage 无有效语言偏好时，才从设备 system.language 同步（不覆盖用户已有选择）
     (async function syncLanguageFromDevice() {
         try {
@@ -167,10 +167,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (e) {}
     })();
-    
+
     // 更新 Footer 版本号
     updateFooterVersion();
-    
+
     // 注册路由（系统页面作为首页）
     router.register('/', loadSystemPage);
     router.register('/system', loadSystemPage);
@@ -190,18 +190,18 @@ document.addEventListener('DOMContentLoaded', () => {
     router.register('/commands', loadCommandsPage);
     router.register('/security', loadSecurityPage);
     router.register('/automation', loadAutomationPage);
-    
+
     // 语言切换时重新渲染当前页，使主内容使用新语言；下一帧恢复右上角登录态（避免 translateDOM 覆盖 #user-name）
     window.addEventListener('languageChanged', (event) => {
         if (event.detail?.initial) return;
         router.navigate();
         setTimeout(() => updateAuthUI(), 0);
     });
-    
+
     window.dispatchEvent(new CustomEvent('appReady'));
     // 启动 WebSocket
     setupWebSocket();
-    
+
     // 全局键盘快捷键
     document.addEventListener('keydown', (e) => {
         // Esc 键取消 SSH 命令执行
@@ -242,23 +242,20 @@ function updateAuthUI() {
     if (api.isLoggedIn()) {
         const username = api.getUsername();
         const level = api.getLevel();
-        const levelIcon = 'ri-user-line'; // 统一使用人形图标
-        
-        loginBtn.textContent = t('security.logout');
-        loginBtn.classList.add('btn-service-style');
-        userName.innerHTML = `<i class="${levelIcon}"></i> ${username}`;
+
+        loginBtn.textContent = t('security.logoutBtn');
+        userName.textContent = username;
         userName.title = (typeof t === 'function' ? t('ui.permissionLevel') : '权限级别') + ': ' + level;
         loginBtn.onclick = logout;
-        
+
         // 更新导航菜单可见性
         router.updateNavVisibility();
     } else {
         loginBtn.textContent = t('security.login');
-        loginBtn.classList.add('btn-service-style');
         userName.textContent = t('ui.notLoggedIn');
         userName.title = '';
         loginBtn.onclick = showLoginModal;
-        
+
         // 隐藏需要权限的导航项
         router.updateNavVisibility();
     }
@@ -282,24 +279,24 @@ document.getElementById('login-form')?.addEventListener('submit', async (e) => {
     const password = document.getElementById('password').value;
     const errorEl = document.getElementById('login-error');
     const submitBtn = e.target.querySelector('button[type="submit"]');
-    
+
     // 显示加载状态
     submitBtn.disabled = true;
     submitBtn.textContent = t('login.loggingIn');
     errorEl?.classList.add('hidden');
-    
+
     try {
         const result = await api.login(username, password);
-        
+
         if (result.code === 0) {
             closeLoginModal();
             updateAuthUI();
-            
+
             // 检查是否需要修改密码
             if (!result.data.password_changed) {
                 showPasswordChangeReminder();
             }
-            
+
             router.navigate();
             showToast(t('login.welcomeName', { name: username }), 'success');
         } else {
@@ -340,35 +337,14 @@ function showPasswordChangeReminder() {
     const modal = document.createElement('div');
     modal.id = 'password-change-modal';
     modal.className = 'modal show';
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:400px;">
-            <div class="modal-header">
-                <h3>${typeof t === 'function' ? t('login.securityReminder') : '安全提醒'}</h3>
-            </div>
-            <div class="modal-body">
-                <p style="margin-bottom:16px;">${typeof t === 'function' ? t('login.defaultPasswordHint') : '您正在使用默认密码，建议立即修改以确保系统安全。'}</p>
-                <form id="change-password-form">
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('login.currentPassword') : '当前密码'}</label>
-                        <input type="password" id="change-old-pwd" class="input" required>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('login.newPassword') : '新密码 (4-64字符)'}</label>
-                        <input type="password" id="change-new-pwd" class="input" minlength="4" maxlength="64" required>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('login.confirmNewPassword') : '确认新密码'}</label>
-                        <input type="password" id="change-confirm-pwd" class="input" minlength="4" maxlength="64" required>
-                    </div>
-                    <div id="change-pwd-error" class="form-error hidden"></div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button class="btn" onclick="closePasswordChangeModal()">${typeof t === 'function' ? t('login.changeLater') : '稍后修改'}</button>
-                <button class="btn btn-service-style" onclick="submitPasswordChange()">${typeof t === 'function' ? t('login.changeNow') : '立即修改'}</button>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = sheet(460, t('login.securityReminder'),
+        `<div class="t-body" style="color:var(--ink-2);margin-bottom:12px">${t('login.defaultPasswordHint')}</div>
+        <form id="change-password-form">${grp(
+            row(t('login.currentPassword'), inp('change-old-pwd', 200, '', '', `type="password" required aria-label="${t('login.currentPassword')}"`)) +
+            row(t('login.newPassword'), inp('change-new-pwd', 200, '', '', `type="password" minlength="4" maxlength="64" required aria-label="${t('login.newPassword')}"`)) +
+            row(t('login.confirmNewPassword'), inp('change-confirm-pwd', 200, '', '', `type="password" minlength="4" maxlength="64" required aria-label="${t('login.confirmNewPassword')}"`)))}
+        <div id="change-pwd-error" class="form-error hidden"></div></form>`,
+        `<button class="btn lg" onclick="closePasswordChangeModal()">${t('login.changeLater')}</button><button class="btn lg primary" onclick="submitPasswordChange()">${t('login.changeNow')}</button>`);
     document.body.appendChild(modal);
 }
 
@@ -382,19 +358,19 @@ async function submitPasswordChange() {
     const newPwd = document.getElementById('change-new-pwd').value;
     const confirmPwd = document.getElementById('change-confirm-pwd').value;
     const errorEl = document.getElementById('change-pwd-error');
-    
+
     if (newPwd !== confirmPwd) {
         errorEl.textContent = typeof t === 'function' ? t('login.passwordMismatch') : '两次输入的新密码不一致';
         errorEl.classList.remove('hidden');
         return;
     }
-    
+
     if (newPwd.length < 4) {
         errorEl.textContent = typeof t === 'function' ? t('login.passwordMinLength') : '新密码至少4个字符';
         errorEl.classList.remove('hidden');
         return;
     }
-    
+
     try {
         const result = await api.changePassword(oldPwd, newPwd);
         if (result.code === 0) {
@@ -440,6 +416,7 @@ function renderWsStatus(connected = webSocketConnected) {
     el.classList.toggle('connected', connected);
     el.setAttribute('data-i18n-title', connected ? 'network.connected' : 'network.disconnected');
     el.title = t(connected ? 'network.connected' : 'network.disconnected');
+    el.textContent = el.title;
     el.setAttribute('aria-label', el.title);
 }
 window.addEventListener('languageChanged', () => {
@@ -457,10 +434,10 @@ function setupWebSocket() {
         () => renderWsStatus(false)
     );
     ws.connect();
-    
+
     // 初始化订阅管理器
     subscriptionManager = new SubscriptionManager(ws);
-    
+
     // 暴露给全局，供日志页面使用
     window.ws = ws;
     window.subscriptionManager = subscriptionManager;
@@ -468,20 +445,20 @@ function setupWebSocket() {
 
 function handleEvent(msg) {
     // console.log('Event:', msg);
-    
+
     // 处理订阅管理器消息 (subscribed/unsubscribed/data)
     if (subscriptionManager && (msg.type === 'subscribed' || msg.type === 'unsubscribed' || msg.type === 'data')) {
         subscriptionManager.handleMessage(msg);
         return;
     }
-    
+
     // 处理日志消息
     if (msg.type === 'log') {
         // 日志页面处理
         if (typeof window.handleLogMessage === 'function') {
             window.handleLogMessage(msg);
         }
-        
+
         // 模态框实时日志处理
         const modal = document.getElementById('terminal-logs-modal');
         if (modal && modal.style.display === 'flex') {
@@ -491,7 +468,7 @@ function handleEvent(msg) {
         }
         return;
     }
-    
+
     // 处理日志订阅确认
     if (msg.type === 'log_subscribed') {
         if (typeof window.updateWsStatus === 'function') {
@@ -499,11 +476,11 @@ function handleEvent(msg) {
         }
         return;
     }
-    
+
     // 处理历史日志响应
     if (msg.type === 'log_history') {
         const logs = msg.logs || [];
-        
+
         // 日志页面
         if (typeof window.logEntries !== 'undefined') {
             window.logEntries = logs;
@@ -512,7 +489,7 @@ function handleEvent(msg) {
             }
             showToast(typeof t === 'function' ? t('toast.logsLoadedCount', { count: logs.length }) : `加载了 ${logs.length} 条历史日志`, 'success');
         }
-        
+
         // 终端页面的日志模态框
         const modal = document.getElementById('terminal-logs-modal');
         if (modal && modal.style.display === 'flex') {
@@ -527,22 +504,22 @@ function handleEvent(msg) {
             })));
             renderModalLogs();
         }
-        
+
         return;
     }
-    
+
     if (msg.type === 'event') {
         // 刷新相关页面数据
         if (router.currentPage) {
             router.currentPage();
         }
     }
-    
+
     // 处理电压保护事件
     if (msg.type === 'power_event') {
         handlePowerEvent(msg);
     }
-    
+
     // 处理 SSH Exec 流式输出消息
     if (msg.type && msg.type.startsWith('ssh_exec_')) {
         handleSshExecMessage(msg);
@@ -570,7 +547,7 @@ function handlePowerEvent(msg) {
     const state = msg.state;
     const voltage = msg.voltage?.toFixed(2) || '?';
     const countdown = msg.countdown || 0;
-    
+
     // 显示警告
     if (state === 'LOW_VOLTAGE' || state === 'SHUTDOWN') {
         showToast(typeof t === 'function' ? t('toast.lowVoltageWarning', { voltage, countdown }) : `低电压警告: ${voltage}V (${countdown}s)`, 'warning', 5000);
@@ -585,249 +562,240 @@ function handlePowerEvent(msg) {
 //                         系统页面（合并原首页+系统）
 // =========================================================================
 
+// 带状态的按钮（AGX / LPMU 电源键）：图标 + 名称 + 状态
+const pwHtml = (nameKey, status) => `<svg class="i"><use href="#ri-shut-down-line"/></svg><span class="nm">${t(nameKey)}</span><span class="st">${status}</span>`;
+// 表格行内图标按钮（与设计稿的 btn icon sm 对应）
+// 图标来自 index.html 里的 SVG 精灵（<symbol id="ri-…">）；设备上持久化的组件图标仍是旧的 <i class="ri-…"></i> 字符串，渲染前用 iconize 转成 svg
+const ic = (name, cls = '') => `<svg class="i${cls ? ' ' + cls : ''}"><use href="#${name}"/></svg>`;
+const iconize = html => String(html ?? '').replace(/<i class=(["'])(ri-[\w-]+)\1><\/i>/g, (m, q, n) => ic(n));
+const icoBtn = (icon, title, onclick, cls = '', dis = false) => `<button class="btn icon sm ${cls}" onclick="${onclick}" title="${title}" aria-label="${title}"${dis ? ' disabled' : ''}><svg class="i"><use href="#${icon}"/></svg></button>`;
+// 模板片段：与设计稿的键值行一一对应
+const kvRow = (label, value = '-', id = '') => `<div class="kv"><span>${label}</span><span${id ? ` id="${id}"` : ''}>${value}</span></div>`;
+
+// 弹窗（分组表单）片段：sheet 是弹窗元素（.modal）里面的内容，宽度与设计稿一致；close 是右上角 ✕ 的处理函数（稿里有取消按钮的弹窗不放 ✕）
+const sheet = (w, title, body, foot = '', close = '', cls = '') =>
+    `<div class="sheet m-float${cls ? ' ' + cls : ''}" style="width:${w}px"><div class="sh"><span class="st">${title}</span>${close ? `<button type="button" class="btn icon round xbtn" onclick="${close}" aria-label="${t('common.close')}" title="${t('common.close')}"><svg class="i"><use href="#ri-close-line"/></svg></button>` : ''}</div><div class="sb">${body}</div>${foot ? `<div class="sf">${foot}</div>` : ''}</div>`;
+const gt = title => `<div class="gt">${title}</div>`;
+const grp = (rows, style = '') => `<div class="grp"${style ? ` style="${style}"` : ''}>${rows}</div>`;
+const row = (label, ctl, note = '', tip = '') => `<div class="row"><div class="rl"${tip ? ` title="${escapeHtml(tip)}"` : ''}>${label}${note ? `<small>${note}</small>` : ''}</div><div class="rc">${ctl}</div></div>`;
+// 行内输入框：宽度按稿；cls 里 mono 用于标识符/命令/地址；extra 追加属性（type、min、max、value…）
+const inp = (id, w, ph = '', cls = '', extra = '') => `<input class="field${cls ? ' ' + cls : ''}" id="${id}"${ph ? ` placeholder="${ph}" aria-label="${ph}"` : ''} style="width:${w}px"${extra ? ' ' + extra : ''}>`;
+const unit = u => `<span class="t-note" style="min-width:22px">${u}</span>`;
+const swc = (id, on = false, extra = '') => `<input type="checkbox" class="switch" role="switch" id="${id}"${on ? ' checked' : ''}${extra ? ' ' + extra : ''}>`;
+
+// 导出 / 导入配置包弹窗的通用外观（指令、主机、数据源、规则、动作共用）。key 决定元素 id：
+//   export-<key>-cert|result|btn；import-<key>-file|file-status|step2|preview|overwrite|result|btn
+const exportSheet = (key, title, desc, hint, hide, run, extra = '') => sheet(560, title,
+    `${desc ? `<div class="t-note" style="margin-bottom:10px">${desc}</div>` : ''}${extra}<div class="fl"><label>${t('securityPage.targetDeviceCert')}</label><textarea class="field mono" id="export-${key}-cert" style="height:96px" placeholder="${escapeHtml(hint)}"></textarea></div><div id="export-${key}-result" class="result-box hidden" style="margin-top:12px"></div>`,
+    `<button class="btn lg" onclick="${hide}()">${t('common.cancel')}</button><button class="btn lg primary" id="export-${key}-btn" onclick="${run}"><svg class="i"><use href="#ri-download-line"/></svg>${t('common.export')}</button>`);
+const importPlaceholder = key => row(t('securityPage.previewRowLabel'), `<span class="t-note">${t('securityPage.previewAfterSelect')}</span>`) + row(t('ssh.overwriteExisting'), swc(`import-${key}-overwrite`));
+const importSheet = (key, title, desc, preview, confirm, hide, extra = '', w = 560, ok = t('ssh.confirmImport')) => sheet(w, title,
+    `<div class="t-label" style="margin-bottom:10px">${desc}</div><div class="acts" style="align-items:center;gap:12px"><input type="file" id="import-${key}-file" accept=".tscfg" onchange="${preview}()" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none"><button type="button" class="btn" onclick="document.getElementById('import-${key}-file').click()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('common.selectFile')}</button><span id="import-${key}-file-status" class="t-note">${t('common.noFileSelected')}</span></div>
+     ${gt(t('ssh.configPackContent'))}<div id="import-${key}-step2"><div class="grp" id="import-${key}-preview">${importPlaceholder(key)}</div>${extra}</div>
+     <div id="import-${key}-result" class="result-box hidden" style="margin-top:10px"></div>`,
+    `<button class="btn lg" onclick="${hide}()">${t('common.cancel')}</button><button class="btn lg primary" id="import-${key}-btn" onclick="${confirm}()" disabled>${ok}</button>`);
+// 预览通过后的键值行（签名验证通过的提示由调用处写进 result-box）；typeVal 为空则不显示「类型」行
+function renderImportPreview(key, data, typeVal) {
+    document.getElementById(`import-${key}-preview`).innerHTML =
+        row(t('securityPage.configId'), `<span class="mono">${escapeHtml(data.id)}</span>`) +
+        (typeVal ? row(t('common.type'), typeVal) : '') +
+        row(t('ssh.signer'), escapeHtml(data.signer) + (data.official ? ` <span class="state ok">${t('ssh.official')}</span>` : '')) +
+        row(t('securityPage.noteLabel'), escapeHtml(data.note || t('ssh.restartToLoad'))) +
+        row(t('ssh.overwriteExisting'), swc(`import-${key}-overwrite`), data.exists ? t('securityPage.configExistsWarning') : '');
+}
+
 async function loadSystemPage() {
     const pageCurrent = capturePageValidity();
     clearInterval(refreshInterval);
-    
+
     // 取消之前设置的快捷操作刷新定时器（防止切换到其他页后仍触发）
     if (quickActionsTimeoutId) {
         clearTimeout(quickActionsTimeoutId);
         quickActionsTimeoutId = null;
     }
-    
-    
+
+
     // 停止 uptime 计算
     if (window.systemUptimeInterval) {
         clearInterval(window.systemUptimeInterval);
         window.systemUptimeInterval = null;
     }
-    
+
     // 停止服务状态刷新（切换页面时会重新启动）
     stopServiceStatusRefresh();
-    
+
     const content = document.getElementById('page-content');
     content.innerHTML = `
-        <div class="page-system">
-            <!-- 紧凑式系统概览 -->
-            <div class="cards">
-                <!-- 资源监控 (标题栏含服务状态) - 放首位，高频被动观察 -->
+        <div class="page page-system">
+            <div class="sys-top">
+                <!-- 资源监控 -->
                 <div class="card">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                        <h3 style="margin:0">${t('system.resourceMonitor')}</h3>
-                        <button class="btn btn-sm btn-service-style" onclick="showServicesModal()" style="cursor:pointer">
-                            <i class="ri-service-line"></i> ${t('system.services')} <span id="services-running">-</span>/<span id="services-total">-</span>
-                        </button>
+                    <div class="card-h">
+                        <span class="t-section">${t('system.resourceMonitorOob')}</span>
+                        <button class="btn sm" onclick="showServicesModal()"><span>${t('system.services')} <span id="services-running">-</span> / <span id="services-total">-</span></span></button>
                     </div>
-                    <div class="card-content" style="display:flex;gap:20px">
-                        <div style="flex:1">
-                            <p><strong>CPU</strong></p>
-                            <div id="cpu-cores" style="margin-top:5px">
-                                <div class="loading-small">${t('common.loading')}</div>
-                            </div>
+                    <div class="cols g20">
+                        <div>
+                            <div class="t-label">${t('system.cpuUsage')}</div>
+                            <div class="bigrow"><span class="t-big" id="cpu-avg">-</span><span class="t-unit">%</span></div>
+                            <div id="cpu-cores"></div>
                         </div>
-                        <div style="flex:1;border-left:1px solid var(--border);padding-left:20px">
-                            <div style="display:flex;justify-content:space-between;align-items:center">
-                                <p><strong>${t('system.memory')}</strong></p>
-                                <button class="btn btn-sm btn-gray" onclick="showMemoryDetailModal()" style="font-size:0.75em;padding:2px 8px" title="${t('system.memoryDetail')}">${t('system.detail')}</button>
-                            </div>
-                            <div style="margin-top:5px">
-                                <p style="font-size:0.85em;margin:3px 0">DRAM:</p>
-                                <div class="progress-bar" style="height:12px"><div class="progress" id="heap-progress"></div></div>
-                                <p style="font-size:0.8em;margin:2px 0" id="heap-text">-</p>
-                                <p style="font-size:0.85em;margin:8px 0 3px">PSRAM:</p>
-                                <div class="progress-bar" style="height:12px"><div class="progress" id="psram-progress"></div></div>
-                                <p style="font-size:0.8em;margin:2px 0" id="psram-text">-</p>
-                            </div>
+                        <hr class="sep v">
+                        <div>
+                            <div class="between"><span class="t-label">${t('system.memory')}</span><button class="btn sm quiet" onclick="showMemoryDetailModal()" title="${t('system.memoryDetail')}">${t('system.detail')}</button></div>
+                            <div class="mblock first"><div class="kv"><span>DRAM</span><span id="heap-pct">-</span></div><div class="bar"><i id="heap-progress"></i></div><div class="t-note num" id="heap-text">-</div></div>
+                            <div class="mblock"><div class="kv"><span>PSRAM</span><span id="psram-pct">-</span></div><div class="bar"><i id="psram-progress"></i></div><div class="t-note num" id="psram-text">-</div></div>
                         </div>
                     </div>
                 </div>
-                
-                <!-- 系统总览 (包含电源) - 第二位，操作按钮在右手热区 -->
+
+                <!-- 系统总览（含电源） -->
                 <div class="card">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                        <h3 style="margin:0">${t('system.title')}</h3>
-                        <div style="display:flex;gap:8px">
-                            <button class="btn btn-small btn-gray" onclick="showShutdownSettingsModal()" style="font-size:0.85em" title="${t('system.shutdownSettings')}"><i class="ri-shut-down-line"></i> ${t('system.shutdownSettings')}</button>
-                            <button id="usb-mux-btn" class="btn btn-small btn-gray" onclick="toggleUsbMux()" style="font-size:0.85em"><i class="ri-usb-line"></i> USB: <span id="usb-mux-target">-</span></button>
-                            <button class="btn btn-small btn-service-style" onclick="confirmReboot()" style="font-size:0.85em"><i class="ri-restart-line"></i> ${t('system.reboot')}</button>
+                    <div class="card-h">
+                        <span class="t-section">${t('system.title')}</span>
+                        <div class="acts">
+                            <button class="btn sm" onclick="showShutdownSettingsModal()" title="${t('system.shutdownSettings')}"><svg class="i"><use href="#ri-shut-down-line"/></svg>${t('system.shutdownSettings')}</button>
+                            <button id="usb-mux-btn" class="btn sm" onclick="toggleUsbMux()"><span>USB: <span id="usb-mux-target">-</span></span></button>
+                            <button class="btn sm danger" onclick="confirmReboot()"><svg class="i"><use href="#ri-restart-line"/></svg>${t('system.reboot')}</button>
                         </div>
                     </div>
-                    <div class="card-content" style="display:flex;gap:20px">
-                        <div style="flex:1">
-                            <p style="font-size:0.9em;color:var(--text-muted);margin-bottom:5px">${t('system.overview')}</p>
-                            <p><strong>${t('system.chip')}:</strong> <span id="sys-chip">-</span></p>
-                            <p><strong>${t('system.firmware')}:</strong> <span id="sys-version">-</span> / <span id="sys-idf" style="font-size:0.85em;color:var(--text-muted)">-</span></p>
-                            <p><strong>${t('system.uptime')}:</strong> <span id="sys-uptime">-</span></p>
-                            <p style="font-size:0.8em;color:var(--text-muted);margin-top:5px" id="sys-compile">-</p>
+                    <div class="cols">
+                        <div>
+                            ${kvRow(t('system.chip'), '-', 'sys-chip')}
+                            ${kvRow(t('system.firmware'), '-', 'sys-version')}
+                            ${kvRow('ESP-IDF', '-', 'sys-idf')}
+                            ${kvRow(t('system.uptime'), '-', 'sys-uptime')}
+                            <div class="t-note" id="sys-compile" hidden></div>
                         </div>
-                        <div style="flex:1;border-left:1px solid var(--border);padding-left:20px">
-                            <p style="font-size:0.9em;color:var(--text-muted);margin-bottom:5px">${t('system.power')}</p>
-                            <p><strong>${t('system.inputVoltage')}:</strong> <span id="voltage">-</span> <span style="font-size:0.85em;color:var(--text-muted)">/ ${t('system.internal')} <span id="internal-voltage">-</span></span></p>
-                            <p><strong>${t('system.current')}:</strong> <span id="current">-</span></p>
-                            <p><strong>${t('system.wattage')}:</strong> <span id="power-watts">-</span></p>
-                            <p style="display:flex;align-items:center;gap:6px"><strong>${t('system.protection')}:</strong> 
-                                <i id="protection-toggle-icon" class="ri-toggle-line" onclick="toggleProtection()" title="${t('system.toggleProtectionTitle')}" style="color:var(--text-secondary);cursor:pointer;font-size:1.2em"></i>
-                                <span id="protection-status" style="font-size:0.85em">-</span>
-                            </p>
+                        <hr class="sep v">
+                        <div>
+                            ${kvRow(t('system.inputVoltage'), '-', 'voltage')}
+                            ${kvRow(t('system.internalVoltage'), '-', 'internal-voltage')}
+                            ${kvRow(t('system.current'), '-', 'current')}
+                            ${kvRow(t('system.wattage'), '-', 'power-watts')}
+                            <div class="kv"><span>${t('system.protection')}</span><span class="inl"><span id="protection-status">-</span><button id="protection-toggle" class="switch" role="switch" aria-checked="false" aria-label="${t('system.protection')}" title="${t('system.toggleProtectionTitle')}" onclick="toggleProtection()"></button></span></div>
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- 网络与时间 -->
                 <div class="card">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                        <h3 style="margin:0">${t('system.networkTime')}</h3>
-                        <button class="btn btn-small btn-service-style" onclick="router.navigate('/ota')" style="font-size:0.85em"><i class="ri-download-cloud-line"></i> ${t('nav.ota')}</button>
+                    <div class="card-h">
+                        <span class="t-section">${t('system.networkTime')}</span>
+                        <button class="btn sm" onclick="router.navigate('/ota')"><svg class="i"><use href="#ri-upload-line"/></svg>${t('nav.ota')}</button>
                     </div>
-                    <div class="card-content" style="display:flex;gap:20px">
-                        <div style="flex:1">
-                            <p style="font-size:0.9em;color:var(--text-muted);margin-bottom:5px">${t('network.connection')}</p>
-                            <p><strong>${t('system.ethernet')}:</strong> <span id="eth-status">-</span></p>
-                            <p><strong>${t('system.wifi')}:</strong> <span id="wifi-status">-</span></p>
-                            <p><strong>${t('system.ipAddress')}:</strong> <span id="ip-addr" style="font-size:0.9em">-</span></p>
+                    <div class="cols">
+                        <div>
+                            <div class="kv"><span>${t('system.ethernet')}</span><span><span class="state" id="eth-status">-</span></span></div>
+                            <div class="kv"><span>${t('system.wifi')}</span><span><span class="state" id="wifi-status">-</span></span></div>
+                            ${kvRow(t('system.ipAddress'), '-', 'ip-addr')}
                         </div>
-                        <div style="flex:1;border-left:1px solid var(--border);padding-left:20px">
-                            <p style="font-size:0.9em;color:var(--text-muted);margin-bottom:5px">${t('system.timeSync')}</p>
-                            <p><strong>${t('system.currentTime')}:</strong> <span id="sys-datetime" style="font-size:0.9em">-</span></p>
-                            <p><strong>${t('system.timeStatus')}:</strong> <span id="sys-time-status">-</span> <span style="font-size:0.85em;color:var(--text-muted)">(<span id="sys-time-source">-</span>)</span></p>
-                            <p><strong>${t('system.timezone')}:</strong> <span id="sys-timezone">-</span></p>
-                            <div style="margin-top:8px;display:flex;gap:5px">
-                                <button type="button" class="btn btn-small btn-gray time-sync-btn" onclick="syncTimeFromBrowser()" style="font-size:0.85em;padding:4px 8px"><i class="ri-refresh-line"></i> ${t('system.syncTime')}</button>
-                                <button class="btn btn-small btn-gray" onclick="showTimezoneModal()" style="font-size:0.85em;padding:4px 8px"><i class="ri-time-line"></i> ${t('system.timezone')}</button>
-                            </div>
+                        <hr class="sep v">
+                        <div>
+                            ${kvRow(t('system.currentTime'), '-', 'sys-datetime')}
+                            <div class="kv"><span>${t('system.timeStatus')}</span><span><span id="sys-time-status">-</span><span id="sys-time-src"> · <span id="sys-time-source">-</span></span></span></div>
+                            ${kvRow(t('system.timezone'), '-', 'sys-timezone')}
+                        </div>
+                    </div>
+                    <div class="acts end">
+                        <button type="button" class="btn sm time-sync-btn" onclick="syncTimeFromBrowser()"><svg class="i"><use href="#ri-time-line"/></svg>${t('system.syncTime')}</button>
+                        <button class="btn sm" onclick="showTimezoneModal()"><svg class="i"><use href="#ri-global-line"/></svg>${t('system.timezone')}</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sys-mid">
+                <!-- 设备面板 -->
+                <div class="card">
+                    <div class="card-h">
+                        <span class="t-section">${t('system.devicePanel')}</span>
+                        <div class="acts">
+                            <button id="agx-power-btn" class="btn sm pw bad" onclick="toggleAgxPower()">${pwHtml('system.agxPowerName', t('system.powerOff'))}</button>
+                            <button id="lpmu-power-btn" class="btn sm pw warn" onclick="toggleLpmuPower()">${pwHtml('system.lpmuPowerName', t('system.lpmuUnknown'))}</button>
+                            <button class="btn sm" onclick="showWidgetManager()"><svg class="i"><use href="#ri-apps-line"/></svg>${t('system.widgetManager')}</button>
+                        </div>
+                    </div>
+                    <div id="quick-actions-grid" class="qa-grid">
+                        <div class="t-note">${t('common.loading')}</div>
+                    </div>
+                    <hr class="sep" style="margin:16px 0">
+                    <div id="data-widgets-grid" class="dw-grid"></div>
+                    <div id="data-widgets-empty" class="empty" style="display:none;">
+                        <p class="t-note">${t('system.noDataWidgetsYet')}</p>
+                    </div>
+                </div>
+
+                <!-- 风扇控制 -->
+                <div class="card fan-panel">
+                    <div class="card-h">
+                        <span class="t-section">${t('fan.title')}</span>
+                        <div class="acts">
+                            <button type="button" class="btn sm icon fan-refresh-btn" onclick="refreshFans()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
+                            <button type="button" class="btn sm" onclick="showFanCurveModal()"><svg class="i"><use href="#ri-line-chart-line"/></svg>${t('fan.curve')}</button>
+                        </div>
+                    </div>
+                    <div class="fan-body">
+                        <div class="fan-status" id="fan-temp-status-bar">
+                            <span class="t-label">${t('fan.effectiveTemp')} <b class="t-value" id="fan-global-temp">--</b></span>
+                            <span class="t-label">${t('fan.targetSpeed')} <b class="t-value" id="fan-global-duty">--</b></span>
+                        </div>
+                        <div class="fans-grid" id="fans-grid">
+                            <div class="loading">${t('common.loading')}</div>
+                        </div>
+                        <div class="fan-test">
+                            <span class="t-label">${t('fan.testTemp')}</span>
+                            <input type="number" id="fan-test-temp" class="field sm" placeholder="--" min="0" max="100" step="1" style="width:64px" aria-label="${t('fan.testTemp')}">
+                            <button class="btn sm" onclick="applyTestTemp()">${t('common.test')}</button>
+                            <button class="btn sm" onclick="clearTestTemp()">${t('fan.clearTest')}</button>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- 设备面板 + 风扇控制 并排 -->
-            <div class="panel-row">
-                <!-- 设备面板 -->
-                <div class="section device-panel-section">
-                    <div class="section-header">
-                        <h2>${t('system.devicePanel')}</h2>
-                        <div class="section-actions">
-                            <button id="agx-power-btn" class="btn btn-sm btn-danger" onclick="toggleAgxPower()"><i class="ri-checkbox-blank-circle-fill" style="color:var(--rose-500)"></i> ${t('system.agxStopped')}</button>
-                            <button id="lpmu-power-btn" class="btn btn-sm btn-warning" onclick="toggleLpmuPower()"><i class="ri-alert-line"></i> ${t('system.lpmuDetecting')}</button>
-                            <button class="btn btn-sm btn-service-style" onclick="showWidgetManager()"><i class="ri-apps-line"></i> ${t('system.widgetManager')}</button>
-                        </div>
-                    </div>
-                    <!-- 快捷操作区域 -->
-                    <div id="quick-actions-grid" class="quick-actions-grid">
-                        <div class="loading-inline">${t('common.loading')}</div>
-                    </div>
-                    <!-- 分隔线 -->
-                    <div class="device-panel-divider"></div>
-                    <!-- 数据监控区域 -->
-                    <div id="data-widgets-grid" class="data-widgets-grid">
-                        <!-- 动态生成的组件 -->
-                    </div>
-                    <div id="data-widgets-empty" class="data-widgets-empty" style="display:none;">
-                        <div class="empty-icon"><i class="ri-box-3-line"></i></div>
-                        <p>${t('system.noDataWidgetsYet')}</p>
-                    </div>
-                </div>
-                
-                <!-- 风扇控制 -->
-                <div class="section fan-control-section">
-                    <div class="section-header">
-                        <h2>${t('fan.title')}</h2>
-                        <div class="section-actions fan-section-actions">
-                            <button type="button" class="btn btn-sm btn-gray fan-refresh-btn" onclick="refreshFans()" title="${t('common.refresh')}"><i class="ri-refresh-line"></i></button>
-                            <button type="button" class="btn btn-sm btn-service-style" onclick="showFanCurveModal()"><i class="ri-line-chart-line"></i> ${t('fan.curve')}</button>
-                        </div>
-                    </div>
-                    <!-- 温度状态栏 -->
-                    <div class="fan-temp-status-bar" id="fan-temp-status-bar">
-                        <div class="temp-status-item">
-                            <span class="temp-label"><i class="ri-temp-hot-line"></i> ${t('fan.effectiveTemp')}</span>
-                            <span class="temp-value" id="fan-global-temp">--°C</span>
-                        </div>
-                        <div class="temp-status-item">
-                            <span class="temp-label"><i class="ri-dashboard-3-line"></i> ${t('fan.targetSpeed')}</span>
-                            <span class="temp-value" id="fan-global-duty">--%</span>
-                        </div>
-                        <div class="temp-status-item test-temp-control">
-                            <span class="temp-label"><i class="ri-scan-line"></i> ${t('fan.testTemp')}</span>
-                            <div class="test-temp-input-wrap">
-                                <input type="number" id="fan-test-temp" class="input input-sm" 
-                                       placeholder="--" min="0" max="100" step="1" style="width:60px;">
-                                <button class="btn btn-sm btn-warning" onclick="applyTestTemp()">${t('common.test')}</button>
-                                <button class="btn btn-sm btn-gray" onclick="clearTestTemp()">${t('fan.clearTest')}</button>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="fans-grid" id="fans-grid">
-                        <div class="loading">${t('common.loading')}</div>
-                    </div>
-                </div>
-            </div>
-            
             <!-- LED 控制 -->
-            <div class="section">
-                <div class="led-page-header">
-                    <h2>${t('led.title')}</h2>
-                    <div class="led-quick-actions">
-                        <button type="button" class="btn btn-sm btn-gray led-refresh-btn" onclick="refreshSystemLeds()" title="${t('common.refresh')}"><i class="ri-refresh-line"></i></button>
-                        <button class="btn btn-sm btn-gray system-led-cc-btn" id="system-led-cc-btn" onclick="openLedModal('matrix', 'colorcorrection')" style="display:none"><i class="ri-contrast-line"></i> ${t('ledPage.colorCorrectionTitle')}</button>
-                        <button class="btn btn-sm btn-gray" onclick="allLedsOff()">${t('led.allOff')}</button>
+            <div class="card" style="flex:none">
+                <div class="card-h">
+                    <span class="t-section">${t('led.title')}</span>
+                    <div class="acts">
+                        <button type="button" class="btn sm icon led-refresh-btn" onclick="refreshSystemLeds()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
+                        <button class="btn sm system-led-cc-btn" id="system-led-cc-btn" onclick="openLedModal('matrix', 'colorcorrection')" style="display:none"><svg class="i"><use href="#ri-contrast-line"/></svg>${t('ledPage.colorCorrectionTitle')}</button>
+                        <button class="btn sm danger" onclick="allLedsOff()">${t('led.allOff')}</button>
                     </div>
                 </div>
-                <div id="system-led-devices-grid" class="led-devices-grid">
-                    <div class="loading-inline">${t('ledPage.loadingDevices')}</div>
+                <div id="system-led-devices-grid" class="led-grid">
+                    <div class="t-note">${t('ledPage.loadingDevices')}</div>
                 </div>
             </div>
         </div>
-        
+
         <!-- 服务详情模态框 - 复刻全局色彩校正，关闭按钮右上角 -->
-        <div id="services-modal" class="modal hidden">
-            <div class="modal-content cc-compact" style="max-width:900px">
-                <div class="modal-header">
-                    <h2>${t('system.serviceStatusTitle')}</h2>
-                    <button class="modal-close" onclick="hideServicesModal()"><i class="ri-close-line"></i></button>
-                </div>
-                <div class="modal-body">
-                    <table class="data-table" id="services-table">
-                        <thead>
-                            <tr>
-                                <th>${t('system.serviceName')}</th>
-                                <th>${t('system.serviceStatus')}</th>
-                                <th>${t('system.stage')}</th>
-                                <th>${t('system.health')}</th>
-                                <th>${t('common.actions')}</th>
-                            </tr>
-                        </thead>
-                        <tbody id="services-body"></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
+        <div id="services-modal" class="modal hidden">${sheet(520, t('system.serviceStatusTitle'), '<div class="grp" id="services-body"></div>', `<button class="btn lg primary" onclick="hideServicesModal()">${t('common.close')}</button>`, 'hideServicesModal()')}</div>
     `;
-    
+
     // 初始加载（不含快捷操作，避免 ssh.commands.list 慢响应阻塞）
     await refreshSystemPageOnce();
     if (!pageCurrent()) return;
-    
+
     // 加载数据监控面板（优先执行，确保组件能实时获取变量数据）
     await initDataWidgets();
     if (!pageCurrent()) return;
-    
+
     // 快捷操作延迟 2 秒后台加载，避免与 initDataWidgets 的首次变量刷新竞争 API
     quickActionsTimeoutId = setTimeout(() => {
         if (!pageCurrent()) return;
         quickActionsTimeoutId = null;
         void refreshQuickActions();
     }, 2000);
-    
+
     // 订阅 WebSocket 实时更新 - 使用聚合订阅（system.dashboard）
     if (subscriptionManager) {
         const dashboardCallback = (msg) => {
             if (!pageCurrent()) return;
             console.log('[System Page] Received dashboard:', msg);
             if (!msg.data) return;
-            
+
             const data = msg.data;
-            
+
             // 分发到各个更新函数
             if (data.info) updateSystemInfo(data.info);
             if (data.memory) updateMemoryInfo(data.memory);
@@ -841,13 +809,13 @@ async function loadSystemPage() {
         manager.subscribe('system.dashboard', dashboardCallback, {interval: 1000});
         if (typeof router !== 'undefined') router.navigation?.onDispose(() => manager.unsubscribe('system.dashboard', dashboardCallback));
     }
-    
+
     // 启动浏览器本地时间更新定时器
     startLocalTimeUpdate();
-    
+
     // 启动设备状态实时监控
     startDeviceStateMonitor();
-    
+
     // 初始化设备面板长按拖拽排序
     const widgetGrid = document.getElementById('data-widgets-grid');
     if (widgetGrid && typeof initLongPressDragSort === 'function') {
@@ -894,7 +862,7 @@ async function refreshSystemPageOnce() {
         }
     } catch (e) {
         if (!pageCurrent()) return; console.log('System info error:', e); }
-    
+
     // 时间信息
     try {
         const time = await api.timeInfo();
@@ -904,7 +872,7 @@ async function refreshSystemPageOnce() {
         }
     } catch (e) {
         if (!pageCurrent()) return; console.log('Time info error:', e); }
-    
+
     // 内存
     try {
         const mem = await api.getMemoryInfo();
@@ -914,7 +882,7 @@ async function refreshSystemPageOnce() {
         }
     } catch (e) {
         if (!pageCurrent()) return; console.log('Memory info error:', e); }
-    
+
     // 网络
     try {
         const netStatus = await api.networkStatus();
@@ -927,7 +895,7 @@ async function refreshSystemPageOnce() {
         document.getElementById('eth-status').textContent = '-';
         document.getElementById('wifi-status').textContent = '-';
     }
-    
+
     // 电源
     try {
         const powerStatus = await api.powerStatus();
@@ -943,11 +911,11 @@ async function refreshSystemPageOnce() {
         }
     } catch (e) {
         if (!pageCurrent()) return;
-        document.getElementById('voltage').textContent = '-'; 
-        document.getElementById('current').textContent = '-'; 
-        document.getElementById('power-watts').textContent = '-'; 
+        document.getElementById('voltage').textContent = '-';
+        document.getElementById('current').textContent = '-';
+        document.getElementById('power-watts').textContent = '-';
     }
-    
+
     // 风扇
     try {
         const fans = await api.fanStatus();
@@ -957,7 +925,7 @@ async function refreshSystemPageOnce() {
         if (!pageCurrent()) return;
         document.getElementById('fans-grid').innerHTML = '<p class="text-muted">' + t('fan.statusUnavailable') + '</p>';
     }
-    
+
     // 服务列表
     try {
         const services = await api.serviceList();
@@ -967,21 +935,21 @@ async function refreshSystemPageOnce() {
         if (!pageCurrent()) return;
         console.log('Services error:', e);
     }
-    
+
     // LED 设备
     await refreshSystemLeds();
     if (!pageCurrent()) return;
-    
+
     // 快捷操作已移至 loadSystemPage 末尾后台执行，避免阻塞 initDataWidgets
-    
+
     // USB Mux 状态
     await refreshUsbMuxStatus();
     if (!pageCurrent()) return;
-    
+
     // AGX 电源状态
     await refreshAgxPowerState();
     if (!pageCurrent()) return;
-    
+
     // LPMU 状态检测
     await refreshLpmuState();
     if (!pageCurrent()) return;
@@ -996,7 +964,6 @@ let usbMuxConfigured = false;
 
 const USB_MUX_TARGETS = ['esp32', 'agx', 'lpmu'];
 const USB_MUX_DISPLAY = { 'esp32': 'ESP', 'agx': 'AGX', 'lpmu': 'LPMU' };
-const USB_MUX_COLORS = { 'esp32': '', 'agx': 'btn-service-style', 'lpmu': 'btn-success' };
 
 async function refreshUsbMuxStatus() {
     const pageCurrent = capturePageValidity();
@@ -1022,47 +989,34 @@ function updateUsbMuxButton() {
 
     if (!usbMuxConfigured) {
         if (targetEl) targetEl.textContent = t('common.notConfigured');
-        if (btn) {
-            btn.className = 'btn btn-small btn-gray';
-            btn.disabled = true;
-        }
+        if (btn) btn.disabled = true;
         return;
     }
 
-    const displayName = USB_MUX_DISPLAY[usbMuxTarget] || usbMuxTarget.toUpperCase();
-    if (targetEl) {
-        targetEl.textContent = displayName;
-    }
-    if (btn) {
-        btn.disabled = false;
-        const colorClass = USB_MUX_COLORS[usbMuxTarget] || '';
-        btn.className = 'btn btn-small btn-gray ' + colorClass.trim();
-    }
+    if (targetEl) targetEl.textContent = USB_MUX_DISPLAY[usbMuxTarget] || usbMuxTarget.toUpperCase();
+    if (btn) btn.disabled = false;
 }
 
 /**
  * 更新保护状态 UI（图标和文字）
  */
 function updateProtectionUI(running) {
-    const icon = document.getElementById('protection-toggle-icon');
+    const sw = document.getElementById('protection-toggle');
     const statusSpan = document.getElementById('protection-status');
-    
-    if (icon) {
-        icon.className = running ? 'ri-toggle-fill' : 'ri-toggle-line';
-        icon.style.color = running ? 'var(--emerald-600)' : 'var(--text-secondary)';
+
+    if (sw) {
+        sw.classList.toggle('on', !!running);
+        sw.setAttribute('aria-checked', running ? 'true' : 'false');
     }
-    if (statusSpan) {
-        statusSpan.textContent = running ? t('status.enabled') : t('status.disabled');
-        statusSpan.style.color = running ? 'var(--emerald-600)' : 'var(--text-secondary)';
-    }
+    if (statusSpan) statusSpan.textContent = running ? t('status.enabled') : t('status.disabled');
 }
 
 /**
  * 切换电压保护状态
  */
 async function toggleProtection() {
-    const icon = document.getElementById('protection-toggle-icon');
-    
+    const icon = document.getElementById('protection-toggle');
+
     // 获取当前状态
     let currentRunning = false;
     try {
@@ -1071,15 +1025,15 @@ async function toggleProtection() {
     } catch (e) {
         console.error('Failed to get protection status:', e);
     }
-    
+
     const newState = !currentRunning;
-    
+
     // 临时禁用图标防止重复点击
     if (icon) icon.style.pointerEvents = 'none';
-    
+
     try {
         const result = await api.powerProtectionSet({ enable: newState });
-        
+
         if (result.code === 0) {
             const isRunning = result.data?.running ?? newState;
             updateProtectionUI(isRunning);
@@ -1148,15 +1102,9 @@ function updateAgxPowerButton() {
     const btn = document.getElementById('agx-power-btn');
     if (!btn) return;
 
-    if (agxPowerState) {
-        btn.innerHTML = '<i class="ri-checkbox-blank-circle-fill" style="color:#059669"></i> ' + t('system.agxRunning');
-        btn.className = 'btn btn-sm btn-success';
-        btn.title = t('system.agxPowerOffTitle');
-    } else {
-        btn.innerHTML = '<i class="ri-checkbox-blank-circle-fill" style="color:#e11d48"></i> ' + t('system.agxStopped');
-        btn.className = 'btn btn-sm btn-danger';
-        btn.title = t('system.agxPowerOnTitle');
-    }
+    btn.className = 'btn sm pw ' + (agxPowerState ? 'ok' : 'bad');
+    btn.innerHTML = pwHtml('system.agxPowerName', t(agxPowerState ? 'system.powerRunning' : 'system.powerOff'));
+    btn.title = t(agxPowerState ? 'system.agxPowerOffTitle' : 'system.agxPowerOnTitle');
 }
 
 async function toggleAgxPower() {
@@ -1189,7 +1137,7 @@ let lpmuPollingStartTime = 0;
 let lpmuPollingMode = 'startup'; // 'startup' | 'shutdown'
 
 async function toggleLpmuPower() {
-    if (!confirmAction(t('system.lpmuTriggerConfirm'))) {
+    if (!await confirmAction(t('system.lpmuTriggerConfirm'), { primary: t('common.trigger'), tone: 'neutral' })) {
         return;
     }
 
@@ -1300,39 +1248,27 @@ function updateLpmuPowerButton(remainingSec = 0) {
     const btn = document.getElementById('lpmu-power-btn');
     if (!btn) return;
 
-    switch (lpmuState) {
-        case 'online':
-            btn.innerHTML = '<i class="ri-checkbox-blank-circle-fill" style="color:#059669"></i> ' + t('system.lpmuRunning');
-            btn.className = 'btn btn-sm btn-success';
-            btn.title = t('system.lpmuOnlineTitle');
-            break;
-        case 'offline':
-            btn.innerHTML = '<i class="ri-checkbox-blank-circle-fill" style="color:#e11d48"></i> ' + t('system.lpmuStopped');
-            btn.className = 'btn btn-sm btn-danger';
-            btn.title = t('system.lpmuOfflineTitle');
-            break;
-        case 'detecting':
-            const timeText = remainingSec > 0 ? ' (' + remainingSec + 's)' : '';
-            btn.innerHTML = '<i class="ri-hourglass-line"></i> ' + t('system.statusFetching') + timeText;
-            btn.className = 'btn btn-sm btn-warning';
-            btn.title = t('system.lpmuDetectingTitle');
-            break;
-        default:
-            btn.innerHTML = '<i class="ri-alert-line"></i> ' + t('system.lpmuDetecting');
-            btn.className = 'btn btn-sm btn-warning';
-            btn.title = t('system.lpmuUnknownTitle');
-    }
+    let cls = 'warn', status = t('system.lpmuUnknown'), title = t('system.lpmuUnknownTitle');
+    if (lpmuState === 'online') { cls = 'ok'; status = t('system.lpmuOnline'); title = t('system.lpmuOnlineTitle'); }
+    else if (lpmuState === 'offline') { cls = 'bad'; status = t('system.lpmuOffline'); title = t('system.lpmuOfflineTitle'); }
+    else if (lpmuState === 'detecting') { status = t('system.statusFetching') + (remainingSec > 0 ? ' (' + remainingSec + 's)' : ''); title = t('system.lpmuDetectingTitle'); }
+    btn.className = 'btn sm pw ' + cls;
+    btn.innerHTML = pwHtml('system.lpmuPowerName', status);
+    btn.title = title;
 }
 
 // 更新系统信息
 function updateSystemInfo(data) {
     if (!data) return;
     document.getElementById('sys-chip').textContent = data.chip?.model || '-';
-    document.getElementById('sys-version').textContent = data.app?.version || '-';
+    const verEl = document.getElementById('sys-version');
+    verEl.textContent = data.app?.version || '-';
+    verEl.title = verEl.textContent;
     document.getElementById('sys-idf').textContent = data.app?.idf_version || '-';
-    document.getElementById('sys-compile').textContent = 
-        (data.app?.compile_date || '') + ' ' + (data.app?.compile_time || '');
-    
+    const compileEl = document.getElementById('sys-compile');
+    compileEl.textContent = ((data.app?.compile_date || '') + ' ' + (data.app?.compile_time || '')).trim();
+    compileEl.hidden = !compileEl.textContent;
+
     // 直接显示服务器提供的运行时间（不再前端计算）
     const uptimeElem = document.getElementById('sys-uptime');
     if (uptimeElem && data.uptime_ms !== undefined) {
@@ -1348,24 +1284,20 @@ function startLocalTimeUpdate() {
     if (localTimeInterval) {
         clearInterval(localTimeInterval);
     }
-    
+
     // 立即更新一次
     updateLocalTime();
-    
+
     // 每秒更新
     localTimeInterval = setInterval(updateLocalTime, 1000);
 }
 
 function updateLocalTime() {
     const now = new Date();
-    const timeStr = now.toLocaleString('zh-CN', { 
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        hour12: false 
-    });
     const datetimeElem = document.getElementById('sys-datetime');
     if (datetimeElem) {
-        datetimeElem.textContent = timeStr;
+        datetimeElem.textContent = now.toLocaleTimeString('zh-CN', { hour12: false });
+        datetimeElem.title = now.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     }
 }
 
@@ -1376,7 +1308,7 @@ function updateTimeInfo(data) {
     // 系统时间现在使用浏览器本地时间（通过 startLocalTimeUpdate 定时器更新）
     // 此函数保留以备后续扩展（例如显示 NTP 同步状态等）
     if (!data) return;
-    
+
     // 检查 ESP32 时间是否早于 2025 年，自动同步浏览器时间（只触发一次）
     const deviceYear = data.year || (data.datetime ? parseInt(data.datetime.substring(0, 4)) : 0);
     if (deviceYear > 0 && deviceYear < 2025 && !autoSyncTriggered && !data.synced) {
@@ -1384,7 +1316,7 @@ function updateTimeInfo(data) {
         autoSyncTriggered = true;  // 标记已触发，避免重复
         setTimeout(() => syncTimeFromBrowser(true), 500);  // 延迟执行避免阻塞页面加载
     }
-    
+
     const statusText = data.synced ? (typeof t === 'function' ? t('system.timeSynced') : '已同步') : (typeof t === 'function' ? t('system.timeNotSynced') : '未同步');
     const statusElem = document.getElementById('sys-time-status');
     if (statusElem) {
@@ -1394,6 +1326,8 @@ function updateTimeInfo(data) {
     const sourceElem = document.getElementById('sys-time-source');
     if (sourceElem) {
         sourceElem.textContent = sourceMap[data.source] || data.source;
+        const srcWrap = document.getElementById('sys-time-src');
+        if (srcWrap) srcWrap.hidden = !data.source || data.source === 'none';
     }
     const timezoneElem = document.getElementById('sys-timezone');
     if (timezoneElem) {
@@ -1402,30 +1336,21 @@ function updateTimeInfo(data) {
 }
 
 // 更新内存信息
+function memPair(used, total) {
+    const mb = total >= 1048576, u = mb ? 1048576 : 1024, d = mb ? 1 : 0;
+    return `${(used / u).toFixed(d)} / ${(total / u).toFixed(d)} ${mb ? 'MB' : 'KB'}`;
+}
 function updateMemoryInfo(data) {
     if (!data) return;
-    
-    const heapTotal = data.internal?.total || 1;
-    const heapFree = data.internal?.free || data.free_heap || 0;
-    const heapUsed = heapTotal - heapFree;
-    const heapPercent = Math.round((heapUsed / heapTotal) * 100);
-    
-    document.getElementById('heap-progress').style.width = heapPercent + '%';
-    document.getElementById('heap-text').textContent = 
-        `${formatBytes(heapUsed)} / ${formatBytes(heapTotal)} (${heapPercent}%)`;
-    
-    if (data.psram?.total) {
-        const psramTotal = data.psram.total;
-        const psramFree = data.psram.free || 0;
-        const psramUsed = psramTotal - psramFree;
-        const psramPercent = Math.round((psramUsed / psramTotal) * 100);
-        
-        document.getElementById('psram-progress').style.width = psramPercent + '%';
-        document.getElementById('psram-text').textContent = 
-            `${formatBytes(psramUsed)} / ${formatBytes(psramTotal)} (${psramPercent}%)`;
-    } else {
-        document.getElementById('psram-text').textContent = typeof t === 'function' ? t('ui.psramUnavailable') : '不可用';
-    }
+    const put = (name, total, free) => {
+        const pct = Math.round(((total - free) / total) * 100);
+        document.getElementById(name + '-progress').style.width = pct + '%';
+        document.getElementById(name + '-pct').textContent = pct + '%';
+        document.getElementById(name + '-text').textContent = memPair(total - free, total);
+    };
+    put('heap', data.internal?.total || 1, data.internal?.free || data.free_heap || 0);
+    if (data.psram?.total) put('psram', data.psram.total, data.psram.free || 0);
+    else document.getElementById('psram-text').textContent = typeof t === 'function' ? t('ui.psramUnavailable') : '不可用';
 }
 
 // 更新 CPU 信息
@@ -1434,28 +1359,17 @@ function updateCpuInfo(data) {
         console.log('CPU data missing cores:', data);
         return;
     }
-    
+
     const container = document.getElementById('cpu-cores');
     if (!container) return;
-    
-    let html = '';
-    data.cores.forEach(core => {
+
+    container.innerHTML = data.cores.map((core, i) => {
         const usage = Math.round(core.usage || 0);
-        const color = usage > 80 ? '#f43f5e' : (usage > 50 ? '#f59e0b' : '#059669');
-        html += `
-            <p style="font-size:0.85em;margin:3px 0"><strong>Core ${core.id}:</strong> ${usage}%</p>
-            <div class="progress-bar" style="height:10px">
-                <div class="progress" style="width:${usage}%;background-color:${color}"></div>
-            </div>
-        `;
-    });
-    
-    if (data.total_usage !== undefined) {
-        const avgUsage = Math.round(data.total_usage);
-        html += `<p style="margin-top:5px;font-size:0.8em;color:#9ca3af">${typeof t === 'function' ? t('common.average') : '平均'}: ${avgUsage}%</p>`;
-    }
-    
-    container.innerHTML = html;
+        return `<div class="meter"><div class="kv"><span>Core ${core.id ?? i}</span><span>${usage}%</span></div><div class="bar"><i class="${usage > 80 ? 'bad' : usage > 50 ? 'warn' : ''}" style="width:${usage}%"></i></div></div>`;
+    }).join('');
+
+    const avgEl = document.getElementById('cpu-avg');
+    if (avgEl) avgEl.textContent = Math.round(data.total_usage ?? data.cores.reduce((sum, c) => sum + (c.usage || 0), 0) / data.cores.length);
 }
 
 // 更新网络信息
@@ -1463,66 +1377,68 @@ function updateNetworkInfo(data) {
     if (!data) return;
     const eth = data.ethernet || {};
     const wifi = data.wifi || {};
-    document.getElementById('eth-status').textContent = eth.status === 'connected' ? (typeof t === 'function' ? t('status.connected') : '已连接') : (typeof t === 'function' ? t('status.disconnected') : '未连接');
-    document.getElementById('wifi-status').textContent = wifi.connected ? (typeof t === 'function' ? t('status.connected') : '已连接') : (typeof t === 'function' ? t('status.disconnected') : '未连接');
+    const setState = (id, ok) => {
+        const el = document.getElementById(id);
+        el.className = ok ? 'state ok' : 'state';
+        el.textContent = ok ? t('status.connected') : t('status.disconnected');
+    };
+    setState('eth-status', eth.status === 'connected');
+    setState('wifi-status', !!wifi.connected);
     document.getElementById('ip-addr').textContent = eth.ip || wifi.ip || '-';
 }
 
 // 更新电源信息
 function updatePowerInfo(data) {
     if (!data) return;
-    
+
     // 输入电压：来自电源芯片 (GPIO47 UART)
     const inputVoltage = data.power_chip?.voltage_v;
     // 内部电压：来自 ADC 监控 (GPIO18 ADC)
     const internalVoltage = data.voltage?.supply_v;
-    
+
     const current = data.power_chip?.current_a || data.current?.value_a;
     const power = data.power_chip?.power_w || data.power?.value_w;
-    
+
     // 显示输入电压（主电压）
-    document.getElementById('voltage').textContent = 
+    document.getElementById('voltage').textContent =
         (typeof inputVoltage === 'number' ? inputVoltage.toFixed(1) + ' V' : '-');
-    
+
     // 显示内部电压（如果可用）- ADC 需要 -1V 校准
     const internalVoltageElem = document.getElementById('internal-voltage');
     if (internalVoltageElem) {
         const calibratedVoltage = typeof internalVoltage === 'number' ? internalVoltage - 1.0 : null;
-        internalVoltageElem.textContent = 
+        internalVoltageElem.textContent =
             (calibratedVoltage !== null ? calibratedVoltage.toFixed(2) + ' V' : '-');
     }
-    
-    document.getElementById('current').textContent = 
+
+    document.getElementById('current').textContent =
         (typeof current === 'number' ? current.toFixed(2) + ' A' : '-');
-    document.getElementById('power-watts').textContent = 
+    document.getElementById('power-watts').textContent =
         (typeof power === 'number' ? power.toFixed(1) + ' W' : '-');
 }
 
 // 更新风扇信息
 function updateFanInfo(data) {
     const container = document.getElementById('fans-grid');
-    
+
     // 更新全局温度状态栏（从 data.temperature 获取绑定变量的温度）
     const globalTempEl = document.getElementById('fan-global-temp');
     const globalDutyEl = document.getElementById('fan-global-duty');
     if (globalTempEl && data?.temperature !== undefined) {
-        const temp = typeof data.temperature === 'number' ? data.temperature.toFixed(1) : '--';
-        globalTempEl.textContent = `${temp}°C`;
-        globalTempEl.style.color = data.temp_valid ? 'var(--primary)' : 'var(--warning)';
+        globalTempEl.textContent = `${typeof data.temperature === 'number' ? data.temperature.toFixed(1) : '--'} °C`;
+        globalTempEl.classList.toggle('warn', !data.temp_valid);
     }
     if (globalDutyEl && data?.fans?.length > 0) {
         // 显示第一个曲线模式风扇的目标转速，或平均值
         const curveFan = data.fans.find(f => f.mode === 'curve' || f.mode === 'auto');
         if (curveFan) {
-            // 曲线/自动模式：显示 target_duty（目标转速）
             globalDutyEl.textContent = `${curveFan.target_duty ?? curveFan.duty ?? 0}%`;
         } else {
-            // 手动/关闭模式：显示当前转速
             const avgDuty = Math.round(data.fans.reduce((s, f) => s + (f.duty ?? 0), 0) / data.fans.length);
             globalDutyEl.textContent = `${avgDuty}%`;
         }
     }
-    
+
     if (data?.fans && data.fans.length > 0) {
         container.innerHTML = data.fans.map(fan => {
             const mode = fan.mode || 'auto';
@@ -1540,87 +1456,42 @@ function updateFanInfo(data) {
                 fan.temp_stale === true ||
                 fan.guard_active === true
             );
-            
-            const _off = typeof t === 'function' ? t('fanPage.modeOff') : '关闭';
-            const _manual = typeof t === 'function' ? t('fanPage.modeManual') : '手动';
-            const _auto = typeof t === 'function' ? t('fanPage.modeAuto') : '自动';
-            const _curve = typeof t === 'function' ? t('fanPage.modeCurve') : '曲线';
-            const modeInfo = {
-                'off':    { label: _off, color: '#6b7280', iconRi: 'ri-stop-line' },
-                'manual': { label: _manual, color: '#f59e0b', iconRi: 'ri-settings-3-line' },
-                'auto':   { label: _auto, color: '#10b981', iconRi: 'ri-run-line' },
-                'curve':  { label: _curve, color: '#3b82f6', iconRi: 'ri-line-chart-line' }
-            };
-            const currentMode = modeInfo[mode] || modeInfo['auto'];
-            const _fanTitle = typeof t === 'function' ? t('fanPage.fanN', { id: fan.id }) : `风扇 ${fan.id}`;
-            const _speedAdjust = typeof t === 'function' ? t('fanPage.speedAdjust') : '转速调节';
-            const _manualHint = typeof t === 'function' ? t('fanPage.manualModeHint') : '切换到手动模式后可调节';
-            const _autoHelpTitle = typeof t === 'function' ? t('fanPage.autoHelpTitle') : '自动模式有什么不同？';
-            const _autoHelpTitleSafe = typeof escapeHtml === 'function' ? escapeHtml(_autoHelpTitle) : _autoHelpTitle;
+
+            const _off = t('fanPage.modeOff'), _manual = t('fanPage.modeManual'), _smart = t('fanPage.modeSmart'), _curve = t('fanPage.modeCurve');
+            const autoHelpTitle = escapeHtml(t('fanPage.smartHelpTitle'));
             const autoStateLabels = {
-                idle: typeof t === 'function' ? t('fanPage.autoStateIdle') : '待机',
-                baseline: typeof t === 'function' ? t('fanPage.autoStateBaseline') : '按曲线运行',
-                active: typeof t === 'function' ? t('fanPage.autoStateActive') : '自适应调速',
-                guard: typeof t === 'function' ? t('fanPage.autoStateGuard') : '保护介入',
-                stale: typeof t === 'function' ? t('fanPage.autoStateStale') : '温度失效',
-                unknown: typeof t === 'function' ? t('fanPage.autoStateUnknown') : '未知'
+                idle: t('fanPage.autoStateIdle'), baseline: t('fanPage.autoStateBaseline'), active: t('fanPage.autoStateSmart'),
+                guard: t('fanPage.autoStateGuard'), stale: t('fanPage.autoStateStale'), unknown: t('fanPage.autoStateUnknown')
             };
             const autoState = fan.auto_state || 'unknown';
-            const autoStateText = autoStateLabels[autoState] || autoState;
-            const guardLabel = typeof t === 'function' ? t('fanPage.guardTempShort') : '安全参考温度';
-            const predictedLabel = typeof t === 'function' ? t('fanPage.predictedTempShort') : '45秒预测';
-            const slopeLabel = typeof t === 'function' ? t('fanPage.slopeTempShort') : '升温速度';
-            const slopeUnit = typeof t === 'function' ? t('fanPage.slopeTempUnit') : '°C/分钟';
-            const autoMeta = hasAutoTelemetry ? `
-                <div class="fan-auto-meta ${fan.guard_active ? 'is-guard' : ''} ${fan.temp_stale ? 'is-stale' : ''}">
-                    <span>${autoStateText}</span>
-                    ${typeof fan.guard_temperature === 'number' ? `<span>${guardLabel} ${fan.guard_temperature.toFixed(1)}°C</span>` : ''}
-                    ${typeof fan.predicted_temperature === 'number' ? `<span>${predictedLabel} ${fan.predicted_temperature.toFixed(1)}°C</span>` : ''}
-                    ${typeof fan.slope_c_per_min === 'number' ? `<span>${slopeLabel} ${fan.slope_c_per_min.toFixed(2)}${slopeUnit}</span>` : ''}
-                </div>
-            ` : '';
-            
+            const stateText = mode === 'auto' ? (autoStateLabels[autoState] || autoState) : ({ off: _off, manual: _manual, curve: _curve }[mode] || mode);
+            const stateCls = isOff ? '' : fan.guard_active ? ' warn' : fan.temp_stale ? ' bad' : ' ok';
+            const stat = (label, value) => `<span class="fan-stat"><i>${label}</i><b>${value}</b></span>`;
+            const meta = '<div class="t-note fan-meta">' + (hasAutoTelemetry ? (
+                (typeof fan.guard_temperature === 'number' ? stat(t('fanPage.guardTempBrief'), `${fan.guard_temperature.toFixed(1)} °C`) : '') +
+                (typeof fan.predicted_temperature === 'number' ? stat(t('fanPage.predictedTempBrief'), `${fan.predicted_temperature.toFixed(1)} °C`) : '') +
+                (typeof fan.slope_c_per_min === 'number' ? stat(t('fanPage.slopeTempShort'), `${fan.slope_c_per_min.toFixed(2)} ${t('fanPage.slopeTempUnit')}`) : '')) : '') + '</div>';
+            const tab = (m, label) => `<button class="${mode === m ? 'on' : ''}" onclick="setFanMode(${fan.id}, '${m}')">${label}</button>`;
+
             return `
-            <div class="fan-card ${isOff ? 'is-off' : ''}">
-                <div class="fan-header">
-                    <div class="fan-header-main">
-                        <span class="fan-title">${_fanTitle}</span>
-                        ${autoMeta}
-                    </div>
-                    <div class="fan-header-actions">
-                        ${mode === 'auto' ? `<button type="button" class="fan-auto-info-btn" onclick="showFanAutoHelpModal()" title="${_autoHelpTitleSafe}" aria-label="${_autoHelpTitleSafe}"><i class="ri-information-line"></i></button>` : ''}
-                        <span class="fan-status-badge" style="background:${currentMode.color}20;color:${currentMode.color}" title="${currentMode.label}">
-                            <i class="${currentMode.iconRi}"></i>
-                        </span>
-                    </div>
+            <div class="card in fan-card ${isOff ? 'is-off' : ''}">
+                <div class="card-h fan-head">
+                    <span class="t-section">${t('fanPage.fanN', { id: fan.id })}</span>
+                    <span class="inl"><span class="state${stateCls}">${stateText}</span>${mode === 'auto' ? `<button type="button" class="tti" onclick="showFanAutoHelpModal()" title="${autoHelpTitle}" aria-label="${autoHelpTitle}">TTI</button>` : ''}</span>
                 </div>
-                <div class="fan-speed-display">
-                    <span class="fan-speed-num">${displayDuty}</span>
-                    <span class="fan-speed-percent">%</span>
-                    ${rpm > 0 ? `<div class="fan-rpm-small">${rpm} RPM</div>` : ''}
+                <div class="fan-readout"><div class="bigrow fan-big"><span class="t-big fan-speed-num">${displayDuty}</span><span class="t-unit">%</span></div><div class="t-label num fan-rpm">${rpm > 0 ? rpm + ' RPM' : '&nbsp;'}</div></div>
+                <div class="seg full">${tab('off', _off)}${tab('manual', _manual)}${tab('curve', _curve)}${tab('auto', _smart)}</div>
+                <div class="slrow ${isManual ? '' : 'disabled'}">
+                    <span class="t-label">${t('fanPage.speedAdjust')}</span>
+                    <div class="sl" style="--p:${duty}%"><i></i><b></b><input type="range" class="fan-slider" min="0" max="100" value="${duty}" id="fan-slider-${fan.id}" onchange="setFanSpeed(${fan.id}, this.value)" oninput="updateFanSliderUI(${fan.id}, this.value)" ${!isManual ? 'disabled title="' + t('fanPage.manualModeHint') + '"' : ''}></div>
+                    <span class="t-value fan-slider-value">${duty}%</span>
                 </div>
-                <div class="fan-mode-tabs">
-                    <button class="fan-mode-tab ${mode === 'off' ? 'active off' : ''}" onclick="setFanMode(${fan.id}, 'off')">${_off}</button>
-                    <button class="fan-mode-tab ${mode === 'manual' ? 'active manual' : ''}" onclick="setFanMode(${fan.id}, 'manual')">${_manual}</button>
-                    <button class="fan-mode-tab ${mode === 'auto' ? 'active auto' : ''}" onclick="setFanMode(${fan.id}, 'auto')">${_auto}</button>
-                    <button class="fan-mode-tab ${mode === 'curve' ? 'active curve' : ''}" onclick="setFanMode(${fan.id}, 'curve')">${_curve}</button>
-                </div>
-                <div class="fan-slider-wrap ${isManual ? '' : 'disabled'}">
-                    <div class="fan-slider-label">
-                        <span>${_speedAdjust}</span>
-                        <span class="fan-slider-value">${duty}%</span>
-                    </div>
-                    <input type="range" class="fan-slider" min="0" max="100" value="${duty}" 
-                           id="fan-slider-${fan.id}"
-                           onchange="setFanSpeed(${fan.id}, this.value)"
-                           oninput="updateFanSliderUI(${fan.id}, this.value)"
-                           ${!isManual ? 'disabled title="' + _manualHint + '"' : ''}>
-                </div>
+                ${meta}
             </div>
         `;
         }).join('');
     } else {
-        container.innerHTML = '<p class="text-muted">' + (typeof t === 'function' ? t('fanPage.noFans') : '无可用风扇') + '</p>';
+        container.innerHTML = '<p class="t-note">' + (typeof t === 'function' ? t('fanPage.noFans') : '无可用风扇') + '</p>';
     }
 }
 
@@ -1630,36 +1501,13 @@ function showFanAutoHelpModal() {
 
     const modal = document.createElement('div');
     modal.id = 'fan-auto-help-modal';
-    modal.className = 'modal fan-auto-help-modal';
+    modal.className = 'modal';
     modal.onclick = (event) => {
         if (event.target === modal) closeFanAutoHelpModal();
     };
-
-    const title = typeof t === 'function' ? t('fanPage.autoHelpTitle') : '自动模式有什么不同？';
-    const closeLabel = typeof t === 'function' ? t('common.close') : '关闭';
-    const safeTitle = typeof escapeHtml === 'function' ? escapeHtml(title) : title;
-    const safeCloseLabel = typeof escapeHtml === 'function' ? escapeHtml(closeLabel) : closeLabel;
-    const paragraphs = [
-        typeof t === 'function' ? t('fanPage.autoHelpIntro') : '自动模式会根据设备当前的散热状态实时调节风扇，而不是只按一条固定曲线运行。',
-        typeof t === 'function' ? t('fanPage.autoHelpCurveDiff') : '曲线模式更像一张固定规则表：温度到多少，风扇就转到多少。它稳定、可预期，适合你想手动定义散热策略的场景。',
-        typeof t === 'function' ? t('fanPage.autoHelpAdaptive') : '自动模式会在曲线的基础上继续判断温度变化趋势。如果设备正在快速升温，它会提前加速；如果温度稳定下降，它才会慢慢把转速降下来。',
-        typeof t === 'function' ? t('fanPage.autoHelpSafety') : '这样做的目的，是让风扇不只是看到温度后再反应，而是尽量提前压住温度波动。日常轻载时保持更安静，高负载或温度异常时优先保护设备安全。'
-    ];
-
-    modal.innerHTML = `
-        <div class="modal-content modal-sm fan-auto-help-content">
-            <div class="modal-header fan-auto-help-header">
-                <h2><i class="ri-information-line"></i> ${safeTitle}</h2>
-                <button class="modal-close" onclick="closeFanAutoHelpModal()" aria-label="${safeCloseLabel}"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body fan-auto-help-body">
-                ${paragraphs.map(text => `<p>${typeof escapeHtml === 'function' ? escapeHtml(text) : text}</p>`).join('')}
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-service-style" onclick="closeFanAutoHelpModal()">${safeCloseLabel}</button>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = sheet(560, t('fanPage.smartHelpTitle'),
+        `<p class="t-body" style="color:var(--ink-2);line-height:22px;margin:0">${escapeHtml(t('fanPage.smartHelpBody'))}</p>`,
+        `<button class="btn lg primary" onclick="closeFanAutoHelpModal()">${t('fanPage.autoHelpGotIt')}</button>`, 'closeFanAutoHelpModal()');
     document.body.appendChild(modal);
 }
 
@@ -1671,7 +1519,7 @@ function closeFanAutoHelpModal() {
 function updateFanSliderUI(fanId, value) {
     const slider = document.getElementById(`fan-slider-${fanId}`);
     if (!slider) return;
-    
+
     const card = slider.closest('.fan-card');
     if (card) {
         // 更新大数字
@@ -1680,43 +1528,32 @@ function updateFanSliderUI(fanId, value) {
         // 更新滑块旁边的值
         const valSpan = card.querySelector('.fan-slider-value');
         if (valSpan) valSpan.textContent = value + '%';
+        slider.parentElement.style.setProperty('--p', value + '%');
     }
 }
 
 // 更新服务列表
 function updateServiceList(data) {
     if (!data || !data.services) return;
-    
+
     const services = data.services;
     const runningCount = services.filter(s => s.state === 'RUNNING').length;
     const totalCount = services.length;
-    
+
     // 更新卡片统计
     const runningElem = document.getElementById('services-running');
     const totalElem = document.getElementById('services-total');
     if (runningElem) runningElem.textContent = runningCount;
     if (totalElem) totalElem.textContent = totalCount;
-    
-    // 更新模态框表格
+
+    // 更新模态框列表
     const tbody = document.getElementById('services-body');
     if (!tbody) return;
-    
-    tbody.innerHTML = '';
-    services.forEach(svc => {
-        const tr = document.createElement('tr');
-        const stateClass = svc.state === 'RUNNING' ? 'status-running' : 
-                          svc.state === 'ERROR' ? 'status-error' : 'status-warn';
-        tr.innerHTML = `
-            <td>${svc.name}</td>
-            <td><span class="status-badge ${stateClass}">${userStateLabel(svc.state)}</span></td>
-            <td>${servicePhaseLabel(svc.phase)}</td>
-            <td>${svc.healthy ? '<i class="ri-check-line health-ok"></i>' : '<i class="ri-close-line health-fail"></i>'}</td>
-            <td>
-                <button class="btn btn-small" onclick="serviceAction('${svc.name}', 'restart')">${t('system.reboot')}</button>
-            </td>
-        `;
-        tbody.appendChild(tr);
-    });
+
+    tbody.innerHTML = services.map(svc => {
+        const cls = svc.state === 'RUNNING' ? (svc.healthy ? 'ok' : 'warn') : svc.state === 'ERROR' ? 'bad' : 'warn';
+        return row(svc.name, `<span class="state ${cls}">${userStateLabel(svc.state)}</span><button class="btn sm" onclick="serviceAction('${svc.name}', 'restart')">${t('system.reboot')}</button>`, svc.phase ? servicePhaseLabel(svc.phase) : '');
+    }).join('');
 }
 
 // 显示/隐藏服务模态框
@@ -1731,16 +1568,16 @@ function showServicesModal() {
 async function applyTestTemp() {
     const input = document.getElementById('fan-test-temp');
     const temp = parseFloat(input?.value);
-    
+
     if (isNaN(temp) || temp < 0 || temp > 100) {
         showToast((typeof t === 'function' ? t('fan.enterValidTemp') : '请输入有效温度 (0-100°C)'), 'warning');
         return;
     }
-    
+
     try {
         // 使用 temp.manual API 设置手动温度
         const result = await api.call('temp.manual', { temperature: temp });
-        
+
         if (result.code === 0) {
             showToast((typeof t === 'function' ? t('fan.testTempSet', { temp }) : `测试温度已设置为 ${temp}°C`), 'success');
             // 刷新风扇状态
@@ -1761,7 +1598,7 @@ async function clearTestTemp() {
     try {
         // 清除手动温度，恢复自动模式
         const result = await api.call('temp.select', { source: 'variable' });
-        
+
         if (result.code === 0) {
             showToast((typeof t === 'function' ? t('fan.testTempCleared') : '测试温度已清除，恢复正常模式'), 'success');
             document.getElementById('fan-test-temp').value = '';
@@ -1791,7 +1628,7 @@ async function setFanSpeed(id, speed) {
 async function setFanMode(id, mode) {
     try {
         requireApiSuccess(await api.call('fan.mode', { id: id, mode: mode }), 'call');
-        showToast(typeof t === 'function' ? t('fan.modeSwitch', { id, mode: t({off:'common.disabled', manual:'common.manual', auto:'common.auto', curve:'fan.curve'}[mode] || 'common.unknown') }) : `风扇 ${id} 模式已切换为 ${mode}`, 'success');
+        showToast(typeof t === 'function' ? t('fan.modeSwitch', { id, mode: t({off:'common.disabled', manual:'common.manual', auto:'fanPage.modeSmart', curve:'fan.curve'}[mode] || 'common.unknown') }) : `风扇 ${id} 模式已切换为 ${mode}`, 'success');
         await refreshFans();
     } catch (e) { showToast((typeof t === 'function' ? t('fan.setFanModeFailed', { msg: e.message }) : '设置风扇模式失败: ' + e.message), 'error'); }
 }
@@ -1833,100 +1670,45 @@ let fanCurveConfig = {
  */
 async function showFanCurveModal(fanId = 0) {
     fanCurveConfig.fanId = fanId;
-    
+
     const modal = document.createElement('div');
     modal.id = 'fan-curve-modal';
-    modal.className = 'modal show';
+    modal.className = 'modal';
     modal.onclick = (e) => { if (e.target === modal) closeFanCurveModal(); };
-    
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:650px;">
-            <div class="modal-header">
-                <h2>${t('fanPage.curveManagement')}</h2>
-                <button class="modal-close" onclick="closeFanCurveModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>${t('fanPage.selectFan')}</label>
-                    <select id="fan-curve-fan-select" class="input" onchange="updateFanCurvePreview()">
-                        <option value="0">${t('fanPage.fanN', { id: 0 })}</option>
-                        <option value="1">${t('fanPage.fanN', { id: 1 })}</option>
-                        <option value="2">${t('fanPage.fanN', { id: 2 })}</option>
-                        <option value="3">${t('fanPage.fanN', { id: 3 })}</option>
-                    </select>
-                </div>
-                <div class="form-group fan-curve-bind-temp" style="background:var(--bg-muted); border-radius:var(--radius); padding:16px;">
-                    <label style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                        <span>${t('fanPage.bindTempVar')}</span>
-                        <div style="display:flex; gap:10px; align-items:center;">
-                            <span id="variable-bind-status" class="badge" style="background:var(--blue-50);color:var(--blue-600);border:1px solid transparent;">${t('fanPage.unbound')}</span>
-                            <div id="fan-curve-temp-current" style="padding:6px 12px; background:var(--bg-card); border-radius:var(--radius-sm); font-size:16px; font-weight:bold; color:var(--blue-500);">--°C</div>
-                        </div>
-                    </label>
-                    <div id="temp-var-bindings-container" class="temp-var-bindings"></div>
-                    <div style="display:flex; gap:10px; align-items:center; margin-top:10px;">
-                        <button class="btn btn-sm btn-success" onclick="addTempVarBinding()"><i class="ri-add-line"></i> ${t('fanPage.addVariable')}</button>
-                        <div style="flex:1;"></div>
-                        <button class="btn btn-sm btn-service-style" onclick="bindTempVariable()">${t('fanPage.bindAll')}</button>
-                        <button class="btn btn-sm btn-secondary" onclick="unbindTempVariable()"><i class="ri-delete-bin-line"></i></button>
-                    </div>
-                    <div id="temp-var-formula" class="temp-var-formula" style="margin-top:10px; display:none;"></div>
-                    <div id="temp-var-weight-warn" class="temp-var-weight-warn" style="display:none;"></div>
-                    <small class="form-hint" id="temp-source-hint" style="margin-top:10px;">${t('fanPage.selectVariableWeightHint')}</small>
-                </div>
-                <div class="form-group">
-                    <label style="display:flex;justify-content:space-between;align-items:center;">
-                        <span>${t('fanPage.tempSpeedCurve')}</span>
-                        <button class="btn btn-sm btn-success" onclick="addCurvePoint()"><i class="ri-add-line"></i> ${t('fanPage.addPoint')}</button>
-                    </label>
-                    <div id="fan-curve-points" class="fan-curve-points">${renderCurvePoints()}</div>
-                    <small class="form-hint">${t('fanPage.curveHint')}</small>
-                </div>
-                <div class="form-group">
-                    <label>${t('fanPage.curvePreview')}</label>
-                    <div class="fan-curve-preview"><canvas id="fan-curve-canvas" width="560" height="200"></canvas></div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1;">
-                        <label>${t('fanPage.minDuty')}</label>
-                        <input type="number" id="fan-curve-min-duty" class="input" value="${fanCurveConfig.minDuty}" min="0" max="100" step="1">
-                        <small class="form-hint">${t('fanPage.minDutyHint')}</small>
-                    </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>${t('fanPage.maxDuty')}</label>
-                        <input type="number" id="fan-curve-max-duty" class="input" value="${fanCurveConfig.maxDuty}" min="0" max="100" step="1">
-                        <small class="form-hint">${t('fanPage.maxDutyHint')}</small>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1;">
-                        <label>${t('fanPage.tempHysteresis')}</label>
-                        <input type="number" id="fan-curve-hysteresis" class="input" value="${fanCurveConfig.hysteresis}" min="0" max="20" step="0.5">
-                        <small class="form-hint">${t('fanPage.hysteresisHint')}</small>
-                    </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>${t('fanPage.minInterval')}</label>
-                        <input type="number" id="fan-curve-interval" class="input" value="${fanCurveConfig.minInterval}" min="500" max="30000" step="100">
-                        <small class="form-hint">${t('fanPage.intervalHint')}</small>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn" onclick="closeFanCurveModal()">${t('fanPage.cancel')}</button>
-                <button class="btn btn-service-style" onclick="importFanCurveConfig()"><i class="ri-upload-line"></i> ${t('fan.importConfig')}</button>
-                <button class="btn btn-service-style" onclick="exportFanCurveConfig()"><i class="ri-download-line"></i> ${t('fan.exportConfig')}</button>
-                <button class="btn btn-service-style" onclick="applyFanCurve()"><i class="ri-check-line"></i> ${t('fanPage.applyCurve')}</button>
-            </div>
+
+    const fanOpts = [0, 1, 2, 3].map(i => `<option value="${i}">${t('fanPage.fanN', { id: i })}</option>`).join('');
+    const num = (id, w, val, attrs) => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
+    modal.innerHTML = sheet(660, t('fanPage.curveManagement'), `
+        ${grp(row(t('fanPage.fanRow'), `<select class="field" id="fan-curve-fan-select" style="width:120px" onchange="updateFanCurvePreview()">${fanOpts}</select>`))}
+        ${gt(t('fanPage.tempVarBindingTitle'))}
+        <div class="grp">
+            <div class="row"><div class="rl">${t('common.status')}</div><div class="rc"><span id="fan-curve-temp-current" class="t-note">--°C</span><span id="variable-bind-status" class="state">${t('fanPage.unbound')}</span></div></div>
+            <div class="rows" id="temp-var-bindings-container"></div>
+            <div class="row"><div class="rl"></div><div class="rc"><button class="btn sm" onclick="addTempVarBinding()"><svg class="i"><use href="#ri-add-line"/></svg>${t('fanPage.addVariable')}</button><button class="btn sm" onclick="bindTempVariable()">${t('fanPage.bind')}</button><button class="btn sm dg" onclick="unbindTempVariable()">${t('fanPage.unbindBtn')}</button></div></div>
         </div>
-    `;
-    
+        <div id="temp-var-formula" class="t-note" style="display:none;margin:6px 4px 0"></div>
+        <div id="temp-var-weight-warn" class="t-note warn-t" style="display:none;margin:6px 4px 0"></div>
+        <div id="temp-source-hint" class="t-note" style="margin:6px 4px 0">${t('fanPage.selectVariableWeightHint')}</div>
+        <div class="sec-h" style="margin:18px 4px 6px"><span class="t-label">${t('fanPage.curveNodes')}</span><span class="acts"><button class="btn sm" onclick="importFanCurveConfig()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('fan.importConfig')}</button><button class="btn sm" onclick="exportFanCurveConfig()"><svg class="i"><use href="#ri-download-line"/></svg>${t('fan.exportConfig')}</button><button class="btn sm" onclick="addCurvePoint()"><svg class="i"><use href="#ri-add-line"/></svg>${t('fanPage.addNode')}</button></span></div>
+        <div class="grp" id="fan-curve-points">${renderCurvePoints()}</div>
+        <div class="t-note" style="margin:6px 4px 0">${t('fanPage.curveHint')}</div>
+        ${gt(t('fanPage.curvePreview'))}
+        <div class="cvbox"><canvas id="fan-curve-canvas" width="1240" height="160"></canvas></div>
+        ${gt(t('fanPage.limits'))}
+        ${grp(
+            row(t('fanPage.minSpeed'), num('fan-curve-min-duty', 90, fanCurveConfig.minDuty, 'min="0" max="100" step="1"') + unit('%'), '', t('fanPage.minDutyHint')) +
+            row(t('fanPage.maxSpeed'), num('fan-curve-max-duty', 90, fanCurveConfig.maxDuty, 'min="0" max="100" step="1"') + unit('%'), '', t('fanPage.maxDutyHint')) +
+            row(t('fanPage.tempDiff'), num('fan-curve-hysteresis', 90, fanCurveConfig.hysteresis, 'min="0" max="20" step="0.5"') + unit('°C'), '', t('fanPage.hysteresisHint')) +
+            row(t('fanPage.minIntervalShort'), num('fan-curve-interval', 90, fanCurveConfig.minInterval, 'min="500" max="30000" step="100"') + unit('ms'), '', t('fanPage.intervalHint')))}`,
+        `<button class="btn lg" onclick="closeFanCurveModal()">${t('fanPage.cancel')}</button><button class="btn lg primary" onclick="applyFanCurve()">${t('fanPage.saveCurve')}</button>`);
+
     document.body.appendChild(modal);
-    
+
     document.getElementById('fan-curve-fan-select').value = fanId;
-    
+
     loadTempSourceStatus();
     setTimeout(() => drawCurvePreview(), 50);
-    
+
     // 异步加载设备配置并更新 UI（不阻塞 modal 显示）
     api.call('fan.config', { id: fanId }).then(result => {
         if (result.code === 0 && result.data) {
@@ -1963,33 +1745,18 @@ function closeFanCurveModal() {
 function renderTempVarBindings() {
     const container = document.getElementById('temp-var-bindings-container');
     if (!container) return;
-    
+
     if (tempVarBindings.length === 0) {
-        container.innerHTML = `<div style="text-align:center;color:var(--text-secondary);padding:12px;font-size:13px;">${t('fanPage.unbound')}</div>`;
+        container.innerHTML = row(t('dataWidget.tempVariables'), `<span class="t-note">${t('fanPage.unbound')}</span>`);
         updateWeightedTempFormula();
         return;
     }
-    
-    container.innerHTML = tempVarBindings.map((binding, index) => {
-        const selectOptions = buildVarSelectOptions(binding.name);
-        return `<div class="temp-var-row" data-index="${index}">
-            <select class="input" style="flex:1;min-width:0;" onchange="updateTempVarName(${index}, this.value)">
-                <option value="">-- ${t('fanPage.selectVariable')} --</option>
-                ${selectOptions}
-            </select>
-            <div class="temp-var-weight">
-                <label>${t('fanPage.weight')}</label>
-                <input type="number" class="input" value="${binding.weight}" min="0" max="1" step="0.05"
-                       onchange="updateTempVarWeight(${index}, this.value)"
-                       oninput="updateWeightedTempFormula()">
-            </div>
-            <button class="btn btn-sm btn-secondary temp-var-delete"
-                    onclick="removeTempVarBinding(${index})">
-                <i class="ri-delete-bin-line"></i>
-            </button>
-        </div>`;
-    }).join('');
-    
+
+    container.innerHTML = tempVarBindings.map((binding, index) => row(index === 0 ? t('dataWidget.tempVariables') : '',
+        `<select class="field" style="width:170px" onchange="updateTempVarName(${index}, this.value)"><option value="">${t('fanPage.selectVariable')}</option>${buildVarSelectOptions(binding.name)}</select>` +
+        `<input type="number" class="field num" style="width:64px" value="${binding.weight}" min="0" max="1" step="0.05" title="${t('fanPage.weight')}" aria-label="${t('fanPage.weight')}" onchange="updateTempVarWeight(${index}, this.value)" oninput="updateWeightedTempFormula()">` +
+        `<button class="btn icon sm dg" onclick="removeTempVarBinding(${index})" title="${t('common.delete')}" aria-label="${t('common.delete')}"><svg class="i"><use href="#ri-delete-bin-line"/></svg></button>`)).join('');
+
     updateWeightedTempFormula();
 }
 
@@ -1998,7 +1765,7 @@ function renderTempVarBindings() {
  */
 function buildVarSelectOptions(selectedName) {
     if (!availableTempVars || availableTempVars.length === 0) return '';
-    
+
     const isPriorityTempVar = (v) => {
         const name = (v.name || '').toLowerCase();
         return name.includes('temp') || name.includes('tj') ||
@@ -2013,7 +1780,7 @@ function buildVarSelectOptions(selectedName) {
     };
     const priorityVars = availableTempVars.filter(isPriorityTempVar);
     const otherVars = availableTempVars.filter(v => !isPriorityTempVar(v));
-    
+
     let html = '';
     if (priorityVars.length > 0) {
         html += `<optgroup label="${t('dataWidget.tempVariables') || t('dataWidget.tempVariables')}">`;
@@ -2029,13 +1796,13 @@ function buildVarSelectOptions(selectedName) {
         });
         html += `</optgroup>`;
     }
-    
+
     /* 如果已选变量不在列表中，追加显示 */
     if (selectedName && !availableTempVars.find(v => v.name === selectedName)) {
         const safeName = typeof escapeHtml === 'function' ? escapeHtml(selectedName) : selectedName;
         html += `<option value="${safeName}" selected>${safeName} (${t('common.current') || t('common.current')})</option>`;
     }
-    
+
     return html;
 }
 
@@ -2091,21 +1858,21 @@ function updateWeightedTempFormula() {
     const formulaEl = document.getElementById('temp-var-formula');
     const warnEl = document.getElementById('temp-var-weight-warn');
     if (!formulaEl) return;
-    
+
     const validBindings = tempVarBindings.filter(b => b.name && b.weight > 0);
-    
+
     if (validBindings.length === 0) {
         formulaEl.style.display = 'none';
         if (warnEl) warnEl.style.display = 'none';
         return;
     }
-    
+
     /* 从缓存的变量列表获取当前值 */
     let parts = [];
     let weightedSum = 0;
     let totalWeight = 0;
     let allValuesKnown = true;
-    
+
     validBindings.forEach(b => {
         const varInfo = availableTempVars.find(v => v.name === b.name);
         const val = varInfo?.value;
@@ -2118,17 +1885,17 @@ function updateWeightedTempFormula() {
         }
         totalWeight += b.weight;
     });
-    
+
     let formula = parts.join(' + ');
     if (allValuesKnown && totalWeight > 0.001) {
         formula += ` = <span class="result">${(weightedSum / totalWeight).toFixed(1)}°C</span>`;
     } else {
         formula += ` = <span class="result">${t('fanPage.variableNoData')}</span>`;
     }
-    
+
     formulaEl.innerHTML = `${t('fanPage.weightedTemp')}: ${formula}`;
     formulaEl.style.display = 'block';
-    
+
     /* 权重总和警告 */
     if (warnEl) {
         const sum = tempVarBindings.reduce((s, b) => s + (b.weight || 0), 0);
@@ -2145,36 +1912,14 @@ function updateWeightedTempFormula() {
  * 渲染曲线点列表
  */
 function renderCurvePoints() {
-    const _tempPh = typeof t === 'function' ? t('fanPage.tempPlaceholder') : '温度';
-    const _speedPh = typeof t === 'function' ? t('fanPage.speedPlaceholder') : '转速';
-    return fanCurveConfig.curve.map((point, index) => `
-        <div class="curve-point-row" data-index="${index}">
-            <div class="curve-point-inputs">
-                <div class="curve-point-field">
-                    <span class="field-icon"><i class="ri-temp-hot-line"></i></span>
-                    <input type="number" class="input curve-temp-input" 
-                           value="${point.temp}" min="-20" max="120" step="1"
-                           onchange="updateCurvePoint(${index}, 'temp', this.value)"
-                           placeholder="${_tempPh}">
-                    <span class="field-unit">°C</span>
-                </div>
-                <span class="curve-arrow"><i class="ri-arrow-right-line"></i></span>
-                <div class="curve-point-field">
-                    <span class="field-icon"><i class="ri-dashboard-3-line"></i></span>
-                    <input type="number" class="input curve-duty-input" 
-                           value="${point.duty}" min="0" max="100" step="1"
-                           onchange="updateCurvePoint(${index}, 'duty', this.value)"
-                           placeholder="${_speedPh}">
-                    <span class="field-unit">%</span>
-                </div>
-            </div>
-            <button class="btn btn-sm btn-secondary curve-point-delete" 
-                    onclick="removeCurvePoint(${index})" 
-                    ${fanCurveConfig.curve.length <= 2 ? 'disabled' : ''}>
-                <i class="ri-delete-bin-line"></i>
-            </button>
-        </div>
-    `).join('');
+    const _tempPh = t('fanPage.tempPlaceholder');
+    const _speedPh = t('fanPage.speedPlaceholder');
+    return fanCurveConfig.curve.map((point, index) => row(t('fanPage.nodeN', { n: index + 1 }),
+        `<input type="number" class="field num" style="width:70px" value="${point.temp}" min="-20" max="120" step="1" onchange="updateCurvePoint(${index}, 'temp', this.value)" placeholder="${_tempPh}" aria-label="${_tempPh}">` +
+        `<span class="t-note">°C →</span>` +
+        `<input type="number" class="field num" style="width:70px" value="${point.duty}" min="0" max="100" step="1" onchange="updateCurvePoint(${index}, 'duty', this.value)" placeholder="${_speedPh}" aria-label="${_speedPh}">` +
+        unit('%') +
+        `<button class="btn icon sm dg" onclick="removeCurvePoint(${index})" title="${t('fanPage.deleteNode')}" aria-label="${t('fanPage.deleteNode')}" ${fanCurveConfig.curve.length <= 2 ? 'disabled' : ''}><svg class="i"><use href="#ri-delete-bin-line"/></svg></button>`)).join('');
 }
 
 /**
@@ -2185,12 +1930,12 @@ function addCurvePoint() {
         showToast(typeof t === 'function' ? t('fanPage.maxCurvePoints') : '最多支持 10 个曲线点', 'warning');
         return;
     }
-    
+
     // 在最后一个点后添加
     const lastPoint = fanCurveConfig.curve[fanCurveConfig.curve.length - 1];
     const newTemp = Math.min(lastPoint.temp + 10, 100);
     const newDuty = Math.min(lastPoint.duty + 10, 100);
-    
+
     fanCurveConfig.curve.push({ temp: newTemp, duty: newDuty });
     refreshCurveEditor();
 }
@@ -2223,7 +1968,7 @@ function updateCurvePoint(index, field, value) {
 function refreshCurveEditor() {
     // 按温度排序
     fanCurveConfig.curve.sort((a, b) => a.temp - b.temp);
-    
+
     const container = document.getElementById('fan-curve-points');
     if (container) {
         container.innerHTML = renderCurvePoints();
@@ -2237,125 +1982,76 @@ function refreshCurveEditor() {
 function drawCurvePreview() {
     const canvas = document.getElementById('fan-curve-canvas');
     if (!canvas) return;
-    
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W || !H) return;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
     const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
-    const padding = { top: 20, right: 20, bottom: 35, left: 45 };
-    const plotWidth = width - padding.left - padding.right;
-    const plotHeight = height - padding.top - padding.bottom;
-    
-    // 清空画布
-    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-color').trim() || '#f5f6fa';
-    ctx.fillRect(0, 0, width, height);
-    
-    // 绘制网格
-    ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const pad = { top: 28, right: 20, bottom: 28, left: 46 };
+    const pw = W - pad.left - pad.right, ph = H - pad.top - pad.bottom;
+    const px = temp => pad.left + Math.max(0, Math.min(100, temp)) / 100 * pw;
+    const py = duty => pad.top + ph - Math.max(0, Math.min(100, duty)) / 100 * ph;
+    const font = getComputedStyle(document.body).fontFamily || 'system-ui';
+
+    // 网格（20 为一格）+ 坐标轴刻度数字：横轴温度 °C，纵轴转速 %
     ctx.lineWidth = 1;
-    
-    // 垂直网格线 (温度轴)
-    for (let t = 0; t <= 100; t += 20) {
-        const x = padding.left + (t / 100) * plotWidth;
-        ctx.beginPath();
-        ctx.moveTo(x, padding.top);
-        ctx.lineTo(x, height - padding.bottom);
-        ctx.stroke();
-    }
-    
-    // 水平网格线 (转速轴)
-    for (let d = 0; d <= 100; d += 20) {
-        const y = height - padding.bottom - (d / 100) * plotHeight;
-        ctx.beginPath();
-        ctx.moveTo(padding.left, y);
-        ctx.lineTo(width - padding.right, y);
-        ctx.stroke();
-    }
-    
-    // 绘制坐标轴
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(padding.left, padding.top);
-    ctx.lineTo(padding.left, height - padding.bottom);
-    ctx.lineTo(width - padding.right, height - padding.bottom);
-    ctx.stroke();
-    
-    // 坐标轴标签
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.font = '11px system-ui';
-    ctx.textAlign = 'center';
-    
-    // X 轴标签
-    for (let t = 0; t <= 100; t += 20) {
-        const x = padding.left + (t / 100) * plotWidth;
-        ctx.fillText(`${t}°C`, x, height - 8);
-    }
-    
-    // Y 轴标签
-    ctx.textAlign = 'right';
-    for (let d = 0; d <= 100; d += 20) {
-        const y = height - padding.bottom - (d / 100) * plotHeight;
-        ctx.fillText(`${d}%`, padding.left - 8, y + 4);
-    }
-    
-    // 绘制曲线
-    if (fanCurveConfig.curve.length < 2) return;
-    
-    const points = [...fanCurveConfig.curve].sort((a, b) => a.temp - b.temp);
-    
-    // 曲线路径
-    ctx.beginPath();
-    ctx.strokeStyle = '#4fc3f7';
-    ctx.lineWidth = 3;
-    
-    // 左侧延伸线（低于最低温度）
-    const firstPoint = points[0];
-    const firstX = padding.left;
-    const firstY = height - padding.bottom - (firstPoint.duty / 100) * plotHeight;
-    ctx.moveTo(firstX, firstY);
-    ctx.lineTo(padding.left + (firstPoint.temp / 100) * plotWidth, firstY);
-    
-    // 曲线点连接
-    points.forEach((point, i) => {
-        const x = padding.left + (point.temp / 100) * plotWidth;
-        const y = height - padding.bottom - (point.duty / 100) * plotHeight;
-        ctx.lineTo(x, y);
-    });
-    
-    // 右侧延伸线（高于最高温度）
-    const lastPoint = points[points.length - 1];
-    const lastX = padding.left + (lastPoint.temp / 100) * plotWidth;
-    const lastY = height - padding.bottom - (lastPoint.duty / 100) * plotHeight;
-    ctx.lineTo(width - padding.right, lastY);
-    
-    ctx.stroke();
-    
-    // 填充区域
-    ctx.lineTo(width - padding.right, height - padding.bottom);
-    ctx.lineTo(padding.left, height - padding.bottom);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(79, 195, 247, 0.15)';
-    ctx.fill();
-    
-    // 绘制曲线点
-    points.forEach((point, i) => {
-        const x = padding.left + (point.temp / 100) * plotWidth;
-        const y = height - padding.bottom - (point.duty / 100) * plotHeight;
-        
-        // 点
-        ctx.beginPath();
-        ctx.arc(x, y, 6, 0, Math.PI * 2);
-        ctx.fillStyle = '#4fc3f7';
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        
-        // 标签（使用坐标轴文字颜色）
-        ctx.fillStyle = 'rgba(0,0,0,0.7)';
-        ctx.font = 'bold 10px system-ui';
+    ctx.font = '11px ' + font;
+    ctx.fillStyle = '#5f6670';
+    for (let v = 0; v <= 100; v += 20) {
+        const x = Math.round(px(v)) + 0.5, y = Math.round(py(v)) + 0.5;
+        ctx.strokeStyle = v === 0 ? 'rgba(60,60,67,.32)' : 'rgba(60,60,67,.12)';
+        ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + ph); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + pw, y); ctx.stroke();
         ctx.textAlign = 'center';
-        ctx.fillText(`${point.temp}°/${point.duty}%`, x, y - 12);
+        ctx.fillText(v + '°C', px(v), H - 8);
+        ctx.textAlign = 'right';
+        ctx.fillText(v + '%', pad.left - 8, py(v) + 4);
+    }
+    if (fanCurveConfig.curve.length < 2) return;
+
+    // 折线：低于最低点 / 高于最高点时保持水平；下方淡色填充
+    const points = [...fanCurveConfig.curve].sort((a, b) => a.temp - b.temp);
+    const right = pad.left + pw, base = pad.top + ph;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py(points[0].duty));
+    points.forEach(pt => ctx.lineTo(px(pt.temp), py(pt.duty)));
+    ctx.lineTo(right, py(points[points.length - 1].duty));
+    ctx.lineTo(right, base);
+    ctx.lineTo(pad.left, base);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, pad.top, 0, base);
+    grad.addColorStop(0, 'rgba(0,122,255,.18)');
+    grad.addColorStop(1, 'rgba(0,122,255,0)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py(points[0].duty));
+    points.forEach(pt => ctx.lineTo(px(pt.temp), py(pt.duty)));
+    ctx.lineTo(right, py(points[points.length - 1].duty));
+    ctx.strokeStyle = '#007aff';
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // 节点：白底蓝圈 + 「温度°/转速%」标注：优先放在点左上方（折线向右上走，不压线），放不下再居中 / 靠左，仍冲突放到点下方
+    const boxes = [];
+    const hit = (r) => boxes.some(q => r.x < q.x + q.w && r.x + r.w > q.x && r.y < q.y + q.h && r.y + r.h > q.y);
+    points.forEach(pt => {
+        const x = px(pt.temp), y = py(pt.duty);
+        ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff'; ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = '#007aff'; ctx.stroke();
+        const label = `${pt.temp}°/${pt.duty}%`;
+        ctx.font = '600 10.5px ' + font;
+        const tw = ctx.measureText(label).width, th = 12;
+        const tries = [[x + 6 - tw, y - 20, 'right', x + 6], [x - tw / 2, y - 20, 'center', x], [x - 6, y - 20, 'left', x - 6], [x + 6 - tw, y + 8, 'right', x + 6], [x - tw / 2, y + 8, 'center', x]];
+        let pick = tries.find(([lx, ly]) => lx >= pad.left - 2 && lx + tw <= right + 6 && ly >= 2 && ly + th <= H - 18 && !hit({ x: lx, y: ly, w: tw, h: th })) || tries[1];
+        boxes.push({ x: pick[0], y: pick[1], w: tw, h: th });
+        ctx.fillStyle = '#1d1d1f'; ctx.textAlign = pick[2];
+        ctx.fillText(label, pick[3], pick[1] + 10);
     });
 }
 
@@ -2371,7 +2067,7 @@ async function loadTempSourceStatus() {
             if (tempEl) {
                 const temp = data.temperature_c?.toFixed(1) || '--';
                 tempEl.textContent = `${temp}°C`;
-                tempEl.style.color = data.valid ? 'var(--primary)' : 'var(--warning)';
+                tempEl.style.color = data.valid ? '' : 'var(--warn)';
             }
         }
     } catch (e) {
@@ -2379,7 +2075,7 @@ async function loadTempSourceStatus() {
         const tempEl = document.getElementById('fan-curve-temp-current');
         if (tempEl) {
             tempEl.textContent = '??°C';
-            tempEl.style.color = 'var(--error)';
+            tempEl.style.color = 'var(--bad)';
         }
     }
     await loadVariableBindStatus();
@@ -2412,15 +2108,15 @@ async function loadVariableBindStatus() {
     } catch (e) {
         console.warn('加载变量列表失败:', e.message);
     }
-    
+
     try {
         const bindResult = await api.call('temp.bind');
         const statusEl = document.getElementById('variable-bind-status');
-        
+
         if (bindResult.code === 0 && bindResult.data) {
             const data = bindResult.data;
             const boundVars = data.bound_variables || [];
-            
+
             if (boundVars.length > 0) {
                 tempVarBindings = boundVars.map(bv => ({
                     name: bv.name,
@@ -2446,7 +2142,7 @@ async function loadVariableBindStatus() {
             } else {
                 tempVarBindings = [];
             }
-            
+
             const positiveBoundVars = boundVars.filter(bv => (bv.weight ?? 1.0) > 0.001);
             const positiveCount = typeof data.bound_total_count === 'number'
                 ? data.bound_total_count : positiveBoundVars.length;
@@ -2463,30 +2159,30 @@ async function loadVariableBindStatus() {
                 if (tempVarBindings.length > 0) {
                     if (positiveCount > 0 && validCount === 0 && staleCount === positiveCount) {
                         statusEl.textContent = t('fanPage.boundVarsStale', { count: tempVarBindings.length });
-                        statusEl.className = 'badge badge-warning';
+                        statusEl.className = 'state warn';
                     } else if (positiveCount > 0 && partialStale && validCount > 0) {
                         statusEl.textContent = t('fanPage.boundVarsPartialStale', { fresh: validCount, count: positiveCount });
-                        statusEl.className = 'badge badge-warning';
+                        statusEl.className = 'state warn';
                     } else if (positiveCount > 0 && !hasWeightedTemp) {
                         statusEl.textContent = t('fanPage.boundVarsInvalid', { count: tempVarBindings.length });
-                        statusEl.className = 'badge badge-warning';
+                        statusEl.className = 'state warn';
                     } else if (positiveCount === 0) {
                         statusEl.textContent = t('fanPage.boundVarsInvalid', { count: tempVarBindings.length });
-                        statusEl.className = 'badge badge-warning';
+                        statusEl.className = 'state warn';
                     } else {
                         statusEl.textContent = t('fanPage.boundVarCount', { count: tempVarBindings.length });
-                        statusEl.className = 'badge badge-success';
+                        statusEl.className = 'state ok';
                     }
                 } else {
                     statusEl.textContent = t('fanPage.unbound');
-                    statusEl.className = 'badge badge-secondary';
+                    statusEl.className = 'state';
                 }
             }
-            
+
             const tempEl = document.getElementById('fan-curve-temp-current');
             if (tempEl && hasWeightedTemp) {
                 tempEl.textContent = `${data.weighted_temp_c.toFixed(1)}°C`;
-                tempEl.style.color = 'var(--primary)';
+                tempEl.style.color = '';
             } else if (tempEl && positiveCount > 0) {
                 if (validCount === 0 && staleCount === positiveCount) {
                     tempEl.textContent = t('fanPage.boundVarsStaleShort');
@@ -2495,7 +2191,7 @@ async function loadVariableBindStatus() {
                 } else {
                     tempEl.textContent = freshCount === 0 ? t('fanPage.boundVarsStaleShort') : t('fanPage.boundVarsInvalidShort');
                 }
-                tempEl.style.color = 'var(--warning)';
+                tempEl.style.color = 'var(--warn)';
             } else if (tempEl && typeof data.temperature_c === 'number') {
                 tempEl.textContent = `${data.temperature_c.toFixed(1)}°C`;
                 tempEl.style.color = '';
@@ -2504,7 +2200,7 @@ async function loadVariableBindStatus() {
     } catch (e) {
         console.warn('加载绑定状态失败:', e.message);
     }
-    
+
     renderTempVarBindings();
 }
 
@@ -2513,25 +2209,25 @@ async function loadVariableBindStatus() {
  */
 async function bindTempVariable() {
     const validBindings = tempVarBindings.filter(b => b.name && b.name.trim() !== '');
-    
+
     if (validBindings.length === 0) {
         showToast(t('fanPage.noVarSelected'), 'warning');
         return;
     }
-    
+
     try {
         const variables = validBindings.map(b => ({
             name: b.name,
             weight: Math.max(0, Math.min(1, b.weight || 0))
         }));
-        
+
         const result = await api.call('temp.bind', { variables });
-        
+
         if (result.code === 0) {
             requireApiSuccess(await api.call('temp.select', { source: 'variable' }), 'call');
-            
+
             showToast(t('fanPage.tempBoundWeighted', { count: variables.length }), 'success');
-            
+
             await loadTempSourceStatus();
         } else {
             showToast(t('fanPage.bindFailed') + ': ' + result.message, 'error');
@@ -2548,11 +2244,11 @@ async function bindTempVariable() {
 async function unbindTempVariable() {
     try {
         const result = await api.call('temp.bind', { variables: [] });
-        
+
         if (result.code === 0) {
             tempVarBindings = [];
             showToast(t('fanPage.unbindSuccess'), 'success');
-            
+
             await loadTempSourceStatus();
         } else {
             showToast(t('fanPage.unbindFailed') + ': ' + result.message, 'error');
@@ -2580,32 +2276,32 @@ async function applyFanCurve() {
     const minInterval = parseInt(document.getElementById('fan-curve-interval').value);
     const minDuty = parseInt(document.getElementById('fan-curve-min-duty').value);
     const maxDuty = parseInt(document.getElementById('fan-curve-max-duty').value);
-    
+
     // 验证
     if (fanCurveConfig.curve.length < 2) {
         showToast(typeof t === 'function' ? t('fanPage.minCurvePoints') : '至少需要 2 个曲线点', 'error');
         return;
     }
-    
+
     if (minDuty > maxDuty) {
         showToast(typeof t === 'function' ? t('fanPage.dutyOrderError') : '最小占空比不能大于最大占空比', 'error');
         return;
     }
-    
+
     // 验证温度迟滞和最小间隔（防止 NaN 导致保存失败）
     if (isNaN(hysteresis) || hysteresis < 0 || hysteresis > 20) {
         showToast(typeof t === 'function' ? t('fanPage.hysteresisRangeError') : '温度迟滞必须在 0-20°C 范围内', 'error');
         return;
     }
-    
+
     if (isNaN(minInterval) || minInterval < 500 || minInterval > 30000) {
         showToast(typeof t === 'function' ? t('fanPage.intervalRangeError') : '最小间隔必须在 500-30000ms 范围内', 'error');
         return;
     }
-    
+
     // 排序曲线点
     const sortedCurve = [...fanCurveConfig.curve].sort((a, b) => a.temp - b.temp);
-    
+
     try {
         // 1. 设置占空比限制
         const limitsResult = await api.call('fan.limits', {
@@ -2613,11 +2309,11 @@ async function applyFanCurve() {
             min_duty: minDuty,
             max_duty: maxDuty
         });
-        
+
         if (limitsResult.code !== 0) {
             throw new Error(limitsResult.message || t('dataWidget.setDutyLimitFailed'));
         }
-        
+
         // 2. 设置曲线（同时传递 hysteresis 和 min_interval，会自动保存到 NVS）
         const curveResult = await api.call('fan.curve', {
             id: fanId,
@@ -2625,27 +2321,27 @@ async function applyFanCurve() {
             hysteresis: hysteresis,
             min_interval: minInterval
         });
-        
+
         if (curveResult.code !== 0) {
             throw new Error(curveResult.message || t('dataWidget.setCurveFailed'));
         }
-        
+
         // 3. 切换到曲线模式
         const modeResult = await api.call('fan.mode', {
             id: fanId,
             mode: 'curve'
         });
-        
+
         if (modeResult.code !== 0) {
             throw new Error(modeResult.message || t('promptRepair.modeFailed'));
         }
-        
+
         showToast(typeof t === 'function' ? t('fanPage.curveApplied', { id: fanId }) : `风扇 ${fanId} 曲线已应用并保存`, 'success');
         closeFanCurveModal();
-        
+
         // 刷新风扇状态
         await refreshFans();
-        
+
     } catch (e) {
         console.error('应用曲线失败:', e);
         showToast((typeof t === 'function' ? t('fanPage.applyCurveFailed') : '应用曲线失败') + ': ' + e.message, 'error');
@@ -2661,7 +2357,7 @@ async function exportFanCurveConfig() {
     const minInterval = parseInt(document.getElementById('fan-curve-interval').value);
     const minDuty = parseInt(document.getElementById('fan-curve-min-duty').value);
     const maxDuty = parseInt(document.getElementById('fan-curve-max-duty').value);
-    
+
     // 构建导出配置
     const config = {
         version: 1,
@@ -2674,10 +2370,10 @@ async function exportFanCurveConfig() {
         max_duty: maxDuty,
         exported_at: new Date().toISOString()
     };
-    
+
     const json = JSON.stringify(config, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
-    
+
     // 1. 保存到本地（触发浏览器下载）
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2687,7 +2383,7 @@ async function exportFanCurveConfig() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    
+
     // 2. 同时保存到 SD 卡 /sdcard/config
     const sdcardPath = `/sdcard/config/fan_curve_config_${fanId}.json`;
     try {
@@ -2705,36 +2401,36 @@ function importFanCurveConfig() {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
-    
+
     input.onchange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        
+
         try {
             const text = await file.text();
             const config = JSON.parse(text);
-            
+
             // 验证配置格式
             if (config.type !== 'fan_curve_config') {
                 showToast(typeof t === 'function' ? t('fanPage.invalidConfigFormat') : '无效的配置文件格式', 'error');
                 return;
             }
-            
+
             if (!config.curve || !Array.isArray(config.curve) || config.curve.length < 2) {
                 showToast(typeof t === 'function' ? t('fanPage.invalidCurvePoints') : '配置文件中曲线点无效', 'error');
                 return;
             }
-            
+
             for (const point of config.curve) {
                 if (typeof point.temp !== 'number' || typeof point.duty !== 'number') {
                     showToast(typeof t === 'function' ? t('fanPage.curvePointFormatError') : '曲线点格式错误', 'error');
                     return;
                 }
             }
-            
+
             // 应用配置到当前界面
             fanCurveConfig.curve = config.curve.sort((a, b) => a.temp - b.temp);
-            
+
             if (typeof config.hysteresis === 'number') {
                 fanCurveConfig.hysteresis = config.hysteresis;
                 document.getElementById('fan-curve-hysteresis').value = config.hysteresis;
@@ -2751,18 +2447,18 @@ function importFanCurveConfig() {
                 fanCurveConfig.maxDuty = config.max_duty;
                 document.getElementById('fan-curve-max-duty').value = config.max_duty;
             }
-            
+
             // 刷新曲线编辑器和预览
             refreshCurveEditor();
             drawCurvePreview();
-            
+
             showToast(typeof t === 'function' ? t('fanPage.configImported', { name: file.name }) : `已导入配置文件: ${file.name}`, 'success');
         } catch (err) {
             console.error('导入配置失败:', err);
             showToast((typeof t === 'function' ? t('fanPage.importConfigFailed') : '导入配置失败') + ': ' + err.message, 'error');
         }
     };
-    
+
     input.click();
 }
 
@@ -2771,11 +2467,11 @@ function importFanCurveConfig() {
  */
 async function updateFanCurvePreview() {
     const newFanId = parseInt(document.getElementById('fan-curve-fan-select').value);
-    
+
     // 如果切换了风扇，重新加载该风扇的配置
     if (newFanId !== fanCurveConfig.fanId) {
         fanCurveConfig.fanId = newFanId;
-        
+
         try {
             const result = await api.call('fan.config', { id: newFanId });
             if (result.code === 0 && result.data) {
@@ -2806,7 +2502,7 @@ async function updateFanCurvePreview() {
             console.warn('加载风扇配置失败:', e);
         }
     }
-    
+
     drawCurvePreview();
 }
 
@@ -2822,8 +2518,8 @@ async function serviceAction(name, action) {
     }
 }
 
-function confirmReboot() {
-    if (confirmAction(t('system.rebootConfirm'))) {
+async function confirmReboot() {
+    if (await confirmAction(t('system.rebootConfirm'), { primary: t('system.reboot'), tone: 'danger' })) {
         showToast(t('system.rebootSending'), 'info');
         api.reboot(500)
             .then((result) => {
@@ -2843,11 +2539,11 @@ async function refreshSystemLeds() {
     const pageCurrent = capturePageValidity();
     const container = document.getElementById('system-led-devices-grid');
     if (!container) return;
-    
+
     try {
         const result = await api.ledList();
         if (!pageCurrent()) return;
-        
+
         if (result.data && result.data.devices && result.data.devices.length > 0) {
             // 存储设备信息
             result.data.devices.forEach(dev => {
@@ -2860,12 +2556,12 @@ async function refreshSystemLeds() {
                     ledStates[dev.name] = dev.current.on || false;
                 }
             });
-            
+
             window.ledDevicesCache = result.data.devices;
-            
+
             // 渲染设备卡片
             container.innerHTML = result.data.devices.map(dev => generateLedDeviceCard(dev)).join('');
-            
+
             // 加载字体列表 & 显示色彩校正按钮
             if (result.data.devices.some(d => d.name === 'matrix' || d.layout === 'matrix')) {
                 loadFontList();
@@ -2874,17 +2570,16 @@ async function refreshSystemLeds() {
             }
         } else {
             container.innerHTML = `
-                <div class="led-empty-state">
-                    <div class="empty-icon"><i class="ri-error-warning-line" style="color:var(--warning-color)"></i></div>
-                    <h3>${t('ledPage.ledNotFound')}</h3>
-                    <p>${t('ledPage.ledNotStarted')}</p>
+                <div class="empty">
+                    <p class="t-body">${t('ledPage.ledNotFound')}</p>
+                    <p class="t-note">${t('ledPage.ledNotStarted')}</p>
                 </div>
             `;
         }
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('LED list error:', e);
-        container.innerHTML = `<div class="error-state">${escapeHtml(typeof t === 'function' ? t('common.loadFailedMsg', { msg: e.message }) : '加载失败: ' + e.message)}</div>`;
+        container.innerHTML = `<div class="empty"><p class="t-note">${escapeHtml(typeof t === 'function' ? t('common.loadFailedMsg', { msg: e.message }) : '加载失败: ' + e.message)}</p></div>`;
     }
 }
 
@@ -3264,10 +2959,10 @@ function sanitizeWidgetIcon(iconHtml) {
     if (!iconHtml || typeof iconHtml !== 'string') return '';
     const trimmed = iconHtml.trim();
     // 有效图标：以 <i 开始，以 </i> 结束（正确闭合）
-    if (trimmed.startsWith('<i ') && trimmed.endsWith('</i>')) return trimmed + ' ';
+    if (trimmed.startsWith('<i ') && trimmed.endsWith('</i>')) return iconize(trimmed) + ' ';
     if (trimmed === '<i></i>') return '';
     // 如果只是 remixicon 类名（旧格式），包装成完整标签
-    if (/^ri-[\w-]+$/.test(trimmed)) return `<i class="${trimmed}"></i> `;
+    if (/^ri-[\w-]+$/.test(trimmed)) return ic(trimmed) + ' ';
     // 无效或损坏的图标 HTML — 丢弃，防止破坏 DOM
     return '';
 }
@@ -3276,148 +2971,73 @@ function sanitizeWidgetIcon(iconHtml) {
  * 渲染单个组件的 HTML
  */
 function renderWidgetHtml(widget) {
-    const { id, type, label, icon, color, unit } = widget;
-    
+    const { id, type, label, icon, unit } = widget;
+    const vid = `dw-${id}-value`;
+    const big = (inner) => `<div class="bigrow w32">${inner}</div>`;
     let contentHtml = '';
     
     switch (type) {
         case 'ring':
-            contentHtml = `
-                <div class="dw-ring-container">
-                    <svg class="dw-ring" viewBox="0 0 100 100">
-                        <circle class="dw-ring-bg" cx="50" cy="50" r="42"/>
-                        <circle class="dw-ring-progress" id="dw-${id}-ring" cx="50" cy="50" r="42" style="stroke: ${color};"/>
-                    </svg>
-                    <div class="dw-ring-value" id="dw-${id}-value">-</div>
-                </div>`;
+            contentHtml = `<div class="dw-ring"><svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(0,0,0,.07)" stroke-width="6"/><circle id="dw-${id}-ring" cx="32" cy="32" r="26" fill="none" stroke="#007aff" stroke-width="6" stroke-linecap="round" stroke-dasharray="0 163.4" transform="rotate(-90 32 32)"/><text id="${vid}" x="32" y="37" text-anchor="middle" font-size="14" font-weight="500" fill="#1d1d1f">-</text></svg></div>`;
             break;
-            
         case 'gauge':
-            contentHtml = `
-                <div class="dw-gauge-container">
-                    <svg class="dw-gauge" viewBox="0 0 100 60">
-                        <path class="dw-gauge-bg" d="M10,50 A40,40 0 0,1 90,50"/>
-                        <path class="dw-gauge-progress" id="dw-${id}-gauge" d="M10,50 A40,40 0 0,1 90,50" style="stroke: ${color};"/>
-                    </svg>
-                    <div class="dw-gauge-value" id="dw-${id}-value">-</div>
-                </div>`;
+            contentHtml = `<div class="dw-ring"><svg width="72" height="44" viewBox="0 0 72 44"><path d="M8 38A28 28 0 0 1 64 38" fill="none" stroke="rgba(0,0,0,.07)" stroke-width="6" stroke-linecap="round"/><path id="dw-${id}-gauge" d="M8 38A28 28 0 0 1 64 38" fill="none" stroke="#007aff" stroke-width="6" stroke-linecap="round" stroke-dasharray="0 87.96"/><text id="${vid}" x="36" y="38" text-anchor="middle" font-size="14" font-weight="500" fill="#1d1d1f">-</text></svg></div>`;
             break;
-            
         case 'temp':
-            contentHtml = `
-                <div class="dw-temp-container">
-                    <div class="dw-temp-bar">
-                        <div class="dw-temp-fill" id="dw-${id}-fill"></div>
-                        <div class="dw-temp-scale"><span>100°</span><span>50°</span><span>0°</span></div>
-                    </div>
-                    <div class="dw-temp-value" id="dw-${id}-value">-</div>
-                </div>`;
+            contentHtml = big(`<span class="t-big" id="${vid}">-</span><span class="t-unit">°C</span>`);
             break;
-            
         case 'number':
-            contentHtml = `
-                <div class="dw-number-container">
-                    <div class="dw-number-icon" style="color: ${color};">${sanitizeWidgetIcon(icon) || '<i class="ri-dashboard-line"></i>'}</div>
-                    <div class="dw-number-value">
-                        <span class="dw-number-num" id="dw-${id}-value" style="color: ${color};">-</span>
-                        <span class="dw-number-unit">${unit || ''}</span>
-                    </div>
-                </div>`;
+            contentHtml = big(`<span class="t-big" id="${vid}">-</span><span class="t-unit">${unit || ''}</span>`);
             break;
-            
-        case 'bar':
-            contentHtml = `
-                <div class="dw-bar-container">
-                    <div class="dw-bar-track">
-                        <div class="dw-bar-fill" id="dw-${id}-fill" style="background: ${color};"></div>
-                    </div>
-                    <div class="dw-bar-value" id="dw-${id}-value">-</div>
-                </div>`;
-            break;
-            
-        case 'status':
-            contentHtml = `
-                <div class="dw-status-container">
-                    <div class="dw-status-light" id="dw-${id}-light"></div>
-                    <div class="dw-status-label" id="dw-${id}-value">-</div>
-                </div>`;
-            break;
-            
-        case 'icon':
-            contentHtml = `
-                <div class="dw-icon-container">
-                    <div class="dw-icon-display" id="dw-${id}-icon"><i class="ri-question-line"></i></div>
-                    <div class="dw-icon-label" id="dw-${id}-value">-</div>
-                </div>`;
-            break;
-            
-        case 'dual':
-            contentHtml = `
-                <div class="dw-dual-container">
-                    <div class="dw-dual-main" id="dw-${id}-value" style="color: ${color};">-</div>
-                    <div class="dw-dual-sep">/</div>
-                    <div class="dw-dual-sub" id="dw-${id}-sub">-</div>
-                    <div class="dw-dual-unit">${unit || ''}</div>
-                </div>`;
-            break;
-            
         case 'percent':
-            contentHtml = `
-                <div class="dw-percent-container">
-                    <div class="dw-percent-value" id="dw-${id}-value" style="color: ${color};">-</div>
-                    <div class="dw-percent-symbol">%</div>
-                </div>`;
+            contentHtml = big(`<span class="t-big" id="${vid}">-</span><span class="t-unit">%</span>`);
             break;
-            
-        case 'log':
+        case 'bar':
+            contentHtml = `<div class="kv" style="padding:10px 0 6px"><span></span><span id="${vid}">-</span></div><div class="bar"><i id="dw-${id}-fill" style="width:0"></i></div>`;
+            break;
+        case 'status':
+            contentHtml = `<div class="dw-st"><span class="state" id="${vid}">-</span></div>`;
+            break;
+        case 'icon':
+            contentHtml = `<div class="dw-ic"><span class="dw-icon-display" id="dw-${id}-icon"><svg class="i"><use href="#ri-question-line"/></svg></span><span class="t-body" id="${vid}">-</span></div>`;
+            break;
+        case 'dual':
+            contentHtml = big(`<span class="t-big" id="${vid}">-</span><span class="t-unit">/</span><span class="t-value" id="dw-${id}-sub">-</span><span class="t-unit">${unit || ''}</span>`);
+            break;
+        case 'log': {
             const maxLines = widget.maxLines || 15;
             const isReading = widget._isReading || false;
             // 默认折叠（除非明确设置了 _isCollapsed: false）
             const isCollapsed = widget._isCollapsed !== false;
             contentHtml = `
-                <div class="dw-log-toolbar ${isCollapsed ? 'dw-log-toolbar-collapsed' : ''}">
-                    <button class="btn btn-sm dw-log-collapse-btn" 
-                            id="dw-${id}-collapse" onclick="event.stopPropagation();toggleLogCollapse('${id}')"
-                            title="${isCollapsed ? (typeof t === 'function' ? t('dataWidget.expandLog') : '展开日志') : (typeof t === 'function' ? t('dataWidget.collapseLog') : '折叠日志')}">
-                        <i class="ri-arrow-${isCollapsed ? 'down' : 'up'}-s-line"></i>
-                    </button>
-                    <button class="btn btn-sm ${isReading ? 'btn-danger' : 'btn-service-style'}" 
-                            id="dw-${id}-toggle" onclick="event.stopPropagation();toggleLogReading('${id}')">
-                        <i class="ri-${isReading ? 'stop' : 'play'}-line"></i> ${isReading ? (typeof t === 'function' ? t('fanPage.stopReading') : '停止') : (typeof t === 'function' ? t('fanPage.reading') : '读取')}
-                    </button>
-                    <button class="btn btn-sm" onclick="event.stopPropagation();refreshLogOnce('${id}')" title="${typeof t === 'function' ? t('common.refreshOnce') : '刷新一次'}">
-                        <i class="ri-refresh-line"></i>
-                    </button>
-                    <button class="btn btn-sm" onclick="event.stopPropagation();clearLogWidget('${id}')" title="${typeof t === 'function' ? t('common.clear') : '清空'}">
-                        <i class="ri-delete-bin-line"></i>
-                    </button>
-                    <span class="dw-log-status" id="dw-${id}-status">${isReading ? (typeof t === 'function' ? t('common.reading') : '读取中...') : (typeof t === 'function' ? t('status.stopped') : '已停止')}</span>
+                <div class="dw-log-h">
+                    <span class="t-label">${sanitizeWidgetIcon(icon)}${escapeHtml(label)}</span>
+                    <span class="dw-log-tools">
+                        <span class="state${isReading ? ' ok' : ''}" id="dw-${id}-status">${isReading ? t('common.reading') : t('status.stopped')}</span>
+                        <button class="btn sm" id="dw-${id}-toggle" onclick="event.stopPropagation();toggleLogReading('${id}')">${isReading ? t('fanPage.stopReading') : t('fanPage.reading')}</button>
+                        <button class="btn sm" onclick="event.stopPropagation();refreshLogOnce('${id}')">${t('common.refreshOnce')}</button>
+                        <button class="btn sm" onclick="event.stopPropagation();clearLogWidget('${id}')">${t('common.clear')}</button>
+                        <button class="btn sm" id="dw-${id}-collapse" onclick="event.stopPropagation();toggleLogCollapse('${id}')">${isCollapsed ? t('dataWidget.expandLog') : t('dataWidget.collapseLog')}</button>
+                    </span>
                 </div>
                 <div class="dw-log-container ${isCollapsed ? 'dw-log-collapsed' : ''}" id="dw-${id}-log" data-max-lines="${maxLines}">
-                    <div class="dw-log-empty">${typeof t === 'function' ? t('dataWidget.clickToRead') : '点击「读取」开始获取日志'}</div>
+                    <div class="dw-log-empty">${t('dataWidget.clickToRead')}</div>
                 </div>`;
             break;
-            
+        }
         case 'text':
         default:
-            contentHtml = `
-                <div class="dw-text-container">
-                    <div class="dw-text-icon">${sanitizeWidgetIcon(icon) || '<i class="ri-file-text-line"></i>'}</div>
-                    <div class="dw-text-value" id="dw-${id}-value" style="color: ${color};">-</div>
-                </div>`;
+            contentHtml = `<div class="t-body dw-tx" id="${vid}">-</div>`;
             break;
     }
     
-    // 计算布局类名
     const layout = widget.layout || 'auto';
     const layoutClass = layout !== 'auto' ? `dw-layout-${layout}` : '';
+    const head = type === 'log' ? '' : `<div class="t-label">${sanitizeWidgetIcon(icon)}${escapeHtml(label)}</div>`;
     
     return `
-        <div class="dw-card ${layoutClass}" data-widget-id="${id}" data-layout="${layout}" onclick="event.target.closest('.dw-card-actions') || event.target.closest('.dw-log-toolbar') || showWidgetManager('${id}')">
-            <div class="dw-card-header">
-                <span class="dw-card-label">${sanitizeWidgetIcon(icon)}${escapeHtml(label)}</span>
-            </div>
-            ${contentHtml}
+        <div class="w-tile dw-card ${layoutClass}" data-widget-id="${id}" data-layout="${layout}" data-type="${type}" onclick="event.target.closest('button') || showWidgetManager('${id}')">
+            ${head}${contentHtml}
         </div>
     `;
 }
@@ -3443,131 +3063,75 @@ function renderDataWidgets() {
  * 更新单个组件的值
  */
 function updateWidgetValue(widget, value) {
-    const { id, type, color, unit, min = 0, max = 100, decimals = 1, thresholds, colors, icons, expression2 } = widget;
+    const { id, type, unit, min = 0, max = 100, decimals = 1, thresholds, icons } = widget;
+    const el = (suffix) => document.getElementById(`dw-${id}-${suffix}`);
+    const valueEl = el('value');
+    const setRing = (arc, percent, len) => { if (arc) arc.setAttribute('stroke-dasharray', `${(percent * len / 100).toFixed(1)} ${len}`); };
     
     // 处理空值
     if (value === null || value === undefined) {
-        const valueEl = document.getElementById(`dw-${id}-value`);
         if (valueEl) valueEl.textContent = '-';
-        
-        // 重置视觉元素
-        if (type === 'ring') {
-            const ringEl = document.getElementById(`dw-${id}-ring`);
-            if (ringEl) ringEl.style.strokeDashoffset = 264;
-        } else if (type === 'gauge') {
-            const gaugeEl = document.getElementById(`dw-${id}-gauge`);
-            if (gaugeEl) gaugeEl.style.strokeDashoffset = 126;
-        } else if (type === 'temp' || type === 'bar') {
-            const fillEl = document.getElementById(`dw-${id}-fill`);
-            if (fillEl) {
-                fillEl.style.height = type === 'temp' ? '0%' : '';
-                if (type === 'bar') fillEl.style.width = '0%';
-            }
-        } else if (type === 'status') {
-            const lightEl = document.getElementById(`dw-${id}-light`);
-            if (lightEl) lightEl.style.background = '#9ca3af';
-        }
+        if (type === 'ring') setRing(el('ring'), 0, 163.4);
+        else if (type === 'gauge') setRing(el('gauge'), 0, 87.96);
+        else if (type === 'bar' && el('fill')) el('fill').style.width = '0%';
+        else if (type === 'status' && valueEl) valueEl.className = 'state';
         return;
     }
     
     const numVal = typeof value === 'number' ? value : parseFloat(value);
     const percent = isNaN(numVal) ? 0 : Math.min(100, Math.max(0, ((numVal - min) / (max - min)) * 100));
+    const num = (d) => isNaN(numVal) ? value : numVal.toFixed(d);
     
     switch (type) {
-        case 'ring': {
-            const ringEl = document.getElementById(`dw-${id}-ring`);
-            const valueEl = document.getElementById(`dw-${id}-value`);
-            if (ringEl) {
-                ringEl.style.strokeDashoffset = 264 - (percent / 100) * 264;
-            }
-            if (valueEl) valueEl.textContent = (isNaN(numVal) ? value : numVal.toFixed(decimals)) + (unit || '%');
+        case 'ring':
+            setRing(el('ring'), percent, 163.4);
+            if (valueEl) valueEl.textContent = num(decimals) + (unit || '%');
             break;
-        }
-        case 'gauge': {
-            const gaugeEl = document.getElementById(`dw-${id}-gauge`);
-            const valueEl = document.getElementById(`dw-${id}-value`);
-            if (gaugeEl) {
-                gaugeEl.style.strokeDashoffset = 126 - (percent / 100) * 126;
-            }
-            if (valueEl) valueEl.textContent = (isNaN(numVal) ? value : numVal.toFixed(decimals)) + (unit || '');
+        case 'gauge':
+            setRing(el('gauge'), percent, 87.96);
+            if (valueEl) valueEl.textContent = num(decimals) + (unit || '');
             break;
-        }
-        case 'temp': {
-            const fillEl = document.getElementById(`dw-${id}-fill`);
-            const valueEl = document.getElementById(`dw-${id}-value`);
-            if (fillEl) fillEl.style.height = percent + '%';
-            if (valueEl) {
-                valueEl.textContent = (isNaN(numVal) ? value : numVal.toFixed(0)) + '°C';
-                if (!isNaN(numVal)) {
-                    if (numVal < 40) valueEl.style.color = '#3b82f6';
-                    else if (numVal < 60) valueEl.style.color = '#10b981';
-                    else if (numVal < 80) valueEl.style.color = '#f59e0b';
-                    else valueEl.style.color = '#f43f5e';
-                }
-            }
+        case 'temp':
+            if (valueEl) valueEl.textContent = num(0);
             break;
-        }
-        case 'bar': {
-            const fillEl = document.getElementById(`dw-${id}-fill`);
-            const valueEl = document.getElementById(`dw-${id}-value`);
-            if (fillEl) fillEl.style.width = percent + '%';
-            if (valueEl) valueEl.textContent = (isNaN(numVal) ? value : numVal.toFixed(decimals)) + (unit || '%');
+        case 'bar':
+            if (el('fill')) el('fill').style.width = percent + '%';
+            if (valueEl) valueEl.textContent = num(decimals) + (unit || '%');
             break;
-        }
-        case 'number': {
-            const valueEl = document.getElementById(`dw-${id}-value`);
-            if (valueEl) valueEl.textContent = isNaN(numVal) ? value : numVal.toFixed(decimals);
+        case 'number':
+        case 'percent':
+            if (valueEl) valueEl.textContent = num(decimals);
             break;
-        }
-        case 'percent': {
-            const valueEl = document.getElementById(`dw-${id}-value`);
-            if (valueEl) valueEl.textContent = isNaN(numVal) ? value : numVal.toFixed(decimals);
-            break;
-        }
         case 'status': {
-            const lightEl = document.getElementById(`dw-${id}-light`);
-            const valueEl = document.getElementById(`dw-${id}-value`);
             const th = thresholds || [0, 50, 80];
-            const cl = colors || ['#40c057', '#fab005', '#fa5252'];
-            let statusColor = cl[0];
-            let statusText = typeof t === 'function' ? t('dataWidget.statusNormal') : '正常';
+            let cls = 'ok', statusText = t('dataWidget.statusNormal');
             if (!isNaN(numVal)) {
-                if (numVal >= th[2]) { statusColor = cl[2]; statusText = typeof t === 'function' ? t('dataWidget.statusWarning') : '警告'; }
-                else if (numVal >= th[1]) { statusColor = cl[1]; statusText = typeof t === 'function' ? t('dataWidget.statusAttention') : '注意'; }
+                if (numVal >= th[2]) { cls = 'bad'; statusText = t('dataWidget.statusWarning'); }
+                else if (numVal >= th[1]) { cls = 'warn'; statusText = t('dataWidget.statusAttention'); }
             }
-            if (lightEl) lightEl.style.background = statusColor;
-            if (valueEl) valueEl.textContent = statusText;
+            if (valueEl) { valueEl.className = 'state ' + cls; valueEl.textContent = statusText; }
             break;
         }
         case 'icon': {
-            const iconEl = document.getElementById(`dw-${id}-icon`);
-            const valueEl = document.getElementById(`dw-${id}-value`);
             const iconMap = icons || { '0': '<i class="ri-close-line"></i>', '1': '<i class="ri-check-line"></i>', 'default': '<i class="ri-question-line"></i>' };
-            const displayIcon = iconMap[String(value)] || iconMap['default'] || '<i class="ri-question-line"></i>';
-            if (iconEl) iconEl.innerHTML = displayIcon;
+            if (el('icon')) el('icon').innerHTML = iconize(iconMap[String(value)] || iconMap['default'] || '<i class="ri-question-line"></i>');
             if (valueEl) valueEl.textContent = value;
             break;
         }
         case 'dual': {
-            const valueEl = document.getElementById(`dw-${id}-value`);
-            const subEl = document.getElementById(`dw-${id}-sub`);
-            if (valueEl) valueEl.textContent = isNaN(numVal) ? value : numVal.toFixed(decimals);
+            if (valueEl) valueEl.textContent = num(decimals);
+            const subEl = el('sub');
             // 副值需要从 expression2 获取
             if (subEl && widget.subValue !== undefined) {
                 subEl.textContent = typeof widget.subValue === 'number' ? widget.subValue.toFixed(decimals) : widget.subValue;
             }
             break;
         }
-        case 'log': {
+        case 'log':
             // 日志组件特殊处理，在 refreshDataWidgets 中单独刷新
             break;
-        }
-        case 'text':
-        default: {
-            const valueEl = document.getElementById(`dw-${id}-value`);
+        default:
             if (valueEl) valueEl.textContent = String(value);
-            break;
-        }
     }
 }
 
@@ -3664,31 +3228,10 @@ function toggleLogCollapse(widgetId) {
     
     widget._isCollapsed = !widget._isCollapsed;
     
-    // 更新 DOM
     const container = document.getElementById(`dw-${widgetId}-log`);
-    const toolbar = container?.previousElementSibling;
     const btn = document.getElementById(`dw-${widgetId}-collapse`);
-    
-    if (container) {
-        if (widget._isCollapsed) {
-            container.classList.add('dw-log-collapsed');
-        } else {
-            container.classList.remove('dw-log-collapsed');
-        }
-    }
-    
-    if (toolbar) {
-        if (widget._isCollapsed) {
-            toolbar.classList.add('dw-log-toolbar-collapsed');
-        } else {
-            toolbar.classList.remove('dw-log-toolbar-collapsed');
-        }
-    }
-    
-    if (btn) {
-        btn.innerHTML = `<i class="ri-arrow-${widget._isCollapsed ? 'down' : 'up'}-s-line"></i>`;
-        btn.title = widget._isCollapsed ? (typeof t === 'function' ? t('dataWidget.expandLog') : '展开日志') : (typeof t === 'function' ? t('dataWidget.collapseLog') : '折叠日志');
-    }
+    if (container) container.classList.toggle('dw-log-collapsed', !!widget._isCollapsed);
+    if (btn) btn.textContent = t(widget._isCollapsed ? 'dataWidget.expandLog' : 'dataWidget.collapseLog');
     
     // 保存状态
     saveDataWidgets();
@@ -3726,14 +3269,9 @@ function startLogReading(widgetId) {
     if (widget._isCollapsed !== false) {
         widget._isCollapsed = false;
         const container = document.getElementById(`dw-${widgetId}-log`);
-        const toolbar = container?.previousElementSibling;
         const btn = document.getElementById(`dw-${widgetId}-collapse`);
         if (container) container.classList.remove('dw-log-collapsed');
-        if (toolbar) toolbar.classList.remove('dw-log-toolbar-collapsed');
-        if (btn) {
-            btn.innerHTML = '<i class="ri-arrow-up-s-line"></i>';
-            btn.title = typeof t === 'function' ? t('dataWidget.collapseLog') : '折叠日志';
-        }
+        if (btn) btn.textContent = t('dataWidget.collapseLog');
     }
     
     updateLogToggleButton(widgetId, true);
@@ -3772,12 +3310,10 @@ function updateLogToggleButton(widgetId, isReading) {
     const btn = document.getElementById(`dw-${widgetId}-toggle`);
     const status = document.getElementById(`dw-${widgetId}-status`);
     
-    if (btn) {
-        btn.className = `btn btn-sm ${isReading ? 'btn-danger' : 'btn-service-style'}`;
-        btn.innerHTML = `<i class="ri-${isReading ? 'stop' : 'play'}-line"></i> ${isReading ? (typeof t === 'function' ? t('fanPage.stopReading') : '停止') : (typeof t === 'function' ? t('fanPage.reading') : '读取')}`;
-    }
+    if (btn) btn.textContent = t(isReading ? 'fanPage.stopReading' : 'fanPage.reading');
     if (status) {
-        status.textContent = isReading ? (typeof t === 'function' ? t('common.reading') : '读取中...') : (typeof t === 'function' ? t('status.stopped') : '已停止');
+        status.className = isReading ? 'state ok' : 'state';
+        status.textContent = t(isReading ? 'common.reading' : 'status.stopped');
     }
 }
 
@@ -3888,54 +3424,23 @@ function clearLogWidget(widgetId) {
 /**
  * 显示组件管理器
  */
+const WIDGET_TYPE_KEYS = { ring: 'Ring', gauge: 'Gauge', temp: 'Temp', number: 'Number', bar: 'Bar', text: 'Text', status: 'Status', icon: 'Icon', dual: 'Dual', percent: 'Percent', log: 'Log' };
+const widgetTypeName = type => t('dataWidget.type' + (WIDGET_TYPE_KEYS[type] || type));
+
 function showWidgetManager(editWidgetId = null) {
     const modal = document.createElement('div');
-    modal.className = 'modal show';
+    modal.className = 'modal';
     modal.id = 'widget-manager-modal';
     modal.onclick = (e) => { if (e.target === modal) closeModal('widget-manager-modal'); };
     
-    modal.innerHTML = `
-        <div class="modal-content dw-manager-modal cc-compact">
-            <div class="modal-header">
-                <h2>${t('dataWidget.management')}</h2>
-                <button class="modal-close" onclick="closeModal('widget-manager-modal')"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body dw-manager-body">
-                <div class="dw-manager-sidebar">
-                    <div class="dw-manager-section">
-                        <h4>${t('dataWidget.panelSettings')}</h4>
-                        <div class="form-group" style="margin-bottom:15px;">
-                            <label style="font-size:0.9em;">${t('dataWidget.autoRefreshInterval')}</label>
-                            <div style="display:flex;gap:8px;align-items:center;">
-                                <select id="dw-refresh-interval" onchange="updateRefreshInterval()" style="flex:1;">
-                                    <option value="0" ${dataWidgetsRefreshInterval === 0 ? 'selected' : ''}>${t('dataWidget.disabled')}</option>
-                                    <option value="1000" ${dataWidgetsRefreshInterval === 1000 ? 'selected' : ''}>${t('dataWidget.seconds1')}</option>
-                                    <option value="2000" ${dataWidgetsRefreshInterval === 2000 ? 'selected' : ''}>${t('dataWidget.seconds2')}</option>
-                                    <option value="5000" ${dataWidgetsRefreshInterval === 5000 ? 'selected' : ''}>${t('dataWidget.seconds5')}</option>
-                                    <option value="10000" ${dataWidgetsRefreshInterval === 10000 ? 'selected' : ''}>${t('dataWidget.seconds10')}</option>
-                                    <option value="30000" ${dataWidgetsRefreshInterval === 30000 ? 'selected' : ''}>${t('dataWidget.seconds30')}</option>
-                                    <option value="60000" ${dataWidgetsRefreshInterval === 60000 ? 'selected' : ''}>${t('dataWidget.minute1')}</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="dw-manager-section">
-                        <h4>${t('dataWidget.addedWidgets')}</h4>
-                        <div id="dw-manager-list" class="dw-manager-list"></div>
-                        <button class="btn btn-service-style btn-block" onclick="showAddWidgetPanel()" style="margin-top:12px;">
-                            <i class="ri-add-line"></i> ${t('dataWidget.addNewWidget')}
-                        </button>
-                    </div>
-                </div>
-                <div class="dw-manager-main" id="dw-manager-main">
-                    <div class="dw-manager-empty">
-                        <i class="ri-box-3-line" style="font-size:48px;opacity:0.3;"></i>
-                        <p>${t('dataWidget.selectWidgetHint')}</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
+    const intervals = [[0, 'disabled'], [1000, 'seconds1'], [2000, 'seconds2'], [5000, 'seconds5'], [10000, 'seconds10'], [30000, 'seconds30'], [60000, 'minute1']];
+    modal.innerHTML = sheet(600, t('system.widgetManager'), `
+        ${gt(t('dataWidget.panelSettings'))}
+        ${grp(row(t('dataWidget.autoRefreshInterval'), `<select class="field" id="dw-refresh-interval" onchange="updateRefreshInterval()" style="width:110px">${intervals.map(([v, k]) => `<option value="${v}" ${dataWidgetsRefreshInterval === v ? 'selected' : ''}>${t('dataWidget.' + k)}</option>`).join('')}</select>`))}
+        ${gt(t('dataWidget.addedWidgets'))}
+        <div class="grp" id="dw-manager-list"></div>
+        <div style="margin-top:12px"><button class="btn sm" onclick="showAddWidgetPanel()"><svg class="i"><use href="#ri-add-line"/></svg>${t('dataWidget.addWidget')}</button></div>`,
+        `<button class="btn lg primary" onclick="closeModal('widget-manager-modal')">${t('common.close')}</button>`, "closeModal('widget-manager-modal')");
     document.body.appendChild(modal);
     
     // 渲染组件列表
@@ -3970,26 +3475,15 @@ function renderWidgetManagerList() {
     if (!list) return;
     
     if (dataWidgets.length === 0) {
-        list.innerHTML = '<div class="dw-manager-empty-list">' + t('dataWidget.noWidgets') + '</div>';
+        list.innerHTML = row(`<span class="t-note">${t('dataWidget.noWidgets')}</span>`, '');
         return;
     }
     
-    list.innerHTML = dataWidgets.map((w, idx) => {
-        const moveUpTitle = typeof t === 'function' ? t('dataWidget.moveUp') : '上移';
-        const moveDownTitle = typeof t === 'function' ? t('dataWidget.moveDown') : '下移';
-        const deleteTitle = typeof t === 'function' ? t('dataWidget.delete') : '删除';
-        return `
-        <div class="dw-manager-item" data-id="${w.id}" onclick="showWidgetEditPanel('${w.id}')">
-            <span class="dw-manager-item-icon">${sanitizeWidgetIcon(w.icon) || sanitizeWidgetIcon(WIDGET_TYPES[w.type]?.icon) || '<i class="ri-dashboard-line"></i>'}</span>
-            <span class="dw-manager-item-label">${escapeHtml(w.label)}</span>
-            <div class="dw-manager-item-actions">
-                <button class="dw-btn-icon" onclick="event.stopPropagation();moveWidget('${w.id}',-1)" title="${moveUpTitle}" ${idx === 0 ? 'disabled' : ''}><i class="ri-arrow-up-line"></i></button>
-                <button class="dw-btn-icon" onclick="event.stopPropagation();moveWidget('${w.id}',1)" title="${moveDownTitle}" ${idx === dataWidgets.length - 1 ? 'disabled' : ''}><i class="ri-arrow-down-line"></i></button>
-                <button class="dw-btn-icon" onclick="event.stopPropagation();deleteDataWidget('${w.id}')" title="${deleteTitle}"><i class="ri-delete-bin-line"></i></button>
-            </div>
-        </div>
-    `;
-    }).join('');
+    list.innerHTML = dataWidgets.map((w, idx) => row(`${escapeHtml(w.label)} · ${widgetTypeName(w.type)}`,
+        icoBtn('ri-arrow-up-line', t('dataWidget.moveUp'), `moveWidget('${w.id}',-1)`, '', idx === 0) +
+        icoBtn('ri-arrow-down-line', t('dataWidget.moveDown'), `moveWidget('${w.id}',1)`, '', idx === dataWidgets.length - 1) +
+        icoBtn('ri-edit-line', t('common.edit'), `showWidgetEditPanel('${w.id}')`) +
+        icoBtn('ri-delete-bin-line', t('dataWidget.delete'), `deleteDataWidget('${w.id}')`, 'dg'))).join('');
 }
 
 /**
@@ -4012,42 +3506,25 @@ function moveWidget(widgetId, direction) {
  * 显示添加组件面板
  */
 function showAddWidgetPanel() {
-    const main = document.getElementById('dw-manager-main');
-    if (!main) return;
-    
-    const typeNameKeys = { ring: 'Ring', gauge: 'Gauge', temp: 'Temp', number: 'Number', bar: 'Bar', text: 'Text', status: 'Status', icon: 'Icon', dual: 'Dual', percent: 'Percent', log: 'Log' };
-    const typesHtml = Object.entries(WIDGET_TYPES).map(([key, cfg]) => {
-        const nameKey = 'dataWidget.type' + (typeNameKeys[key] || key);
-        const descKey = nameKey + 'Desc';
-        return `
-        <div class="dw-type-card" onclick="createNewWidget('${key}')">
-            <span class="dw-type-icon">${cfg.icon}</span>
-            <span class="dw-type-name">${typeof t === 'function' ? t(nameKey) : cfg.name}</span>
-            <span class="dw-type-desc">${typeof t === 'function' ? t(descKey) : cfg.description}</span>
-        </div>
-    `;
-    }).join('');
-    
+    document.getElementById('widget-add-modal')?.remove();
     const presetLabelKeys = { cpu: 'presetCpu', mem: 'presetMem', disk: 'presetDisk', temp: 'presetTemp', gpu: 'presetGpu', power: 'presetPower', voltage: 'presetVoltage', current: 'presetCurrent', network: 'presetNetwork', status: 'presetStatus', uptime: 'presetUptime', log: 'presetLog' };
-    const presetsHtml = WIDGET_PRESETS.map(p => {
-        const label = typeof t === 'function' ? t('dataWidget.' + (presetLabelKeys[p.id] || p.id)) : p.label;
-        return `
-        <div class="dw-preset-item" onclick="addWidgetFromPreset('${p.id}')">
-            <span class="dw-preset-icon">${p.icon}</span>
-            <span class="dw-preset-label">${label}</span>
-        </div>
-    `;
+    const presetsHtml = WIDGET_PRESETS.map(p => `<button class="btn" onclick="addWidgetFromPreset('${p.id}')">${iconize(p.icon)}${t('dataWidget.' + (presetLabelKeys[p.id] || p.id))}</button>`).join('');
+    const typesHtml = Object.entries(WIDGET_TYPES).map(([key, cfg]) => {
+        const nameKey = 'dataWidget.type' + (WIDGET_TYPE_KEYS[key] || key);
+        return `<div class="row" style="cursor:pointer" onclick="createNewWidget('${key}')"><div class="rl"><span style="display:flex;gap:10px;align-items:center">${iconize(cfg.icon)}${t(nameKey)}</span></div><div class="rc"><span class="t-note">${t(nameKey + 'Desc')}</span></div></div>`;
     }).join('');
     
-    main.innerHTML = `
-        <div class="dw-add-panel">
-            <h4>${typeof t === 'function' ? t('dataWidget.quickAddPreset') : '快速添加预设'}</h4>
-            <div class="dw-presets-grid">${presetsHtml}</div>
-            
-            <h4 style="margin-top:20px;">${typeof t === 'function' ? t('dataWidget.customWidgetType') : '自定义组件类型'}</h4>
-            <div class="dw-types-grid">${typesHtml}</div>
-        </div>
-    `;
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'widget-add-modal';
+    modal.onclick = (e) => { if (e.target === modal) closeModal('widget-add-modal'); };
+    modal.innerHTML = sheet(600, t('dataWidget.addNewWidget'), `
+        ${gt(t('dataWidget.quickAddPreset'))}
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">${presetsHtml}</div>
+        ${gt(t('dataWidget.customWidgetType'))}
+        <div class="grp">${typesHtml}</div>`,
+        `<button class="btn lg primary" onclick="closeModal('widget-add-modal')">${t('common.close')}</button>`, "closeModal('widget-add-modal')");
+    document.body.appendChild(modal);
 }
 
 /**
@@ -4130,158 +3607,57 @@ function showWidgetEditPanel(widgetId) {
     const widget = dataWidgets.find(w => w.id === widgetId);
     if (!widget) return;
     
-    const main = document.getElementById('dw-manager-main');
-    if (!main) return;
-    
-    // 高亮当前编辑项
-    document.querySelectorAll('.dw-manager-item').forEach(el => el.classList.remove('active'));
-    document.querySelector(`.dw-manager-item[data-id="${widgetId}"]`)?.classList.add('active');
-    
+    document.getElementById('widget-add-modal')?.remove();
+    document.getElementById('widget-edit-modal')?.remove();
     const typeConfig = WIDGET_TYPES[widget.type] || {};
+    const num = (id, w, val, attrs = '') => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
     
     // 额外配置（根据组件类型）
-    let extraConfigHtml = '';
+    let extraRows = '';
     if (widget.type === 'status') {
-        extraConfigHtml = `
-            <div class="form-group">
-                <label>${typeof t === 'function' ? t('dataWidget.thresholdSettings') : '阈值设置（正常/注意/警告）'}</label>
-                <div class="form-row">
-                    <input type="number" id="edit-threshold-1" class="input" value="${widget.thresholds?.[0] || 0}" placeholder="0">
-                    <input type="number" id="edit-threshold-2" class="input" value="${widget.thresholds?.[1] || 50}" placeholder="50">
-                    <input type="number" id="edit-threshold-3" class="input" value="${widget.thresholds?.[2] || 80}" placeholder="80">
-                </div>
-            </div>`;
+        extraRows = row(t('dataWidget.thresholdSettings'), num('edit-threshold-1', 64, widget.thresholds?.[0] || 0) + num('edit-threshold-2', 64, widget.thresholds?.[1] || 50) + num('edit-threshold-3', 64, widget.thresholds?.[2] || 80));
     }
     if (widget.type === 'dual') {
-        extraConfigHtml = `
-            <div class="form-group">
-                <label>${typeof t === 'function' ? t('dataWidget.secondaryExpression') : '副值表达式'}</label>
-                <input type="text" id="edit-expression2" class="input" value="${escapeHtml(widget.expression2 || '')}" 
-                       placeholder="${typeof t === 'function' ? t('dataWidget.secondaryExpressionPlaceholder') : '例如: ${max_value}'}">
-                <small class="form-hint">${typeof t === 'function' ? t('dataWidget.secondaryExpressionHint') : '显示在主值右侧的副值'}</small>
-            </div>`;
+        extraRows = row(t('dataWidget.secondaryExpression'), inp('edit-expression2', 220, t('dataWidget.secondaryExpressionPlaceholder'), 'mono', `value="${escapeHtml(widget.expression2 || '')}"`), '', t('dataWidget.secondaryExpressionHint'));
     }
     if (widget.type === 'log') {
-        extraConfigHtml = `
-            <div class="form-row">
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.displayLines') : '显示行数'}</label>
-                    <input type="number" id="edit-max-lines" class="input" value="${widget.maxLines || 15}" min="5" max="100">
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.refreshIntervalMs') : '刷新间隔（毫秒）'}</label>
-                    <input type="number" id="edit-refresh-interval" class="input" value="${widget.refreshInterval || 2000}" min="500" max="60000" step="500">
-                </div>
-            </div>
-            <div class="form-group dw-expression-group">
-                <label>${typeof t === 'function' ? t('dataWidget.logVariable') : '日志变量'} <span class="badge">${typeof t === 'function' ? t('common.core') : '核心'}</span></label>
-                <div class="dw-expression-input">
-                    <input type="text" id="edit-expression" class="input" value="${escapeHtml(widget.expression || '')}" 
-                           placeholder="${typeof t === 'function' ? t('dataWidget.logVariablePlaceholder') : '选择包含日志文本的变量'}">
-                    <button class="btn" onclick="selectVariableForWidget()">${typeof t === 'function' ? t('dataWidget.selectVariable') : '选择变量'}</button>
-                </div>
-                <small class="form-hint">${typeof t === 'function' ? t('dataWidget.logVariableHint') : '选择一个包含日志文本的变量，日志会追加显示（支持多行，用 \\n 分隔）'}</small>
-            </div>`;
+        extraRows = row(t('dataWidget.displayLines'), num('edit-max-lines', 90, widget.maxLines || 15, 'min="5" max="100"')) +
+                    row(t('dataWidget.refreshIntervalMs'), num('edit-refresh-interval', 90, widget.refreshInterval || 2000, 'min="500" max="60000" step="500"'));
     }
+    const layouts = [['auto', 'Auto'], ['small', 'Small'], ['medium', 'Medium'], ['large', 'Large'], ['full', 'Full']];
+    const layoutRows = layouts.map(([val, k]) => {
+        const active = widget.layout === val || (!widget.layout && val === 'auto');
+        return row(t('dataWidget.layout' + k), `<input type="radio" name="edit-layout" value="${val}" ${active ? 'checked' : ''}>`, t('dataWidget.layout' + k + 'Desc'));
+    }).join('');
+    const exprLabel = widget.type === 'log' ? t('dataWidget.logVariable') : t('dataWidget.dataExpression');
+    const exprPh = widget.type === 'log' ? t('dataWidget.logVariablePlaceholder') : t('dataWidget.dataExpressionPlaceholder');
+    const exprHint = widget.type === 'log' ? t('dataWidget.logVariableHint') : t('dataWidget.dataExpressionHint');
     
-    main.innerHTML = `
-        <div class="dw-edit-panel">
-            <div class="dw-edit-header">
-                <span class="dw-edit-type-badge">${typeConfig.icon || '<i class="ri-dashboard-line"></i>'} ${typeof t === 'function' ? (typeConfig.name || t('common.unknown')) : (typeConfig.name || widget.type)}</span>
-            </div>
-            
-            <div class="form-group">
-                <label>${typeof t === 'function' ? t('dataWidget.labelName') : '标签名称'}</label>
-                <input type="text" id="edit-label" class="input" value="${escapeHtml(widget.label)}" placeholder="${typeof t === 'function' ? t('dataWidget.labelPlaceholder') : '组件名称'}">
-            </div>
-            
-            <div class="form-row">
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.icon') : '图标'}</label>
-                    <input type="text" id="edit-icon" class="input" value="${escapeHtml(widget.icon || '')}" placeholder="${typeof t === 'function' ? t('dataWidget.iconPlaceholder') || 'emoji' : 'emoji'}">
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.color') : '颜色'}</label>
-                    <input type="color" id="edit-color" class="input input-color" value="${widget.color || '#4dabf7'}">
-                </div>
-            </div>
-            
-            <div class="form-group">
-                <label><i class="ri-ruler-line"></i> ${typeof t === 'function' ? t('dataWidget.layoutWidth') : '布局宽度'}</label>
-                <div class="dw-layout-options">
-                    ${(typeof t === 'function' ? [
-                        { value: 'auto', labelKey: 'dataWidget.layoutAuto', descKey: 'dataWidget.layoutAutoDesc' },
-                        { value: 'small', labelKey: 'dataWidget.layoutSmall', descKey: 'dataWidget.layoutSmallDesc' },
-                        { value: 'medium', labelKey: 'dataWidget.layoutMedium', descKey: 'dataWidget.layoutMediumDesc' },
-                        { value: 'large', labelKey: 'dataWidget.layoutLarge', descKey: 'dataWidget.layoutLargeDesc' },
-                        { value: 'full', labelKey: 'dataWidget.layoutFull', descKey: 'dataWidget.layoutFullDesc' }
-                    ] : LAYOUT_OPTIONS.width).map(opt => {
-                        const val = opt.value;
-                        const lab = typeof opt.labelKey === 'string' && typeof t === 'function' ? t(opt.labelKey) : (opt.label || opt.labelKey);
-                        const desc = typeof opt.descKey === 'string' && typeof t === 'function' ? t(opt.descKey) : (opt.desc || opt.descKey);
-                        const active = widget.layout === val || (!widget.layout && val === 'auto');
-                        return `<label class="dw-layout-option ${active ? 'active' : ''}">
-                            <input type="radio" name="edit-layout" value="${val}" ${active ? 'checked' : ''} onchange="updateLayoutPreview()">
-                            <span class="dw-layout-label">${lab}</span>
-                            <span class="dw-layout-desc">${desc}</span>
-                        </label>`;
-                    }).join('')}
-                </div>
-            </div>
-            
-            ${widget.type !== 'log' ? `
-            <div class="form-row">
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.unit') : '单位'}</label>
-                    <input type="text" id="edit-unit" class="input" value="${escapeHtml(widget.unit || '')}" placeholder="%、°C、W">
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.decimals') : '小数位'}</label>
-                    <input type="number" id="edit-decimals" class="input" value="${widget.decimals || 1}" min="0" max="4">
-                </div>
-            </div>
-            ` : ''}
-            
-            ${widget.type !== 'text' && widget.type !== 'icon' && widget.type !== 'status' && widget.type !== 'log' ? `
-            <div class="form-row">
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.minValue') : '最小值'}</label>
-                    <input type="number" id="edit-min" class="input" value="${widget.min || 0}">
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.maxValue') : '最大值'}</label>
-                    <input type="number" id="edit-max" class="input" value="${widget.max || 100}">
-                </div>
-            </div>
-            ` : ''}
-            
-            ${extraConfigHtml}
-            
-            ${widget.type !== 'log' ? `
-            <div class="form-group dw-expression-group">
-                <label>${typeof t === 'function' ? t('dataWidget.dataExpression') : '数据表达式'} <span class="badge">${typeof t === 'function' ? t('common.core') : '核心'}</span></label>
-                <div class="dw-expression-input">
-                    <input type="text" id="edit-expression" class="input" value="${escapeHtml(widget.expression || '')}" 
-                           placeholder="${typeof t === 'function' ? t('dataWidget.dataExpressionPlaceholder') : '点击选择变量或输入表达式'}">
-                    <button class="btn" onclick="selectVariableForWidget()">${typeof t === 'function' ? t('dataWidget.selectVariable') : '选择变量'}</button>
-                </div>
-                <small class="form-hint">${typeof t === 'function' ? t('dataWidget.dataExpressionHint') : '支持: ${变量名} 引用变量，${a} + ${b} 数学运算，${a} + "单位" 文本拼接'}</small>
-            </div>
-            ` : ''}
-            
-            <div class="dw-edit-preview">
-                <label>${typeof t === 'function' ? t('dataWidget.preview') : '预览'}</label>
-                <div class="dw-preview-card" id="dw-preview-card">
-                    ${renderWidgetHtml(widget)}
-                </div>
-            </div>
-            
-            <div class="dw-edit-actions">
-                <button class="btn btn-danger" onclick="deleteDataWidget('${widget.id}')"><i class="ri-delete-bin-line"></i> ${typeof t === 'function' ? t('dataWidget.delete') : '删除'}</button>
-                <button class="btn btn-service-style" onclick="saveWidgetEdit('${widget.id}')"><i class="ri-save-line"></i> ${typeof t === 'function' ? t('dataWidget.save') : '保存'}</button>
-            </div>
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'widget-edit-modal';
+    modal.innerHTML = sheet(600, `${t('dataWidget.editWidget')} · ${escapeHtml(typeConfig.name || widget.type)}`, `
+        ${grp(
+            row(t('dataWidget.labelName'), inp('edit-label', 220, t('dataWidget.labelPlaceholder'), '', `value="${escapeHtml(widget.label)}"`)) +
+            row(t('dataWidget.icon'), inp('edit-icon', 120, t('dataWidget.iconPlaceholder') || 'emoji', '', `value="${escapeHtml(widget.icon || '')}"`)) +
+            row(t('dataWidget.color'), `<input type="color" class="field" id="edit-color" value="${widget.color || '#4dabf7'}" style="width:44px;padding:2px">`))}
+        ${gt(t('dataWidget.layoutWidth'))}
+        ${grp(layoutRows)}
+        ${widget.type !== 'log' ? gt(t('dataWidget.unit')) + grp(
+            row(t('dataWidget.unit'), inp('edit-unit', 90, '%、°C、W', '', `value="${escapeHtml(widget.unit || '')}"`)) +
+            row(t('dataWidget.decimals'), num('edit-decimals', 70, widget.decimals || 1, 'min="0" max="4"')) +
+            (widget.type !== 'text' && widget.type !== 'icon' && widget.type !== 'status' ?
+                row(t('dataWidget.minValue'), num('edit-min', 90, widget.min || 0)) + row(t('dataWidget.maxValue'), num('edit-max', 90, widget.max || 100)) : '')) : ''}
+        ${extraRows ? grp(extraRows, 'margin-top:8px') : ''}
+        <div class="fl" style="margin-top:18px">
+            <label>${exprLabel} <span class="tag">${t('common.core')}</span></label>
+            <div style="display:flex;gap:8px"><input class="field mono" id="edit-expression" style="flex:1" value="${escapeHtml(widget.expression || '')}" placeholder="${exprPh}"><button class="btn" onclick="selectVariableForWidget()">${t('dataWidget.selectVariable')}</button></div>
         </div>
-    `;
+        <div class="t-note" style="margin:6px 4px 0">${exprHint}</div>
+        ${widget.type !== 'log' ? gt(t('dataWidget.preview')) + `<div id="dw-preview-card" class="cvbox" style="height:auto;padding:12px">${renderWidgetHtml(widget)}</div>` : ''}`,
+        `<button class="btn lg dg" style="margin-right:auto" onclick="deleteDataWidget('${widget.id}')">${t('dataWidget.delete')}</button><button class="btn lg" onclick="closeModal('widget-edit-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="saveWidgetEdit('${widget.id}')">${t('dataWidget.save')}</button>`);
+    modal.onclick = (e) => { if (e.target === modal) closeModal('widget-edit-modal'); };
+    document.body.appendChild(modal);
 }
 
 /**
@@ -4348,36 +3724,28 @@ function saveWidgetEdit(widgetId) {
     refreshDataWidgets();
     showToast(typeof t === 'function' ? t('toast.widgetSaved') : '组件已保存', 'success');
     
-    // 关闭管理器模态框
+    // 关闭编辑与管理器弹窗
+    closeModal('widget-edit-modal');
     closeModal('widget-manager-modal');
 }
 
 /**
  * 删除组件
  */
-function deleteDataWidget(widgetId) {
+async function deleteDataWidget(widgetId) {
     const idx = dataWidgets.findIndex(w => w.id === widgetId);
     if (idx === -1) return;
     
     const widget = dataWidgets[idx];
     
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmDeleteWidget', { label: widget.label }) : `确定要删除"${widget.label}"组件吗？`)) return;
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteWidget', { label: widget.label }) : `确定要删除"${widget.label}"组件吗？`, { primary: t('dataWidget.delete'), tone: 'danger' })) return;
     
     dataWidgets.splice(idx, 1);
     saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
     
-    // 清空编辑面板
-    const main = document.getElementById('dw-manager-main');
-    if (main) {
-        main.innerHTML = `
-            <div class="dw-manager-empty">
-                <i class="ri-box-3-line" style="font-size:48px;opacity:0.3;"></i>
-                <p>${t('dataWidget.selectWidgetHint')}</p>
-            </div>
-        `;
-    }
+    closeModal('widget-edit-modal');
     
     showToast(typeof t === 'function' ? t('toast.widgetDeleted', { name: widget.label }) : `已删除 ${widget.label}`, 'info');
 }
@@ -4443,28 +3811,16 @@ async function refreshQuickActions() {
                 // 串行检查每个规则的 nohup 状态并生成卡片，避免多路 ssh.exec 并发导致后端串行/覆盖、结果错位
                 const cardsHtml = [];
                 for (const rule of manualRules) {
-                    const iconValue = rule.icon || 'ri-thunderstorms-line';
-                    let iconHtml;
-                    if (iconValue.startsWith('/sdcard/')) {
-                        iconHtml = `<img src="/api/v1/file/download?path=${encodeURIComponent(iconValue)}" alt="icon" onerror="this.outerHTML='<i class=\\'ri-thunderstorms-line\\'></i>'">`;
-                    } else if (iconValue.startsWith('ri-')) {
-                        iconHtml = `<i class="${iconValue}"></i>`;
-                    } else {
-                        iconHtml = `<i class="${getRuleIconRi(iconValue)}"></i>`;
-                    }
-                    
                     const nohupInfo = await checkRuleHasNohupSsh(rule);
                     if (!pageCurrent()) return;
-                    let nohupBtns = '';
+                    let nohupBtns = '', statusHtml = '';
                     let isRunning = false;
                     if (nohupInfo?.serviceMode) {
+                        statusHtml = `<span class="quick-action-service-status" data-command="${escapeHtml(nohupInfo.commandId)}"><span class="service-value">${runtimeText('unknown')}</span></span>`;
                         nohupBtns = `
-                            <div class="quick-action-service-status" data-command="${escapeHtml(nohupInfo.commandId)}">
-                                <span class="service-value">${runtimeText('unknown')}</span>
-                            </div>
                             <div class="quick-action-nohup-bar" onclick="event.stopPropagation()">
-                                <button onclick="quickActionViewLog('${escapeHtml(nohupInfo.logFile)}', '${escapeHtml(nohupInfo.hostId)}')"><i class="ri-file-text-line"></i> ${t('automationPage.logTitle')}</button>
-                                <button onclick="quickActionStopProcess('${escapeHtml(nohupInfo.commandId)}', ${!rule.manual_trigger})"><i class="ri-stop-fill"></i> ${t('automationPage.stopProcess')}</button>
+                                <button type="button" class="btn sm" onclick="quickActionViewLog('${escapeHtml(nohupInfo.logFile)}', '${escapeHtml(nohupInfo.hostId)}')"><svg class="i"><use href="#ri-file-list-line"/></svg>${t('automationPage.logTitle')}</button>
+                                <button type="button" class="btn sm dg" onclick="quickActionStopProcess('${escapeHtml(nohupInfo.commandId)}', ${!rule.manual_trigger})"><svg class="i"><use href="#ri-stop-fill"/></svg>${t('automationPage.stopProcess')}</button>
                             </div>`;
                     }
                     const cardOnClick = `triggerQuickAction('${escapeHtml(rule.id)}')`;
@@ -4478,10 +3834,8 @@ async function refreshQuickActions() {
                              data-state="${nohupInfo?.serviceMode ? 'unknown' : 'stopped'}"
                              onclick="${cardOnClick}" 
                              title="${escapeHtml(cleanName)}">
-                            <div class="quick-action-icon">${iconHtml}</div>
-                            <div class="quick-action-name">${escapeHtml(cleanName)}</div>
-                            <small>${runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic')}${(rule.reference_unresolved || nohupInfo?.unresolved) ? ' · ' + runtimeText('referenceUnresolved') : ''}</small>
-                            ${nohupBtns}
+                            <div class="quick-action-head"><div class="quick-action-name">${escapeHtml(cleanName)}</div></div>
+                            <div class="quick-action-foot"><small>${(!nohupInfo?.serviceMode || !rule.enabled || !rule.manual_trigger) ? runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic') : ''}${(rule.reference_unresolved || nohupInfo?.unresolved) ? ' · ' + runtimeText('referenceUnresolved') : ''}${statusHtml && (!rule.enabled || !rule.manual_trigger) ? ' · ' : ''}${statusHtml}</small>${nohupBtns}</div>
                         </div>
                     `);
                 }
@@ -4494,20 +3848,19 @@ async function refreshQuickActions() {
                 startServiceStatusRefresh();
             } else {
                 container.innerHTML = `
-                    <div class="quick-actions-empty">
-                        <div class="empty-icon"><i class="ri-dashboard-line"></i></div>
-                        <p>${typeof t === 'function' ? t('automationPage.noQuickActions') : '暂无快捷操作'}</p>
-                        <small>${typeof t === 'function' ? t('automationPage.quickActionsHint') : '在自动化规则中启用"手动触发"选项'}</small>
+                    <div class="empty">
+                        <p class="t-body">${typeof t === 'function' ? t('automationPage.noQuickActions') : '暂无快捷操作'}</p>
+                        <p class="t-note">${typeof t === 'function' ? t('automationPage.quickActionsHint') : '在自动化规则中启用"手动触发"选项'}</p>
                     </div>
                 `;
             }
         } else {
-            container.innerHTML = '<p class="text-muted">' + (typeof t === 'function' ? (t('automationPage.loadQuickActionsFailed') || '无法加载快捷操作') : '无法加载快捷操作') + '</p>';
+            container.innerHTML = '<p class="t-note">' + (typeof t === 'function' ? (t('automationPage.loadQuickActionsFailed') || '无法加载快捷操作') : '无法加载快捷操作') + '</p>';
         }
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Quick actions error:', e);
-        container.innerHTML = '<p class="text-muted">' + (typeof t === 'function' ? t('filePage.loadFailed') : '加载失败') + '</p>';
+        container.innerHTML = '<p class="t-note">' + (typeof t === 'function' ? t('filePage.loadFailed') : '加载失败') + '</p>';
     }
 }
 
@@ -4640,7 +3993,7 @@ async function triggerQuickAction(ruleId) {
         const iconEl = card.querySelector('.quick-action-icon');
         const originalIcon = iconEl?.innerHTML;
         if (iconEl) {
-            iconEl.innerHTML = '<span class="spinner-small"><i class="ri-refresh-line"></i></span>';
+            iconEl.innerHTML = '<span class="spinner-small"><svg class="i"><use href="#ri-refresh-line"/></svg></span>';
         }
         
         const result = await api.call('automation.rules.trigger', { id: ruleId });
@@ -4793,36 +4146,21 @@ async function quickActionViewLog(logFile, hostId) {
     const interval30Sec = typeof t === 'function' ? t('automationPage.interval30Sec') : '30秒';
     const realTimeText = typeof t === 'function' ? t('automationPage.realTimeUpdating') : '● 实时更新中';
     const closeText = typeof t === 'function' ? t('common.close') : '关闭';
-    const modalHtml = `
-        <div id="quick-log-modal" class="modal">
-            <div class="modal-content" style="max-width:1400px;width:90%">
-                <div class="modal-header">
-                    <h2><i class="ri-file-text-line"></i> ${logTitle} - <small style="font-weight:normal;font-size:0.7em;color:var(--text-muted)">${escapeHtml(logFile)}</small></h2>
-                    <button class="modal-close" onclick="closeQuickLogModal()">&times;</button>
-                </div>
-                <div class="modal-body" style="padding:0">
-                    <pre id="quick-log-content" style="max-height:400px;overflow:auto;padding:15px;margin:0;background:#1e293b;color:#e2e8f0;font-size:12px;white-space:pre-wrap">${t('common.loading')}</pre>
-                </div>
-                <div class="modal-footer" style="display:flex;gap:10px;padding:10px 15px;justify-content:space-between;align-items:center">
-                    <div style="display:flex;gap:8px;align-items:center">
-                        <button class="btn btn-danger" id="quick-log-tail-btn" onclick="toggleQuickLogTail('${escapeHtml(logFile)}', '${escapeHtml(hostId)}')"><i class="ri-stop-fill"></i> ${stopTrackingText}</button>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:0.85em;color:var(--text-muted)">
-                            ${intervalText}
-                            <select id="quick-log-interval" onchange="updateQuickLogInterval('${escapeHtml(logFile)}', '${escapeHtml(hostId)}')" style="padding:2px 6px;border-radius:4px;border:1px solid var(--border);background:var(--bg-muted);color:var(--text-primary);font-size:0.9em">
-                                <option value="1000">${interval1Sec}</option>
-                                <option value="2000">${interval2Sec}</option>
-                                <option value="3000">${interval3Sec}</option>
-                                <option value="5000" selected>${interval5Sec}</option>
-                                <option value="10000">${interval10Sec}</option>
-                                <option value="30000">${interval30Sec}</option>
-                            </select>
-                        </label>
-                        <span id="quick-log-status" style="font-size:0.85em;color:var(--text-muted);display:flex;align-items:center"><span style="color:var(--emerald-600)">${realTimeText}</span></span>
-                    </div>
-                    <button class="btn" onclick="closeQuickLogModal()">${closeText}</button>
-                </div>
-            </div>
-        </div>
+    const safeFile = escapeHtml(logFile), safeHost = escapeHtml(hostId);
+    const modalHtml = `<div id="quick-log-modal" class="modal">${sheet(760, `${logTitle} <small class="t-note mono" style="font-weight:400">${safeFile}</small>`, `
+            <pre class="term logv" id="quick-log-content" style="height:320px;margin:0;white-space:pre-wrap">${t('common.loading')}</pre>`,
+            `<span class="inl" style="margin-right:auto"><button class="btn lg" id="quick-log-tail-btn" onclick="toggleQuickLogTail('${safeFile}', '${safeHost}')"><svg class="i"><use href="#ri-stop-fill"/></svg>${stopTrackingText}</button>
+                <span class="t-note">${intervalText}</span>
+                <select class="field" id="quick-log-interval" onchange="updateQuickLogInterval('${safeFile}', '${safeHost}')" style="width:90px">
+                    <option value="1000">${interval1Sec}</option>
+                    <option value="2000">${interval2Sec}</option>
+                    <option value="3000">${interval3Sec}</option>
+                    <option value="5000" selected>${interval5Sec}</option>
+                    <option value="10000">${interval10Sec}</option>
+                    <option value="30000">${interval30Sec}</option>
+                </select>
+                <span id="quick-log-status" class="t-note"><span style="color:var(--ok)">${realTimeText}</span></span></span>
+            <button class="btn lg primary" onclick="closeQuickLogModal()">${closeText}</button>`, 'closeQuickLogModal()')}</div>
     `;
     
     // 添加模态框
@@ -4898,13 +4236,11 @@ function startQuickLogTail(logFile, hostId, intervalMs = 5000) {
     
     if (btn) {
         const stopText = typeof t === 'function' ? t('automationPage.stopTracking') : '停止跟踪';
-        btn.innerHTML = '<i class="ri-stop-fill"></i> ' + stopText;
-        btn.classList.remove('btn-service-style');
-        btn.classList.add('btn-danger');
+        btn.innerHTML = '<svg class="i"><use href="#ri-stop-fill"/></svg>' + stopText;
     }
     if (status) {
         const realTimeText = typeof t === 'function' ? t('automationPage.realTimeUpdating') : '● 实时更新中';
-        status.innerHTML = '<span style="color:#059669">' + realTimeText + '</span>';
+        status.innerHTML = '<span style="color:var(--ok)">' + realTimeText + '</span>';
     }
     quickActionLastContent = '';
     
@@ -4959,9 +4295,7 @@ function stopQuickLogTail() {
     
     if (btn) {
         const startText = typeof t === 'function' ? t('automationPage.startTracking') : '开始跟踪';
-        btn.innerHTML = '<i class="ri-play-line"></i> ' + startText;
-        btn.classList.remove('btn-danger');
-        btn.classList.add('btn-service-style');
+        btn.innerHTML = '<svg class="i"><use href="#ri-play-line"/></svg>' + startText;
     }
     if (status) status.textContent = (typeof t === 'function' ? t('automationPage.trackingStopped') : '已暂停');
 }
@@ -4996,7 +4330,7 @@ function closeQuickLogModal() {
 const serviceStopInFlight = new Set();
 async function quickActionStopProcess(commandId, automatic) {
     if (serviceStopInFlight.has(commandId)) return;
-    if (!confirmAction(runtimeText(automatic ? 'confirmStopAutomatic' : 'confirmStop'))) return;
+    if (!await confirmAction(runtimeText(automatic ? 'confirmStopAutomatic' : 'confirmStop'), { primary: t('common.stop'), tone: 'neutral' })) return;
     serviceStopInFlight.add(commandId);
     for (const card of document.querySelectorAll('.quick-action-card'))
         if (card.dataset.service === commandId) card.dataset.state = 'stopping';
@@ -5056,12 +4390,9 @@ function showTimezoneModal() {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:400px">
-            <h2>${t('common.setTimezone')}</h2>
-            <div class="form-group">
-                <label>${t('common.timezone')}</label>
-                <select id="timezone-select" class="form-control">
+    modal.innerHTML = sheet(520, t('common.setTimezone'),
+        grp(
+            row(t('common.timezone'), `<select class="field" id="timezone-select" style="width:210px">
                     <option value="CST-8">${t('common.tzChinaStandard')}</option>
                     <option value="JST-9">${t('common.tzJapanStandard')}</option>
                     <option value="KST-9">${t('common.tzKoreaStandard')}</option>
@@ -5070,18 +4401,9 @@ function showTimezoneModal() {
                     <option value="EST5EDT">${t('common.tzUSEastern')}</option>
                     <option value="PST8PDT">${t('common.tzUSPacific')}</option>
                     <option value="CET-1CEST">${t('common.tzCentralEuropean')}</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>${t('common.customTimezone')}</label>
-                <input type="text" id="timezone-custom" class="form-control" placeholder="${t('common.timezoneExample')}">
-            </div>
-            <div class="form-actions">
-                <button class="btn" onclick="hideTimezoneModal()">${t('common.cancel')}</button>
-                <button class="btn btn-service-style" onclick="applyTimezone()">${t('common.apply')}</button>
-            </div>
-        </div>
-    `;
+                </select>`) +
+            row(t('common.customTimezoneShort'), inp('timezone-custom', 210, t('common.timezoneExampleShort'), 'mono'), '', t('common.customTimezone'))),
+        `<button class="btn lg" onclick="hideTimezoneModal()">${t('common.cancel')}</button><button class="btn lg primary" onclick="applyTimezone()">${t('common.apply')}</button>`);
     
     modal.classList.remove('hidden');
 }
@@ -5127,8 +4449,8 @@ async function loadLedPage() {
             <div class="led-page-header">
                 <h1>${t('nav.led')}</h1>
                 <div class="led-quick-actions">
-                    <button type="button" class="btn btn-sm btn-gray led-refresh-btn" onclick="refreshLedPage()" title="${t('common.refresh')}"><i class="ri-refresh-line"></i></button>
-                    <button class="btn btn-sm btn-gray led-color-correction-btn" id="led-page-cc-btn" onclick="openLedModal('matrix', 'colorcorrection')" style="display:none"><i class="ri-contrast-line"></i> ${t('ledPage.colorCorrectionTitle')}</button>
+                    <button type="button" class="btn btn-sm btn-gray led-refresh-btn" onclick="refreshLedPage()" title="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
+                    <button class="btn btn-sm btn-gray led-color-correction-btn" id="led-page-cc-btn" onclick="openLedModal('matrix', 'colorcorrection')" style="display:none"><svg class="i"><use href="#ri-contrast-line"/></svg> ${t('ledPage.colorCorrectionTitle')}</button>
                     <button class="btn btn-sm btn-gray" onclick="allLedsOff()">${typeof t === 'function' ? t('ledPage.allOff') : '全部关闭'}</button>
                 </div>
             </div>
@@ -5174,7 +4496,7 @@ async function refreshLedPage() {
         } else {
             container.innerHTML = `
                 <div class="led-empty-state">
-                    <div class="empty-icon"><i class="ri-error-warning-line" style="color:var(--warning-color)"></i></div>
+                    <div class="empty-icon"><svg class="i" style="color:var(--warn-dot)"><use href="#ri-error-warning-line"/></svg></div>
                     <h3>${t('ledPage.ledNotFound')}</h3>
                     <p>${t('ledPage.ledNotStartedHint')}</p>
                     <ul>
@@ -5190,115 +4512,58 @@ async function refreshLedPage() {
     }
 }
 
+// 色块：[显示色, 下发给灯的颜色, 名称 key 后缀]
+const LED_PRESETS = [['#ff3b30', '#ff0000', 'Red'], ['#ff6b00', '#ff6600', 'Orange'], ['#ffd60a', '#ffd700', 'Yellow'], ['#00c766', '#00d26a', 'Green'], ['#00e5ff', '#00ffff', 'Cyan'], ['#2d7dff', '#2d7dff', 'Blue'], ['#d630ff', '#d630ff', 'Purple'], ['#ffffff', '#ffffff', 'White'], ['#ffcccc', '#ffcccc', 'Pink'], ['#e0e0e0', '#e0e0e0', 'Gray']];
+
 function generateLedDeviceCard(dev) {
-    const icon = getDeviceIcon(dev.name);
-    const description = getDeviceDescription(dev.name);
+    const description = t({ board: 'ledPage.descBoard', touch: 'ledPage.descTouch', matrix: 'ledPage.descMatrix' }[dev.name.toLowerCase()] || 'ledPage.deviceDefault');
     const current = dev.current || {};
     const isOn = current.on || false;
     const currentAnimation = current.animation || '';
-    const currentSpeed = current.speed || 50;
-    const currentColor = current.color || {r: 255, g: 255, b: 255};
-    const colorHex = rgbToHex(currentColor);
+    const colorHex = rgbToHex(current.color || {r: 255, g: 255, b: 255});
     const isMatrix = dev.name === 'matrix' || dev.layout === 'matrix';
-    const deviceEffects = dev.effects || [];
-    
-    const _off = typeof t === 'function' ? t('ledPage.statusOff') : '已关闭';
-    const _on = typeof t === 'function' ? t('ledPage.statusOn') : '常亮';
-    let statusText = _off;
-    let statusClass = 'off';
-    if (isOn) {
-        if (currentAnimation) {
-            statusText = `▶ ${effectDisplayName(currentAnimation)}`;
-            statusClass = 'effect';
-        } else {
-            statusText = _on;
-            statusClass = 'on';
-        }
-    }
-    
-    const _contentTitle = typeof t === 'function' ? t('ledPage.contentTitle') : '图像/QR码';
-    const _textTitle = typeof t === 'function' ? t('ledPage.textTitle') : '文本显示';
-    const _filterTitle = typeof t === 'function' ? t('ledPage.filterEffect') : '滤镜效果';
-    const _stopEffect = typeof t === 'function' ? t('ledPage.stopEffect') : '停止动画';
-    const _clickOff = typeof t === 'function' ? t('ledPage.clickOff') : '点击关闭';
-    const _clickOn = typeof t === 'function' ? t('ledPage.clickOn') : '点击开启';
-    const _moreEffects = typeof t === 'function' ? t('ledPage.moreEffects') : '更多动画';
-    const matrixFooterBtns = isMatrix ? `
-        <button class="led-quick-effect" onclick="openLedModal('${dev.name}', 'content')" title="${_contentTitle}">
-            <i class="ri-qr-code-line"></i>
-        </button>
-        <button class="led-quick-effect" onclick="openLedModal('${dev.name}', 'text')" title="${_textTitle}">
-            <i class="ri-text"></i>
-        </button>
-        <button class="led-quick-effect" onclick="openLedModal('${dev.name}', 'filter')" title="${_filterTitle}">
-            <i class="ri-color-filter-line"></i>
-        </button>
-    ` : '';
+    const brightness = dev.brightness ?? 0;
+
+    let statusText = t('ledPage.statusOff');
+    if (isOn) statusText = currentAnimation ? `▶ ${effectDisplayName(currentAnimation)}` : t('ledPage.statusOn');
+
+    const icoBtn = (icon, title, action, cls = '') => `<button class="btn sm icon ${cls}" onclick="${action}" title="${title}" aria-label="${title}"><svg class="i"><use href="#${icon}"/></svg></button>`;
+    const matrixBtns = isMatrix ? icoBtn('ri-qr-code-line', t('ledPage.contentTitle'), `openLedModal('${dev.name}', 'content')`, 'led-quick-effect')
+        + icoBtn('ri-text', t('ledPage.textTitle'), `openLedModal('${dev.name}', 'text')`, 'led-quick-effect')
+        + icoBtn('ri-color-filter-line', t('ledPage.filterEffect'), `openLedModal('${dev.name}', 'filter')`, 'led-quick-effect') : '';
+    const powerTitle = isOn ? t('ledPage.clickOff') : t('ledPage.clickOn');
     
     return `
-        <div class="led-device-card ${isOn ? 'is-on' : ''}" data-device="${dev.name}">
-            <!-- 设备头部 -->
-            <div class="led-card-header">
-                <div class="led-device-info">
-                    <span class="led-device-name">${dev.name}</span>
-                    <span class="led-device-desc">${description}</span>
+        <div class="w-tile led-device-card ${isOn ? 'is-on' : ''}" data-device="${dev.name}">
+            <div class="led-h">
+                <div>
+                    <div class="t-section">${dev.name.charAt(0).toUpperCase() + dev.name.slice(1)}</div>
+                    <div class="t-note" style="margin-top:2px">${description}</div>
                 </div>
-                <div class="led-device-status ${statusClass}">${escapeHtml(statusText)}</div>
-                <button class="led-stop-btn" onclick="stopEffect('${dev.name}')" title="${_stopEffect}"><i class="ri-stop-circle-line"></i> ${_stopEffect}</button>
-            </div>
-            
-            <!-- 控制区域 -->
-            <div class="led-card-controls">
-                <!-- 亮度滑块 -->
-                <div class="led-brightness-row">
-                    <span class="brightness-label"><i class="ri-sun-line"></i></span>
-                    <input type="range" min="0" max="255" value="${dev.brightness}" 
-                           class="led-brightness-slider"
-                           oninput="updateBrightnessDisplay('${dev.name}', this.value)"
-                           onchange="setBrightness('${dev.name}', this.value)"
-                           id="brightness-${dev.name}">
-                    <span class="brightness-value" id="brightness-val-${dev.name}">${dev.brightness}</span>
-                </div>
-                
-                <!-- 颜色选择 (Modern) -->
-                <div class="led-color-row">
-                    <div class="modern-picker-wrapper" title="${t('promptRepair.customColor')}">
-                        <div class="modern-picker-visual"></div>
-                        <i class="ri-palette-line modern-picker-icon"></i>
-                        <input type="color" value="${colorHex}" id="color-picker-${dev.name}" 
-                               onchange="fillColorFromPicker('${dev.name}', this.value)"
-                               class="modern-picker-input">
-                    </div>
-                    
-                    <div class="modern-presets-container">
-                        <div class="modern-presets-list">
-                            <button class="modern-color-dot" style="background:#ff0000" onclick="quickFillColor('${dev.name}', '#ff0000')" title="${t('promptRepair.colorRed')}"></button>
-                            <button class="modern-color-dot" style="background:#ff6600" onclick="quickFillColor('${dev.name}', '#ff6600')" title="${t('promptRepair.colorOrange')}"></button>
-                            <button class="modern-color-dot" style="background:#ffd700" onclick="quickFillColor('${dev.name}', '#ffd700')" title="${t('promptRepair.colorYellow')}"></button>
-                            <button class="modern-color-dot" style="background:#00d26a" onclick="quickFillColor('${dev.name}', '#00d26a')" title="${t('promptRepair.colorGreen')}"></button>
-                            <button class="modern-color-dot" style="background:#00ffff" onclick="quickFillColor('${dev.name}', '#00ffff')" title="${t('promptRepair.colorCyan')}"></button>
-                            <button class="modern-color-dot" style="background:#2d7dff" onclick="quickFillColor('${dev.name}', '#2d7dff')" title="${t('promptRepair.colorBlue')}"></button>
-                            <button class="modern-color-dot" style="background:#d630ff" onclick="quickFillColor('${dev.name}', '#d630ff')" title="${t('promptRepair.colorPurple')}"></button>
-                            <button class="modern-color-dot" style="background:#ffffff" onclick="quickFillColor('${dev.name}', '#ffffff')" title="${t('promptRepair.colorWhite')}"></button>
-                            <button class="modern-color-dot" style="background:#ffcccc" onclick="quickFillColor('${dev.name}', '#ffcccc')" title="${t('promptRepair.colorPink')}"></button>
-                            <button class="modern-color-dot" style="background:#e0e0e0" onclick="quickFillColor('${dev.name}', '#e0e0e0')" title="${t('promptRepair.colorGray')}"></button>
-                        </div>
-                    </div>
+                <div class="between">
+                    <span class="state led-device-status${isOn ? ' ok' : ''}">${escapeHtml(statusText)}</span>
+                    <button class="btn sm" onclick="stopEffect('${dev.name}')">${t('ledPage.stopEffect')}</button>
                 </div>
             </div>
-            
-            <!-- 底部操作栏：电源 | 更多动画 | [Matrix: QR/文本/滤镜] | 保存 -->
-            <div class="led-card-footer">
-                <button class="led-power-btn ${isOn ? 'on' : ''}" id="toggle-${dev.name}" onclick="toggleLed('${dev.name}')" title="${isOn ? _clickOff : _clickOn}">
-                    <i class="power-icon ${isOn ? 'ri-lightbulb-fill' : 'ri-lightbulb-line'}"></i>
-                </button>
-                <button class="led-quick-effect" onclick="openLedModal('${dev.name}', 'effect')" title="${_moreEffects}">
-                    <i class="ri-play-line"></i>
-                </button>
-                ${matrixFooterBtns}
-                <button class="led-save-btn" onclick="saveLedConfig('${dev.name}')" title="${t('led.saveConfig')}">
-                    <i class="ri-save-line"></i>
-                </button>
+            <hr class="sep">
+            <div class="led-c">
+                <div class="led-br">
+                    <svg class="i"><use href="#ri-sun-line"/></svg>
+                    <div class="sl" style="--p:${brightness / 2.55}%"><i></i><b></b><input type="range" min="0" max="255" value="${brightness}" class="led-brightness-slider" oninput="updateBrightnessDisplay('${dev.name}', this.value)" onchange="setBrightness('${dev.name}', this.value)" id="brightness-${dev.name}"></div>
+                    <span class="t-value" id="brightness-val-${dev.name}">${brightness}</span>
+                </div>
+                <div class="led-dots">
+                    <label class="dotc pick" title="${t('promptRepair.customColor')}"><input type="color" value="${colorHex}" id="color-picker-${dev.name}" onchange="fillColorFromPicker('${dev.name}', this.value)" aria-label="${t('promptRepair.customColor')}"></label>
+                    ${LED_PRESETS.map(([shown, sent, name]) => `<button class="dotc" style="background:${shown}" onclick="quickFillColor('${dev.name}', '${sent}')" title="${t('promptRepair.color' + name)}" aria-label="${t('promptRepair.color' + name)}"></button>`).join('')}
+                </div>
+            </div>
+            <hr class="sep">
+            <div class="led-f">
+                <button class="btn sm icon led-power-btn ${isOn ? 'on' : ''}" id="toggle-${dev.name}" onclick="toggleLed('${dev.name}')" title="${powerTitle}" aria-label="${powerTitle}"><svg class="i power-icon"><use href="#ri-lightbulb-line"/></svg></button>
+                ${icoBtn('ri-play-line', t('ledPage.moreEffects'), `openLedModal('${dev.name}', 'effect')`, 'led-quick-effect')}
+                ${matrixBtns}
+                <span style="flex:1"></span>
+                ${icoBtn('ri-save-line', t('led.saveConfig'), `saveLedConfig('${dev.name}')`)}
             </div>
         </div>
     `;
@@ -5315,6 +4580,7 @@ function rgbToHex(color) {
 function updateBrightnessDisplay(device, value) {
     const label = document.getElementById(`brightness-val-${device}`);
     if (label) label.textContent = value;
+    document.getElementById(`brightness-${device}`)?.parentElement.style.setProperty('--p', (value / 2.55) + '%');
 }
 
 async function fillColorFromPicker(device, color) {
@@ -5373,55 +4639,25 @@ function updateLedCardState(device, isOn, effect = undefined) {
     const card = document.querySelector(`.led-device-card[data-device="${device}"]`);
     if (!card) return;
     
-    // 更新卡片状态
-    if (isOn) {
-        card.classList.add('is-on');
-    } else {
-        card.classList.remove('is-on');
-    }
+    card.classList.toggle('is-on', !!isOn);
     
     // 更新状态显示
     const statusEl = card.querySelector('.led-device-status');
     if (statusEl) {
-        if (!isOn) {
-            statusEl.textContent = typeof t === 'function' ? t('ledPage.statusOff') : '已关闭';
-            statusEl.className = 'led-device-status off';
-        } else if (effect) {
-            statusEl.textContent = `▶ ${effectDisplayName(effect)}`;
-            statusEl.className = 'led-device-status effect';
-        } else {
-            statusEl.textContent = typeof t === 'function' ? t('ledPage.statusOn') : '常亮';
-            statusEl.className = 'led-device-status on';
-        }
+        statusEl.textContent = !isOn ? t('ledPage.statusOff') : effect ? `▶ ${effectDisplayName(effect)}` : t('ledPage.statusOn');
+        statusEl.className = 'state led-device-status' + (isOn ? ' ok' : '');
     }
     
     // 更新电源按钮
     const powerBtn = card.querySelector('.led-power-btn');
     if (powerBtn) {
-        const powerIcon = powerBtn.querySelector('.power-icon');
-        if (isOn) {
-            powerBtn.classList.add('on');
-            powerBtn.title = t('ledPage.clickOff');
-            if (powerIcon) {
-                powerIcon.className = 'power-icon ri-lightbulb-fill';
-            }
-        } else {
-            powerBtn.classList.remove('on');
-            powerBtn.title = t('ledPage.clickOn');
-            if (powerIcon) {
-                powerIcon.className = 'power-icon ri-lightbulb-line';
-            }
-        }
+        powerBtn.classList.toggle('on', !!isOn);
+        powerBtn.title = t(isOn ? 'ledPage.clickOff' : 'ledPage.clickOn');
     }
     
     // 更新快捷特效按钮状态
     card.querySelectorAll('.led-quick-effect').forEach(btn => {
-        const btnEffect = btn.getAttribute('title');
-        if (effect && btnEffect === effect) {
-            btn.classList.add('active');
-        } else {
-            btn.classList.remove('active');
-        }
+        btn.classList.toggle('active', !!effect && btn.getAttribute('title') === effect);
     });
 }
 
@@ -5501,344 +4737,144 @@ function updateToggleButton(device, isOn) {
     if (btn && !btn.classList.contains('led-power-btn')) {
         if (isOn) {
             btn.classList.add('on');
-            btn.innerHTML = '<i class="ri-sun-line"></i> ' + (typeof t === 'function' ? t('ledPage.on') : '已开启');
+            btn.innerHTML = '<svg class="i"><use href="#ri-sun-line"/></svg> ' + (typeof t === 'function' ? t('ledPage.on') : '已开启');
         } else {
             btn.classList.remove('on');
-            btn.innerHTML = '<i class="ri-lightbulb-line"></i> ' + (typeof t === 'function' ? t('ledPage.off') : '已关闭');
+            btn.innerHTML = '<svg class="i"><use href="#ri-lightbulb-line"/></svg> ' + (typeof t === 'function' ? t('ledPage.off') : '已关闭');
         }
     }
 }
 
 // 生成 LED 模态框内容
+// LED 弹窗小控件：滑块（--p 由 oninput 同步）、颜色色块、分段控件（选中值写进同名隐藏 input）
+const ledSlider = (id, min, max, val, on) => `<div class="sl" style="width:200px;flex:none;--p:${(val - min) / (max - min) * 100}%"><i></i><b></b><input type="range" id="${id}" min="${min}" max="${max}" value="${val}" oninput="syncSliders();${on}"></div>`;
+const ledVal = (id, txt) => `<span class="t-value num" id="${id}" style="width:40px;text-align:right">${txt}</span>`;
+const swatch = (id, val, on = '') => `<input type="color" class="swi" id="${id}" value="${val}"${on ? ` oninput="${on}"` : ''}>`;
+function syncSliders() {
+    document.querySelectorAll('.sl>input[type="range"]').forEach(i => i.parentElement.style.setProperty('--p', ((i.value - i.min) / (i.max - i.min) * 100) + '%'));
+}
+function segPick(btn, hiddenId, value) {
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+    document.getElementById(hiddenId).value = value;
+}
+// 文本页：打开「自动位置」时 X / Y 置灰
+function toggleTextAutoPos(auto) {
+    document.getElementById('modal-text-pos-note').classList.toggle('hidden', !auto);
+    for (const id of ['modal-text-x', 'modal-text-y']) {
+        const el = document.getElementById(id);
+        el.disabled = auto;
+        el.closest('.row').classList.toggle('off', auto);
+    }
+}
+
+// 每个标签页 → [正文, 底部按钮]
 function generateLedModalContent(device, type) {
     const deviceData = window.ledDevicesCache?.find(d => d.name === device);
     const current = deviceData?.current || {};
     const currentAnimation = current.animation || '';
     const currentSpeed = current.speed || 50;
     const currentColor = current.color || {r: 255, g: 0, b: 0};
-    const colorHex = '#' + 
+    const colorHex = '#' +
         currentColor.r.toString(16).padStart(2, '0') +
         currentColor.g.toString(16).padStart(2, '0') +
         currentColor.b.toString(16).padStart(2, '0');
     const deviceEffects = deviceData?.effects || [];
-    
+    const num = (id, w, val, attrs = '') => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
+    const cancelReset = (fn) => `<button class="btn lg" onclick="${fn}">${t('ledPage.ccReset')}</button>`;
+
     if (type === 'effect') {
-        // 普通设备的动画模态框 - 卡片式布局，无 emoji，RemixIcon + 复刻全局色彩校正风格
-        const effectsHtml = deviceEffects.length > 0 
-            ? deviceEffects.map(eff => {
-                const isActive = eff === currentAnimation;
-                const activeClass = isActive ? ' active' : '';
-                return `<button class="btn effect-btn${activeClass}" onclick="selectEffectInModal('${device}', '${eff}', this)">${getEffectIconRemix(eff)}${effectDisplayName(eff)}</button>`;
-            }).join('')
-            : '<span class="empty">' + (typeof t === 'function' ? t('ledPage.noEffects') : '暂无可用动画') + '</span>';
-        
+        const effectsHtml = deviceEffects.length > 0
+            ? deviceEffects.map(eff => `<button class="tile effect-btn${eff === currentAnimation ? ' on' : ''}" onclick="selectEffectInModal('${device}', '${eff}', this)" style="padding:10px 12px;justify-content:center"><span class="t-body">${effectDisplayName(eff)}</span></button>`).join('')
+            : '<span class="t-note">' + t('ledPage.noEffects') + '</span>';
         const isOn = ledStates[device] || false;
-        
-        return `
-            <div class="modal-section cc-modal-section">
-                <!-- 启用开关 - 保持与色彩校正布局一致 -->
-                <div class="cc-enable-row">
-                    <label>
-                        <input type="checkbox" id="modal-device-enabled-${device}" ${isOn ? 'checked' : ''} 
-                               onchange="toggleLedFromModal('${device}', this.checked)"> 
-                        ${t('ledPage.deviceEnable')}
-                    </label>
-                </div>
-
-                <div class="cc-section">
-                    <h4>${t('ledPage.effects')}</h4>
-                    <p class="cc-help-text">${t('ledPage.selectAnimation')}</p>
-                    <div class="effects-grid">${effectsHtml}</div>
-                </div>
-                
-                <div class="cc-section" id="modal-effect-config-${device}" style="display:${currentAnimation ? 'block' : 'none'};">
-                    <h4>${t('ledPage.settings')}</h4>
-                    <p class="cc-help-text">${t('ledPage.current')}: <span id="modal-effect-name-${device}">${getEffectIconRemix(currentAnimation)}${currentAnimation ? effectDisplayName(currentAnimation) : t('ledPage.effectNotSelected')}</span></p>
-                    
-                    <div class="config-row">
-                        <label>${t('ledPage.speed')}</label>
-                        <input type="range" min="1" max="100" value="${currentSpeed}" id="modal-effect-speed-${device}" 
-                               oninput="updateEffectSliderValue('${device}', this.value)">
-                        <span id="modal-speed-val-${device}">${currentSpeed}</span>
-                    </div>
-                    
-                    <div class="config-row" id="modal-color-row-${device}" style="display:${colorSupportedEffects.includes(currentAnimation) ? 'flex' : 'none'};">
-                        <label>${t('ledPage.color')}</label>
-                        <input type="color" id="modal-effect-color-${device}" value="${colorHex}"
-                               oninput="previewEffectFromModal('${device}')">
-                    </div>
-                </div>
-
-                <div class="config-actions cc-actions">
-                    <button class="btn btn-sm btn-gray" onclick="resetEffectFromModal('${device}')">${t('ledPage.ccReset')}</button>
-                    <button class="btn btn-service-style btn-sm" onclick="applyEffectFromModal('${device}')"><i class="ri-save-line"></i> ${t('ledPage.ccApply')}</button>
-                </div>
-            </div>
-        `;
-    } else if (type === 'content') {
-        return `
-            <div class="modal-section cc-modal-section">
-                <div class="modal-tabs">
-                    <button class="modal-tab active" onclick="switchModalTab(this, 'modal-tab-image')">${t('ledPage.imageTab')}</button>
-                    <button class="modal-tab" onclick="switchModalTab(this, 'modal-tab-qr')">${t('ledPage.qrTab')}</button>
-                </div>
-                <div class="modal-tab-content active" id="modal-tab-image">
-                    <div class="cc-section">
-                        <h4>${t('ledPage.imageTab')}</h4>
-                        <div class="config-row">
-                            <input type="text" id="modal-image-path" placeholder="/sdcard/images/..." class="input-flex" value="/sdcard/images/">
-                            <button class="btn btn-sm btn-gray" onclick="browseImages()"><i class="ri-folder-open-line"></i> ${t('ledPage.browse')}</button>
-                        </div>
-                        <div class="config-row">
-                            <label><input type="checkbox" id="modal-image-center" checked> ${t('ledPage.centerDisplay')}</label>
-                            <button class="btn btn-service-style btn-sm" onclick="displayImageFromModal()">${t('ledPage.displayImage')}</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-tab-content" id="modal-tab-qr" style="display:none;">
-                    <div class="cc-section">
-                        <h4>${t('ledPage.qrTab')}</h4>
-                        <div class="config-row">
-                            <input type="text" id="modal-qr-text" placeholder="${t('ledPage.enterTextOrUrl')}" class="input-flex">
-                        </div>
-                        <div class="config-row">
-                            <label>${t('ledPage.errorCorrection')}</label>
-                            <select id="modal-qr-ecc">
-                                <option value="L">L - 7%</option>
-                                <option value="M" selected>M - 15%</option>
-                                <option value="Q">Q - 25%</option>
-                                <option value="H">H - 30%</option>
-                            </select>
-                            <label>${t('ledPage.foregroundColor')}</label>
-                            <input type="color" id="modal-qr-fg" value="#ffffff">
-                        </div>
-                        <div class="config-row">
-                            <label>${t('ledPage.backgroundImage')}</label>
-                            <input type="text" id="modal-qr-bg-image" placeholder="${t('ledPage.noBackgroundImage')}" readonly style="flex:1;cursor:pointer" onclick="openFilePickerFor('modal-qr-bg-image', '/sdcard/images')">
-                            <button class="btn btn-sm btn-gray" onclick="document.getElementById('modal-qr-bg-image').value=''" title="${t('ledPage.clear')}"><i class="ri-close-line"></i></button>
-                        </div>
-                        <div class="config-row">
-                            <button class="btn btn-service-style btn-sm" onclick="generateQrCodeFromModal()">${t('ledPage.generateQrCode')}</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-    } else if (type === 'text') {
-        return `
-            <div class="modal-section cc-modal-section">
-                <div class="cc-section">
-                    <h4>${t('ledPage.textTitle')}</h4>
-                    <div class="config-row">
-                        <input type="text" id="modal-text-content" placeholder="${t('ledPage.enterTextToDisplay')}" class="input-flex">
-                    </div>
-                </div>
-                <div class="cc-section">
-                    <h4>${t('ledPage.fontAndStyle')}</h4>
-                    <div class="config-row">
-                        <label>${t('ledPage.font')}</label>
-                        <select id="modal-text-font">
-                            <option value="default">${t('common.default')}</option>
-                        </select>
-                        <button class="btn btn-sm btn-gray" onclick="loadFontListForModal()" title="${t('ledPage.refreshFonts')}"><i class="ri-refresh-line"></i> ${t('ledPage.refreshFonts')}</button>
-                    </div>
-                    <div class="config-row">
-                        <label>${t('ledPage.alignment')}</label>
-                        <select id="modal-text-align">
-                            <option value="left">${t('ledPage.alignLeft')}</option>
-                            <option value="center" selected>${t('ledPage.alignCenter')}</option>
-                            <option value="right">${t('ledPage.alignRight')}</option>
-                        </select>
-                        <label>${t('ledPage.color')}</label>
-                        <input type="color" id="modal-text-color" value="#00ff00">
-                    </div>
-                </div>
-                <div class="cc-section">
-                    <h4>${t('ledPage.position')}</h4>
-                    <div class="config-row">
-                        <label>X</label>
-                        <input type="number" id="modal-text-x" value="0" min="0" max="255" style="width:56px">
-                        <label>Y</label>
-                        <input type="number" id="modal-text-y" value="0" min="0" max="255" style="width:56px">
-                        <label><input type="checkbox" id="modal-text-auto-pos" checked> ${t('ledPage.autoPosition')}</label>
-                    </div>
-                </div>
-                <div class="cc-section">
-                    <h4>${t('ledPage.scroll')}</h4>
-                    <div class="config-row">
-                        <label>${t('ledPage.paramDirection')}</label>
-                        <select id="modal-text-scroll">
-                            <option value="none">${t('ledPage.scrollNone')}</option>
-                            <option value="left" selected>${t('ledPage.scrollLeft')}</option>
-                            <option value="right">${t('ledPage.scrollRight')}</option>
-                            <option value="up">${t('ledPage.scrollUp')}</option>
-                            <option value="down">${t('ledPage.scrollDown')}</option>
-                        </select>
-                        <label>${t('ledPage.paramSpeed')}</label>
-                        <input type="number" id="modal-text-speed" value="50" min="1" max="100" style="width:56px">
-                        <label><input type="checkbox" id="modal-text-loop" checked> ${t('ledPage.loopScroll')}</label>
-                    </div>
-                </div>
-                <div class="config-actions cc-actions">
-                    <button class="btn btn-service-style btn-sm" onclick="displayTextFromModal()">${t('ledPage.display')}</button>
-                    <button class="btn btn-danger btn-sm" onclick="stopTextFromModal()">${t('ledPage.stop')}</button>
-                </div>
-            </div>
-        `;
-    } else if (type === 'filter') {
-        return `
-            <div class="modal-section cc-modal-section">
-                <div class="cc-section">
-                    <h4>${t('ledPage.filterTitle')}</h4>
-                    <p class="cc-help-text">${t('ledPage.selectFilter')}</p>
-                    <div class="filters-grid">
-                        <button class="btn filter-btn" data-filter="pulse" onclick="selectFilterInModal('pulse', this)">${t('ledPage.filterPulse')}</button>
-                        <button class="btn filter-btn" data-filter="breathing" onclick="selectFilterInModal('breathing', this)">${t('ledPage.filterBreathing')}</button>
-                        <button class="btn filter-btn" data-filter="blink" onclick="selectFilterInModal('blink', this)">${t('ledPage.filterBlink')}</button>
-                        <button class="btn filter-btn" data-filter="wave" onclick="selectFilterInModal('wave', this)">${t('ledPage.filterWave')}</button>
-                        <button class="btn filter-btn" data-filter="scanline" onclick="selectFilterInModal('scanline', this)">${t('ledPage.filterScanline')}</button>
-                        <button class="btn filter-btn" data-filter="glitch" onclick="selectFilterInModal('glitch', this)">${t('ledPage.filterGlitch')}</button>
-                        <button class="btn filter-btn" data-filter="rainbow" onclick="selectFilterInModal('rainbow', this)">${t('ledPage.filterRainbow')}</button>
-                        <button class="btn filter-btn" data-filter="sparkle" onclick="selectFilterInModal('sparkle', this)">${t('ledPage.filterSparkle')}</button>
-                        <button class="btn filter-btn" data-filter="plasma" onclick="selectFilterInModal('plasma', this)">${t('ledPage.filterPlasma')}</button>
-                        <button class="btn filter-btn" data-filter="sepia" onclick="selectFilterInModal('sepia', this)">${t('ledPage.filterSepia')}</button>
-                        <button class="btn filter-btn" data-filter="posterize" onclick="selectFilterInModal('posterize', this)">${t('ledPage.filterPosterize')}</button>
-                        <button class="btn filter-btn" data-filter="contrast" onclick="selectFilterInModal('contrast', this)">${t('ledPage.filterContrast')}</button>
-                        <button class="btn filter-btn" data-filter="invert" onclick="selectFilterInModal('invert', this)">${t('ledPage.filterInvert')}</button>
-                        <button class="btn filter-btn" data-filter="grayscale" onclick="selectFilterInModal('grayscale', this)">${t('ledPage.filterGrayscale')}</button>
-                    </div>
-                </div>
-                <div class="cc-section" id="modal-filter-config" style="display:none;">
-                    <h4>${t('ledPage.settings')}</h4>
-                    <p class="cc-help-text">${t('ledPage.current')}: <span id="modal-filter-name">${t('ledPage.effectNotSelected')}</span></p>
-                    <div id="modal-filter-params"></div>
-                </div>
-                <div class="config-actions cc-actions">
-                    <button class="btn btn-service-style btn-sm" id="modal-apply-filter-btn" onclick="applyFilterFromModal()" disabled>${t('ledPage.apply')}</button>
-                    <button class="btn btn-danger btn-sm" onclick="stopFilterFromModal()">${t('ledPage.stop')}</button>
-                </div>
-            </div>
-        `;
-    } else if (type === 'colorcorrection') {
-        // 色彩校正模态框
-        return `
-            <div class="modal-section cc-modal-section">
-                <div class="cc-enable-row">
-                    <label>
-                        <input type="checkbox" id="cc-enabled" onchange="previewColorCorrection()"> 
-                        ${t('ledPage.ccEnable')}
-                    </label>
-                </div>
-                <div class="cc-section">
-                    <h4>${t('ledPage.ccWhitePoint')}</h4>
-                    <p class="cc-help-text">${t('ledPage.ccWhitePointHelp')}</p>
-                    <div class="config-row">
-                        <label>R</label>
-                        <input type="range" min="0" max="200" value="100" id="cc-wp-r" 
-                               oninput="updateCcSliderValue('cc-wp-r-val', this.value / 100)">
-                        <span id="cc-wp-r-val">1.00</span>
-                    </div>
-                    <div class="config-row">
-                        <label>G</label>
-                        <input type="range" min="0" max="200" value="100" id="cc-wp-g" 
-                               oninput="updateCcSliderValue('cc-wp-g-val', this.value / 100)">
-                        <span id="cc-wp-g-val">1.00</span>
-                    </div>
-                    <div class="config-row">
-                        <label>B</label>
-                        <input type="range" min="0" max="200" value="100" id="cc-wp-b" 
-                               oninput="updateCcSliderValue('cc-wp-b-val', this.value / 100)">
-                        <span id="cc-wp-b-val">1.00</span>
-                    </div>
-                </div>
-                <div class="cc-section">
-                    <h4>${t('ledPage.ccGamma')}</h4>
-                    <p class="cc-help-text">${t('ledPage.ccGammaHelp')}</p>
-                    <div class="config-row">
-                        <label>${t('ledPage.ccGammaValue')}</label>
-                        <input type="range" min="10" max="400" value="100" id="cc-gamma" 
-                               oninput="updateCcSliderValue('cc-gamma-val', this.value / 100)">
-                        <span id="cc-gamma-val">1.00</span>
-                    </div>
-                </div>
-                <div class="cc-section">
-                    <h4>${t('ledPage.ccBrightness')}</h4>
-                    <p class="cc-help-text">${t('ledPage.ccBrightnessHelp')}</p>
-                    <div class="config-row">
-                        <label>${t('ledPage.ccFactor')}</label>
-                        <input type="range" min="0" max="200" value="100" id="cc-brightness" 
-                               oninput="updateCcSliderValue('cc-brightness-val', this.value / 100)">
-                        <span id="cc-brightness-val">1.00</span>
-                    </div>
-                </div>
-                <div class="cc-section">
-                    <h4>${t('ledPage.ccSaturation')}</h4>
-                    <p class="cc-help-text">${t('ledPage.ccSaturationHelp')}</p>
-                    <div class="config-row">
-                        <label>${t('ledPage.ccFactor')}</label>
-                        <input type="range" min="0" max="200" value="100" id="cc-saturation" 
-                               oninput="updateCcSliderValue('cc-saturation-val', this.value / 100)">
-                        <span id="cc-saturation-val">1.00</span>
-                    </div>
-                </div>
-                <div class="config-actions cc-actions">
-                    <button class="btn btn-sm btn-gray" onclick="resetColorCorrection()">${t('ledPage.ccReset')}</button>
-                    <button class="btn btn-sm btn-service-style" onclick="ccExport()" title="${t('ledPage.ccExportTip')}"><i class="ri-download-line"></i> ${t('ledPage.ccExport')}</button>
-                    <button class="btn btn-sm btn-service-style" onclick="ccImport()" title="${t('ledPage.ccImportTip')}"><i class="ri-upload-line"></i> ${t('ledPage.ccImport')}</button>
-                    <button class="btn btn-sm btn-service-style" onclick="applyColorCorrection()"><i class="ri-save-line"></i> ${t('ledPage.ccApply')}</button>
-                </div>
-            </div>
-        `;
+        const body = grp(row(t('ledPage.deviceEnable'), swc(`modal-device-enabled-${device}`, isOn, `onchange="toggleLedFromModal('${device}', this.checked)"`))) +
+            gt(t('ledPage.animationGroup')) +
+            `<div class="effects-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">${effectsHtml}</div>
+            <div class="gw" id="modal-effect-config-${device}" style="display:${currentAnimation ? 'block' : 'none'}">
+                ${gt(t('ledPage.settings'))}
+                ${grp(
+                    row(t('ledPage.current'), `<span class="t-value" id="modal-effect-name-${device}">${currentAnimation ? effectDisplayName(currentAnimation) : t('ledPage.effectNotSelected')}</span>`) +
+                    row(t('ledPage.speed'), ledSlider(`modal-effect-speed-${device}`, 1, 100, currentSpeed, `updateEffectSliderValue('${device}', this.value)`) + ledVal(`modal-speed-val-${device}`, currentSpeed)) +
+                    `<div class="row" id="modal-color-row-${device}" style="display:${colorSupportedEffects.includes(currentAnimation) ? 'flex' : 'none'}"><div class="rl">${t('ledPage.color')}</div><div class="rc">${swatch(`modal-effect-color-${device}`, colorHex, `previewEffectFromModal('${device}')`)}</div></div>`)}
+            </div>`;
+        return [body, `<button class="btn lg" onclick="stopEffectFromModal('${device}')"><svg class="i"><use href="#ri-stop-circle-line"/></svg>${t('ledPage.stop')}</button>${cancelReset(`resetEffectFromModal('${device}')`)}<button class="btn lg primary" onclick="applyEffectFromModal('${device}')">${t('ledPage.ccApply')}</button>`];
     }
-    return '<p>' + (typeof t === 'function' ? t('ledPage.unknownType') : '未知类型') + '</p>';
+    if (type === 'content') {
+        const body = `<div style="display:flex;justify-content:center;margin:12px 0 4px"><div class="seg"><button class="on" onclick="switchModalTab(this, 'modal-tab-image')">${t('ledPage.imageTab')}</button><button onclick="switchModalTab(this, 'modal-tab-qr')">${t('ledPage.qrTabSp')}</button></div></div>
+            <div id="modal-tab-image">${grp(
+                row(t('automationPage.imagePath'), inp('modal-image-path', 200, '/sdcard/images/...', 'mono', 'value="/sdcard/images/"') + `<button class="btn sm" onclick="browseImages()">${t('ledPage.browse')}</button>`) +
+                row(t('ledPage.centerDisplay'), swc('modal-image-center', true)))}</div>
+            <div class="gw" id="modal-tab-qr" style="display:none">
+                ${gt(t('ledPage.contentGroup'))}
+                <input type="text" class="field" id="modal-qr-text" placeholder="${t('ledPage.enterTextOrUrl')}" aria-label="${t('ledPage.enterTextOrUrl')}" style="width:100%">
+                ${gt(t('ledPage.styleGroup'))}
+                ${grp(
+                    row(t('ledPage.errorCorrection'), `<select class="field" id="modal-qr-ecc" style="width:130px"><option value="L">L · 7%</option><option value="M" selected>M · 15%</option><option value="Q">Q · 25%</option><option value="H">H · 30%</option></select>`) +
+                    row(t('ledPage.foregroundColor'), swatch('modal-qr-fg', '#ffffff')) +
+                    row(t('ledPage.backgroundImage'), `<input class="field" id="modal-qr-bg-image" placeholder="${t('ledPage.noBackgroundImage')}" aria-label="${t('ledPage.noBackgroundImage')}" readonly style="width:150px;cursor:pointer" onclick="openFilePickerFor('modal-qr-bg-image', '/sdcard/images')"><button class="btn sm" onclick="openFilePickerFor('modal-qr-bg-image', '/sdcard/images')">${t('ledPage.browse')}</button><button class="btn sm" onclick="document.getElementById('modal-qr-bg-image').value=''">${t('ledPage.clear')}</button>`))}
+            </div>`;
+        return [body, `<button class="btn lg primary" id="led-foot-image" onclick="displayImageFromModal()">${t('ledPage.displayImage')}</button><button class="btn lg primary hidden" id="led-foot-qr" onclick="generateQrCodeFromModal()">${t('ledPage.generateQrCode')}</button>`];
+    }
+    if (type === 'text') {
+        const body = gt(t('ledPage.textGroup')) +
+            `<input type="text" class="field" id="modal-text-content" placeholder="${t('ledPage.enterTextToDisplay')}" aria-label="${t('ledPage.enterTextToDisplay')}" style="width:100%">` +
+            gt(t('ledPage.fontAndStyle')) +
+            grp(
+                row(t('ledPage.font'), `<select class="field" id="modal-text-font" style="width:150px"><option value="default">${t('common.default')}</option></select><button class="btn icon sm" onclick="loadFontListForModal()" title="${t('ledPage.refreshFonts')}" aria-label="${t('ledPage.refreshFonts')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>`) +
+                row(t('ledPage.alignment'), `<div class="seg"><button onclick="segPick(this,'modal-text-align','left')">${t('ledPage.alignShortLeft')}</button><button class="on" onclick="segPick(this,'modal-text-align','center')">${t('ledPage.alignShortCenter')}</button><button onclick="segPick(this,'modal-text-align','right')">${t('ledPage.alignShortRight')}</button></div><input type="hidden" id="modal-text-align" value="center">`) +
+                row(t('ledPage.color'), swatch('modal-text-color', '#00ff00'))) +
+            gt(t('ledPage.position')) +
+            grp(
+                row(t('ledPage.autoPosition'), swc('modal-text-auto-pos', true, 'onchange="toggleTextAutoPos(this.checked)"')) +
+                `<div class="row off"><div class="rl">X</div><div class="rc">${num('modal-text-x', 80, 0, 'min="0" max="255" placeholder="X" disabled')}<span class="t-note" id="modal-text-pos-note">${t('ledPage.autoPosNote')}</span></div></div>` +
+                `<div class="row off"><div class="rl">Y</div><div class="rc">${num('modal-text-y', 80, 0, 'min="0" max="255" placeholder="Y" disabled')}</div></div>`) +
+            gt(t('ledPage.scroll')) +
+            grp(
+                row(t('ledPage.paramDirection'), `<select class="field" id="modal-text-scroll" style="width:110px"><option value="none">${t('ledPage.scrollDirNone')}</option><option value="left" selected>${t('ledPage.scrollLeft')}</option><option value="right">${t('ledPage.scrollRight')}</option><option value="up">${t('ledPage.scrollUp')}</option><option value="down">${t('ledPage.scrollDown')}</option></select>`) +
+                row(t('ledPage.paramSpeed'), num('modal-text-speed', 80, 50, 'min="1" max="100"')) +
+                row(t('ledPage.loopScroll'), swc('modal-text-loop', true)));
+        return [body, `<button class="btn lg" onclick="stopTextFromModal()"><svg class="i"><use href="#ri-stop-circle-line"/></svg>${t('ledPage.stop')}</button><button class="btn lg primary" onclick="displayTextFromModal()">${t('ledPage.display')}</button>`];
+    }
+    if (type === 'filter') {
+        const filters = ['pulse', 'breathing', 'blink', 'wave', 'scanline', 'glitch', 'rainbow', 'sparkle', 'plasma', 'sepia', 'posterize', 'contrast', 'invert', 'grayscale'];
+        const body = gt(t('ledPage.filterGroup')) +
+            `<div class="filters-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">${filters.map(f => `<button class="tile filter-btn" data-filter="${f}" onclick="selectFilterInModal('${f}', this)" style="padding:10px 12px;justify-content:center"><span class="t-body">${t('ledPage.filter' + f.charAt(0).toUpperCase() + f.slice(1))}</span></button>`).join('')}</div>` +
+            gt(t('ledPage.settings')) +
+            grp(row(t('ledPage.current'), `<span class="t-value" id="modal-filter-name">${t('ledPage.effectNotSelected')}</span>`) +
+                `<div class="rows" id="modal-filter-params">${row(t('ledPage.paramsRow'), `<span class="t-note">${t('ledPage.paramsVary')}</span>`)}</div>`);
+        return [body, `<button class="btn lg" onclick="stopFilterFromModal()"><svg class="i"><use href="#ri-stop-circle-line"/></svg>${t('ledPage.stop')}</button><button class="btn lg primary" id="modal-apply-filter-btn" onclick="applyFilterFromModal()" disabled>${t('ledPage.apply')}</button>`];
+    }
+    if (type === 'colorcorrection') {
+        const ccRow = (label, id, min, max, note = '') => row(label, ledSlider(id, min, max, 100, `updateCcSliderValue('${id}-val', this.value / 100)`) + ledVal(`${id}-val`, '1.00'), note);
+        const body = grp(row(t('ledPage.ccEnable'), swc('cc-enabled', false, 'onchange="previewColorCorrection()"'))) +
+            gt(t('ledPage.ccWhiteBalanceTitle')) +
+            grp(ccRow(t('ledPage.ccRed'), 'cc-wp-r', 0, 200) + ccRow(t('ledPage.ccGreen'), 'cc-wp-g', 0, 200) + ccRow(t('ledPage.ccBlue'), 'cc-wp-b', 0, 200)) +
+            gt(t('ledPage.ccAdjust')) +
+            grp(ccRow('Gamma', 'cc-gamma', 10, 400, t('ledPage.ccGammaNote')) + ccRow(t('ledPage.ccBrightness'), 'cc-brightness', 0, 200, t('ledPage.ccBrightnessNote')) + ccRow(t('ledPage.ccSaturation'), 'cc-saturation', 0, 200, t('ledPage.ccSaturationNote'))) +
+            gt(t('ledPage.ccBackup')) +
+            grp(row(t('ledPage.ccConfigFile'), `<button class="btn sm" onclick="ccExport()" title="${t('ledPage.ccExportTip')}">${t('ledPage.ccExportSd')}</button><button class="btn sm" onclick="ccImport()" title="${t('ledPage.ccImportTip')}">${t('ledPage.ccImportSd')}</button>`));
+        return [body, `<button class="btn lg" onclick="resetColorCorrection()">${t('ledPage.ccReset')}</button><button class="btn lg primary" onclick="applyColorCorrection()">${t('ledPage.ccApply')}</button>`];
+    }
+    return [`<div class="t-note">${t('ledPage.unknownType')}</div>`, ''];
 }
 
 // LED 模态框存储
 let currentLedModal = { device: null, type: null };
 let selectedModalFilter = null;
 
-// 打开 LED 模态框
+// 打开 LED 模态框（矩阵屏有 5 个标签，其它设备只有程序动画）
 function openLedModal(device, type) {
     currentLedModal = { device, type };
+    selectedModalFilter = null;
     
-    // 设备名首字母大写 (Touch/Board/Matrix)
     const deviceName = device.charAt(0).toUpperCase() + device.slice(1);
-    
-    const titleMap = {
-        'effect': `${deviceName} ${t('ledPage.effectTitle')}`,
-        'content': `${deviceName} ${t('ledPage.contentTitle')}`,
-        'text': `${deviceName} ${t('ledPage.textTitle')}`,
-        'filter': `${deviceName} ${t('ledPage.filterTitle')}`,
-        'colorcorrection': t('ledPage.ccGlobalTitle') || t('ledPage.ccGlobalTitle')
-    };
+    const deviceData = window.ledDevicesCache?.find(d => d.name === device);
+    const isMatrix = device === 'matrix' || deviceData?.layout === 'matrix';
+    const tabs = isMatrix ? `<div class="seg full" style="margin-bottom:6px">${[['effect', 'effectTitle'], ['content', 'contentTitle'], ['text', 'textTitle'], ['filter', 'filterTitle'], ['colorcorrection', 'colorCorrectionTitle']].map(([k, key]) => `<button class="${k === type ? 'on' : ''}" onclick="openLedModal('${device}', '${k}')">${t('ledPage.' + key)}</button>`).join('')}</div>` : '';
+    const [body, foot] = generateLedModalContent(device, type);
     
     const modal = document.getElementById('led-modal');
-    const title = document.getElementById('led-modal-title');
-    const body = document.getElementById('led-modal-body');
-    const headerActions = document.getElementById('led-modal-header-actions');
-    
-    title.textContent = titleMap[type] || t('promptRepair.settingsTitle', {device: getDeviceDescription(device)});
-    body.innerHTML = generateLedModalContent(device, type);
-    
-    // 色彩校正、程序动画、Matrix 图像/QR/文本/滤镜：紧凑样式 + 淡色背景，复刻全局色彩校正风格
-    if (type === 'colorcorrection' || type === 'effect' || type === 'content' || type === 'text' || type === 'filter') {
-        modal.querySelector('.modal-content').classList.add('cc-compact');
-        if (headerActions) {
-            if (type === 'colorcorrection') {
-                headerActions.innerHTML = '';
-            } else if (type === 'effect') {
-                headerActions.innerHTML = `
-                    <button class="btn btn-sm btn-gray" onclick="stopEffectFromModal('${device}')"><i class="ri-stop-circle-line"></i> ${t('ledPage.stop')}</button>
-                `;
-            } else {
-                headerActions.innerHTML = '';
-            }
-        }
-    } else {
-        modal.querySelector('.modal-content').classList.remove('cc-compact');
-        if (headerActions) headerActions.innerHTML = '';
-    }
-    
+    modal.innerHTML = sheet(660, `${t('led.settingsTitle')} · ${type === 'colorcorrection' ? t('ledPage.colorCorrectionTitle') : deviceName}`, tabs + body, foot, 'closeLedModal()');
     modal.classList.remove('hidden');
     
     // 加载字体列表（如果是文本模态框）
@@ -5860,22 +4896,14 @@ function closeLedModal() {
     selectedModalFilter = null;
 }
 
-// 模态框内 Tab 切换
+// 图像 / QR 码 子标签切换（底部主按钮跟着换）
 function switchModalTab(btn, tabId) {
-    btn.parentElement.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
-    btn.classList.add('active');
-    
-    const modal = btn.closest('.modal-content');
-    modal.querySelectorAll('.modal-tab-content').forEach(c => {
-        c.style.display = 'none';
-        c.classList.remove('active');
-    });
-    
-    const tab = document.getElementById(tabId);
-    if (tab) {
-        tab.style.display = 'block';
-        tab.classList.add('active');
-    }
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+    const isQr = tabId === 'modal-tab-qr';
+    document.getElementById('modal-tab-image').style.display = isQr ? 'none' : 'block';
+    document.getElementById('modal-tab-qr').style.display = isQr ? 'block' : 'none';
+    document.getElementById('led-foot-image').classList.toggle('hidden', isQr);
+    document.getElementById('led-foot-qr').classList.toggle('hidden', !isQr);
 }
 
 // 模态框内选择特效
@@ -5883,12 +4911,12 @@ function selectEffectInModal(device, effect, btn) {
     selectedEffects[device] = effect;
     
     // 更新按钮状态
-    btn.closest('.effects-grid, .modal-tab-content').querySelectorAll('.effect-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
+    btn.closest('.effects-grid').querySelectorAll('.effect-btn').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
     
     // 显示特效名（RemixIcon，无 emoji，首字母大写）
     const effectName = document.getElementById(`modal-effect-name-${device}`);
-    if (effectName) effectName.innerHTML = getEffectIconRemix(effect) + effectDisplayName(effect);
+    if (effectName) effectName.textContent = effectDisplayName(effect);
     
     // 显示/隐藏颜色选择器
     const colorRow = document.getElementById(`modal-color-row-${device}`);
@@ -5986,6 +5014,7 @@ function resetEffectFromModal(device) {
     if (speedVal) speedVal.textContent = defaultSpeed;
     if (colorPicker) colorPicker.value = defaultColor;
     
+    syncSliders();
     showToast(t('ledPage.ccResetSuccess'), 'success');
     previewEffectFromModal(device);
 }
@@ -6168,42 +5197,25 @@ async function stopTextFromModal() {
 function selectFilterInModal(filter, btn) {
     selectedModalFilter = filter;
     
-    btn.closest('.filters-grid').querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
+    btn.closest('.filters-grid').querySelectorAll('.filter-btn').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
     
     const filterName = document.getElementById('modal-filter-name');
     if (filterName) filterName.textContent = filterDisplayName(filter);
     
-    const configDiv = document.getElementById('modal-filter-config');
     const paramsDiv = document.getElementById('modal-filter-params');
-    
-    // \u6e05\u7a7a\u73b0\u6709\u53c2\u6570
     if (paramsDiv) {
-        paramsDiv.innerHTML = '';
-        
-        // \u6839\u636e\u6ede\u955c\u914d\u7f6e\u751f\u6210\u53c2\u6570\u63a7\u4ef6
         const config = filterConfig[filter];
         if (config && config.params && config.params.length > 0) {
-            config.params.forEach(param => {
+            paramsDiv.innerHTML = config.params.map(param => {
                 const paramInfo = paramLabels[param];
                 const defaultValue = config.defaults[param] || 50;
-                
-                const row = document.createElement('div');
-                row.className = 'config-row';
-                row.innerHTML = `
-                    <label>${getParamLabel(param)}</label>
-                    <input type="range" id="modal-filter-${param}" 
-                           min="${paramInfo.min}" max="${paramInfo.max}" 
-                           value="${defaultValue}" style="flex:1"
-                           oninput="document.getElementById('modal-filter-${param}-val').textContent=this.value+'${paramInfo.unit}'">
-                    <span id="modal-filter-${param}-val">${defaultValue}${paramInfo.unit}</span>
-                `;
-                paramsDiv.appendChild(row);
-            });
+                return row(getParamLabel(param), ledSlider(`modal-filter-${param}`, paramInfo.min, paramInfo.max, defaultValue, `document.getElementById('modal-filter-${param}-val').textContent=this.value+'${paramInfo.unit}'`) + ledVal(`modal-filter-${param}-val`, defaultValue + paramInfo.unit));
+            }).join('');
+        } else {
+            paramsDiv.innerHTML = row(t('ledPage.paramsRow'), `<span class="t-note">${t('ledPage.paramsVary')}</span>`);
         }
     }
-    
-    if (configDiv) configDiv.style.display = 'block';
     
     const applyBtn = document.getElementById('modal-apply-filter-btn');
     if (applyBtn) applyBtn.disabled = false;
@@ -6368,7 +5380,7 @@ function applyCcConfigToUI(config) {
 function updateCcSliderNoPreview(sliderId, sliderValue, displayValue) {
     const slider = document.getElementById(sliderId);
     const valueEl = document.getElementById(sliderId + '-val');
-    if (slider) slider.value = Math.round(sliderValue);
+    if (slider) { slider.value = Math.round(sliderValue); syncSliders(); }
     if (valueEl) valueEl.textContent = displayValue.toFixed(2);
 }
 
@@ -6470,11 +5482,11 @@ async function ccImport() {
 
 function getDeviceIcon(name) {
     const icons = {
-        'touch': '<i class="ri-lightbulb-flash-line"></i>',
-        'board': '<i class="ri-dashboard-3-line"></i>',
-        'matrix': '<i class="ri-apps-line"></i>'
+        'touch': '<svg class="i"><use href="#ri-lightbulb-flash-line"/></svg>',
+        'board': '<svg class="i"><use href="#ri-dashboard-3-line"/></svg>',
+        'matrix': '<svg class="i"><use href="#ri-apps-line"/></svg>'
     };
-    return icons[name.toLowerCase()] || '<i class="ri-lightbulb-line"></i>';
+    return icons[name.toLowerCase()] || '<svg class="i"><use href="#ri-lightbulb-line"/></svg>';
 }
 
 function getDeviceDescription(name) {
@@ -6485,7 +5497,7 @@ function getDeviceDescription(name) {
 /** 程序动画模态框内使用的 RemixIcon（无 emoji，用已纳入 minimal 字体的 ri-play-line） */
 function getEffectIconRemix(name) {
     if (!name) return '';
-    return '<i class="ri-play-line"></i> ';
+    return '<svg class="i"><use href="#ri-play-line"/></svg> ';
 }
 
 /** 动画名称首字母大写（用于更多动画弹窗展示） */
@@ -6544,7 +5556,7 @@ async function applyEffect(device) {
         if (btn) {
             btn.classList.add('on');
             const icon = btn.querySelector('.power-icon');
-            if (icon) icon.innerHTML = '<i class="ri-sun-line"></i>';
+            if (icon) icon.innerHTML = '<svg class="i"><use href="#ri-sun-line"/></svg>';
         }
         
         // 更新顶部当前动画显示
@@ -6616,7 +5628,7 @@ async function fillColor(device) {
         const btn = document.getElementById(`toggle-${device}`);
         if (btn) {
             btn.classList.add('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<i class="ri-checkbox-blank-circle-fill"></i>';
+            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-checkbox-blank-circle-fill"/></svg>';
             btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOffLight') : '关灯';
         }
         showToast(typeof t === 'function' ? t('toast.ledFilled', { device: getDeviceDescription(device), color }) : `${device} 已填充 ${color}`, 'success');
@@ -6634,7 +5646,7 @@ async function quickFill(device, color) {
         const btn = document.getElementById(`toggle-${device}`);
         if (btn) {
             btn.classList.add('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<i class="ri-checkbox-blank-circle-fill"></i>';
+            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-checkbox-blank-circle-fill"/></svg>';
             btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOffLight') : '关灯';
         }
         showToast(typeof t === 'function' ? t('toast.ledFilled', { device: getDeviceDescription(device), color }) : `${device} → ${color}`, 'success');
@@ -6651,7 +5663,7 @@ async function clearLed(device) {
         const btn = document.getElementById(`toggle-${device}`);
         if (btn) {
             btn.classList.remove('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<i class="ri-lightbulb-line"></i>';
+            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-lightbulb-line"/></svg>';
             btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOnLight') : '开灯';
         }
         showToast(typeof t === 'function' ? t('toast.ledTurnedOff', { device: getDeviceDescription(device) }) : `${device} 已关闭`, 'success');
@@ -6668,7 +5680,7 @@ async function startEffect(device, effect) {
         const btn = document.getElementById(`toggle-${device}`);
         if (btn) {
             btn.classList.add('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<i class="ri-checkbox-blank-circle-fill"></i>';
+            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-checkbox-blank-circle-fill"/></svg>';
             btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOffLight') : '关灯';
         }
         showToast(typeof t === 'function' ? t('toast.ledEffectStarted', { device: getDeviceDescription(device), effect }) : `${device}: ${effect} 已启动`, 'success');
@@ -6723,8 +5735,17 @@ async function openFilePickerFor(inputId, startPath = '/sdcard/images') {
     filePickerCallback = (path) => {
         document.getElementById(inputId).value = path;
     };
+    buildFilePicker();
     document.getElementById('file-picker-modal').classList.remove('hidden');
     await loadFilePickerDirectory(filePickerCurrentPath);
+}
+
+// 文件选择器弹窗外观：面包屑 + 目录列表；单击文件即选中并关闭，单击目录进入
+function buildFilePicker() {
+    document.getElementById('file-picker-modal').innerHTML = sheet(560, t('files.pickImageTitle'),
+        `<div class="acts" style="align-items:center;margin-bottom:12px"><button class="btn icon sm" onclick="loadFilePickerDirectory('/sdcard')" title="${t('files.rootDir')}" aria-label="${t('files.rootDir')}"><svg class="i"><use href="#ri-home-line"/></svg></button><span id="file-picker-current-path" style="display:contents"></span></div>
+        <div class="card" style="padding:0;background:var(--fill)" id="file-picker-list"></div>`,
+        `<button class="btn lg" onclick="closeFilePicker()">${t('common.cancel')}</button>`);
 }
 
 // 浏览图像文件 - 打开文件选择器
@@ -6741,16 +5762,24 @@ async function browseImages() {
             oldInput.value = path;
         }
     };
+    buildFilePicker();
     document.getElementById('file-picker-modal').classList.remove('hidden');
     await loadFilePickerDirectory(filePickerCurrentPath);
 }
 
 // 加载文件选择器目录
 async function loadFilePickerDirectory(path) {
+    if (!document.getElementById('file-picker-list')) buildFilePicker();
     filePickerCurrentPath = path;
-    document.getElementById('file-picker-current-path').textContent = path;
+    const parts = path.split('/').filter(Boolean);
+    document.getElementById('file-picker-current-path').innerHTML = parts.map((seg, i) => {
+        const upto = '/' + parts.slice(0, i + 1).join('/');
+        return `<span class="t-note">/</span>` + (i === parts.length - 1
+            ? `<span class="t-body" style="font-weight:600">${escapeHtml(seg)}</span>`
+            : `<span class="t-body" role="link" style="cursor:pointer" onclick="loadFilePickerDirectory('${escapeHtml(upto)}')">${escapeHtml(seg)}</span>`);
+    }).join('');
     const listContainer = document.getElementById('file-picker-list');
-    listContainer.innerHTML = '<div class="loading">' + t('common.loading') + '</div>';
+    listContainer.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('common.loading') + '</div>';
     
     try {
         const result = await api.storageList(path);
@@ -6759,11 +5788,7 @@ async function loadFilePickerDirectory(path) {
         if (result.error) {
             // 目录不存在，尝试创建
             if (result.error.includes('not found') || result.error.includes('Directory')) {
-                listContainer.innerHTML = `
-                    <div class="empty-state">
-                        <div>${typeof t === 'function' ? t('filePage.dirNotExist') : '目录不存在'}</div>
-                        <button class="btn btn-sm btn-service-style" onclick="createAndOpenDir('${path}')">${typeof t === 'function' ? t('filePage.createDir') : '创建目录'}</button>
-                    </div>`;
+                listContainer.innerHTML = `<div class="tr" style="--cols:1fr auto;color:var(--ink-3)"><span>${t('filePage.dirNotExist')}</span><button class="btn sm" onclick="createAndOpenDir('${path}')">${t('filePage.createDir')}</button></div>`;
                 return;
             }
             throw new Error(result.error);
@@ -6780,7 +5805,7 @@ async function loadFilePickerDirectory(path) {
         });
         
         if (filtered.length === 0) {
-            listContainer.innerHTML = '<div class="empty-state">' + (typeof t === 'function' ? t('filePage.noImages') : '无图片文件') + '</div>';
+            listContainer.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('filePage.noImages') + '</div>';
             return;
         }
         
@@ -6795,21 +5820,11 @@ async function loadFilePickerDirectory(path) {
         
         listContainer.innerHTML = filtered.map(f => {
             const isDir = f.type === 'dir' || f.type === 'directory';
-            const icon = isDir ? '<i class="ri-folder-line"></i>' : getFileIcon(f.name);
             const fullPath = path + (path.endsWith('/') ? '' : '/') + f.name;
-            return `
-                <div class="file-picker-item ${isDir ? 'directory' : 'file'}" 
-                     data-path="${fullPath}" data-type="${f.type}"
-                     onclick="filePickerItemClick(this, '${fullPath}', ${isDir})"
-                     ondblclick="filePickerItemDblClick('${fullPath}', ${isDir})">
-                    <span class="icon">${icon}</span>
-                    <span class="name">${f.name}</span>
-                    ${!isDir ? `<span class="size">${formatFileSize(f.size)}</span>` : ''}
-                </div>
-            `;
+            return `<div class="tr" style="--cols:24px 1fr 90px;cursor:pointer" onclick="filePickerItemClick(this, '${fullPath}', ${isDir})"><div><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg></div><div>${escapeHtml(f.name)}</div><div>${isDir ? '-' : formatFileSize(f.size)}</div></div>`;
         }).join('');
     } catch (e) {
-        listContainer.innerHTML = `<div class="error">${t('common.loadFailed')}:  ${escapeHtml(e.message)}</div>`;
+        listContainer.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('common.loadFailed')}: ${escapeHtml(e.message)}</span></div>`;
     }
 }
 
@@ -6825,18 +5840,11 @@ async function createAndOpenDir(path) {
 
 // 文件选择器项目单击
 function filePickerItemClick(element, path, isDir) {
-    // 移除其他选中状态
-    document.querySelectorAll('.file-picker-item.selected').forEach(el => el.classList.remove('selected'));
-    element.classList.add('selected');
-    
-    if (!isDir) {
-        filePickerSelectedFile = path;
-        document.getElementById('file-picker-selected-name').textContent = path.split('/').pop();
-        document.getElementById('file-picker-confirm').disabled = false;
+    if (isDir) {
+        loadFilePickerDirectory(path);
     } else {
-        filePickerSelectedFile = null;
-        document.getElementById('file-picker-selected-name').textContent = '-';
-        document.getElementById('file-picker-confirm').disabled = true;
+        filePickerSelectedFile = path;
+        confirmFilePicker();
     }
 }
 
@@ -7232,189 +6240,129 @@ async function loadNetworkPage() {
     
     const content = document.getElementById('page-content');
     content.innerHTML = `
-        <div class="page-network">
+        <div class="page page-network">
             <!-- 网络状态概览 -->
-            <div class="net-overview">
-                <div class="net-status-row">
-                    <div class="net-iface" id="net-iface-eth">
-                        <div class="iface-icon"><i class="ri-network-line"></i></div>
-                        <div class="iface-info">
-                            <div class="iface-name">${t('network.ethernet')}</div>
-                            <div class="iface-status" id="eth-quick-status">-</div>
-                        </div>
-                        <div class="iface-ip" id="eth-quick-ip">-</div>
-                    </div>
-                    <div class="net-iface" id="net-iface-wifi">
-                        <div class="iface-icon"><i class="ri-signal-wifi-3-line"></i></div>
-                        <div class="iface-info">
-                            <div class="iface-name">${t('network.wifiSta')}</div>
-                            <div class="iface-status" id="wifi-quick-status">-</div>
-                        </div>
-                        <div class="iface-ip" id="wifi-quick-ip">-</div>
-                    </div>
-                    <div class="net-iface" id="net-iface-ap">
-                        <div class="iface-icon"><i class="ri-broadcast-line"></i></div>
-                        <div class="iface-info">
-                            <div class="iface-name">${t('network.wifiAp')}</div>
-                            <div class="iface-status" id="ap-quick-status">-</div>
-                        </div>
-                        <div class="iface-clients" id="ap-quick-clients">-</div>
-                    </div>
+            <div class="net-tiles">
+                <div class="tile" id="net-iface-eth">
+                    <span class="tile-i"><svg class="i"><use href="#ri-network-line"/></svg></span>
+                    <div class="tile-m"><div class="t-section">${t('network.ethernet')}</div><div><span class="state" id="eth-quick-status">-</span></div></div>
+                    <span class="num t-value" id="eth-quick-ip">-</span>
+                </div>
+                <div class="tile" id="net-iface-wifi">
+                    <span class="tile-i"><svg class="i"><use href="#ri-signal-wifi-3-line"/></svg></span>
+                    <div class="tile-m"><div class="t-section">${t('network.wifiSta')}</div><div><span class="state" id="wifi-quick-status">-</span></div></div>
+                    <span class="num t-value" id="wifi-quick-ip">-</span>
+                </div>
+                <div class="tile" id="net-iface-ap">
+                    <span class="tile-i"><svg class="i"><use href="#ri-broadcast-line"/></svg></span>
+                    <div class="tile-m"><div class="t-section">${t('network.wifiAp')}</div><div><span class="state" id="ap-quick-status">-</span></div></div>
+                    <span class="num t-value" id="ap-quick-clients">-</span>
                 </div>
             </div>
             
             <!-- 主要配置区域 -->
-            <div class="net-config-grid">
+            <div class="net-grid">
                 <!-- 左侧：接口配置 -->
-                <div class="net-panel">
-                    <div class="panel-header">
-                        <h3>${t('network.interfaceConfig')}</h3>
-                        <div class="panel-tabs">
-                            <button class="panel-tab active btn-service-style" onclick="switchNetTab('eth')">${t('network.ethernet')}</button>
-                            <button class="panel-tab btn-service-style" onclick="switchNetTab('wifi')">${t('network.wifi')}</button>
+                <div>
+                    <div class="sec-h">
+                        <span class="t-section sec-t">${t('network.interfaceConfig')}</span>
+                        <div class="seg">
+                            <button class="panel-tab on" onclick="switchNetTab('eth')">${t('network.ethernet')}</button>
+                            <button class="panel-tab" onclick="switchNetTab('wifi')">${t('network.wifi')}</button>
                         </div>
                     </div>
                     
                     <!-- 以太网配置面板 -->
-                    <div class="panel-content" id="net-tab-eth">
-                        <div class="config-section">
-                            <div class="config-row">
-                                <span class="config-label">${t('network.linkStatus')}</span>
-                                <span class="config-value" id="net-eth-link">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.ipAddress')}</span>
-                                <span class="config-value mono" id="net-eth-ip">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.subnetMask')}</span>
-                                <span class="config-value mono" id="net-eth-netmask">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.gateway')}</span>
-                                <span class="config-value mono" id="net-eth-gw">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.dns')}</span>
-                                <span class="config-value mono" id="net-eth-dns">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.mac')}</span>
-                                <span class="config-value mono small" id="net-eth-mac">-</span>
-                            </div>
+                    <div id="net-tab-eth">
+                        <div class="card">
+                            <div class="kv"><span>${t('network.linkStatus')}</span><span><span class="state" id="net-eth-link">-</span></span></div>
+                            ${kvRow(t('network.ipAddress'), '-', 'net-eth-ip')}
+                            ${kvRow(t('network.subnetMask'), '-', 'net-eth-netmask')}
+                            ${kvRow(t('network.gateway'), '-', 'net-eth-gw')}
+                            ${kvRow(t('network.dns'), '-', 'net-eth-dns')}
+                            <div class="kv"><span>${t('network.mac')}</span><span><span class="mono" id="net-eth-mac">-</span></span></div>
                         </div>
                     </div>
                     
                     <!-- WiFi 配置面板 -->
-                    <div class="panel-content hidden" id="net-tab-wifi">
-                        <div class="wifi-mode-selector">
-                            <label>${t('network.mode')}:</label>
-                            <select id="wifi-mode-select" onchange="setWifiMode()">
-                                <option value="off">${t('network.off')}</option>
-                                <option value="sta">${t('network.sta')}</option>
-                                <option value="ap">${t('network.ap')}</option>
-                                <option value="apsta">${t('network.apsta')}</option>
-                            </select>
-                        </div>
-                        
-                        <!-- STA 信息 -->
-                        <div class="config-section" id="wifi-sta-section">
-                            <h4>${t('network.stationConnect')}</h4>
-                            <div class="config-row">
-                                <span class="config-label">${t('common.status')}</span>
-                                <span class="config-value" id="net-wifi-sta-status">-</span>
+                    <div class="hidden" id="net-tab-wifi">
+                        <div class="card net-wifi">
+                            <div class="between">
+                                <span class="t-label">${t('network.mode')}</span>
+                                <select id="wifi-mode-select" class="field" style="width:120px" onchange="setWifiMode()">
+                                    <option value="off">${t('network.off')}</option>
+                                    <option value="sta">${t('network.sta')}</option>
+                                    <option value="ap">${t('network.ap')}</option>
+                                    <option value="apsta">${t('network.apsta')}</option>
+                                </select>
                             </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.ssid')}</span>
-                                <span class="config-value" id="net-wifi-sta-ssid">-</span>
+
+                            <!-- STA 信息 -->
+                            <div id="wifi-sta-section">
+                                <div class="t-label net-sub">${t('network.stationConnect')}</div>
+                                <div class="kv"><span>${t('common.status')}</span><span><span class="state" id="net-wifi-sta-status">-</span></span></div>
+                                ${kvRow(t('network.ssid'), '-', 'net-wifi-sta-ssid')}
+                                ${kvRow('IP', '-', 'net-wifi-sta-ip')}
+                                ${kvRow(t('network.signal'), '-', 'net-wifi-sta-rssi')}
+                                <div class="acts end">
+                                    <button class="btn sm" id="wifi-scan-btn" onclick="showWifiScan()"><svg class="i"><use href="#ri-scan-line"/></svg>${t('network.scan')}</button>
+                                    <button class="btn sm hidden" id="wifi-disconnect-btn" onclick="disconnectWifi()">${t('network.disconnect')}</button>
+                                </div>
                             </div>
-                            <div class="config-row">
-                                <span class="config-label">IP</span>
-                                <span class="config-value mono" id="net-wifi-sta-ip">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.signal')}</span>
-                                <span class="config-value" id="net-wifi-sta-rssi">-</span>
-                            </div>
-                            <div class="wifi-sta-actions">
-                                <button class="btn btn-sm" id="wifi-scan-btn" onclick="showWifiScan()"><i class="ri-scan-line"></i> ${t('network.scan')}</button>
-                                <button class="btn btn-sm btn-danger hidden" id="wifi-disconnect-btn" onclick="disconnectWifi()">${t('network.disconnect')}</button>
-                            </div>
-                        </div>
-                        
-                        <!-- AP 信息 -->
-                        <div class="config-section" id="wifi-ap-section">
-                            <h4><i class="ri-broadcast-line"></i> ${t('network.hotspot')}</h4>
-                            <div class="config-row">
-                                <span class="config-label">${t('common.status')}</span>
-                                <span class="config-value" id="net-wifi-ap-status">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.ssid')}</span>
-                                <span class="config-value" id="net-wifi-ap-ssid">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">IP</span>
-                                <span class="config-value mono" id="net-wifi-ap-ip">-</span>
-                            </div>
-                            <div class="config-row">
-                                <span class="config-label">${t('network.clientCount')}</span>
-                                <span class="config-value" id="net-wifi-ap-sta-count">0</span>
-                            </div>
-                            <div class="wifi-ap-actions">
-                                <button class="btn btn-sm" id="ap-config-btn" onclick="showApConfig()"><i class="ri-settings-3-line"></i> ${t('network.config')}</button>
-                                <button class="btn btn-sm" id="ap-stations-btn" onclick="showApStations()"><i class="ri-server-line"></i> ${t('network.devices')}</button>
+                            <hr class="sep">
+                            <!-- AP 信息 -->
+                            <div id="wifi-ap-section">
+                                <div class="between">
+                                    <span class="t-label">${t('network.hotspot')}</span>
+                                    <div class="acts">
+                                        <button class="btn sm" id="ap-config-btn" onclick="showApConfig()">${t('network.config')}</button>
+                                        <button class="btn sm" id="ap-stations-btn" onclick="showApStations()">${t('network.devices')}</button>
+                                    </div>
+                                </div>
+                                <div class="kv"><span>${t('common.status')}</span><span><span class="state" id="net-wifi-ap-status">-</span></span></div>
+                                ${kvRow(t('network.ssid'), '-', 'net-wifi-ap-ssid')}
+                                ${kvRow('IP', '-', 'net-wifi-ap-ip')}
+                                ${kvRow(t('network.clientCount'), '0', 'net-wifi-ap-sta-count')}
                             </div>
                         </div>
                     </div>
                 </div>
                 
                 <!-- 右侧：服务配置 -->
-                <div class="net-panel">
-                    <div class="panel-header">
-                        <h3>${t('network.networkServices')}</h3>
+                <div>
+                    <div class="sec-h">
+                        <span class="t-section sec-t">${t('network.networkServices')}</span>
+                        <div class="acts"></div>
                     </div>
-                    <div class="panel-content">
+                    <div class="card svc">
                         <!-- 主机名 -->
-                        <div class="service-block">
-                            <div class="service-header">
-                                <span class="service-name">${t('network.hostname')}</span>
-                                <span class="service-value" id="net-hostname">-</span>
-                            </div>
-                            <div class="service-config">
-                                <input type="text" id="hostname-input" placeholder="${t('network.newHostname')}" class="input-sm">
-                                <button class="btn btn-sm" onclick="setHostname()">${t('network.set')}</button>
+                        <div style="padding-bottom:16px">
+                            <div style="display:flex;justify-content:space-between;margin-bottom:8px"><span class="t-section">${t('network.hostname')}</span><span class="t-note" id="net-hostname">-</span></div>
+                            <div class="acts">
+                                <input type="text" id="hostname-input" class="field" style="flex:1" placeholder="${t('network.newHostname')}" aria-label="${t('network.newHostname')}">
+                                <button class="btn" onclick="setHostname()">${t('network.set')}</button>
                             </div>
                         </div>
-                        
+                        <hr class="sep">
                         <!-- DHCP 服务 -->
-                        <div class="service-block">
-                            <div class="service-header">
-                                <span class="service-name">${t('network.dhcpServer')}</span>
-                                <span class="service-badge" id="dhcp-badge">-</span>
-                            </div>
-                            <div class="service-detail" id="dhcp-interfaces-list"></div>
-                            <div class="service-actions">
-                                <button class="btn btn-sm" onclick="showDhcpClients()"><i class="ri-user-line"></i> ${t('network.clients')}</button>
+                        <div style="padding:16px 0">
+                            <div class="between"><span class="t-section">${t('network.dhcpServer')}</span><span class="state" id="dhcp-badge">-</span></div>
+                            <div class="between" style="margin-top:10px">
+                                <div class="t-label" id="dhcp-interfaces-list"></div>
+                                <button class="btn sm" onclick="showDhcpClients()">${t('network.clients')}</button>
                             </div>
                         </div>
-                        
-                        <div class="service-block">
-                            <div class="service-header">
-                                <span class="service-name">${typeof t === 'function' ? t('networkPage.natGateway') : 'NAT 网关'}</span>
-                                <span class="service-badge" id="nat-badge">-</span>
-                            </div>
-                            <div class="service-detail">
-                                <div class="nat-status-row">
-                                    <span>${typeof t === 'function' ? t('system.wifi') : 'WiFi'}:</span>
-                                    <span id="net-nat-wifi">-</span>
-                                    <span>${typeof t === 'function' ? t('system.ethernet') : 'ETH'}:</span>
-                                    <span id="net-nat-eth">-</span>
-                                </div>
-                            </div>
-                            <div class="service-actions">
-                                <button class="btn btn-sm" id="nat-toggle-btn" onclick="toggleNat()">${typeof t === 'function' ? t('common.enable') : '启用'}</button>
-                                <button class="btn btn-sm" onclick="saveNatConfig()">${typeof t === 'function' ? t('common.save') : '保存'}</button>
+                        <hr class="sep">
+                        <!-- NAT -->
+                        <div style="padding-top:16px">
+                            <div class="between"><span class="t-section">${t('networkPage.natGateway')}</span><span class="state" id="nat-badge">-</span></div>
+                            <div class="nat-row">
+                                <span class="t-label">${t('system.wifi')} <b class="t-value" id="net-nat-wifi"><svg class="i"><use href="#ri-close-line"/></svg></b></span>
+                                <span class="t-label">${t('system.ethernet')} <b class="t-value" id="net-nat-eth"><svg class="i"><use href="#ri-close-line"/></svg></b></span>
+                                <span style="flex:1"></span>
+                                <span class="t-label">${t('common.enable')}</span>
+                                <button class="switch" id="nat-toggle-btn" role="switch" aria-checked="false" aria-label="${t('common.enable')}" onclick="toggleNat()"></button>
+                                <button class="btn sm" onclick="saveNatConfig()">${t('common.save')}</button>
                             </div>
                         </div>
                     </div>
@@ -7422,93 +6370,37 @@ async function loadNetworkPage() {
             </div>
             
             <!-- 接入上层网络 -->
-            <div class="net-section" id="lpmu-access-section" style="padding:12px 16px">
-                <div class="section-header" style="margin-bottom:8px">
-                    <h3>${typeof t === 'function' ? t('networkPage.lpmuAccessTitle') : '接入上层网络'}</h3>
-                    <button class="btn btn-sm btn-service-style lpmu-access-btn" id="network-lpmu-access-btn" onclick="startNetworkLpmuAccess()">${typeof t === 'function' ? t('networkPage.lpmuAccessButton') : '通过LPMU接入'}</button>
+            <div class="card net-lpmu" id="lpmu-access-section">
+                <div>
+                    <div class="t-section">${t('networkPage.lpmuAccessTitle')}</div>
+                    <div id="network-lpmu-access-current" style="margin-top:4px"><span class="state">${t('networkPage.lpmuAccessIdle')}</span></div>
+                    <div id="network-lpmu-access-summary" class="t-note" style="word-break:break-word"></div>
                 </div>
-                <div class="service-detail" style="margin-bottom:0">
-                    <div id="network-lpmu-access-current" style="display:flex;align-items:center;gap:8px;min-height:22px">
-                        <span class="status-dot gray"></span>${typeof t === 'function' ? t('networkPage.lpmuAccessIdle') : '未启动'}
-                    </div>
-                    <div id="network-lpmu-access-summary" style="margin-top:8px;word-break:break-word"></div>
-                </div>
+                <button class="btn sm lpmu-access-btn" id="network-lpmu-access-btn" onclick="startNetworkLpmuAccess()">${t('networkPage.lpmuAccessBtn')}</button>
             </div>
 
-            <!-- WiFi 扫描结果面板 -->
-            <div class="net-section hidden" id="wifi-scan-section">
-                <div class="section-header">
-                    <h3>${t('networkPage.wifiNetworks')}</h3>
-                    <div class="section-actions">
-                        <button class="btn btn-sm" onclick="showWifiScan()"><i class="ri-refresh-line"></i> ${t('common.refresh')}</button>
-                        <button class="btn btn-sm" onclick="hideWifiScan()"><i class="ri-close-line"></i> ${t('common.close')}</button>
-                    </div>
-                </div>
-                <div class="wifi-networks" id="wifi-scan-results"></div>
-            </div>
+            <!-- WiFi 扫描 -->
+            <div class="modal hidden" id="wifi-scan-section">${sheet(560, t('networkPage.wifiScanTitle'), '<div class="card" style="padding:0;background:var(--fill)" id="wifi-scan-results"></div>',
+                `<button class="btn lg" onclick="showWifiScan()"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.refresh')}</button><button class="btn lg primary" onclick="hideWifiScan()">${t('common.close')}</button>`, 'hideWifiScan()')}</div>
             
-            <!-- AP 接入设备面板 -->
-            <div class="net-section hidden" id="ap-stations-section">
-                <div class="section-header">
-                    <h3>${typeof t === 'function' ? t('networkPage.apStations') : '热点接入设备'}</h3>
-                    <button class="btn btn-sm" onclick="hideApStations()"><i class="ri-close-line"></i> ${t('common.close')}</button>
-                </div>
-                <div class="ap-stations-list" id="ap-stations-results"></div>
-            </div>
+            <!-- 热点接入设备 -->
+            <div class="modal hidden" id="ap-stations-section">${sheet(560, t('networkPage.apStations'), `<div class="card" style="padding:0;background:var(--fill)"><div class="tr th cols-sta"><div>MAC</div><div>IP</div><div>RSSI</div></div><div id="ap-stations-results"></div></div>`,
+                `<button class="btn lg primary" onclick="hideApStations()">${t('common.close')}</button>`, 'hideApStations()')}</div>
             
-            <!-- DHCP 客户端面板 -->
-            <div class="net-section hidden" id="dhcp-clients-section">
-                <div class="section-header">
-                    <h3>${typeof t === 'function' ? t('networkPage.dhcpClients') : 'DHCP 客户端'}</h3>
-                    <div class="section-actions">
-                        <select id="dhcp-iface-select" class="select-sm" onchange="loadDhcpClients()">
-                            <option value="ap">WiFi AP</option>
-                            <option value="eth">Ethernet</option>
-                        </select>
-                        <button class="btn btn-sm" onclick="loadDhcpClients()"><i class="ri-refresh-line"></i></button>
-                        <button class="btn btn-sm" onclick="hideDhcpClients()"><i class="ri-close-line"></i></button>
-                    </div>
-                </div>
-                <div class="dhcp-clients-list" id="dhcp-clients-results"></div>
-            </div>
+            <!-- DHCP 客户端 -->
+            <div class="modal hidden" id="dhcp-clients-section">${sheet(560, t('networkPage.dhcpClients'), `
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span class="t-label">${t('networkPage.ifaceLabel')}</span><select id="dhcp-iface-select" class="field" style="width:140px" onchange="loadDhcpClients()"><option value="ap">WiFi AP</option><option value="eth">Ethernet</option></select><button class="btn icon sm" onclick="loadDhcpClients()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button></div>
+                <div class="card" style="padding:0;background:var(--fill)"><div class="tr th cols-dhcp"><div>MAC</div><div>IP</div><div>${t('networkPage.hostname')}</div></div><div id="dhcp-clients-results"></div></div>`,
+                `<button class="btn lg primary" onclick="hideDhcpClients()">${t('common.close')}</button>`, 'hideDhcpClients()')}</div>
             
-            <!-- AP 配置弹窗 -->
-            <div class="modal hidden" id="ap-config-modal">
-                <div class="modal-content modal-sm">
-                    <div class="modal-header">
-                        <h2>${t('networkPage.apConfig')}</h2>
-                        <button class="modal-close" onclick="hideApConfig()"><i class="ri-close-line"></i></button>
-                    </div>
-                    <div class="form-group">
-                        <label>SSID</label>
-                        <input type="text" id="ap-ssid-input" placeholder="TianshanOS">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('networkPage.password') : '密码 (留空=开放)'}</label>
-                        <input type="password" id="ap-password-input" placeholder="${typeof t === 'function' ? t('networkPage.apPasswordHint') : '至少 8 位'}">
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('networkPage.channel') : '信道'}</label>
-                            <select id="ap-channel-input">
-                                <option value="1">1</option>
-                                <option value="6" selected>6</option>
-                                <option value="11">11</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="ap-hidden-input">
-                                ${t('networkPage.hideSSID')}
-                            </label>
-                        </div>
-                    </div>
-                    <div class="form-actions">
-                        <button class="btn" onclick="hideApConfig()">${t('common.cancel')}</button>
-                        <button class="btn btn-service-style" onclick="applyApConfig()">${t('common.apply')}</button>
-                    </div>
-                </div>
-            </div>
+            <!-- WiFi 热点配置 -->
+            <div class="modal hidden" id="ap-config-modal">${sheet(560, t('networkPage.apConfig'),
+                grp(
+                    row('SSID', inp('ap-ssid-input', 200, '', '', 'placeholder="TianshanOS" aria-label="SSID"')) +
+                    row(t('network.password'), inp('ap-password-input', 200, t('networkPage.apPasswordHint'), '', 'type="password"'), '', t('networkPage.password')) +
+                    row(t('networkPage.channel'), `<select id="ap-channel-input" class="field" style="width:90px"><option value="1">1</option><option value="6" selected>6</option><option value="11">11</option></select>`) +
+                    row(t('networkPage.hideSSID'), swc('ap-hidden-input'))),
+                `<button class="btn lg" onclick="hideApConfig()">${t('common.cancel')}</button><button class="btn lg primary" onclick="applyApConfig()">${t('common.apply')}</button>`)}</div>
         </div>
     `;
     
@@ -7523,10 +6415,10 @@ async function loadNetworkPage() {
 
 // 网络页面 Tab 切换
 function switchNetTab(tab) {
-    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel-content').forEach(p => p.classList.add('hidden'));
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('on'));
+    ['eth', 'wifi'].forEach(k => document.getElementById('net-tab-' + k).classList.add('hidden'));
     
-    event.target.classList.add('active');
+    event.target.classList.add('on');
     document.getElementById('net-tab-' + tab).classList.remove('hidden');
 }
 
@@ -7539,20 +6431,24 @@ async function refreshNetworkPage() {
         if (status.data) {
             const data = status.data;
             
+            const setState = (id, ok, text) => {
+                const el = document.getElementById(id);
+                el.className = ok ? 'state ok' : 'state';
+                el.textContent = text;
+            };
+            const connText = (ok) => t(ok ? 'status.connected' : 'status.disconnected');
+
             // 主机名
             document.getElementById('net-hostname').textContent = data.hostname || '-';
             
             // 以太网
             const eth = data.ethernet || {};
             const ethConnected = eth.status === 'connected' || eth.link_up;
-            
-            // 概览区
             updateIfaceStatus('net-iface-eth', ethConnected);
-            document.getElementById('eth-quick-status').textContent = ethConnected ? (typeof t === 'function' ? t('status.connected') : '已连接') : (typeof t === 'function' ? t('status.disconnected') : '未连接');
+            setState('eth-quick-status', ethConnected, connText(ethConnected));
             document.getElementById('eth-quick-ip').textContent = eth.ip || '-';
             
-            document.getElementById('net-eth-link').innerHTML = ethConnected ? 
-                '<span class="status-dot green"></span>' + (typeof t === 'function' ? t('status.connected') : '已连接') : '<span class="status-dot red"></span>' + (typeof t === 'function' ? t('status.disconnected') : '未连接');
+            setState('net-eth-link', ethConnected, connText(ethConnected));
             document.getElementById('net-eth-ip').textContent = eth.ip || '-';
             document.getElementById('net-eth-netmask').textContent = eth.netmask || '-';
             document.getElementById('net-eth-gw').textContent = eth.gateway || '-';
@@ -7562,36 +6458,28 @@ async function refreshNetworkPage() {
             // WiFi STA
             const wifiSta = data.wifi_sta || {};
             const staConnected = wifiSta.connected || wifiSta.status === 'connected';
-            
             updateIfaceStatus('net-iface-wifi', staConnected);
-            document.getElementById('wifi-quick-status').textContent = staConnected ? (typeof t === 'function' ? t('status.connected') : '已连接') : (typeof t === 'function' ? t('status.disconnected') : '未连接');
+            setState('wifi-quick-status', staConnected, connText(staConnected));
             document.getElementById('wifi-quick-ip').textContent = wifiSta.ip || '-';
             
-            document.getElementById('net-wifi-sta-status').innerHTML = staConnected ? 
-                '<span class="status-dot green"></span>' + (typeof t === 'function' ? t('status.connected') : '已连接') : '<span class="status-dot red"></span>' + (typeof t === 'function' ? t('status.disconnected') : '未连接');
+            setState('net-wifi-sta-status', staConnected, connText(staConnected));
             document.getElementById('net-wifi-sta-ssid').textContent = wifiSta.ssid || '-';
             document.getElementById('net-wifi-sta-ip').textContent = wifiSta.ip || '-';
             document.getElementById('net-wifi-sta-rssi').textContent = wifiSta.rssi ? `${wifiSta.rssi} dBm ${getSignalBars(wifiSta.rssi)}` : '-';
             
             // 根据连接状态显示/隐藏断开按钮
-            const disconnectBtn = document.getElementById('wifi-disconnect-btn');
-            if (staConnected) {
-                disconnectBtn.classList.remove('hidden');
-            } else {
-                disconnectBtn.classList.add('hidden');
-            }
+            document.getElementById('wifi-disconnect-btn').classList.toggle('hidden', !staConnected);
             
             // WiFi AP
             const wifiAp = data.wifi_ap || {};
             const apActive = wifiAp.status === 'connected' || wifiAp.active;
             const apClients = wifiAp.sta_count || 0;
-            
+            const apText = t(apActive ? 'status.running' : 'status.notEnabled');
             updateIfaceStatus('net-iface-ap', apActive);
-            document.getElementById('ap-quick-status').textContent = apActive ? (typeof t === 'function' ? t('status.running') : '运行中') : (typeof t === 'function' ? t('status.notEnabled') : '未启用');
-            document.getElementById('ap-quick-clients').textContent = apActive ? (typeof t === 'function' ? t('networkPage.devicesCount', { count: apClients }) : `${apClients} 设备`) : '-';
+            setState('ap-quick-status', apActive, apText);
+            document.getElementById('ap-quick-clients').textContent = apActive ? t('networkPage.devicesCount', { count: apClients }) : '-';
             
-            document.getElementById('net-wifi-ap-status').innerHTML = apActive ? 
-                '<span class="status-dot green"></span>' + (typeof t === 'function' ? t('status.running') : '运行中') : '<span class="status-dot gray"></span>' + (typeof t === 'function' ? t('status.notEnabled') : '未启用');
+            setState('net-wifi-ap-status', apActive, apText);
             document.getElementById('net-wifi-ap-ssid').textContent = wifiAp.ssid || '-';
             document.getElementById('net-wifi-ap-ip').textContent = wifiAp.ip || '-';
             document.getElementById('net-wifi-ap-sta-count').textContent = apClients;
@@ -7635,26 +6523,21 @@ async function refreshNetworkPage() {
         if (dhcp.data) {
             const container = document.getElementById('dhcp-interfaces-list');
             const badge = document.getElementById('dhcp-badge');
-            
+            const setBadge = (ok, text) => { badge.className = ok ? 'state ok' : 'state'; badge.textContent = text; };
             if (dhcp.data.interfaces) {
                 const runningCount = dhcp.data.interfaces.filter(i => i.running).length;
-                badge.textContent = `${runningCount}/${dhcp.data.interfaces.length}`;
-                badge.className = 'service-badge ' + (runningCount > 0 ? 'badge-ok' : 'badge-warn');
+                setBadge(runningCount > 0, `${runningCount}/${dhcp.data.interfaces.length}`);
                 
                 container.innerHTML = dhcp.data.interfaces.map(iface => `
                     <div class="dhcp-iface-row">
-                        <span class="status-dot ${iface.running ? 'green' : 'gray'}"></span>
-                        <span class="iface-name">${iface.display_name || iface.interface}</span>
-                        <span class="iface-detail">${typeof t === 'function' ? t('networkPage.leasesCount', { n: iface.active_leases || 0 }) : (iface.active_leases || 0) + ' 租约'}</span>
+                        <span class="dot ${iface.running ? 'ok' : ''}"></span>
+                        <span>${iface.display_name || iface.interface}</span>
+                        <span class="t-note">${t('networkPage.leasesCount', { n: iface.active_leases || 0 })}</span>
                     </div>
                 `).join('');
             } else {
-                badge.textContent = dhcp.data.running ? (typeof t === 'function' ? t('status.running') : '运行') : (typeof t === 'function' ? t('status.stopped') : '停止');
-                badge.className = 'service-badge ' + (dhcp.data.running ? 'badge-ok' : 'badge-warn');
-                container.innerHTML = '<div class="dhcp-iface-row">' +
-                    '<span class="status-dot ' + (dhcp.data.running ? 'green' : 'gray') + '"></span>' +
-                    '<span>' + (typeof t === 'function' ? t('networkPage.activeLeasesCount', { n: dhcp.data.active_leases || 0 }) : (dhcp.data.active_leases || 0) + ' 活跃租约') + '</span>' +
-                    '</div>';
+                setBadge(dhcp.data.running, t(dhcp.data.running ? 'status.running' : 'status.stopped'));
+                container.textContent = t('networkPage.activeLeasesCount', { n: dhcp.data.active_leases || 0 });
             }
         }
     } catch (e) {
@@ -7670,21 +6553,22 @@ async function refreshNetworkPage() {
             const ethUp = nat.data.eth_up;
             
             const badge = document.getElementById('nat-badge');
-            badge.textContent = enabled ? (typeof t === 'function' ? t('system.running') : '运行') : (typeof t === 'function' ? t('system.stopped') : '停止');
-            badge.className = 'service-badge ' + (enabled ? 'badge-ok' : 'badge-warn');
+            badge.className = enabled ? 'state ok' : 'state';
+            badge.textContent = t(enabled ? 'system.running' : 'system.stopped');
             
-            document.getElementById('net-nat-wifi').innerHTML = wifiConnected ? 
-                '<span class="status-dot green"></span><i class="ri-check-line"></i>' : '<span class="status-dot red"></span><i class="ri-close-line"></i>';
-            document.getElementById('net-nat-eth').innerHTML = ethUp ? 
-                '<span class="status-dot green"></span><i class="ri-check-line"></i>' : '<span class="status-dot red"></span><i class="ri-close-line"></i>';
+            const mark = (id, ok) => {
+                const el = document.getElementById(id);
+                el.innerHTML = '<svg class="i"><use href="#' + (ok ? 'ri-check-line' : 'ri-close-line') + '"/></svg>';
+                el.style.color = ok ? 'var(--ok)' : 'var(--ink-3)';
+            };
+            mark('net-nat-wifi', wifiConnected);
+            mark('net-nat-eth', ethUp);
             
-            // NAT 按钮
-            const natToggleBtn = document.getElementById('nat-toggle-btn');
-            natToggleBtn.textContent = enabled ? (typeof t === 'function' ? t('common.disable') : '禁用') : (typeof t === 'function' ? t('common.enable') : '启用');
-            natToggleBtn.className = enabled ? 'btn btn-sm btn-danger' : 'btn btn-sm btn-success';
-            
-            const canToggle = enabled || (wifiConnected && ethUp);
-            natToggleBtn.disabled = !canToggle;
+            // NAT 开关
+            const natSwitch = document.getElementById('nat-toggle-btn');
+            natSwitch.classList.toggle('on', !!enabled);
+            natSwitch.setAttribute('aria-checked', enabled ? 'true' : 'false');
+            natSwitch.disabled = !(enabled || (wifiConnected && ethUp));
         }
     } catch (e) {
         if (!pageCurrent()) return; console.log('NAT error:', e); }
@@ -7783,15 +6667,15 @@ function renderNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '') {
         btn.disabled = !!info.running;
         btn.innerHTML = info.running
             ? (typeof t === 'function' ? t('networkPage.lpmuAccessRunning') : '处理中')
-            : (typeof t === 'function' ? t('networkPage.lpmuAccessButton') : '通过LPMU接入');
+            : (typeof t === 'function' ? t('networkPage.lpmuAccessBtn') : '通过LPMU接入');
     }
 
     const currentEl = document.getElementById('network-lpmu-access-current');
     if (currentEl) {
-        const dot = info.failed ? 'red' : (info.success ? 'green' : (info.running ? 'yellow' : 'gray'));
+        const cls = info.failed ? ' bad' : (info.success ? ' ok' : '');
         const label = getNetworkLpmuAccessStageLabel(info.stage);
         const text = info.running ? (typeof t === 'function' ? t('networkPage.lpmuAccessRunning') : '处理中') + ': ' + label : label;
-        currentEl.innerHTML = '<span class="status-dot ' + dot + '"></span><span>' + escapeHtml(text) + '</span>';
+        currentEl.innerHTML = '<span class="state' + cls + '">' + escapeHtml(text) + '</span>';
     }
 
     const summaryEl = document.getElementById('network-lpmu-access-summary');
@@ -7800,8 +6684,7 @@ function renderNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '') {
             const label = info.failed
                 ? (typeof t === 'function' ? t('networkPage.lpmuAccessError') : '错误')
                 : (typeof t === 'function' ? t('networkPage.lpmuAccessOutput') : '输出');
-            const color = info.failed ? 'var(--danger-color)' : 'var(--text-light)';
-            summaryEl.innerHTML = '<span style="color:' + color + '">' + label + ': ' + escapeHtml(info.summary) + '</span>';
+            summaryEl.innerHTML = '<span' + (info.failed ? ' style="color:var(--bad)"' : '') + '>' + label + ': ' + escapeHtml(info.summary) + '</span>';
         } else {
             summaryEl.textContent = '';
         }
@@ -7875,12 +6758,9 @@ function compactNetworkLpmuAccessText(value) {
 // 更新接口状态样式
 function updateIfaceStatus(elementId, isActive) {
     const el = document.getElementById(elementId);
-    if (el) {
-        el.className = 'net-iface ' + (isActive ? 'active' : 'inactive');
-    }
+    if (el) el.dataset.active = isActive ? '1' : '0';
 }
 
-// 信号强度条
 function getSignalBars(rssi) {
     if (rssi >= -50) return '████';
     if (rssi >= -60) return '███░';
@@ -7934,41 +6814,31 @@ async function showWifiScan() {
     const container = document.getElementById('wifi-scan-results');
     
     section.classList.remove('hidden');
-    container.innerHTML = '<div class="loading-inline">' + (typeof t === 'function' ? t('networkPage.scanning') : '扫描中...') + '</div>';
+    container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.scanning') + '</div>';
     
     try {
         const result = await api.wifiScan();
         if (result.data && result.data.networks) {
             if (result.data.networks.length === 0) {
-                container.innerHTML = '<div class="empty-state">' + (typeof t === 'function' ? t('networkPage.noNetwork') : '未发现网络') + '</div>';
+                container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.noNetwork') + '</div>';
                 return;
             }
             // 按信号强度排序
             const networks = result.data.networks.sort((a, b) => b.rssi - a.rssi);
             container.innerHTML = networks.map(net => `
-                <div class="wifi-network-card" onclick="connectWifi('${escapeHtml(net.ssid)}')">
-                    <div class="wifi-signal">${getSignalIcon(net.rssi)}</div>
-                    <div class="wifi-info">
-                        <div class="wifi-ssid">${escapeHtml(net.ssid) || t('promptRepair.hiddenNetwork')}</div>
-                        <div class="wifi-meta">
-                            <span>${net.rssi} dBm</span>
-                            <span>CH ${net.channel}</span>
-                            <span>${net.auth || 'OPEN'}</span>
-                        </div>
-                    </div>
-                    <button class="btn btn-sm btn-service-style">${t('networkPage.connect')}</button>
+                <div class="tr cols-wifi" title="CH ${net.channel}">
+                    <div>${escapeHtml(net.ssid) || t('promptRepair.hiddenNetwork')}${net.auth && net.auth !== 'OPEN' ? `<span class="tag" style="margin-left:6px">${escapeHtml(net.auth)}</span>` : ''}</div>
+                    <div><span class="state${net.rssi >= -60 ? ' ok' : ''}">${net.rssi} dBm</span></div>
+                    <div class="act"><button class="btn sm" onclick="connectWifi('${escapeHtml(net.ssid)}')">${t('networkPage.connect')}</button></div>
                 </div>
             `).join('');
         }
     } catch (e) {
         const errorMsg = e.message || '';
         if (errorMsg.includes('STA') || errorMsg.includes('APSTA') || errorMsg.includes('mode')) {
-            container.innerHTML = `<div class="error-state">
-                <div class="error-icon"><i class="ri-error-warning-line" style="color:var(--rose-500)"></i></div>
-                <div class="error-text">${t('networkPage.needStaMode')}</div>
-            </div>`;
+            container.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('networkPage.needStaMode')}</span></div>`;
         } else {
-            container.innerHTML = `<div class="error-state">${t('toast.scanFailed')}:  ${escapeHtml(errorMsg)}</div>`;
+            container.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('toast.scanFailed')}: ${escapeHtml(errorMsg)}</span></div>`;
         }
     }
 }
@@ -7978,24 +6848,65 @@ function hideWifiScan() {
 }
 
 function getSignalIcon(rssi) {
-    return '<i class="ri-signal-wifi-3-line"></i>';
+    return '<svg class="i"><use href="#ri-signal-wifi-3-line"/></svg>';
 }
 
 function escapeHtml(str) {
     return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
+// 必填校验（替代 alert）：字段边框变红，下方一行 12px 红字，焦点移到该字段；提示消失时机：用户修改该字段
+function clearFieldErrors() {
+    document.querySelectorAll('.fe-msg').forEach(e => e.remove());
+    document.querySelectorAll('.err[aria-invalid]').forEach(e => { e.classList.remove('err'); e.removeAttribute('aria-invalid'); });
+}
+
+function fieldError(id, message) {
+    clearFieldErrors();
+    const el = typeof id === 'string' ? document.getElementById(id) : id;
+    if (!el) { showToast(message, 'error'); return; }
+    const msg = document.createElement('small');
+    msg.className = 'form-error fe-msg';
+    msg.setAttribute('role', 'alert');
+    msg.textContent = message;
+    const rl = el.closest('.row')?.querySelector('.rl');
+    const fl = el.closest('.fl');
+    if (rl) { msg.style.cssText = 'display:block;margin:0'; rl.appendChild(msg); }
+    else if (fl) { msg.style.marginTop = '0'; fl.appendChild(msg); }
+    else el.after(msg);
+    el.classList.add('err');
+    el.setAttribute('aria-invalid', 'true');
+    const clear = () => { msg.remove(); el.classList.remove('err'); el.removeAttribute('aria-invalid'); };
+    el.addEventListener('input', clear, { once: true });
+    el.addEventListener('change', clear, { once: true });
+    if (el.focus && !el.classList.contains('grp')) el.focus();
+}
+
 function connectWifi(ssid) {
-    const password = prompt(t('promptRepair.wifiPassword', {ssid}));
-    if (password !== null) {
-        api.wifiConnect(ssid, password)
-            .then((result) => {
-                requireApiSuccess(result, 'wifi.connect');
-                showToast((typeof t === 'function' ? t('toast.connecting') : '正在连接...'), 'info');
-                setTimeout(refreshNetworkPage, 3000);
-            })
-            .catch(e => showToast((typeof t === 'function' ? t('toast.connectFailedMsg', { msg: e.message }) : '连接失败: ' + e.message), 'error'));
-    }
+    document.getElementById('wifi-connect-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'wifi-connect-modal';
+    modal.className = 'modal';
+    modal.onclick = e => { if (e.target === modal) modal.remove(); };
+    const showPasswordLabel = t('securityPage.showPassword');
+    modal.innerHTML = sheet(480, t('ui.wifiConnectTitle', { ssid: escapeHtml(ssid) }),
+        `<div class="fl"><label>${t('network.password')}</label><div class="pwf"><input class="field" type="password" id="wifi-connect-password" autocomplete="off" placeholder="${t('ui.wifiPasswordPh')}" aria-label="${t('ui.wifiPasswordPh')}" style="width:100%" onkeydown="if(event.key==='Enter'){submitWifiConnect(this.dataset.ssid)}" data-ssid="${escapeHtml(ssid)}"><button type="button" class="pwt" onclick="toggleAccountPasswordVisibility('wifi-connect-password', this)" title="${showPasswordLabel}" aria-label="${showPasswordLabel}"><svg class="i"><use href="#ri-eye-line"/></svg></button></div></div>`,
+        `<button type="button" class="btn lg" onclick="document.getElementById('wifi-connect-modal').remove()">${t('common.cancel')}</button><button type="button" class="btn lg primary" data-ssid="${escapeHtml(ssid)}" onclick="submitWifiConnect(this.dataset.ssid)">${t('networkPage.connect')}</button>`);
+    document.body.appendChild(modal);
+    document.getElementById('wifi-connect-password').focus();
+}
+
+// 开放网络可留空密码
+function submitWifiConnect(ssid) {
+    const password = document.getElementById('wifi-connect-password')?.value ?? '';
+    document.getElementById('wifi-connect-modal')?.remove();
+    api.wifiConnect(ssid, password)
+        .then((result) => {
+            requireApiSuccess(result, 'wifi.connect');
+            showToast((typeof t === 'function' ? t('toast.connecting') : '正在连接...'), 'info');
+            setTimeout(refreshNetworkPage, 3000);
+        })
+        .catch(e => showToast((typeof t === 'function' ? t('toast.connectFailedMsg', { msg: e.message }) : '连接失败: ' + e.message), 'error'));
 }
 
 async function disconnectWifi() {
@@ -8014,27 +6925,21 @@ async function showApStations() {
     const container = document.getElementById('ap-stations-results');
     
     section.classList.remove('hidden');
-    container.innerHTML = '<div class="loading-inline">' + t('common.loading') + '</div>';
+    container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('common.loading') + '</div>';
     
     try {
         const result = await api.wifiApStations();
         if (result.data && result.data.stations) {
             if (result.data.stations.length === 0) {
-                container.innerHTML = '<div class="empty-state">' + (typeof t === 'function' ? t('networkPage.noDevice') : '无接入设备') + '</div>';
+                container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.noDevice') + '</div>';
                 return;
             }
             container.innerHTML = result.data.stations.map(sta => `
-                <div class="device-card">
-                    <div class="device-icon"><i class="ri-smartphone-line"></i></div>
-                    <div class="device-info">
-                        <div class="device-mac">${sta.mac}</div>
-                        <div class="device-rssi">${sta.rssi} dBm</div>
-                    </div>
-                </div>
+                <div class="tr cols-sta"><div class="mono">${escapeHtml(sta.mac)}</div><div>${escapeHtml(sta.ip || '-')}</div><div>${sta.rssi} dBm</div></div>
             `).join('');
         }
     } catch (e) {
-        container.innerHTML = `<div class="error-state">${t('toast.fetchFailed')}:  ${escapeHtml(e.message)}</div>`;
+        container.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('toast.fetchFailed')}: ${escapeHtml(e.message)}</span></div>`;
     }
 }
 
@@ -8092,31 +6997,23 @@ async function loadDhcpClients() {
     const iface = document.getElementById('dhcp-iface-select').value;
     const container = document.getElementById('dhcp-clients-results');
     
-    container.innerHTML = '<div class="loading-inline">' + t('common.loading') + '</div>';
+    container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('common.loading') + '</div>';
     
     try {
         const result = await api.dhcpClients(iface);
         if (!pageCurrent()) return;
         if (result.data && result.data.clients) {
             if (result.data.clients.length === 0) {
-                container.innerHTML = '<div class="empty-state">' + (typeof t === 'function' ? t('networkPage.noClient') : '无客户端') + '</div>';
+                container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.noClientBrief') + '</div>';
                 return;
             }
             container.innerHTML = result.data.clients.map(client => `
-                <div class="device-card">
-                    <div class="device-icon">${client.is_static ? '<i class="ri-lock-line"></i>' : '<i class="ri-computer-line"></i>'}</div>
-                    <div class="device-info">
-                        <div class="device-ip">${client.ip}</div>
-                        <div class="device-mac">${client.mac}</div>
-                        ${client.hostname ? `<div class="device-hostname">${client.hostname}</div>` : ''}
-                    </div>
-                    <div class="device-badge">${client.is_static ? t('networkPage.static') : t('networkPage.dynamic')}</div>
-                </div>
+                <div class="tr cols-dhcp"><div class="mono">${escapeHtml(client.mac)}</div><div>${escapeHtml(client.ip)}<span class="tag">${client.is_static ? t('networkPage.static') : t('networkPage.dynamic')}</span></div><div>${escapeHtml(client.hostname || '-')}</div></div>
             `).join('');
         }
     } catch (e) {
         if (!pageCurrent()) return;
-        container.innerHTML = `<div class="error-state">${t('toast.fetchFailed')}:  ${escapeHtml(e.message)}</div>`;
+        container.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('toast.fetchFailed')}: ${escapeHtml(e.message)}</span></div>`;
     }
 }
 
@@ -8159,93 +7056,56 @@ async function loadFilesPage() {
     
     const content = document.getElementById('page-content');
     content.innerHTML = `
-        <div class="page-files">
-            <div class="card file-card">
-                <div class="file-toolbar">
-                    <div class="breadcrumb" id="breadcrumb"></div>
-                    <div class="file-actions">
-                        <button class="btn btn-service-style btn-file-action" onclick="showUploadDialog()"><i class="ri-upload-line"></i> ${t('files.uploadFiles')}</button>
-                        <button class="btn btn-service-style btn-file-action" onclick="showNewFolderDialog()"><i class="ri-folder-add-line"></i> ${t('files.newFolder')}</button>
-                        <button type="button" class="btn btn-file-action btn-gray files-refresh-btn" onclick="refreshFilesPage()" title="${t('common.refresh')}"><i class="ri-refresh-line"></i></button>
-                    </div>
-                </div>
-                
-                <div class="storage-tabs">
-                    <button class="tab-btn btn-gray active" onclick="navigateToPath('/sdcard')">${t('files.sdcard')}</button>
-                    <button class="tab-btn btn-gray" onclick="navigateToPath('/spiffs')">${t('files.spiffs')}</button>
-                    <div class="storage-controls" id="storage-controls">
-                        <!-- 动态显示挂载/卸载按钮 -->
-                    </div>
-                </div>
-                
-                <!-- 批量操作工具栏 -->
-                <div class="batch-toolbar hidden" id="batch-toolbar">
-                    <span id="selected-count">${t('files.selectedCount', { n: 0 })}</span>
-                    <button class="btn btn-sm" onclick="batchDownload()"><i class="ri-download-line"></i> ${t('files.batchDownload')}</button>
-                    <button class="btn btn-sm btn-danger" onclick="batchDelete()"><i class="ri-delete-bin-line"></i> ${t('files.batchDelete')}</button>
-                    <button class="btn btn-sm" onclick="clearSelection()">${t('files.clearSelection')}</button>
-                </div>
-                
-                <div class="file-list" id="file-list">
-                    <div class="loading">${t('common.loading')}</div>
-                </div>
-                
-                <!-- 存储状态 -->
-                <div class="storage-status" id="storage-status"></div>
-            </div>
-        </div>
-        
-        <!-- 上传对话框 - 复刻全局色彩校正风格 -->
-        <div id="upload-modal" class="modal hidden">
-            <div class="modal-content cc-compact" style="max-width:560px">
-                <div class="modal-header">
-                    <h2>${t('files.uploadTitle')}</h2>
-                    <button class="modal-close" onclick="closeUploadDialog()"><i class="ri-close-line"></i></button>
-                </div>
-                <div class="modal-body">
-                    <div class="upload-area" id="upload-area">
-                        <p>${t('files.clickOrDrag')}</p>
-                        <input type="file" id="file-input" multiple style="display:none" onchange="handleFileSelect(event)">
-                    </div>
-                    <div id="upload-list"></div>
-                    <div class="config-actions cc-actions">
-                        <button class="btn btn-sm btn-gray" onclick="closeUploadDialog()">${t('common.cancel')}</button>
-                        <button class="btn btn-service-style btn-sm" onclick="uploadFiles()">${t('common.upload')}</button>
-                    </div>
+        <div class="page page-files">
+            <div class="between">
+                <div class="acts" id="breadcrumb"></div>
+                <div class="acts">
+                    <button class="btn sm" onclick="showUploadDialog()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('files.uploadFiles')}</button>
+                    <button class="btn sm" onclick="showNewFolderDialog()"><svg class="i"><use href="#ri-folder-add-line"/></svg>${t('files.newFolder')}</button>
+                    <button type="button" class="btn icon sm files-refresh-btn" onclick="refreshFilesPage()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                 </div>
             </div>
+
+            <div class="between">
+                <div class="seg storage-tabs">
+                    <button class="tab-btn on" onclick="navigateToPath('/sdcard')">${t('files.sdcard')}</button>
+                    <button class="tab-btn" onclick="navigateToPath('/spiffs')">${t('files.spiffs')}</button>
+                </div>
+                <div id="storage-controls"></div>
+            </div>
+
+            <div class="card file-list" id="file-list" style="padding:0;overflow:hidden">
+                <div class="loading">${t('common.loading')}</div>
+            </div>
+
+            <!-- 批量操作工具栏 -->
+            <div class="m-float batch-toolbar hidden" id="batch-toolbar">
+                <span class="t-value" id="selected-count">${t('files.selectedBrief', { n: 0 })}</span>
+                <span class="vdiv"></span>
+                <button class="btn sm" onclick="batchDownload()"><svg class="i"><use href="#ri-download-line"/></svg>${t('files.batchDownload')}</button>
+                <button class="btn sm dg" onclick="batchDelete()"><svg class="i"><use href="#ri-delete-bin-line"/></svg>${t('files.batchDelete')}</button>
+                <button class="btn sm quiet" onclick="clearSelection()">${t('files.clearSelection')}</button>
+            </div>
+
+            <!-- 存储状态 -->
+            <div class="stor-st" id="storage-status"></div>
         </div>
         
+        <!-- 上传对话框 -->
+        <div id="upload-modal" class="modal hidden">${sheet(520, t('files.uploadTitle'), `
+            <div class="dz" id="upload-area"><div><svg class="i"><use href="#ri-upload-line"/></svg><div class="t-label" style="margin-top:6px">${t('files.pickOrDrop')}</div></div><input type="file" id="file-input" multiple style="display:none" onchange="handleFileSelect(event)"></div>
+            <div class="grp" id="upload-list" style="margin-top:12px"></div>`,
+            `<button class="btn lg" onclick="closeUploadDialog()">${t('common.cancel')}</button><button class="btn lg primary" onclick="uploadFiles()">${t('common.upload')}</button>`)}</div>
+
         <!-- 新建文件夹对话框 -->
-        <div id="newfolder-modal" class="modal hidden">
-            <div class="modal-content" style="max-width:420px">
-                <h2>${t('files.newFolderTitle')}</h2>
-                <div class="form-group">
-                    <label>${t('files.folderName')}</label>
-                    <input type="text" id="new-folder-name" placeholder="${t('files.folderNamePlaceholder')}">
-                </div>
-                <div class="form-actions">
-                    <button class="btn" onclick="closeNewFolderDialog()">${t('common.cancel')}</button>
-                    <button class="btn btn-service-style" onclick="createNewFolder()">${t('files.create')}</button>
-                </div>
-            </div>
-        </div>
+        <div id="newfolder-modal" class="modal hidden">${sheet(460, t('files.newFolderTitle'),
+            grp(row(t('common.name'), inp('new-folder-name', 220, t('files.folderNamePlaceholder')))),
+            `<button class="btn lg" onclick="closeNewFolderDialog()">${t('common.cancel')}</button><button class="btn lg primary" onclick="createNewFolder()">${t('files.create')}</button>`)}</div>
         
         <!-- 重命名对话框 -->
-        <div id="rename-modal" class="modal hidden">
-            <div class="modal-content" style="max-width:420px">
-                <h2>${t('files.renameTitle')}</h2>
-                <div class="form-group">
-                    <label>${t('files.newName')}</label>
-                    <input type="text" id="rename-input" placeholder="${t('files.newNamePlaceholder')}">
-                </div>
-                <input type="hidden" id="rename-original-path">
-                <div class="form-actions">
-                    <button class="btn" onclick="closeRenameDialog()">${t('common.cancel')}</button>
-                    <button class="btn btn-service-style" onclick="doRename()">${t('common.confirm')}</button>
-                </div>
-            </div>
-        </div>
+        <div id="rename-modal" class="modal hidden">${sheet(460, t('files.renameTitle'),
+            grp(row(t('files.newName'), inp('rename-input', 220, t('files.newNamePlaceholder')))) + '<input type="hidden" id="rename-original-path">',
+            `<button class="btn lg" onclick="closeRenameDialog()">${t('common.cancel')}</button><button class="btn lg primary" onclick="doRename()">${t('common.confirm')}</button>`)}</div>
     `;
     
     // 设置拖拽上传
@@ -8267,7 +7127,7 @@ function updateSelectionUI() {
     
     if (selectedFiles.size > 0) {
         toolbar.classList.remove('hidden');
-        countSpan.textContent = t('files.selectedCount', { n: selectedFiles.size });
+        countSpan.textContent = t('files.selectedBrief', { n: selectedFiles.size });
     } else {
         toolbar.classList.add('hidden');
     }
@@ -8335,7 +7195,7 @@ async function batchDelete() {
     }
     
     const count = selectedFiles.size;
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmDeleteFiles', { count }) : `确定要删除选中的 ${count} 个文件/文件夹吗？此操作不可撤销！`)) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteFiles', { count }) : `确定要删除选中的 ${count} 个文件/文件夹吗？此操作不可撤销！`, { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
     
@@ -8404,7 +7264,7 @@ async function mountSdCard() {
 }
 
 async function unmountSdCard() {
-    if (!confirmAction(typeof t === 'function' ? t('filePage.confirmUnmountSd') : '确定要卸载 SD 卡吗？\n\n卸载后将无法访问 SD 卡上的文件。')) {
+    if (!await confirmAction(typeof t === 'function' ? t('filePage.confirmUnmountSd') : '确定要卸载 SD 卡吗？\n\n卸载后将无法访问 SD 卡上的文件。', { primary: t('ui.unmount'), tone: 'neutral' })) {
         return;
     }
     
@@ -8452,9 +7312,9 @@ async function loadDirectory(path) {
             if (!status.data?.sd?.mounted) {
                 console.log('SD card not mounted, showing mount prompt');
                 listContainer.innerHTML = `
-                    <div class="unmounted-notice">
-                        <div class="unmounted-text">${typeof t === 'function' ? t('filePage.sdCardNotMounted') : 'SD 卡未挂载'}</div>
-                        <button class="btn btn-success" onclick="mountSdCard()">${typeof t === 'function' ? t('filePage.mountSdCard') : '挂载 SD 卡'}</button>
+                    <div class="empty unmounted-notice">
+                        <p class="t-body">${typeof t === 'function' ? t('filePage.sdCardNotMounted') : 'SD 卡未挂载'}</p>
+                        <button class="btn primary" onclick="mountSdCard()">${typeof t === 'function' ? t('filePage.mountSdCard') : '挂载 SD 卡'}</button>
                     </div>
                 `;
                 updateBreadcrumb(path);
@@ -8478,16 +7338,11 @@ async function loadDirectory(path) {
         
         // 更新存储标签页
         document.querySelectorAll('.storage-tabs .tab-btn').forEach(btn => {
-            btn.classList.remove('active');
-            if (path.startsWith('/sdcard') && btn.textContent.includes('SD')) {
-                btn.classList.add('active');
-            } else if (path.startsWith('/spiffs') && btn.textContent.includes('SPIFFS')) {
-                btn.classList.add('active');
-            }
+            btn.classList.toggle('on', (path.startsWith('/sdcard') && btn.textContent.includes('SD')) || (path.startsWith('/spiffs') && btn.textContent.includes('SPIFFS')));
         });
         
         if (entries.length === 0) {
-            listContainer.innerHTML = '<div class="empty-folder">' + (typeof t === 'function' ? t('filePage.emptyFolder') : '空文件夹') + '</div>';
+            listContainer.innerHTML = '<div class="empty"><p class="t-note">' + (typeof t === 'function' ? t('filePage.emptyFolder') : '空文件夹') + '</p></div>';
             // 仍然添加事件监听器（虽然没有文件）
             listContainer.addEventListener('click', handleFileListClick);
             return;
@@ -8500,39 +7355,30 @@ async function loadDirectory(path) {
             return a.name.localeCompare(b.name);
         });
         
+        const cols = 'style="--cols:24px 1fr 120px 132px"';
         listContainer.innerHTML = `
-            <table class="file-table">
-                <thead>
-                    <tr>
-                        <th style="width:3%"><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this)" title="${typeof t === 'function' ? t('files.selectAll') : '全选'}"></th>
-                        <th style="width:57%">${typeof t === 'function' ? t('files.name') : '名称'}</th>
-                        <th style="width:15%;text-align:center">${typeof t === 'function' ? t('files.size') : '大小'}</th>
-                        <th style="width:25%;text-align:center">${typeof t === 'function' ? t('files.action') : '操作'}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${entries.map(entry => {
-                        const fullPath = path + '/' + entry.name;
-                        const icon = '';
-                        const size = entry.type === 'dir' ? '-' : formatFileSize(entry.size);
-                        const escapedPath = fullPath.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                        const escapedName = entry.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                        const isSelected = selectedFiles.has(fullPath);
-                        return `
-                            <tr class="file-row" data-path="${escapedPath}" data-type="${entry.type}" data-name="${escapedName}">
-                                <td class="file-checkbox-cell">
-                                    <input type="checkbox" class="file-checkbox" data-path="${escapedPath}" 
-                                           ${isSelected ? 'checked' : ''} 
-                                           onchange="toggleFileSelection('${escapedPath}', this)">
-                                </td>
-                                <td class="file-name ${entry.type === 'dir' ? 'clickable' : ''}">${entry.name}</td>
-                                <td class="file-size">${size}</td>
-                                <td class="file-actions-cell">${entry.type !== 'dir' ? `<button class="btn btn-sm btn-download" title="${t('common.download')}"><i class="ri-download-line"></i></button>` : ''}<button class="btn btn-sm btn-rename" title="${t('files.renameFile')}"><i class="ri-edit-line"></i></button><button class="btn btn-sm btn-danger btn-delete" title="${t('common.delete')}"><i class="ri-delete-bin-line"></i></button></td>
-                            </tr>
-                        `;
-                    }).join('')}
-                </tbody>
-            </table>
+            <div class="tr th" ${cols}>
+                <div><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this)" title="${t('files.selectAll')}" aria-label="${t('files.selectAll')}"></div>
+                <div>${t('files.name')}</div>
+                <div>${t('files.size')}</div>
+                <div class="act">${t('files.action')}</div>
+            </div>
+            ${entries.map(entry => {
+                const fullPath = path + '/' + entry.name;
+                const isDir = entry.type === 'dir';
+                const size = isDir ? '-' : formatFileSize(entry.size);
+                const escapedPath = fullPath.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                const escapedName = entry.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                const isSelected = selectedFiles.has(fullPath);
+                return `
+                    <div class="tr file-row" ${cols} data-path="${escapedPath}" data-type="${entry.type}" data-name="${escapedName}">
+                        <div><input type="checkbox" class="file-checkbox" data-path="${escapedPath}" ${isSelected ? 'checked' : ''} onchange="toggleFileSelection('${escapedPath}', this)" aria-label="${escapedName}"></div>
+                        <div class="file-name ${isDir ? 'clickable' : ''}"><span class="fn"><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg>${entry.name}</span></div>
+                        <div>${size}</div>
+                        <div class="act">${isDir ? '' : `<button class="btn icon sm btn-download" title="${t('common.download')}" aria-label="${t('common.download')}"><svg class="i"><use href="#ri-download-line"/></svg></button>`}<button class="btn icon sm btn-rename" title="${t('files.renameFile')}" aria-label="${t('files.renameFile')}"><svg class="i"><use href="#ri-edit-line"/></svg></button><button class="btn icon sm dg btn-delete" title="${t('common.delete')}" aria-label="${t('common.delete')}"><svg class="i"><use href="#ri-delete-bin-line"/></svg></button></div>
+                    </div>
+                `;
+            }).join('')}
         `;
         
         // 使用事件委托处理点击
@@ -8547,9 +7393,9 @@ async function loadDirectory(path) {
         
         if (isUnmounted) {
             listContainer.innerHTML = `
-                <div class="unmounted-notice">
-                    <div class="unmounted-text">${typeof t === 'function' ? t('filePage.sdCardNotMounted') : 'SD 卡未挂载'}</div>
-                    <button class="btn btn-success" onclick="mountSdCard()">${typeof t === 'function' ? t('filePage.mountSdCard') : '挂载 SD 卡'}</button>
+                <div class="empty unmounted-notice">
+                    <p class="t-body">${typeof t === 'function' ? t('filePage.sdCardNotMounted') : 'SD 卡未挂载'}</p>
+                    <button class="btn primary" onclick="mountSdCard()">${typeof t === 'function' ? t('filePage.mountSdCard') : '挂载 SD 卡'}</button>
                 </div>
             `;
         } else {
@@ -8607,32 +7453,17 @@ async function loadStorageStatus() {
         const sdMounted = status.data?.sd?.mounted;
         const spiffsMounted = status.data?.spiffs?.mounted;
         
-        const formatStorage = (type, data) => {
-            if (!data?.mounted) return '<span class="unmounted">' + (typeof t === 'function' ? t('filePage.notMounted') : '未挂载') + '</span>';
-            return '<span class="mounted">' + (typeof t === 'function' ? t('filePage.mounted') : '已挂载') + '</span>';
-        };
+        const mountState = (data) => data?.mounted ? `<span class="state ok">${t('filePage.mounted')}</span>` : `<span class="state">${t('filePage.notMounted')}</span>`;
         
         container.innerHTML = `
-            <div class="storage-info">
-                <span>SD: ${formatStorage('sd', status.data?.sd)}</span>
-                <span>SPIFFS: ${formatStorage('spiffs', status.data?.spiffs)}</span>
-            </div>
+            <span class="t-label">SD ${mountState(status.data?.sd)}</span>
+            <span class="t-label">SPIFFS ${mountState(status.data?.spiffs)}</span>
         `;
         
         if (controlsContainer) {
-            if (sdMounted) {
-                controlsContainer.innerHTML = `
-                    <button class="btn btn-sm btn-danger" onclick="unmountSdCard()" title="${typeof t === 'function' ? t('filePage.unmountSdCard') : '卸载 SD 卡'}">
-                        <i class="ri-eject-line"></i> ${typeof t === 'function' ? t('filePage.unmountSdBtn') : '卸载 SD'}
-                    </button>
-                `;
-            } else {
-                controlsContainer.innerHTML = `
-                    <button class="btn btn-sm btn-success" onclick="mountSdCard()" title="${typeof t === 'function' ? t('filePage.mountSdCard') : '挂载 SD 卡'}">
-                        ${typeof t === 'function' ? t('filePage.mountSdBtn') : '挂载 SD'}
-                    </button>
-                `;
-            }
+            controlsContainer.innerHTML = sdMounted
+                ? `<button class="btn sm dg" onclick="unmountSdCard()" title="${t('filePage.unmountSdCard')}"><svg class="i"><use href="#ri-eject-line"/></svg>${t('filePage.unmountSdBtn')}</button>`
+                : `<button class="btn sm" onclick="mountSdCard()" title="${t('filePage.mountSdCard')}">${t('filePage.mountSdBtn')}</button>`;
         }
     } catch (e) {
         if (!pageCurrent() || generation !== storageStatusGeneration) return;
@@ -8644,14 +7475,12 @@ function updateBreadcrumb(path) {
     const container = document.getElementById('breadcrumb');
     const parts = path.split('/').filter(p => p);
     
-    let html = '<span class="breadcrumb-item" onclick="navigateToPath(\'/\')"><i class="ri-home-line"></i></span>';
+    let html = '<button class="field sel breadcrumb-item" style="width:84px;text-align:left" onclick="navigateToPath(\'/\')"><svg class="i"><use href="#ri-home-line"/></svg> /</button>';
     let currentPath = '';
     
     parts.forEach((part, i) => {
         currentPath += '/' + part;
-        const isLast = i === parts.length - 1;
-        html += ` / <span class="breadcrumb-item${isLast ? ' current' : ''}" 
-                        onclick="navigateToPath('${currentPath}')">${part}</span>`;
+        html += `<span class="t-note">/</span><button class="field sel breadcrumb-item${i === parts.length - 1 ? ' current' : ''}" style="min-width:120px;text-align:left" onclick="navigateToPath('${currentPath}')">${part}</button>`;
     });
     
     container.innerHTML = html;
@@ -8719,11 +7548,11 @@ function handleFileSelect(event) {
     const listContainer = document.getElementById('upload-list');
     listContainer.replaceChildren();
     filesToUpload.forEach((file, index) => {
-        const row = document.createElement('div'); row.className = 'upload-item';
+        const row = document.createElement('div'); row.className = 'upload-item row';
         const name = document.createElement('span'); name.textContent = file.name;
         const state = document.createElement('span'); state.textContent = formatFileSize(file.size);
-        const remove = document.createElement('button'); remove.className = 'btn btn-sm';
-        remove.textContent = '×'; remove.setAttribute('aria-label', t('common.delete'));
+        const remove = document.createElement('button'); remove.className = 'btn icon sm quiet';
+        remove.innerHTML = '<svg class="i"><use href="#ri-close-line"/></svg>'; remove.setAttribute('aria-label', t('common.delete'));
         remove.onclick = () => removeUploadFile(index);
         row.append(name, state, remove); listContainer.appendChild(row);
     });
@@ -8780,7 +7609,7 @@ async function uploadFiles() {
             } else if (pack?.valid === true) {
                 if (state) state.textContent = t('promptRepair.packVerified');
                 const apply = document.createElement('button');
-                apply.className = 'btn'; apply.textContent = t('common.apply');
+                apply.className = 'btn sm'; apply.textContent = t('common.apply');
                 const verified = () => current() && !versions[index].contended;
                 apply.onclick = () => { if (verified()) showConfigPackApplyConfirm(path, pack, verified); };
                 row.appendChild(apply);
@@ -8893,7 +7722,7 @@ async function downloadFile(path, silent = false) {
 // 删除文件
 async function deleteFile(path) {
     const name = path.split('/').pop();
-    if (!confirmAction(typeof t === 'function' ? t('common.confirmDeleteItem', { name }) : `确定要删除 "${name}" 吗？`)) {
+    if (!await confirmAction(typeof t === 'function' ? t('common.confirmDeleteItem', { name }) : `确定要删除 "${name}" 吗？`, { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
     
@@ -9140,238 +7969,128 @@ async function loadCommandsPage() {
     
     const content = document.getElementById('page-content');
     content.innerHTML = `
-        <div class="page-commands">
-            <!-- 主机选择和指令列表 -->
-            <div class="section">
-                <div class="section-header">
-                    <h2 data-i18n="ssh.selectHost">${typeof t === 'function' ? t('ssh.selectHost') : '选择主机'}</h2>
-                    <div class="section-actions">
-                        <button class="btn btn-small btn-service-style" onclick="showImportSshCommandModal()" style="font-size:0.85em"><i class="ri-download-line"></i> <span data-i18n="ssh.importCommand">${typeof t === 'function' ? t('ssh.importCommand') : '导入指令'}</span></button>
-                        <button class="btn btn-small btn-service-style" onclick="showAddCommandModal()" style="font-size:0.85em"><i class="ri-add-line"></i> <span data-i18n="ssh.newCommand">${typeof t === 'function' ? t('ssh.newCommand') : '新建指令'}</span></button>
-                    </div>
+        <div class="page page-commands">
+            <!-- 主机选择 -->
+            <div class="sec-h">
+                <span class="t-section sec-t" data-i18n="ssh.selectHost">${t('ssh.selectHost')}</span>
+                <div class="acts">
+                    <button class="btn sm" onclick="showImportSshCommandModal()"><svg class="i"><use href="#ri-download-line"/></svg><span data-i18n="ssh.importCommand">${t('ssh.importCommand')}</span></button>
+                    <button class="btn sm" onclick="showAddCommandModal()"><svg class="i"><use href="#ri-add-line"/></svg><span data-i18n="ssh.newCommand">${t('ssh.newCommand')}</span></button>
                 </div>
-                <div id="host-selector" class="host-selector">
-                    <div class="loading">${t('sshPage.loadingHosts')}</div>
-                </div>
+            </div>
+            <div id="host-selector" class="host-selector">
+                <div class="t-note">${t('sshPage.loadingHosts')}</div>
             </div>
             
             <!-- 指令列表 -->
-            <div class="section">
-                <h2>${t('ssh.commandList')}</h2>
-                <div id="commands-list" class="commands-list">
-                    <div class="empty-state">${t('ssh.selectHostFirst')}</div>
+            <div>
+                <div class="sec-h">
+                    <span class="t-section sec-t">${t('ssh.commandList')}</span>
+                    <div class="acts"></div>
+                </div>
+                <div id="commands-list" class="card" style="padding:0">
+                    <div class="empty"><p class="t-note">${t('ssh.selectHostFirst')}</p></div>
                 </div>
             </div>
             
             <!-- 执行结果 -->
-            <div class="section" id="exec-result-section" style="display:none">
-                <div class="section-header">
-                    <h2>${t('sshPage.execResult')}</h2>
-                    <div class="section-actions">
-                        <button id="cancel-exec-btn" class="btn btn-sm" onclick="cancelExecution()" style="display:none;background:#f43f5e;color:white"><i class="ri-stop-line"></i> ${t('common.cancel')} (Esc)</button>
-                        <button class="btn btn-sm" onclick="clearExecResult()"><i class="ri-delete-bin-line"></i> ${t('common.clear')}</button>
+            <div class="card exec-card" id="exec-result-section" style="display:none">
+                <div class="between wrap">
+                    <span class="t-section">${t('sshPage.execResult')}</span>
+                    <div class="acts wrap">
+                        <button id="cancel-exec-btn" class="btn sm dg" onclick="cancelExecution()" style="display:none">${t('common.cancel')} (Esc)</button>
+                        <button class="btn sm" onclick="clearExecResult()">${t('common.clear')}</button>
+                        <!-- nohup 快捷操作按钮 -->
+                        <div id="nohup-actions" class="acts wrap" style="display:none">
+                            <span class="vsep"></span>
+                            <button class="btn sm" id="nohup-view-log" onclick="nohupViewLog()">${t('sshPage.viewLog')}</button>
+                            <button class="btn sm" id="nohup-tail-log" onclick="nohupTailLog()">${t('sshPage.tailLog')}</button>
+                            <button class="btn sm" id="nohup-stop-tail" onclick="nohupStopTail()" style="display:none">${t('sshPage.stopTail')}</button>
+                            <button class="btn sm" id="nohup-check-process" onclick="nohupCheckProcess()">${t('sshPage.checkProcess')}</button>
+                            <button class="btn sm dg" id="nohup-stop-process" onclick="nohupStopProcess()">${t('sshPage.stopProcess')}</button>
+                        </div>
                     </div>
                 </div>
-                <!-- nohup 快捷操作按钮 -->
-                <div id="nohup-actions" class="nohup-actions" style="display:none">
-                    <button class="btn btn-sm" id="nohup-view-log" onclick="nohupViewLog()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('sshPage.viewLog') : '查看日志'}</button>
-                    <button class="btn btn-sm" id="nohup-tail-log" onclick="nohupTailLog()"><i class="ri-eye-line"></i> ${typeof t === 'function' ? t('sshPage.tailLog') : '实时跟踪'}</button>
-                    <button class="btn btn-sm" id="nohup-stop-tail" onclick="nohupStopTail()" style="display:none;background:#f59e0b;color:white"><i class="ri-stop-fill"></i> ${typeof t === 'function' ? t('sshPage.stopTail') : '停止跟踪'}</button>
-                    <button class="btn btn-sm" id="nohup-check-process" onclick="nohupCheckProcess()"><i class="ri-search-line"></i> ${typeof t === 'function' ? t('sshPage.checkProcess') : '检查进程'}</button>
-                    <button class="btn btn-sm" id="nohup-stop-process" onclick="nohupStopProcess()" style="background:#f43f5e;color:white"><i class="ri-stop-circle-line"></i> ${typeof t === 'function' ? t('sshPage.stopProcess') : '停止进程'}</button>
-                </div>
-                <pre id="exec-result" class="exec-result"></pre>
+                <pre id="exec-result" class="term exec-result"></pre>
                 
                 <!-- 模式匹配结果面板 -->
-                <div id="match-result-panel" class="match-result-panel" style="display:none">
-                    <div class="match-panel-header">
-                        <h3>${typeof t === 'function' ? t('sshPage.matchResultTitle') : '匹配结果'}</h3>
-                        <span class="match-status" id="match-status-badge"></span>
+                <div id="match-result-panel" class="match-panel" style="display:none">
+                    <div class="between">
+                        <span class="t-section">${t('sshPage.matchResultTitle')}</span>
+                        <span class="state" id="match-status-badge"></span>
                     </div>
-                    <div class="match-result-grid">
-                        <div class="match-result-item">
-                            <div class="match-label">${typeof t === 'function' ? t('sshPage.expectMatch') : '成功匹配'}</div>
-                            <div class="match-value" id="match-expect-result">-</div>
-                            <code class="match-var">msg.expect_matched</code>
-                        </div>
-                        <div class="match-result-item">
-                            <div class="match-label">${typeof t === 'function' ? t('sshPage.failMatch') : '失败匹配'}</div>
-                            <div class="match-value" id="match-fail-result">-</div>
-                            <code class="match-var">msg.fail_matched</code>
-                        </div>
-                        <div class="match-result-item">
-                            <div class="match-label">${typeof t === 'function' ? t('sshPage.extractContent') : '提取内容'}</div>
-                            <div class="match-value match-extracted" id="match-extracted-result">-</div>
-                            <code class="match-var">msg.extracted</code>
-                        </div>
-                        <div class="match-result-item">
-                            <div class="match-label">${typeof t === 'function' ? t('sshPage.finalStatus') : '最终状态'}</div>
-                            <div class="match-value" id="match-final-status">-</div>
-                            <code class="match-var">msg.status</code>
-                        </div>
+                    <div class="match-grid">
+                        <div><div class="t-label">${t('sshPage.expectMatch')}</div><div class="t-value match-value" id="match-expect-result">-</div><code class="t-note mono">msg.expect_matched</code></div>
+                        <div><div class="t-label">${t('sshPage.failMatch')}</div><div class="t-value match-value" id="match-fail-result">-</div><code class="t-note mono">msg.fail_matched</code></div>
+                        <div><div class="t-label">${t('sshPage.extractContent')}</div><div class="t-value match-value match-extracted" id="match-extracted-result">-</div><code class="t-note mono">msg.extracted</code></div>
+                        <div><div class="t-label">${t('sshPage.finalStatus')}</div><div class="t-value match-value" id="match-final-status">-</div><code class="t-note mono">msg.status</code></div>
                     </div>
-                    <div class="match-api-hint">
-                        <small>${typeof t === 'function' ? t('sshPage.wsMessageHint') : 'WebSocket 消息字段可在 handleSshExecMessage(msg) 回调中使用'}</small>
-                    </div>
+                    <div class="t-note">${t('sshPage.wsMessageHint')}</div>
                 </div>
             </div>
         </div>
         
         <!-- 新建/编辑指令模态框 -->
-        <div id="command-modal" class="modal hidden">
-            <div class="modal-content cc-compact" style="max-width:680px">
-                <div class="modal-header">
-                    <h2 id="command-modal-title">${typeof t === 'function' ? t('ssh.newCommand') : '新建指令'}</h2>
-                    <div id="command-modal-header-actions"></div>
-                    <button class="modal-close" onclick="closeCommandModal()">&times;</button>
+        <div id="command-modal" class="modal hidden"><form id="command-form" class="sheet m-float" style="width:660px" onsubmit="return false;">
+            <div class="sh"><span class="st" id="command-modal-title">${t('ssh.newCommand')}</span></div>
+            <div class="sb">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end">
+                    <div class="fl" id="cmd-id-group">
+                        <label>${t('sshPage.cmdId')} *</label>
+                        <input type="text" class="field" id="cmd-edit-id" placeholder="${t('ssh.cmdIdPlaceholderShort')}" title="${escapeHtml(t('sshPage.cmdIdHint'))}" pattern="^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$" oninput="validateCommandId(this)" required>
+                    </div>
+                    <div class="fl"><label>${t('common.name')} *</label><input type="text" class="field" id="cmd-name" placeholder="${t('sshPage.cmdNamePlaceholder')}" required></div>
                 </div>
-                <div class="modal-body">
-                    <form id="command-form" onsubmit="return false;">
-                        <div class="form-group" id="cmd-id-group">
-                            <label>${typeof t === 'function' ? t('sshPage.cmdId') : '指令 ID'} *</label>
-                            <input type="text" id="cmd-edit-id" placeholder="${typeof t === 'function' ? t('sshPage.cmdIdPlaceholder') : '例如：restart_nginx, check_status'}"
-                                   pattern="^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$"
-                                   oninput="validateCommandId(this)" required>
-                            <small style="color:var(--text-muted)">${typeof t === 'function' ? t('sshPage.cmdIdHint') : '唯一标识符，仅限字母、数字、下划线、连字符，不能以 _ 或 - 开头/结尾'}</small>
-                            <span id="cmd-id-error" class="error-hint" style="display:none;color:var(--rose-500);font-size:12px"></span>
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('sshPage.cmdName') : '指令名称'} *</label>
-                            <input type="text" id="cmd-name" placeholder="${typeof t === 'function' ? t('sshPage.cmdNamePlaceholder') : '例如：重启服务'}" required>
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('ssh.commandText') : 'SSH 命令'} *</label>
-                            <textarea id="cmd-command" rows="5" placeholder="${typeof t === 'function' ? t('sshPage.cmdCommandPlaceholder') : '例如：sudo systemctl restart nginx'}" required></textarea>
-                            <small style="color:var(--text-muted)">${typeof t === 'function' ? t('sshPage.multiLineHint') : '支持多行命令，每行一条'}</small>
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('common.description') : '描述'}（${typeof t === 'function' ? t('common.optional') : '可选'}）</label>
-                            <input type="text" id="cmd-desc" placeholder="${typeof t === 'function' ? t('sshPage.cmdDescPlaceholder') : '简要说明这个指令的作用'}">
-                        </div>
-                        <div class="config-section config-section-icon">
-                            <span class="config-title">${typeof t === 'function' ? t('dataWidget.icon') : '图标'}</span>
-                            <div class="icon-type-tabs">
-                                <button type="button" class="icon-tab active" onclick="switchCmdIconType('emoji')"><i class="ri-emotion-line"></i> ${typeof t === 'function' ? t('automation.iconTab') : '图标'}</button>
-                                <button type="button" class="icon-tab" onclick="switchCmdIconType('image')"><i class="ri-image-line"></i> ${typeof t === 'function' ? t('automation.imageTab') : '图片'}</button>
-                            </div>
-                            <div id="icon-emoji-picker" class="icon-picker">
-                                ${['ri-rocket-line', 'ri-refresh-line', 'ri-thunderstorms-line', 'ri-tools-line', 'ri-bar-chart-line', 'ri-search-line', 'ri-save-line', 'ri-delete-bin-line', 'ri-stop-line', 'ri-play-line', 'ri-box-3-line', 'ri-settings-line'].map(icon => 
-                                    `<button type="button" class="icon-btn" data-icon="${icon}" onclick="selectCmdIcon('${icon}')"><i class="${icon}"></i></button>`
-                                ).join('')}
-                            </div>
-                            <div id="icon-image-picker" class="icon-image-picker hidden">
-                                <div class="icon-preview-row">
-                                    <div id="cmd-icon-preview" class="icon-image-preview">
-                                        <span class="preview-placeholder">${typeof t === 'function' ? t('automation.previewNone') : '无'}</span>
-                                    </div>
-                                    <div class="icon-path-input">
-                                        <input type="text" id="cmd-icon-path" class="input" placeholder="/sdcard/images/..." readonly>
-                                        <button type="button" class="btn btn-sm" onclick="browseCmdIconImage()"><i class="ri-folder-open-line"></i> ${typeof t === 'function' ? t('common.browse') : '浏览'}</button>
-                                        <button type="button" class="btn btn-sm btn-danger" onclick="clearCmdIconImage()" title="${typeof t === 'function' ? t('common.clear') : '清除'}"><i class="ri-close-line"></i></button>
-                                    </div>
-                                </div>
-                            </div>
-                            <input type="hidden" id="cmd-icon" value="ri-rocket-line">
-                            <input type="hidden" id="cmd-icon-type" value="emoji">
-                        </div>
-                        
-                        <details class="advanced-options">
-                            <summary><i class="ri-settings-3-line"></i> ${typeof t === 'function' ? t('sshPage.advancedOptions') : '高级选项（模式匹配）'}</summary>
-                            <div class="advanced-content">
-                                <div class="form-group">
-                                    <label class="checkbox-label">
-                                        <input type="checkbox" id="cmd-nohup" onchange="updateNohupState()">
-                                        <span>${typeof t === 'function' ? t('ssh.nohupTitle') : '后台执行（nohup）'}</span>
-                                    </label>
-                                    <small>${typeof t === 'function' ? t('ssh.nohupHint') : '命令将在服务器后台运行，SSH 断开后不受影响。适合重启、长时间任务等场景'}</small>
-                                </div>
-                                
-                                <div id="cmd-service-mode-options" class="service-mode-options hidden">
-                                    <div class="service-mode-header">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" id="cmd-service-mode" onchange="updateServiceModeState()">
-                                            <span>${typeof t === 'function' ? t('ssh.serviceModeLabel') : '服务模式（监测就绪状态）'}</span>
-                                        </label>
-                                        <small>${typeof t === 'function' ? t('ssh.serviceModeHint') : '启动后持续监测日志，检测到就绪字符串后更新变量状态'}</small>
-                                    </div>
-                                    <div id="cmd-service-mode-fields" class="service-mode-fields hidden">
-                                        <div class="form-group">
-                                            <label><i class="ri-check-line"></i> ${typeof t === 'function' ? t('ssh.readyPatternRequired') : '就绪匹配模式'} *</label>
-                                            <input type="text" id="cmd-ready-pattern" placeholder="${typeof t === 'function' ? t('ssh.cmdReadyPatternPlaceholder') : '例如：Running on|Server started'}">
-                                            <small>${typeof t === 'function' ? t('ssh.readyPatternHint') : '日志中出现此字符串时标记为就绪（支持 | 分隔多个模式）'}</small>
-                                        </div>
-                                        <div class="form-group">
-                                            <label><i class="ri-close-line"></i> ${typeof t === 'function' ? t('ssh.failPatternLabel') : '失败匹配模式'}</label>
-                                            <input type="text" id="cmd-service-fail-pattern" placeholder="${typeof t === 'function' ? t('ssh.cmdFailPatternPlaceholder') : '例如：error|failed|Exception'}">
-                                            <small>${typeof t === 'function' ? t('ssh.serviceFailPatternHint') : '日志中出现此字符串时标记为失败（可选，支持 | 分隔多个模式）'}</small>
-                                        </div>
-                                        <div class="form-group">
-                                            <label><i class="ri-time-line"></i> ${typeof t === 'function' ? t('ssh.readyTimeoutLabel') : '超时（秒）'}</label>
-                                            <input type="number" id="cmd-ready-timeout" value="120" min="10" max="600" step="10">
-                                            <small>${typeof t === 'function' ? t('ssh.readyTimeoutHint') : '超过此时间未匹配到就绪模式则标记为 timeout'}</small>
-                                        </div>
-                                        <div class="form-group">
-                                            <label><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('ssh.readyIntervalLabel') : '检测间隔（毫秒）'}</label>
-                                            <input type="number" id="cmd-ready-interval" value="5000" min="1000" max="30000" step="1000">
-                                            <small>${typeof t === 'function' ? t('ssh.readyIntervalHint') : '每隔多久检测一次日志文件'}</small>
-                                        </div>
-                                        <div class="service-mode-hint">
-                                            <small>${typeof t === 'function' ? t('ssh.serviceLogHint') : '服务启动后，系统将监测日志文件：'}<code>${typeof t === 'function' ? t('ssh.serviceLogPath') : '/tmp/ts_nohup_[命令名].log'}</code></small><br>
-                                            <small>${typeof t === 'function' ? t('ssh.serviceStatusHint') : '变量 [变量名].status 会根据日志匹配自动更新状态'}</small>
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <div class="form-group" id="cmd-var-name-group">
-                                    <label><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('ssh.varNameLabel') : '存储变量名'}</label>
-                                    <input type="text" id="cmd-var-name" placeholder="${typeof t === 'function' ? t('ssh.cmdVarNamePlaceholder') : '例如：ping_test'}">
-                                    <small id="cmd-var-name-hint">${typeof t === 'function' ? t('ssh.varNameHint') : '执行结果将存储为 ${变量名.status}、${变量名.extracted} 等，可在后续命令中引用'}</small>
-                                </div>
-                                
-                                <div id="cmd-pattern-options">
-                                    <div class="form-group">
-                                        <label><i class="ri-check-line"></i> ${typeof t === 'function' ? t('ssh.successPatternLabel') : '成功匹配模式'}</label>
-                                        <input type="text" id="cmd-expect-pattern" placeholder="${typeof t === 'function' ? t('ssh.cmdExpectPatternPlaceholder') : '例如：active (running)'}" oninput="updateTimeoutState()">
-                                        <small>${typeof t === 'function' ? t('ssh.successPatternHint') : '输出中包含此文本时标记为成功'}</small>
-                                    </div>
-                                    <div class="form-group">
-                                        <label><i class="ri-close-line"></i> ${typeof t === 'function' ? t('ssh.failPatternLabel') : '失败匹配模式'}</label>
-                                        <input type="text" id="cmd-fail-pattern" placeholder="${typeof t === 'function' ? t('ssh.cmdFailPatternPlaceholder') : '例如：failed|error'}" oninput="updateTimeoutState()">
-                                        <small>${typeof t === 'function' ? t('ssh.failPatternHint') : '输出中包含此文本时标记为失败'}</small>
-                                    </div>
-                                    <div class="form-group">
-                                        <label><i class="ri-file-list-3-line"></i> ${typeof t === 'function' ? t('ssh.extractPatternLabel') : '提取模式'}</label>
-                                        <input type="text" id="cmd-extract-pattern" placeholder="${typeof t === 'function' ? t('ssh.cmdExtractPatternPlaceholder') : '例如：version: (.*)'}">
-                                        <small>${typeof t === 'function' ? t('ssh.extractPatternHint') : '从输出中提取匹配内容，使用 (.*) 捕获组'}</small>
-                                    </div>
-                                    <div class="form-group">
-                                        <label class="checkbox-label">
-                                            <input type="checkbox" id="cmd-stop-on-match" onchange="updateTimeoutState()">
-                                            <span>${typeof t === 'function' ? t('ssh.stopOnMatchLabel') : '匹配后自动停止'}</span>
-                                        </label>
-                                        <small>${typeof t === 'function' ? t('ssh.stopOnMatchHint') : '适用于 ping 等持续运行的命令，匹配成功后自动终止'}</small>
-                                    </div>
-                                    <div class="form-group" id="cmd-timeout-group">
-                                        <label><i class="ri-time-line"></i> ${typeof t === 'function' ? t('ssh.timeoutLabel') : '超时（秒）'}</label>
-                                        <input type="number" id="cmd-timeout" value="30" min="5" max="300" step="5">
-                                        <small id="cmd-timeout-hint">${typeof t === 'function' ? t('ssh.timeoutHint') : '超时仅在设置了成功/失败模式或勾选了"匹配后停止"时有效'}</small>
-                                    </div>
-                                </div>
-                            </div>
-                        </details>
-                        
-                        <div class="form-actions">
-                            <button type="button" class="btn btn-gray" onclick="closeCommandModal()">${typeof t === 'function' ? t('sshPage.cancelBtn') : '取消'}</button>
-                            <button type="submit" class="btn btn-service-style" onclick="saveCommand()">${typeof t === 'function' ? t('sshPage.saveBtn') : '保存'}</button>
-                        </div>
-                    </form>
+                <span id="cmd-id-error" class="form-error" style="display:none"></span>
+                <div style="height:12px"></div>
+                <div class="fl"><label>${t('common.command')} *</label><textarea class="field mono" id="cmd-command" style="height:64px" placeholder="${t('sshPage.cmdCommandPlaceholder')}" title="${escapeHtml(t('sshPage.multiLineHint'))}" required></textarea></div>
+                <div style="height:12px"></div>
+                <div class="fl"><label>${t('common.description')}</label><input type="text" class="field" id="cmd-desc" style="width:100%" placeholder="${t('sshPage.cmdDescPlaceholder')}" title="${escapeHtml(t('common.optional'))}"></div>
+                <div class="gt" style="margin-top:16px">${t('dataWidget.icon')}</div>
+                <div style="display:flex;justify-content:center;margin-bottom:10px"><div class="seg icon-type-tabs"><button type="button" class="on" data-type="emoji" onclick="switchCmdIconType('emoji')">${t('automation.iconTab')}</button><button type="button" data-type="image" onclick="switchCmdIconType('image')">${t('automation.imageTab')}</button></div></div>
+                <div id="icon-emoji-picker" style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px">
+                    ${['ri-rocket-line', 'ri-refresh-line', 'ri-thunderstorms-line', 'ri-tools-line', 'ri-bar-chart-line', 'ri-search-line', 'ri-save-line', 'ri-delete-bin-line', 'ri-stop-line', 'ri-play-line', 'ri-box-3-line', 'ri-settings-line'].map(icon =>
+                        `<button type="button" class="btn icon icon-btn" data-icon="${icon}" onclick="selectCmdIcon('${icon}')" style="width:100%;height:40px"><svg class="i"><use href="#${icon}"/></svg></button>`
+                    ).join('')}
                 </div>
+                <div id="icon-image-picker" class="hidden">
+                    <div class="acts" style="align-items:center">
+                        <div id="cmd-icon-preview" class="icon-image-preview"><span class="t-note">${t('automation.previewNone')}</span></div>
+                        <input type="text" class="field mono" id="cmd-icon-path" placeholder="/sdcard/images/..." readonly style="flex:1">
+                        <button type="button" class="btn sm" onclick="browseCmdIconImage()">${t('common.browse')}</button>
+                        <button type="button" class="btn sm" onclick="clearCmdIconImage()">${t('common.clear')}</button>
+                    </div>
+                </div>
+                <input type="hidden" id="cmd-icon" value="ri-rocket-line">
+                <input type="hidden" id="cmd-icon-type" value="emoji">
+                ${gt(t('ssh.runMode'))}
+                ${grp(
+                    row(t('ssh.nohupShort'), swc('cmd-nohup', false, 'onchange="updateNohupState()"'), '', t('ssh.nohupHint')) +
+                    `<div class="row hidden" id="cmd-service-mode-options"><div class="rl" title="${escapeHtml(t('ssh.serviceModeHint'))}">${t('ssh.serviceMode')}<small>${t('ssh.serviceModeNote')}</small></div><div class="rc">${swc('cmd-service-mode', false, 'onchange="updateServiceModeState()"')}</div></div>`)}
+                <div class="gw hidden" id="cmd-service-mode-fields">
+                    ${gt(t('ssh.serviceMode'))}
+                    ${grp(
+                        row(t('ssh.readyMatch'), inp('cmd-ready-pattern', 200, t('ssh.readyMatchPh'), 'mono'), '', t('ssh.readyPatternHint')) +
+                        row(t('sshPage.failMatch'), inp('cmd-service-fail-pattern', 200, t('ssh.failMatchPh'), 'mono'), '', t('ssh.serviceFailPatternHint')) +
+                        row(t('ssh.readyTimeoutSec'), inp('cmd-ready-timeout', 80, '', '', 'type="number" value="120" min="10" max="600" step="10"'), '', t('ssh.readyTimeoutHint')) +
+                        row(t('ssh.pollIntervalMs'), inp('cmd-ready-interval', 80, '', '', 'type="number" value="5000" min="1000" max="30000" step="1000"'), '', t('ssh.readyIntervalHint')))}
+                </div>
+                ${gt(t('ssh.outputMatchTitle'))}
+                ${grp(
+                    `<div class="row" id="cmd-var-name-group"><div class="rl">${t('ssh.variableName')}</div><div class="rc">${inp('cmd-var-name', 200, t('ssh.cmdVarNamePlaceholder'), 'mono')}</div></div>` +
+                    `<div class="rows" id="cmd-pattern-options">` +
+                        row(t('ssh.expectMatch'), inp('cmd-expect-pattern', 200, t('ssh.cmdExpectPatternPlaceholder'), 'mono', 'oninput="updateTimeoutState()"'), '', t('ssh.successPatternHint')) +
+                        row(t('sshPage.failMatch'), inp('cmd-fail-pattern', 200, t('ssh.failMatchPh'), 'mono', 'oninput="updateTimeoutState()"'), '', t('ssh.failPatternHint')) +
+                        row(t('ssh.extractRegex'), inp('cmd-extract-pattern', 200, t('ssh.cmdExtractPatternPlaceholder'), 'mono'), '', t('ssh.extractPatternHint')) +
+                        row(t('ssh.stopOnHit'), swc('cmd-stop-on-match', false, 'onchange="updateTimeoutState()"'), '', t('ssh.stopOnMatchHint')) +
+                    `</div>` +
+                    `<div class="row" id="cmd-timeout-group"><div class="rl">${t('ssh.timeoutSec')}</div><div class="rc">${inp('cmd-timeout', 80, '', '', 'type="number" value="30" min="5" max="300" step="5"')}</div></div>`)}
+                <div class="t-note" id="cmd-var-name-hint" style="margin:6px 4px 0">${t('ssh.varNameHint')}</div>
+                <small id="cmd-timeout-hint" class="hidden"></small>
             </div>
-        </div>
+            <div class="sf"><button type="button" class="btn lg" onclick="closeCommandModal()">${t('sshPage.cancelBtn')}</button><button type="submit" class="btn lg primary" onclick="saveCommand()">${t('sshPage.saveBtn')}</button></div>
+        </form></div>
     `;
-    
-    // 添加指令页面专用样式
-    addCommandsPageStyles();
     
     // 加载主机列表
     await loadHostSelector();
@@ -9381,380 +8100,6 @@ async function loadCommandsPage() {
     ensureAllCommandVariables().catch(e => {
         console.warn('Failed to ensure command variables:', e);
     });
-}
-
-function addCommandsPageStyles() {
-    if (document.getElementById('commands-page-styles')) return;
-    
-    const style = document.createElement('style');
-    style.id = 'commands-page-styles';
-    style.textContent = `
-        .page-commands .section h2, .page-commands .section-header h2 { font-size: 1rem; }
-        .page-commands .commands-list .empty-state {
-            text-align: center;
-            min-height: 200px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            grid-column: 1 / -1;
-        }
-        .page-commands .section { margin-top: 20px; }
-        .page-commands .section:first-child { margin-top: 0; }
-        .host-selector {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .host-card {
-            background: var(--bg-card);
-            border: 2px solid var(--border);
-            border-radius: var(--radius);
-            padding: 12px 16px;
-            cursor: pointer;
-            transition: all 0.2s;
-            min-width: 180px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .host-card .host-icon {
-            font-size: 2.5em;
-            color: var(--blue-500);
-            line-height: 1;
-            align-self: center;
-        }
-        .host-card:hover {
-            border-color: var(--blue-500);
-            transform: translateY(-2px);
-        }
-        .host-card.selected {
-            border-color: transparent;
-            background: var(--emerald-50);
-        }
-        .host-card .host-name {
-            font-weight: bold;
-            margin-bottom: 4px;
-        }
-        .host-card .host-info {
-            font-size: 0.85em;
-            color: var(--text-muted);
-        }
-        
-        .commands-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 12px;
-            min-height: 220px;
-        }
-        .command-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 12px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        .command-card .cmd-header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .command-card .cmd-icon {
-            font-size: 1.5em;
-        }
-        .command-card .cmd-name {
-            font-weight: bold;
-            font-size: 1em;
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .command-card .cmd-desc {
-            color: var(--text-muted);
-            font-size: 0.85em;
-            line-height: 1.3;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-        .command-card .cmd-code {
-            font-family: monospace;
-            font-size: 0.8em;
-            color: var(--text-muted);
-            background: var(--bg-muted);
-            padding: 4px 8px;
-            border-radius: var(--radius);
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .command-card .cmd-actions {
-            display: flex;
-            gap: 6px;
-            margin-top: auto;
-        }
-        .command-card .btn-exec {
-            background: var(--success);
-            color: white;
-            flex: 1;
-        }
-        .command-card .btn-sm {
-            padding: 4px 8px;
-            font-size: 0.85em;
-        }
-        
-        /* 模式匹配标签 */
-        .cmd-patterns {
-            display: flex;
-            gap: 4px;
-            margin-left: auto;
-        }
-        .pattern-tag {
-            font-size: 0.9em;
-            cursor: help;
-            opacity: 0.7;
-        }
-        .pattern-tag:hover {
-            opacity: 1;
-        }
-        
-        /* 高级选项折叠面板 */
-        .advanced-options {
-            margin-top: 15px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            overflow: hidden;
-        }
-        .advanced-options summary {
-            padding: 10px 15px;
-            background: var(--bg-muted);
-            cursor: pointer;
-            font-weight: 500;
-            user-select: none;
-        }
-        .advanced-options summary:hover {
-            background: var(--blue-50);
-        }
-        .advanced-content {
-            padding: 15px;
-            border-top: 1px solid var(--border);
-        }
-        .advanced-content .form-group {
-            margin-bottom: 12px;
-        }
-        .advanced-content small {
-            display: block;
-            color: var(--text-muted);
-            font-size: 0.8em;
-            margin-top: 4px;
-        }
-        .checkbox-label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-        }
-        .checkbox-label input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-        }
-        
-        .exec-result {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 15px;
-            border-radius: var(--radius);
-            font-family: monospace;
-            font-size: 0.9em;
-            max-height: 400px;
-            overflow: auto;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        
-        /* nohup 快捷操作按钮 */
-        .nohup-actions {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 10px;
-            flex-wrap: wrap;
-        }
-        .nohup-actions .btn {
-            background: var(--blue-500);
-            color: white;
-        }
-        .nohup-actions .btn:hover {
-            filter: brightness(1.1);
-        }
-        
-        /* 匹配结果面板 */
-        .match-result-panel {
-            margin-top: 15px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 15px;
-        }
-        .match-panel-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 12px;
-        }
-        .match-panel-header h3 {
-            margin: 0;
-            font-size: 1em;
-        }
-        .match-status {
-            padding: 4px 10px;
-            border-radius: 12px;
-            font-size: 0.85em;
-            font-weight: 500;
-        }
-        .match-status.success {
-            background: var(--emerald-50);
-            color: var(--emerald-600);
-        }
-        .match-status.failed {
-            background: var(--rose-50);
-            color: var(--rose-500);
-        }
-        .match-status.timeout {
-            background: var(--amber-50);
-            color: var(--amber-500);
-        }
-        .match-status.extracting {
-            background: var(--blue-100);
-            color: var(--blue-600);
-            animation: pulse 1.5s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-        .match-result-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 12px;
-        }
-        .match-result-item {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            padding: 10px 12px;
-        }
-        .match-label {
-            font-size: 0.85em;
-            color: var(--text-muted);
-            margin-bottom: 4px;
-        }
-        .match-value {
-            font-weight: 600;
-            font-size: 1em;
-            margin-bottom: 6px;
-            word-break: break-all;
-        }
-        .match-value.true {
-            color: var(--emerald-500);
-        }
-        .match-value.false {
-            color: var(--rose-500);
-        }
-        .match-extracted {
-            font-family: monospace;
-            font-size: 0.9em;
-            max-height: 60px;
-            overflow: auto;
-        }
-        .match-var {
-            display: block;
-            font-size: 0.75em;
-            color: var(--text-muted);
-            background: var(--bg-muted);
-            padding: 2px 6px;
-            border-radius: var(--radius-sm);
-        }
-        .match-api-hint {
-            margin-top: 12px;
-            padding-top: 10px;
-            border-top: 1px solid var(--border);
-            color: var(--text-muted);
-        }
-        .match-api-hint code {
-            background: var(--bg-muted);
-            padding: 2px 6px;
-            border-radius: var(--radius-sm);
-            font-size: 0.85em;
-        }
-        
-        .icon-picker {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-        }
-        .icon-btn {
-            width: 36px;
-            height: 36px;
-            font-size: 1.2em;
-            border: 2px solid var(--border);
-            border-radius: var(--radius-sm);
-            background: transparent;
-            cursor: pointer;
-        }
-        .icon-btn:hover, .icon-btn.selected {
-            border-color: var(--blue-500);
-            background: var(--blue-50);
-        }
-        
-        .empty-state {
-            text-align: center;
-            padding: 40px;
-            color: var(--text-muted);
-        }
-        
-        /* 新建指令模态框 - 输入栏加大以便用户查看 */
-        #command-modal .form-group input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
-        #command-modal .form-group textarea {
-            padding: 12px 16px;
-            font-size: 0.95rem;
-            min-height: 48px;
-        }
-        #command-modal .form-group textarea {
-            min-height: 150px;
-        }
-        /* 新建指令模态框 - 图标区块与添加规则一致，带底色包裹 */
-        #command-modal .config-section.config-section-icon {
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 14px;
-            margin-bottom: 16px;
-            background: var(--bg-muted);
-        }
-        #command-modal .config-section-icon .config-title {
-            font-weight: 600;
-            font-size: 0.95rem;
-            margin-bottom: 12px;
-            display: block;
-        }
-        #command-modal .config-section-icon .icon-type-tabs {
-            margin-bottom: 10px;
-        }
-        /* 图标网格去白底：icon-picker 和 icon-btn 透明，与 config-section 灰底融为一体 */
-        #command-modal .config-section-icon .icon-picker {
-            background: transparent;
-            padding: 0;
-        }
-        #command-modal .config-section-icon .icon-btn {
-            background: transparent;
-        }
-    `;
-    document.head.appendChild(style);
 }
 
 // 当前选中的主机
@@ -9771,9 +8116,9 @@ async function loadHostSelector() {
         
         if (hosts.length === 0) {
             container.innerHTML = `
-                <div class="empty-state" style="width:100%">
-                    <p>${typeof t === 'function' ? t('sshPage.noDeployedHostsMsg') : '暂无已部署主机'}</p>
-                    <p style="font-size:0.9em">${typeof t === 'function' ? t('sshPage.deployKeyAtSecurityHint') : '请先到 <a href="#/security">安全</a> 页面部署 SSH 公钥'}</p>
+                <div class="empty">
+                    <p class="t-body">${t('sshPage.noDeployedHostsMsg')}</p>
+                    <p class="t-note">${t('sshPage.deployKeyAtSecurityHint')}</p>
                 </div>
             `;
             return;
@@ -9783,30 +8128,27 @@ async function loadHostSelector() {
         window._cmdHostsList = hosts;
         
         // 检查是否有孤儿命令
-        const hasOrphanCommands = sshCommands['__orphan__'] && sshCommands['__orphan__'].length > 0;
-        const orphanCount = hasOrphanCommands ? sshCommands['__orphan__'].length : 0;
+        const orphanCount = sshCommands['__orphan__']?.length || 0;
         
         let html = hosts.map(h => `
-            <div class="host-card ${selectedHostId === h.id ? 'selected' : ''}" 
-                 onclick="selectHost('${escapeHtml(h.id)}')" 
-                 data-host-id="${escapeHtml(h.id)}">
-                <i class="ri-server-line host-icon"></i>
-                <div class="host-card-content">
-                    <div class="host-name">${escapeHtml(h.id)}</div>
-                    <div class="host-info">${escapeHtml(h.username)}@${escapeHtml(h.host)}:${h.port}</div>
+            <div class="tile host-card ${selectedHostId === h.id ? 'on' : ''}" style="width:280px" onclick="selectHost('${escapeHtml(h.id)}')" data-host-id="${escapeHtml(h.id)}">
+                <svg class="i host-icon"><use href="#ri-server-line"/></svg>
+                <div>
+                    <div class="t-body" style="font-weight:600">${escapeHtml(h.id)}</div>
+                    <div class="t-note mono">${escapeHtml(h.username)}@${escapeHtml(h.host)}:${h.port}</div>
                 </div>
             </div>
         `).join('');
         
         // 如果有孤儿命令，添加特殊分组
-        if (hasOrphanCommands) {
+        if (orphanCount > 0) {
             html += `
-            <div class="host-card orphan-group ${selectedHostId === '__orphan__' ? 'selected' : ''}" 
-                 onclick="selectHost('__orphan__')" 
-                 data-host-id="__orphan__"
-                 style="background:rgba(245,158,11,0.06);border-color:transparent">
-                <div class="host-name"><i class="ri-error-warning-line" style="color:var(--warning-color)"></i> ${t('sshPage.orphanCommands')}</div>
-                <div class="host-info" style="color:#d97706">${t('promptRepair.orphanCount', {count: orphanCount})}</div>
+            <div class="tile host-card orphan-group ${selectedHostId === '__orphan__' ? 'on' : ''}" style="width:300px;background:rgba(255,149,0,.10)" onclick="selectHost('__orphan__')" data-host-id="__orphan__">
+                <span style="color:var(--warn)"><svg class="i"><use href="#ri-alert-line"/></svg></span>
+                <div>
+                    <div class="t-body" style="font-weight:600">${t('sshPage.orphanCommands')}</div>
+                    <div class="t-note" style="color:var(--warn)">${t('promptRepair.orphanCount', {count: orphanCount})}</div>
+                </div>
             </div>
             `;
         }
@@ -9818,7 +8160,7 @@ async function loadHostSelector() {
         
     } catch (e) {
         if (!pageCurrent()) return;
-        container.innerHTML = `<div class="error">${t('common.loadFailed')}:  ${escapeHtml(e.message)}</div>`;
+        container.innerHTML = `<p class="t-note" style="color:var(--bad)">${t('common.loadFailed')}: ${escapeHtml(e.message)}</p>`;
     }
 }
 
@@ -9827,7 +8169,7 @@ function selectHost(hostId) {
     
     // 更新选中状态
     document.querySelectorAll('.host-card').forEach(card => {
-        card.classList.toggle('selected', card.dataset.hostId === hostId);
+        card.classList.toggle('on', card.dataset.hostId === hostId);
     });
     
     // 刷新指令列表
@@ -9836,97 +8178,73 @@ function selectHost(hostId) {
 
 function refreshCommandsList() {
     const container = document.getElementById('commands-list');
-    var createFirstBtn = '<button type="button" class="btn btn-small btn-service-style" onclick="showAddCommandModal()" style="font-size:0.85em;display:inline-block">';
-    createFirstBtn += '<i class="ri-add-line"></i> ' + (typeof t === 'function' ? t('ssh.createFirstCommand') : '创建第一个指令');
-    createFirstBtn += '</button>';
+    const createFirstBtn = `<button type="button" class="btn sm" onclick="showAddCommandModal()"><svg class="i"><use href="#ri-add-line"/></svg>${t('ssh.createFirstCommand')}</button>`;
+    const empty = (msgKey) => `<div class="empty"><p class="t-note">${t(msgKey)}</p>${createFirstBtn}</div>`;
     
     if (!selectedHostId) {
-        container.innerHTML = '<div class="empty-state"><p>' + (typeof t === 'function' ? t('ssh.selectHostFirst') : '请先选择一个主机') + '</p>' + createFirstBtn + '</div>';
+        container.innerHTML = empty('ssh.selectHostFirst');
         return;
     }
     
     const hostCommands = sshCommands[selectedHostId] || [];
     
     if (hostCommands.length === 0) {
-        container.innerHTML = '<div class="empty-state"><p>' + (typeof t === 'function' ? t('ssh.noCommandsForHost') : '该主机暂无指令') + '</p>' + createFirstBtn + '</div>';
+        container.innerHTML = empty('ssh.noCommandsForHost');
         return;
     }
     
+    // 操作列宽按最多的按钮数定，保证各行对齐（默认 执行 / 编辑 / 删除 三个 = 96px）
+    const extraCount = c => (c.varName ? 1 : 0) + (c.nohup && c.serviceMode ? 2 : 0) + 1;
+    const nBtn = 3 + Math.max(...hostCommands.map(extraCount));
+    const cols = `style="--cols:32px 1fr 1.6fr ${nBtn * 28 + (nBtn - 1) * 6}px"`;
+
     container.innerHTML = hostCommands.map((cmd, idx) => {
-        // 孤儿命令警告（引用的主机不存在）
         const isOrphan = cmd.orphan === true;
-        const orphanWarningHtml = isOrphan ? `
-            <div class="orphan-warning" style="background:rgba(245,158,11,0.06);border:1px solid transparent;border-radius:4px;padding:4px 8px;margin-bottom:8px;color:#d97706;font-size:12px;">
-                ${escapeHtml(t('promptRepair.orphanHost', {id: cmd.originalHostId || '?'}))}
-            </div>
-        ` : '';
         
-        // 构建模式匹配标签
-        const hasPatternsConfig = cmd.expectPattern || cmd.failPattern || cmd.extractPattern;
-        const patternsHtml = hasPatternsConfig ? `
-            <div class="cmd-patterns">
-                ${cmd.expectPattern ? '<span class="pattern-tag success" title="' + t('promptRepair.expectedLabel') + ' ' + escapeHtml(cmd.expectPattern) + '"><i class="ri-check-line"></i></span>' : ''}
-                ${cmd.failPattern ? '<span class="pattern-tag fail" title="' + t('promptRepair.failureLabel') + ' ' + escapeHtml(cmd.failPattern) + '"><i class="ri-close-line"></i></span>' : ''}
-                ${cmd.extractPattern ? '<span class="pattern-tag extract" title="' + t('promptRepair.extractLabel') + ' ' + escapeHtml(cmd.extractPattern) + '"><i class="ri-file-list-line"></i></span>' : ''}
-            </div>
-        ` : '';
-        
-        // nohup 标签（显示服务模式或普通后台执行）
-        let nohupHtml = '';
-        if (cmd.nohup) {
-            if (cmd.serviceMode) {
-                // 服务模式：显示服务状态标签（无色块背景）
-                // 使用 cmd.id 作为唯一标识，避免多个服务时 ID 冲突
-                const statusId = `service-status-${cmd.id || idx}`;
-                nohupHtml = `<span class="service-mode-status" title="${escapeHtml(t('promptRepair.servicePattern', {pattern: cmd.readyPattern}))}" data-var="${escapeHtml(cmd.varName)}" data-status-id="${statusId}"><span id="${statusId}" class="service-status">...</span></span>`;
-            } else {
-                nohupHtml = ("<span class=\"pattern-tag nohup\" title=\"" + t('ssh.nohupTitle') + "\"><i class=\"ri-rocket-line\"></i></span>");
-            }
+        // 模式匹配 / nohup 标签
+        const tag = (icon, title, cls = '') => `<span class="tag ${cls}" title="${title}"><svg class="i"><use href="#${icon}"/></svg></span>`;
+        let tagsHtml = '';
+        if (cmd.expectPattern) tagsHtml += tag('ri-check-line', t('promptRepair.expectedLabel') + ' ' + escapeHtml(cmd.expectPattern));
+        if (cmd.failPattern) tagsHtml += tag('ri-close-line', t('promptRepair.failureLabel') + ' ' + escapeHtml(cmd.failPattern));
+        if (cmd.extractPattern) tagsHtml += tag('ri-file-list-line', t('promptRepair.extractLabel') + ' ' + escapeHtml(cmd.extractPattern));
+        if (cmd.nohup && !cmd.serviceMode) tagsHtml += tag('ri-rocket-line', t('ssh.nohupTitle'));
+        if (cmd.nohup && cmd.serviceMode) {
+            // 服务模式：显示服务状态（用 cmd.id 作唯一标识，避免多个服务时 ID 冲突）
+            const statusId = `service-status-${cmd.id || idx}`;
+            tagsHtml += `<span class="service-mode-status" title="${escapeHtml(t('promptRepair.servicePattern', {pattern: cmd.readyPattern}))}" data-var="${escapeHtml(cmd.varName)}" data-status-id="${statusId}"><span id="${statusId}" class="state">...</span></span>`;
         }
         
-        // 变量按钮（仅当设置了 varName 时显示）
-        const varBtnHtml = cmd.varName ? `<button class="btn btn-sm" onclick="showCommandVariables('${escapeHtml(cmd.varName)}')" title="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}"><i class="ri-bar-chart-line"></i></button>` : '';
-        
-        // 服务模式按钮（日志、停止）
-        const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
-        const serviceActionsHtml = (cmd.nohup && cmd.serviceMode) ? `
-            <button class="btn btn-sm" onclick="viewServiceLog(${idx}, '${escapeHtml(safeName)}')" title="${t('sshPage.viewLog')}"><i class="ri-file-text-line"></i></button>
-            <button class="btn btn-sm" onclick="stopServiceProcess(${idx}, '${escapeHtml(safeName)}')" title="${t('sshPage.stopService')}" style="background:#f43f5e;color:white"><i class="ri-stop-line"></i></button>
-        ` : '';
-        
-        // 图标显示：支持 RemixIcon 类名、图片路径或旧版 Emoji
+        // 图标：RemixIcon 类名、图片路径或旧版 Emoji
         const iconValue = cmd.icon || 'ri-rocket-line';
         let iconHtml;
         if (iconValue.startsWith('/sdcard/')) {
-            iconHtml = `<span class="cmd-icon"><img src="/api/v1/file/download?path=${encodeURIComponent(iconValue)}" alt="icon" onerror="this.parentElement.innerHTML='<i class=\\'ri-rocket-line\\'></i>'"></span>`;
+            iconHtml = `<img src="/api/v1/file/download?path=${encodeURIComponent(iconValue)}" alt="icon" style="width:16px;height:16px;object-fit:contain" onerror="this.outerHTML='<svg class=\\'i\\'><use href=\\'#ri-rocket-line\\'/></svg>'">`;
         } else if (iconValue.startsWith('ri-')) {
-            iconHtml = `<span class="cmd-icon"><i class="${iconValue}"></i></span>`;
+            iconHtml = `<svg class="i"><use href="#${iconValue}"/></svg>`;
         } else {
-            iconHtml = `<span class="cmd-icon">${iconValue}</span>`;
+            iconHtml = iconValue;
         }
         
-        // 孤儿命令禁用执行按钮
-        const execBtnDisabled = isOrphan ? 'disabled style="opacity:0.5;cursor:not-allowed"' : '';
+        // 服务模式按钮（日志、停止）
+        const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
+        const serviceActions = (cmd.nohup && cmd.serviceMode)
+            ? icoBtn('ri-file-text-line', t('sshPage.viewLog'), `viewServiceLog(${idx}, '${escapeHtml(safeName)}')`) + icoBtn('ri-stop-line', t('sshPage.stopService'), `stopServiceProcess(${idx}, '${escapeHtml(safeName)}')`, 'dg')
+            : '';
+        const varBtn = cmd.varName ? icoBtn('ri-bar-chart-line', escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName})), `showCommandVariables('${escapeHtml(cmd.varName)}')`) : '';
+        const runTitle = isOrphan ? t('ssh.hostNotExistCannotExec') : t('common.run');
+        const runBtn = `<button class="btn icon sm btn-exec" onclick="executeCommand(${idx})" title="${runTitle}" aria-label="${runTitle}" ${isOrphan ? 'disabled' : ''}><svg class="i"><use href="#ri-play-line"/></svg></button>`;
         
         return `
-        <div class="command-card ${isOrphan ? 'orphan-command' : ''}" data-cmd-idx="${idx}" data-has-service="${cmd.serviceMode || false}" ${isOrphan ? 'style="border:2px solid #f59e0b;background:rgba(245,158,11,0.06)"' : ''}>
-            ${orphanWarningHtml}
-            <div class="cmd-header">
-                ${iconHtml}
-                <span class="cmd-name" title="${escapeHtml(cmd.name)}">${escapeHtml(cmd.name)}</span>
-                ${nohupHtml}
-                ${patternsHtml}
+        <div class="tr command-card ${isOrphan ? 'orphan-command' : ''}" ${cols} data-cmd-idx="${idx}" data-has-service="${cmd.serviceMode || false}">
+            <span style="color:var(--accent-text)">${iconHtml}</span>
+            <div>
+                <div class="t-body cmd-name" style="font-weight:500" title="${escapeHtml(cmd.name)}">${escapeHtml(cmd.name)}${tagsHtml ? ' ' + tagsHtml : ''}</div>
+                <div class="t-note mono">${escapeHtml(cmd.id || '')}</div>
+                ${isOrphan ? `<div class="t-note" style="color:var(--warn)">${escapeHtml(t('promptRepair.orphanHost', {id: cmd.originalHostId || '?'}))}</div>` : ''}
+                ${cmd.desc ? `<div class="t-note" title="${escapeHtml(cmd.desc)}">${escapeHtml(cmd.desc)}</div>` : ''}
             </div>
-            ${cmd.desc ? `<div class="cmd-desc" title="${escapeHtml(cmd.desc)}">${escapeHtml(cmd.desc)}</div>` : ''}
-            <div class="cmd-code" title="${escapeHtml(cmd.command)}">${escapeHtml(cmd.command.split('\n')[0])}${cmd.command.includes('\n') ? ' ...' : ''}</div>
-            <div class="cmd-actions">
-                <button class="btn btn-sm btn-exec" onclick="executeCommand(${idx})" title="${isOrphan ? (typeof t === 'function' ? t('ssh.hostNotExistCannotExec') : '主机不存在，无法执行') : (typeof t === 'function' ? t('common.run') : '执行')}" ${execBtnDisabled}><i class="ri-play-line"></i></button>
-                ${serviceActionsHtml}
-                ${varBtnHtml}
-                <button class="btn btn-sm btn-service-style" onclick="exportSshCommand('${escapeHtml(cmd.id)}')" title="${typeof t === 'function' ? t('ssh.exportConfig') : '导出配置'}"><i class="ri-upload-line"></i></button>
-                <button class="btn btn-sm" onclick="editCommand(${idx})" title="${typeof t === 'function' ? t('common.edit') : '编辑'}"><i class="ri-edit-line"></i></button>
-                <button class="btn btn-sm" onclick="deleteCommand(${idx})" title="${typeof t === 'function' ? t('common.delete') : '删除'}" style="background:#f43f5e;color:white"><i class="ri-delete-bin-line"></i></button>
-            </div>
+            <span class="mono t-label cmd-code" title="${escapeHtml(cmd.command)}">${escapeHtml(cmd.command.split('\n')[0])}${cmd.command.includes('\n') ? ' ...' : ''}</span>
+            <div class="act">${runBtn}${serviceActions}${varBtn}${icoBtn('ri-edit-line', t('common.edit'), `editCommand(${idx})`)}${icoBtn('ri-upload-line', t('ssh.exportConfig'), `exportSshCommand('${escapeHtml(cmd.id)}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteCommand(${idx})`, 'dg')}</div>
         </div>
     `}).join('');
     
@@ -9957,15 +8275,15 @@ async function updateServiceStatusInList() {
             if (result && result.data && result.data.value !== undefined) {
                 const status = result.data.value;
                 statusEl.textContent = getServiceStatusLabel(status);
-                statusEl.className = `service-status status-${status}`;
+                statusEl.className = 'state' + (status === 'ready' ? ' ok' : status === 'failed' || status === 'timeout' ? ' bad' : '');
             } else {
                 statusEl.textContent = (typeof t === 'function' ? t('sshPage.statusIdle') : '未启动');
-                statusEl.className = 'service-status status-idle';
+                statusEl.className = 'state';
             }
         } catch (e) {
             console.error(`[ServiceStatus] Error getting ${escapeHtml(varName)}.status:`, e);
             statusEl.textContent = (typeof t === 'function' ? t('sshPage.statusUnknown') : '未知');
-            statusEl.className = 'service-status status-unknown';
+            statusEl.className = 'state';
         }
     }
 }
@@ -10054,17 +8372,31 @@ function closeCommandModal() {
  * 显示指令变量
  * @param {string} varName - 变量名前缀（不含 cmd.）
  */
-async function showCommandVariables(varName) {
+// 数据源/指令变量弹窗：#source-variables-modal 是空容器，打开时用 sheet() 构建（正文 id 保持 source-variables-body）
+function openSourceVarsSheet(title) {
     const modal = document.getElementById('source-variables-modal');
-    const body = document.getElementById('source-variables-body');
-    if (!modal || !body) return;
-    
-    // 更新标题
-    const header = modal.querySelector('.modal-header h2');
-    if (header) header.textContent = typeof t === 'function' ? t('ui.commandVariablesWithName', { varName }) : `指令变量: ${escapeHtml(varName)}.*`;
-    
-    body.innerHTML = '<div class="loading">' + t('common.loading') + '</div>';
+    if (!modal) return null;
+    modal.innerHTML = sheet(660, title,
+        `<div class="card" id="source-variables-body" style="padding:0;background:var(--fill)"><div class="tr" style="--cols:1fr;border-top:0;color:var(--ink-3)">${t('common.loading')}</div></div>`,
+        `<button class="btn lg primary" onclick="closeSourceVariablesModal()">${t('common.close')}</button>`,
+        'closeSourceVariablesModal()');
     modal.classList.remove('hidden');
+    return document.getElementById('source-variables-body');
+}
+
+function setSourceVarsMessage(body, msg, isError = false) {
+    body.innerHTML = `<div class="tr" style="--cols:1fr;border-top:0;${isError ? '' : 'color:var(--ink-3)'}">${isError ? `<span class="form-error">${msg}</span>` : msg}</div>`;
+}
+
+function renderSourceVarsTable(body, vars) {
+    const cols = '--cols:1.4fr .8fr 1fr 1fr';
+    body.innerHTML = `<div class="tr th" style="${cols}"><div>${t('sshPage.varTableName')}</div><div>${t('sshPage.varTableType')}</div><div>${t('sshPage.varTableValue')}</div><div>${t('sshPage.varTableUpdated')}</div></div>` +
+        vars.map(v => `<div class="tr" style="${cols}"><div><span class="mono">${escapeHtml(v.name)}</span></div><div>${escapeHtml(v.type || '-')}</div><div>${formatVariableValue(v.value, v.type)}</div><div>${formatVariableUpdateTime(v)}</div></div>`).join('');
+}
+
+async function showCommandVariables(varName) {
+    const body = openSourceVarsSheet(t('ui.variablesTitle', { name: escapeHtml(varName) + '.*' }));
+    if (!body) return;
     
     try {
         const result = await api.call('automation.variables.list', {
@@ -10072,44 +8404,19 @@ async function showCommandVariables(varName) {
             include_meta: true
         });
         if (result.code === 0 && result.data && result.data.variables) {
-            // 过滤出属于该指令的变量
-            // SSH 指令变量的 source_id 就是 varName（不带 cmd. 前缀）
-            // 变量名格式为 varName.status, varName.exit_code, varName.extracted 等
             const vars = result.data.variables.filter(v => 
                 v.source_id === varName || v.name.startsWith(varName + '.'));
             
             if (vars.length === 0) {
-                body.innerHTML = '<p style="text-align:center;color:var(--text-secondary);padding:20px">' + (typeof t === 'function' ? t('sshPage.noVariableData') : '该指令暂无变量数据，请先执行一次') + '</p>';
+                setSourceVarsMessage(body, t('sshPage.noVariableData'));
                 return;
             }
-            
-            body.innerHTML = `
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableName') : '变量名'}</th>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableType') : '类型'}</th>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableValue') : '当前值'}</th>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableUpdated') : '更新时间'}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${vars.map(v => `
-                            <tr>
-                                <td><code class="variable-name">${v.name}</code></td>
-                                <td><span class="type-badge type-${v.type || 'unknown'}">${v.type || '-'}</span></td>
-                                <td class="variable-value">${formatVariableValue(v.value, v.type)}</td>
-                                <td class="variable-time">${formatVariableUpdateTime(v)}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            `;
+            renderSourceVarsTable(body, vars);
         } else {
-            body.innerHTML = `<p style="text-align:center;color:var(--rose-500)">${escapeHtml(result.message || (typeof t === 'function' ? t('sshPage.getVarFailed') : '获取变量失败'))}</p>`;
+            setSourceVarsMessage(body, escapeHtml(result.message || t('sshPage.getVarFailed')), true);
         }
     } catch (error) {
-        body.innerHTML = `<p style="text-align:center;color:var(--rose-500)">${escapeHtml(error.message)}</p>`;
+        setSourceVarsMessage(body, escapeHtml(error.message), true);
     }
 }
 
@@ -10136,7 +8443,7 @@ function updateTimeoutState() {
         timeoutHint.textContent = isTimeoutEffective 
             ? (typeof t === 'function' ? t('ssh.matchTimeoutHint') : '匹配超时后命令将被终止')
             : (typeof t === 'function' ? t('ssh.timeoutConditionHint') : '超时仅在设置了成功/失败模式或勾选了"匹配后停止"时有效');
-        timeoutHint.style.color = isTimeoutEffective ? '' : 'var(--text-muted)';
+        timeoutHint.style.color = isTimeoutEffective ? '' : 'var(--ink-3)';
     }
 }
 
@@ -10198,7 +8505,7 @@ function updateServiceModeState() {
     if (varNameInput) {
         if (serviceMode) {
             varNameInput.placeholder = typeof t === 'function' ? t('sshPage.varNameRequiredPlaceholder') : '必填，例如：vllm（用于状态变量）';
-            varNameInput.style.borderColor = varNameInput.value ? '' : 'var(--warning-color)';
+            varNameInput.style.borderColor = varNameInput.value ? '' : 'var(--warn-dot)';
         } else {
             varNameInput.placeholder = typeof t === 'function' ? t('ssh.cmdVarNamePlaceholder') : '例如：ping_test';
             varNameInput.style.borderColor = '';
@@ -10213,10 +8520,8 @@ function switchCmdIconType(type) {
     const iconTypeInput = document.getElementById('cmd-icon-type');
     iconTypeInput.value = type;
     
-    // 更新 Tab 状态
-    document.querySelectorAll('.icon-type-tabs .icon-tab').forEach(tab => {
-        tab.classList.toggle('active', (type === 'emoji' && tab.textContent.includes(t('automation.iconLabel'))) || (type === 'image' && tab.textContent.includes(t('automation.imageTab'))));
-    });
+    // 更新分段控件状态
+    document.querySelectorAll('.icon-type-tabs button').forEach(b => b.classList.toggle('on', b.dataset.type === type));
     
     // 切换面板显示
     document.getElementById('icon-emoji-picker').classList.toggle('hidden', type !== 'emoji');
@@ -10311,8 +8616,8 @@ function validateCommandId(input) {
     }
     
     if (errorMsg) {
-        input.style.borderColor = 'var(--rose-500)';
-        errorSpan.innerHTML = '<i class="ri-error-warning-line"></i> ' + errorMsg;
+        input.style.borderColor = 'var(--bad)';
+        errorSpan.innerHTML = '<svg class="i"><use href="#ri-error-warning-line"/></svg> ' + errorMsg;
         errorSpan.style.display = 'block';
         return false;
     }
@@ -10453,7 +8758,7 @@ function editCommand(idx) {
     const idGroup = document.getElementById('cmd-id-group');
     idInput.value = cmd.id || '';
     idInput.readOnly = true;
-    idInput.style.backgroundColor = 'var(--bg-tertiary)';
+    idInput.style.backgroundColor = 'var(--fill)';
     idInput.style.cursor = 'not-allowed';
     idGroup.classList.add('edit-mode');
     
@@ -10549,8 +8854,9 @@ async function exportSshCommand(cmdId) {
         showExportSshCommandModal(cmdId);
     } else {
         // 非开发机：直接使用设备证书加密，询问是否包含主机
-        const includeHost = confirmAction(typeof t === 'function' ? t('ui.confirmExportWithHost') : '是否同时导出该指令依赖的主机配置？\n\n点击「确定」将主机配置一起打包（推荐），点击「取消」仅导出指令。');
-        await doExportSshCommand(cmdId, null, includeHost);
+        const choice = await confirmSheet({ title: t('sshPage.exportSshCmdTitle'), body: t('ui.exportWithHostBody'), primary: t('ui.exportWithHost'), third: t('ui.exportCmdOnly') });
+        if (!choice) return;
+        await doExportSshCommand(cmdId, null, choice === true);
     }
 }
 
@@ -10566,32 +8872,8 @@ function showExportSshCommandModal(cmdId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:600px">
-            <h2>${typeof t === 'function' ? t('sshPage.exportSshCmdTitle') : '导出 SSH 指令配置'}</h2>
-            <p style="color:#6b7280;font-size:0.9rem">${typeof t === 'function' ? t('sshPage.exportSshCmdDesc', {cmdId: escapeHtml(cmdId)}) : `导出指令 <strong>${escapeHtml(cmdId)}</strong> 的配置为加密配置包`}</p>
-            
-            <div class="form-group" style="margin-top:15px">
-                <label>
-                    <input type="checkbox" id="export-ssh-cmd-include-host" checked> ${typeof t === 'function' ? t('ssh.includeHostConfig') : '同时导出依赖的主机配置'}
-                </label>
-                <div style="font-size:0.85em;color:#6b7280;margin-top:4px">${typeof t === 'function' ? t('ssh.includeHostConfigHint') : '推荐勾选，便于在目标设备完整导入'}</div>
-            </div>
-            
-            <div class="form-group">
-                <label>${typeof t === 'function' ? t('securityPage.targetDeviceCert') : '目标设备证书 (PEM)'}</label>
-                <textarea id="export-ssh-cmd-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;height:120px;font-family:monospace;font-size:11px"></textarea>
-                <div style="font-size:0.85em;color:#6b7280;margin-top:4px">${typeof t === 'function' ? t('securityPage.targetCertHint') : '粘贴目标设备的证书。留空则使用本机证书（自加密）'}</div>
-            </div>
-            
-            <div id="export-ssh-cmd-result" class="result-box hidden" style="margin-top:10px"></div>
-            
-            <div class="form-actions" style="margin-top:15px">
-                <button class="btn" onclick="hideExportSshCommandModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                <button class="btn btn-service-style" id="export-ssh-cmd-btn" onclick="doExportSshCommandFromModal('${escapeHtml(cmdId)}')"><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('common.export') : '导出'}</button>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = exportSheet('ssh-cmd', t('sshPage.exportSshCmdTitle'), t('sshPage.exportSshCmdDesc', {cmdId: escapeHtml(cmdId)}), t('securityPage.targetCertHint'), 'hideExportSshCommandModal', `doExportSshCommandFromModal('${escapeHtml(cmdId)}')`,
+        grp(row(t('ssh.includeHostConfig'), swc('export-ssh-cmd-include-host', true), '', t('ssh.includeHostConfigHint'))) + '<div style="height:12px"></div>');
     
     modal.classList.remove('hidden');
 }
@@ -10691,56 +8973,8 @@ async function showImportSshCommandModal() {
         console.warn('Failed to load hosts list:', e);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:600px">
-            <h2 style="font-size:1.25rem">${typeof t === 'function' ? t('ssh.importSshCmdTitle') : '导入 SSH 指令配置'}</h2>
-            <p style="color:#6b7280;font-size:0.9rem">${typeof t === 'function' ? t('ssh.importSshCmdDesc') : '选择 .tscfg 配置包文件以导入 SSH 指令'}</p>
-            
-            <!-- 步骤 1: 选择文件 -->
-            <div id="import-ssh-cmd-step1">
-                <div class="form-group" style="margin-top:15px">
-                    <label>${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</label>
-                    <div style="display:flex;align-items:center;gap:8px">
-                        <input type="file" id="import-ssh-cmd-file" accept=".tscfg" onchange="previewSshCommandImport()" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
-                        <button type="button" class="btn btn-sm btn-gray" onclick="document.getElementById('import-ssh-cmd-file').click()"><i class="ri-folder-open-line"></i> ${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</button>
-                        <span id="import-ssh-cmd-file-status" style="color:#6b7280;font-size:0.9em">${typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件'}</span>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- 步骤 2: 预览 (默认隐藏) -->
-            <div id="import-ssh-cmd-step2" style="display:none">
-                <div class="info-card" style="background:#f8f9fa;padding:15px;border-radius:8px;margin-top:15px">
-                    <h4 style="margin:0 0 10px 0">${typeof t === 'function' ? t('ssh.configPackContent') : '配置包内容'}</h4>
-                    <div id="import-ssh-cmd-preview"></div>
-                </div>
-                <div class="form-group" style="margin-top:15px">
-                    <label>
-                        <input type="checkbox" id="import-ssh-cmd-overwrite"> ${typeof t === 'function' ? t('ssh.overwriteExisting') : '覆盖已存在的配置'}
-                    </label>
-                </div>
-                <div class="form-group" id="import-ssh-cmd-host-group" style="display:none">
-                    <label>
-                        <input type="checkbox" id="import-ssh-cmd-host" checked> ${typeof t === 'function' ? t('ssh.importHostConfig') : '同时导入包含的主机配置'}
-                    </label>
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('ssh.bindToHost') : '绑定到主机（可选）'}</label>
-                    <select id="import-ssh-cmd-target-host" class="form-control">
-                        ${hostsOptions}
-                    </select>
-                    <small style="color:#9ca3af">${typeof t === 'function' ? t('ssh.bindToHostHint') : '留空则使用配置包中指定的主机'}</small>
-                </div>
-            </div>
-            
-            <div id="import-ssh-cmd-result" class="result-box hidden" style="margin-top:10px"></div>
-            
-            <div class="form-actions" style="margin-top:15px">
-                <button class="btn btn-gray" onclick="hideImportSshCommandModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                <button class="btn btn-service-style" id="import-ssh-cmd-btn" onclick="confirmSshCommandImport()" disabled>${typeof t === 'function' ? t('ssh.confirmImport') : '确认导入'}</button>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = importSheet('ssh-cmd', t('ssh.importSshCmdTitle'), t('ssh.importSshCmdDesc'), 'previewSshCommandImport', 'confirmSshCommandImport', 'hideImportSshCommandModal',
+        `<div class="grp" style="margin-top:8px"><div class="row" id="import-ssh-cmd-host-group" style="display:none"><div class="rl">${t('ssh.importHostConfig')}</div><div class="rc">${swc('import-ssh-cmd-host', true)}</div></div>${row(t('ssh.bindToHost'), `<select class="field" id="import-ssh-cmd-target-host" style="width:220px">${hostsOptions}</select>`, '', t('ssh.bindToHostHint'))}</div>`);
     
     window._importSshCmdTscfg = null;
     modal.classList.remove('hidden');
@@ -10775,7 +9009,7 @@ async function previewSshCommandImport() {
     resultBox.classList.remove('hidden', 'success', 'error', 'warning');
     resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
     importBtn.disabled = true;
-    step2.style.display = 'none';
+    previewDiv.innerHTML = importPlaceholder('ssh-cmd');
     
     try {
         const content = await file.text();
@@ -10790,26 +9024,7 @@ async function previewSshCommandImport() {
         
         if (result.code === 0 && result.data?.valid) {
             const data = result.data;
-            
-            // 轻量级验证只返回基本信息
-            let html = `
-                <table style="width:100%;font-size:0.9em">
-                    <tr><td style="width:80px;color:#6b7280">${typeof t === 'function' ? t('ssh.configId') : '配置 ID'}:</td><td><code>${escapeHtml(data.id)}</code></td></tr>
-                    <tr><td style="color:#6b7280">${typeof t === 'function' ? t('common.type') : '类型'}:</td><td>${data.type === 'ssh_command' ? (typeof t === 'function' ? t('ssh.sshCommand') : 'SSH 指令') : data.type}</td></tr>
-                    <tr><td style="color:#6b7280">${typeof t === 'function' ? t('ssh.signer') : '签名者'}:</td><td>${escapeHtml(data.signer)} ${data.official ? (typeof t === 'function' ? t('ssh.official') : '官方') : ''}</td></tr>
-                    <tr><td style="color:#6b7280">${typeof t === 'function' ? t('ssh.note') : '备注'}:</td><td style="color:#9ca3af;font-size:0.85em">${escapeHtml(data.note || (typeof t === 'function' ? t('ssh.restartToLoad') : '重启后自动加载'))}</td></tr>
-                </table>
-            `;
-            
-            // 隐藏主机选项（因为现在不解密，不知道是否包含主机）
-            if (hostGroup) hostGroup.style.display = 'none';
-            
-            if (data.exists) {
-                html += `<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#d97706">${typeof t === 'function' ? t('ssh.configExistsOverwrite') : '该配置已存在，导入将覆盖现有文件'}</div>`;
-            }
-            
-            previewDiv.innerHTML = html;
-            step2.style.display = 'block';
+            renderImportPreview('ssh-cmd', data, data.type === 'ssh_command' ? t('ssh.sshCommand') : data.type);
             resultBox.className = 'result-box success';
             resultBox.textContent = (typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过');
             importBtn.disabled = false;
@@ -10878,7 +9093,7 @@ async function deleteCommand(idx) {
     const cmd = sshCommands[selectedHostId]?.[idx];
     if (!cmd) return;
     
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmDeleteCmd', { name: cmd.name }) : `确定要删除指令「${cmd.name}」吗？`)) return;
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteCmd', { name: cmd.name }) : `确定要删除指令「${cmd.name}」吗？`, { primary: t('common.delete'), tone: 'danger' })) return;
     
     try {
         // 从后端删除（需要指令 ID）
@@ -10938,7 +9153,7 @@ async function nohupTailLog() {
     
     // 切换按钮状态
     tailBtn.style.display = 'none';
-    stopBtn.style.display = 'inline-block';
+    stopBtn.style.display = '';
     
     resultPre.textContent += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n${typeof t === 'function' ? t('sshPage.startRealTimeTail', { logFile: currentNohupInfo.logFile }) : `开始实时跟踪: ${currentNohupInfo.logFile}\n（点击"停止跟踪"按钮退出）`}\n━━━━━━━━━━━━━━━━━━━━━━\n`;
     lastTailContent = '';
@@ -10994,7 +9209,7 @@ function nohupStopTail() {
     const stopBtn = document.getElementById('nohup-stop-tail');
     const resultPre = document.getElementById('exec-result');
     
-    if (tailBtn) tailBtn.style.display = 'inline-block';
+    if (tailBtn) tailBtn.style.display = '';
     if (stopBtn) stopBtn.style.display = 'none';
     
     resultPre.textContent += t('promptRepair.tailStopped');
@@ -11019,7 +9234,7 @@ async function nohupStopProcess() {
     }
     
     // 确认对话框
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmStopProcess') : '确定要停止此后台进程吗？')) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmStopProcess') : '确定要停止此后台进程吗？', { primary: t('common.stop'), tone: 'neutral' })) {
         return;
     }
     
@@ -11094,7 +9309,7 @@ async function viewServiceLog(idx, safeName) {
     // 显示结果区域
     const resultSection = document.getElementById('exec-result-section');
     const resultPre = document.getElementById('exec-result');
-    resultSection.style.display = 'block';
+    resultSection.style.display = '';
     document.getElementById('cancel-exec-btn').style.display = 'none';
     document.getElementById('nohup-actions').style.display = 'none';
     
@@ -11147,7 +9362,7 @@ async function stopServiceProcess(idx, safeName) {
     }
     
     // 确认对话框
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmStopService', { name: cmd.name }) : `确定要停止服务 "${cmd.name}" 吗？`)) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmStopService', { name: cmd.name }) : `确定要停止服务 "${cmd.name}" 吗？`, { primary: t('common.stop'), tone: 'neutral' })) {
         return;
     }
     
@@ -11156,7 +9371,7 @@ async function stopServiceProcess(idx, safeName) {
     // 显示结果区域
     const resultSection = document.getElementById('exec-result-section');
     const resultPre = document.getElementById('exec-result');
-    resultSection.style.display = 'block';
+    resultSection.style.display = '';
     document.getElementById('cancel-exec-btn').style.display = 'none';
     document.getElementById('nohup-actions').style.display = 'none';
     
@@ -11261,14 +9476,14 @@ async function executeCommand(idx) {
     const resultPre = document.getElementById('exec-result');
     const cancelBtn = document.getElementById('cancel-exec-btn');
     const nohupActions = document.getElementById('nohup-actions');
-    resultSection.style.display = 'block';
+    resultSection.style.display = '';
     
     // nohup 模式下隐藏取消按钮，显示快捷按钮
     if (cmd.nohup) {
         cancelBtn.style.display = 'none';
         nohupActions.style.display = 'flex';
     } else {
-        cancelBtn.style.display = 'inline-block';
+        cancelBtn.style.display = '';
         cancelBtn.disabled = false;
         nohupActions.style.display = 'none';
     }
@@ -11387,7 +9602,7 @@ async function cancelExecution() {
     } catch (e) {
         showToast((typeof t === 'function' ? t('toast.cancelFailedMsg', { msg: e.message }) : '取消失败: ' + e.message), 'error');
         cancelBtn.disabled = false;
-        cancelBtn.innerHTML = '<i class="ri-stop-line"></i> ' + (typeof t === 'function' ? t('sshPage.cancelEsc') : '取消 (Esc)');
+        cancelBtn.innerHTML = '<svg class="i"><use href="#ri-stop-line"/></svg> ' + (typeof t === 'function' ? t('sshPage.cancelEsc') : '取消 (Esc)');
     }
 }
 
@@ -11554,7 +9769,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
     console.log('updateMatchResultPanel called with:', msg, 'isExtractOnly:', isExtractOnly);
     
     // 始终显示面板（只要有匹配就显示）
-    panel.style.display = 'block';
+    panel.style.display = '';
     
     // 更新状态徽章
     const statusBadge = document.getElementById('match-status-badge');
@@ -11719,7 +9934,7 @@ async function resetAdminPasswordToDefault() {
         ? t('securityPage.confirmResetAdminPassword')
         : '确定要重置 admin 密码吗？\n\n此操作会将 admin 密码恢复为默认密码 rm01，并清除登录锁定状态。';
 
-    if (!confirmAction(msg)) return;
+    if (!await confirmAction(msg, { primary: t('common.reset'), tone: 'danger' })) return;
 
     try {
         const result = await api.resetAdminPassword();
@@ -11757,569 +9972,288 @@ async function loadSecurityPage() {
     // 取消系统页面的订阅
     
     const content = document.getElementById('page-content');
-    const showPasswordLabel = typeof t === 'function' ? t('securityPage.showPassword') : '显示密码';
+    const showPasswordLabel = t('securityPage.showPassword');
+    const pwField = (id, label, placeholder) => `
+                    <div class="fl" style="flex:1">
+                        <label>${label}</label>
+                        <div class="pwf">
+                            <input class="field lg" type="password" id="${id}" autocomplete="new-password" placeholder="${placeholder}" aria-label="${label}">
+                            <button type="button" class="pwt" onclick="toggleAccountPasswordVisibility('${id}', this)" title="${showPasswordLabel}" aria-label="${showPasswordLabel}"><svg class="i"><use href="#ri-eye-line"/></svg></button>
+                        </div>
+                    </div>`;
+    const pwCard = (title, desc, field1, field2, submitLabel, submitFn, errId) => `
+                <div class="card">
+                    <div class="t-section">${title}</div>
+                    <div class="t-note" style="margin:2px 0 12px">${desc}</div>
+                    <div class="pwrow">${field1}${field2}
+                        <button class="btn lg primary" onclick="${submitFn}()">${submitLabel}</button>
+                    </div>
+                    <div id="${errId}" class="form-error hidden"></div>
+                </div>`;
     const accountSecuritySection = api.isRoot() ? `
-            <div class="section account-security-section">
-                <h2>${typeof t === 'function' ? t('securityPage.accountSecurity') : '账号安全'}</h2>
-                <p class="account-security-desc">
-                    <i class="ri-information-line"></i>
-                    ${typeof t === 'function' ? t('securityPage.accountSecurityDesc') : 'root 可在此管理 root 与 admin 账号密码。'}
-                </p>
-                <div class="account-password-block">
-                    <h3>${typeof t === 'function' ? t('securityPage.rootPasswordManagement') : 'root 密码管理'}</h3>
-                    <p class="account-password-desc">${typeof t === 'function' ? t('securityPage.rootPasswordManagementDesc') : '设置 root 新密码不会影响当前已登录会话。'}</p>
-                    <div class="account-password-form">
-                        <div class="form-group account-password-group">
-                            <label>${typeof t === 'function' ? t('securityPage.newRootPassword') : 'root 新密码'}</label>
-                            <div class="account-password-field">
-                                <input class="account-password-input" type="password" id="root-new-password" autocomplete="new-password" placeholder="${typeof t === 'function' ? t('securityPage.newRootPasswordPlaceholder') : '输入 root 新密码'}">
-                                <button type="button" class="password-visibility-toggle" onclick="toggleAccountPasswordVisibility('root-new-password', this)" title="${showPasswordLabel}" aria-label="${showPasswordLabel}"><i class="ri-eye-line"></i></button>
-                            </div>
+            <div>
+                <div class="sec-h"><span class="t-section sec-t">${t('securityPage.accountSecurity')}</span><div class="acts"></div></div>
+                <div class="t-note hint" style="margin-bottom:12px"><svg class="i"><use href="#ri-information-line"/></svg>${t('securityPage.accountSecurityDesc')}</div>
+                <div style="display:grid;gap:12px">
+                    ${pwCard(t('securityPage.rootPasswordManagement'), t('securityPage.rootPasswordManagementDesc'),
+                        pwField('root-new-password', t('securityPage.newRootPassword'), t('securityPage.newRootPasswordPlaceholder')),
+                        pwField('root-confirm-password', t('securityPage.confirmRootPassword'), t('securityPage.confirmRootPasswordPlaceholder')),
+                        t('securityPage.setRootPassword'), 'submitRootPasswordSet', 'root-password-error')}
+                    ${pwCard(t('securityPage.adminPasswordManagement'), t('securityPage.adminPasswordDescBrief'),
+                        pwField('admin-new-password', t('securityPage.newAdminPassword'), t('securityPage.newAdminPasswordPlaceholder')),
+                        pwField('admin-confirm-password', t('securityPage.confirmAdminPassword'), t('securityPage.confirmAdminPasswordPlaceholder')),
+                        t('securityPage.setAdminPassword'), 'submitAdminPasswordSet', 'admin-password-error')}
+                    <div class="card between" style="padding:16px 20px">
+                        <div>
+                            <div class="t-section">${t('securityPage.dangerZone')}</div>
+                            <div class="t-note" style="margin-top:2px">${t('securityPage.resetAdminPasswordDesc')}</div>
                         </div>
-                        <div class="form-group account-password-group">
-                            <label>${typeof t === 'function' ? t('securityPage.confirmRootPassword') : '确认新密码'}</label>
-                            <div class="account-password-field">
-                                <input class="account-password-input" type="password" id="root-confirm-password" autocomplete="new-password" placeholder="${typeof t === 'function' ? t('securityPage.confirmRootPasswordPlaceholder') : '再次输入新密码'}">
-                                <button type="button" class="password-visibility-toggle" onclick="toggleAccountPasswordVisibility('root-confirm-password', this)" title="${showPasswordLabel}" aria-label="${showPasswordLabel}"><i class="ri-eye-line"></i></button>
-                            </div>
-                        </div>
-                        <div class="button-group account-security-actions">
-                            <button class="btn btn-sm btn-service-style" onclick="submitRootPasswordSet()"><i class="ri-key-line"></i> ${typeof t === 'function' ? t('securityPage.setRootPassword') : '设置 root 新密码'}</button>
-                        </div>
+                        <button class="btn dg" onclick="resetAdminPasswordToDefault()"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('securityPage.resetAdminPassword')}</button>
                     </div>
-                    <div id="root-password-error" class="form-error hidden"></div>
-                </div>
-                <div class="account-password-block">
-                    <h3>${typeof t === 'function' ? t('securityPage.adminPasswordManagement') : 'admin 密码管理'}</h3>
-                    <p class="account-password-desc">${typeof t === 'function' ? t('securityPage.adminPasswordManagementDesc') : 'root 可在此恢复 admin 账号访问。'}</p>
-                    <div class="account-password-form">
-                        <div class="form-group account-password-group">
-                            <label>${typeof t === 'function' ? t('securityPage.newAdminPassword') : 'admin 新密码'}</label>
-                            <div class="account-password-field">
-                                <input class="account-password-input" type="password" id="admin-new-password" autocomplete="new-password" placeholder="${typeof t === 'function' ? t('securityPage.newAdminPasswordPlaceholder') : '输入 admin 新密码'}">
-                                <button type="button" class="password-visibility-toggle" onclick="toggleAccountPasswordVisibility('admin-new-password', this)" title="${showPasswordLabel}" aria-label="${showPasswordLabel}"><i class="ri-eye-line"></i></button>
-                            </div>
-                        </div>
-                        <div class="form-group account-password-group">
-                            <label>${typeof t === 'function' ? t('securityPage.confirmAdminPassword') : '确认新密码'}</label>
-                            <div class="account-password-field">
-                                <input class="account-password-input" type="password" id="admin-confirm-password" autocomplete="new-password" placeholder="${typeof t === 'function' ? t('securityPage.confirmAdminPasswordPlaceholder') : '再次输入新密码'}">
-                                <button type="button" class="password-visibility-toggle" onclick="toggleAccountPasswordVisibility('admin-confirm-password', this)" title="${showPasswordLabel}" aria-label="${showPasswordLabel}"><i class="ri-eye-line"></i></button>
-                            </div>
-                        </div>
-                        <div class="button-group account-security-actions">
-                            <button class="btn btn-sm btn-service-style" onclick="submitAdminPasswordSet()"><i class="ri-key-line"></i> ${typeof t === 'function' ? t('securityPage.setAdminPassword') : '设置 admin 新密码'}</button>
-                        </div>
-                    </div>
-                    <div id="admin-password-error" class="form-error hidden"></div>
-                </div>
-                <div class="account-danger-row">
-                    <div>
-                        <strong>${typeof t === 'function' ? t('securityPage.dangerZone') : '危险操作'}</strong>
-                        <div style="color:#6b7280;font-size:0.9em;margin-top:4px">
-                            ${typeof t === 'function' ? t('securityPage.resetAdminPasswordDesc') : '将 admin 密码恢复为默认密码 rm01，并清除登录锁定状态。'}
-                        </div>
-                    </div>
-                    <button class="btn btn-sm btn-danger" onclick="resetAdminPasswordToDefault()"><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('securityPage.resetAdminPassword') : '重置 admin 为默认密码'}</button>
                 </div>
             </div>
             ` : '';
     content.innerHTML = `
-        <div class="page-security">
+        <div class="page page-security">
             ${accountSecuritySection}
-            <div class="section">
-                <h2>${t('security.keyManagement')}</h2>
-                <div class="button-group" style="margin-bottom:15px">
-                    <button class="btn btn-sm btn-service-style" onclick="showGenerateKeyModal()"><i class="ri-add-line"></i> ${t('securityPage.generateNewKey')}</button>
+            <div>
+                <div class="sec-h">
+                    <span class="t-section sec-t">${t('security.keyManagement')}</span>
+                    <div class="acts"><button class="btn sm" onclick="showGenerateKeyModal()"><svg class="i"><use href="#ri-add-line"/></svg>${t('securityPage.generateNewKey')}</button></div>
                 </div>
-                <table class="data-table">
-                    <thead>
-                        <tr><th>${typeof t === 'function' ? t('securityPage.keysTableId') : 'ID'}</th><th>${typeof t === 'function' ? t('securityPage.keysTableType') : '类型'}</th><th>${typeof t === 'function' ? t('securityPage.keysTableComment') : '备注'}</th><th>${typeof t === 'function' ? t('securityPage.keysTableCreated') : '创建时间'}</th><th>${typeof t === 'function' ? t('securityPage.keysTableExportable') : '可导出'}</th><th>${typeof t === 'function' ? t('securityPage.keysTableActions') : '操作'}</th></tr>
-                    </thead>
-                    <tbody id="keys-table-body"></tbody>
-                </table>
-            </div>
-            
-            <div class="section">
-                <h2>${t('securityPage.deployedHosts')}</h2>
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
-                    <p style="color:#6b7280;margin:0"><i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.hostsHint') : '通过上方密钥的「部署」按钮将公钥部署到远程服务器后，主机将自动出现在此列表'}</p>
-                    <button class="btn btn-sm btn-service-style" onclick="showImportSshHostModal()"><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('securityPage.importHost') : '导入主机'}</button>
+                <div class="card" style="padding:0">
+                    <div class="tr th cols-keys"><div>${t('securityPage.keysTableId')}</div><div>${t('securityPage.keysTableType')}</div><div>${t('securityPage.keysTableComment')}</div><div>${t('securityPage.keysTableCreated')}</div><div>${t('securityPage.keysTableExportable')}</div><div class="ta-r">${t('securityPage.keysTableActions')}</div></div>
+                    <div id="keys-table-body"></div>
                 </div>
-                <table class="data-table">
-                    <thead>
-                        <tr><th>${typeof t === 'function' ? t('securityPage.hostId') : '主机 ID'}</th><th>${typeof t === 'function' ? t('securityPage.address') : '地址'}</th><th>${typeof t === 'function' ? t('securityPage.port') : '端口'}</th><th>${typeof t === 'function' ? t('securityPage.username') : '用户名'}</th><th>${typeof t === 'function' ? t('securityPage.deployKey') : '部署密钥'}</th><th>${typeof t === 'function' ? t('securityPage.keysTableActions') : '操作'}</th></tr>
-                    </thead>
-                    <tbody id="ssh-hosts-table-body"></tbody>
-                </table>
             </div>
             
-            <div class="section">
-                <h2>${t('securityPage.knownHostFingerprints')}</h2>
-                <p style="color:#6b7280;margin-bottom:15px;font-size:0.9em"><i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.fingerprintHint') : 'SSH 连接时自动记录的服务器指纹，用于防止中间人攻击。如果服务器重装需要更新指纹。'}</p>
-                <table class="data-table">
-                    <thead>
-                        <tr><th>${typeof t === 'function' ? t('securityPage.host') : '主机'}</th><th>${typeof t === 'function' ? t('securityPage.port') : '端口'}</th><th>${typeof t === 'function' ? t('securityPage.keyType') : '密钥类型'}</th><th>${typeof t === 'function' ? t('securityPage.fingerprintSha256') : '指纹 (SHA256)'}</th><th>${typeof t === 'function' ? t('securityPage.addedTime') : '添加时间'}</th><th>${typeof t === 'function' ? t('securityPage.keysTableActions') : '操作'}</th></tr>
-                    </thead>
-                    <tbody id="known-hosts-table-body"></tbody>
-                </table>
+            <div>
+                <div class="sec-h">
+                    <span class="t-section sec-t">${t('securityPage.deployedHosts')}</span>
+                    <div class="acts"><button class="btn sm" onclick="showImportSshHostModal()"><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.importHost')}</button></div>
+                </div>
+                <div class="t-note hint" style="margin-bottom:8px"><svg class="i"><use href="#ri-information-line"/></svg>${t('securityPage.hostsHint')}</div>
+                <div class="card" style="padding:0">
+                    <div class="tr th cols-hosts"><div>${t('securityPage.hostId')}</div><div>${t('securityPage.address')}</div><div>${t('securityPage.port')}</div><div>${t('securityPage.username')}</div><div>${t('securityPage.deployKey')}</div><div class="ta-r">${t('securityPage.keysTableActions')}</div></div>
+                    <div id="ssh-hosts-table-body"></div>
+                </div>
             </div>
             
-            <div class="section">
-                <h2>${t('security.httpsCert')}</h2>
-                <div id="cert-status-card" class="info-card" style="margin-bottom:15px">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                        <span style="font-weight:bold">
-                            <span id="cert-status-icon"><i class="ri-refresh-line"></i></span>
-                            <span id="cert-status-text">${t('common.loading')}</span>
-                        </span>
-                        <span id="cert-expiry-badge" class="badge" style="display:none"></span>
+            <div>
+                <div class="sec-h"><span class="t-section sec-t" title="${escapeHtml(t('securityPage.fingerprintHint'))}">${t('securityPage.knownHostFingerprints')}</span><div class="acts"></div></div>
+                <div class="card" style="padding:0">
+                    <div class="tr th cols-known"><div>${t('securityPage.host')}</div><div>${t('securityPage.port')}</div><div>${t('securityPage.keyType')}</div><div>${t('securityPage.fingerprintSha256')}</div><div>${t('securityPage.addedTime')}</div><div>${t('securityPage.keysTableActions')}</div></div>
+                    <div id="known-hosts-table-body"></div>
+                </div>
+            </div>
+            
+            <div>
+                <div class="sec-h"><span class="t-section sec-t">${t('security.httpsCert')}</span><div class="acts"></div></div>
+                <div id="cert-status-card" class="card">
+                    <div class="between">
+                        <span class="t-section"><span id="cert-status-icon"></span><span id="cert-status-text">${t('common.loading')}</span></span>
+                        <span id="cert-expiry-badge" class="tag" style="display:none"></span>
                     </div>
-                    <p id="cert-material-state"></p>
-                    <p id="cert-https-state"></p>
-                    <p id="cert-blocked-state"></p>
-                    <p id="cert-restart-state" role="status"></p>
-                    <p id="cert-active-fingerprint" style="overflow-wrap:anywhere;font-family:monospace"></p>
-                    <p id="cert-device-time"></p>
-                    <button class="btn btn-sm btn-gray" id="cert-time-sync" onclick="syncCertificateTime()">${certText('pkiRepair.syncBrowser', 'Set device time from this computer')}</button>
+                    <div class="cert-lines">
+                        <span id="cert-material-state"></span>
+                        <span id="cert-https-state"></span>
+                        <span id="cert-blocked-state"></span>
+                        <span id="cert-restart-state" role="status"></span>
+                        <span id="cert-active-fingerprint" class="mono"></span>
+                        <span id="cert-device-time"></span>
+                    </div>
+                    <div style="margin-top:12px"><button class="btn sm" id="cert-time-sync" onclick="syncCertificateTime()"><svg class="i"><use href="#ri-time-line"/></svg>${certText('pkiRepair.syncBrowser', 'Set device time from this computer')}</button></div>
                     <div id="cert-info-details" style="display:none">
-                        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px">
-                            <div><strong>${typeof t === 'function' ? t('securityPage.subjectCN') : '主体 CN'}：</strong><span id="cert-subject-cn">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.issuer') : '签发者'}：</strong><span id="cert-issuer-cn">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.notBefore') : '生效时间'}：</strong><span id="cert-not-before">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.notAfter') : '过期时间'}：</strong><span id="cert-not-after">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.serialNumber') : '序列号'}：</strong><span id="cert-serial" style="font-family:monospace">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.validStatus') : '有效状态'}：</strong><span id="cert-valid-status">-</span></div>
+                        <div class="kv-grid k2">
+                            ${kvRow(t('securityPage.subjectCN'), '-', 'cert-subject-cn')}
+                            ${kvRow(t('securityPage.issuer'), '-', 'cert-issuer-cn')}
+                            ${kvRow(t('securityPage.notBefore'), '-', 'cert-not-before')}
+                            ${kvRow(t('securityPage.notAfter'), '-', 'cert-not-after')}
+                            ${kvRow(t('securityPage.serialNumber'), '-', 'cert-serial')}
+                            ${kvRow(t('securityPage.validStatus'), '-', 'cert-valid-status')}
                         </div>
                     </div>
-                    <div id="cert-no-key-hint" style="display:none;color:#6b7280;font-style:italic">
-                        ${typeof t === 'function' ? t('securityPage.noKeyHint') : '尚未生成密钥对，请先点击下方按钮生成'}
+                    <div id="cert-no-key-hint" class="t-note" style="display:none;margin-top:8px;font-style:italic">${t('securityPage.noKeyHint')}</div>
+                    <hr class="sep" style="margin:16px 0">
+                    <div class="acts wrap">
+                        <button class="btn sm" id="btn-cert-gen-key" onclick="showCertGenKeyModal()"><svg class="i"><use href="#ri-key-line"/></svg>${t('securityPage.genKeyPair')}</button>
+                        <button class="btn sm" id="btn-cert-gen-csr" onclick="showCertCSRModal()" disabled><svg class="i"><use href="#ri-file-text-line"/></svg>${t('securityPage.genCsr')}</button>
+                        <button class="btn sm" id="btn-cert-install" onclick="showCertInstallModal()" disabled><svg class="i"><use href="#ri-upload-line"/></svg>${t('securityPage.installCert')}</button>
+                        <button class="btn sm" id="btn-cert-install-ca" onclick="showCertInstallCAModal()" disabled><svg class="i"><use href="#ri-shield-keyhole-line"/></svg>${t('securityPage.installCa')}</button>
+                        <button class="btn sm" id="btn-cert-view" onclick="showCertViewModal()" disabled><svg class="i"><use href="#ri-eye-line"/></svg>${t('securityPage.viewCert')}</button>
+                        <button class="btn sm dg" id="btn-cert-delete" onclick="deleteCertCredentials()" disabled><svg class="i"><use href="#ri-delete-bin-line"/></svg>${t('securityPage.deleteCredentials')}</button>
                     </div>
-                </div>
-                <div class="button-group" style="display:flex;flex-wrap:wrap;gap:8px">
-                    <button class="btn btn-sm btn-service-style" id="btn-cert-gen-key" onclick="showCertGenKeyModal()"><i class="ri-key-line"></i> ${typeof t === 'function' ? t('securityPage.genKeyPair') : '生成密钥对'}</button>
-                    <button class="btn btn-sm btn-service-style" id="btn-cert-gen-csr" onclick="showCertCSRModal()" disabled><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('securityPage.genCsr') : '生成 CSR'}</button>
-                    <button class="btn btn-sm btn-service-style" id="btn-cert-install" onclick="showCertInstallModal()" disabled><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('securityPage.installCert') : '安装证书'}</button>
-                    <button class="btn btn-sm btn-service-style" id="btn-cert-install-ca" onclick="showCertInstallCAModal()" disabled><i class="ri-shield-keyhole-line"></i> ${typeof t === 'function' ? t('securityPage.installCa') : '安装 CA'}</button>
-                    <button class="btn btn-sm btn-gray" id="btn-cert-view" onclick="showCertViewModal()" disabled><i class="ri-eye-line"></i> ${typeof t === 'function' ? t('securityPage.viewCert') : '查看证书'}</button>
-                    <button class="btn btn-sm btn-danger" id="btn-cert-delete" onclick="deleteCertCredentials()" disabled><i class="ri-delete-bin-line"></i> ${typeof t === 'function' ? t('securityPage.deleteCredentials') : '删除凭证'}</button>
                 </div>
             </div>
             
-            <div class="section">
-                <h2>${typeof t === 'function' ? t('securityPage.configPack') : '配置包 (Config Pack)'}</h2>
-                <div id="config-pack-status-card" class="info-card" style="margin-bottom:15px">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                        <span style="font-weight:bold">
-                            <span id="pack-status-icon"><i class="ri-refresh-line"></i></span>
-                            <span id="pack-status-text">${t('common.loading')}</span>
-                        </span>
-                        <span id="pack-device-type-badge" class="badge" style="display:none"></span>
+            <div>
+                <div class="sec-h"><span class="t-section sec-t">${t('securityPage.configPack')}</span><div class="acts"></div></div>
+                <div id="config-pack-status-card" class="card">
+                    <div class="between">
+                        <span class="t-section"><span id="pack-status-icon"></span><span id="pack-status-text">${t('common.loading')}</span></span>
+                        <span id="pack-device-type-badge" class="tag" style="display:none"></span>
                     </div>
                     <div id="pack-info-details" style="display:none">
-                        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:8px">
-                            <div><strong>${typeof t === 'function' ? t('securityPage.deviceType') : 'Device Type'}:</strong> <span id="pack-device-type">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.certCN') : 'Cert CN'}:</strong> <span id="pack-cert-cn">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.certFingerprintShort') : 'Cert Fingerprint'}:</strong> <span id="pack-cert-fp" style="font-family:monospace">-</span></div>
-                            <div><strong>${typeof t === 'function' ? t('securityPage.formatVersion') : 'Format Version'}:</strong> <span id="pack-version">-</span></div>
+                        <div class="kv-grid k4">
+                            <div>${kvRow(t('securityPage.deviceType'), '-', 'pack-device-type')}</div>
+                            <div>${kvRow(t('securityPage.certCN'), '-', 'pack-cert-cn')}</div>
+                            <div>${kvRow(t('securityPage.certFingerprintShort'), '-', 'pack-cert-fp')}</div>
+                            <div>${kvRow(t('securityPage.formatVersion'), '-', 'pack-version')}</div>
                         </div>
                     </div>
-                    <p style="color:#6b7280;margin-top:10px">
-                        <i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.configPackDesc') : '配置包系统允许安全地加密和签名配置文件，用于设备间配置分发'}
-                    </p>
-                </div>
-                <div class="button-group" style="display:flex;flex-wrap:wrap;gap:8px">
-                    <button class="btn btn-sm btn-service-style" onclick="showConfigPackExportCertModal()"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('securityPage.exportDeviceCert') : '导出设备证书'}</button>
-                    <button class="btn btn-sm btn-service-style" onclick="showConfigPackImportModal()"><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('securityPage.importConfigPack') : '导入配置包'}</button>
-                    <button class="btn btn-sm btn-service-style" id="btn-pack-export" onclick="showConfigPackExportModal()" disabled><i class="ri-download-line"></i> ${typeof t === 'function' ? t('securityPage.configPackExport') : '导出配置包'}</button>
-                    <button class="btn btn-sm btn-gray" onclick="showConfigPackListModal()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('securityPage.viewPackList') : '查看配置包列表'}</button>
+                    <div class="t-note hint" style="margin:8px 0 16px"><svg class="i"><use href="#ri-information-line"/></svg>${t('securityPage.configPackDesc')}</div>
+                    <hr class="sep" style="margin-bottom:16px">
+                    <div class="acts wrap">
+                        <button class="btn sm" onclick="showConfigPackExportCertModal()"><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.exportDeviceCert')}</button>
+                        <button class="btn sm" onclick="showConfigPackImportModal()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('securityPage.importConfigPack')}</button>
+                        <button class="btn sm" id="btn-pack-export" onclick="showConfigPackExportModal()" disabled><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.configPackExport')}</button>
+                        <button class="btn sm" onclick="showConfigPackListModal()"><svg class="i"><use href="#ri-file-text-line"/></svg>${t('securityPage.viewPackList')}</button>
+                    </div>
                 </div>
             </div>
             
             <!-- 配置包：导出设备证书弹窗 -->
-            <div class="modal hidden" id="pack-export-cert-modal">
-                <div class="modal-content" style="max-width:600px">
-                    <h2>${typeof t === 'function' ? t('securityPage.exportCertTitle') : '导出设备证书'}</h2>
-                    <p style="color:#6b7280;margin-bottom:15px">${typeof t === 'function' ? t('securityPage.exportCertDesc') : '将此证书发送给需要向您发送加密配置的开发者'}</p>
-                    <div id="pack-export-cert-loading" style="text-align:center;padding:20px"><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('common.loading') : 'Loading...'}</div>
-                    <div id="pack-export-cert-content" class="hidden">
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('securityPage.certFingerprint') : '证书指纹 (SHA256)'}</label>
-                            <input type="text" id="pack-cert-fingerprint" readonly style="font-family:monospace;background:#f5f5f5">
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('securityPage.certCn') : '证书 CN'}</label>
-                            <input type="text" id="pack-cert-cn-display" readonly style="background:#f5f5f5">
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('securityPage.certPem') : '证书 PEM'}</label>
-                            <textarea id="pack-cert-pem" readonly style="width:100%;height:200px;font-family:monospace"></textarea>
-                        </div>
-                        <button class="btn btn-sm btn-service-style" onclick="copyPackCertToClipboard()" style="margin-top:8px"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('common.copyToClipboard') : '复制到剪贴板'}</button>
-                    </div>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm" onclick="hideConfigPackExportCertModal()">${typeof t === 'function' ? t('common.close') : '关闭'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="pack-export-cert-modal">${sheet(560, t('securityPage.exportCertTitle'), `
+                <div class="t-note" style="margin-bottom:12px">${t('securityPage.exportCertDesc')}</div>
+                <div id="pack-export-cert-loading" class="t-note" style="text-align:center;padding:20px">${t('common.loading')}</div>
+                <div id="pack-export-cert-content" class="hidden">
+                    ${grp(row(t('securityPage.certFingerprint'), '<input class="field mono" id="pack-cert-fingerprint" readonly style="width:300px">') + row(t('securityPage.certCn'), '<input class="field" id="pack-cert-cn-display" readonly style="width:300px">'))}
+                    ${gt(t('securityPage.certPem'))}
+                    <textarea class="field mono" id="pack-cert-pem" readonly style="height:150px"></textarea>
+                </div>`,
+                `<button class="btn lg" onclick="copyPackCertToClipboard()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg primary" onclick="hideConfigPackExportCertModal()">${t('common.close')}</button>`)}</div>
             
             <!-- 配置包：导入弹窗 -->
-            <div class="modal hidden" id="pack-import-modal">
-                <div class="modal-content" style="max-width:700px">
-                    <h2>${typeof t === 'function' ? t('securityPage.importPackTitle') : '导入配置包'}</h2>
-                    <p style="color:#6b7280;margin-bottom:15px">${typeof t === 'function' ? t('securityPage.importPackDesc') : '上传或粘贴 .tscfg 配置包，验证后保存到设备（加密存储）'}</p>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</label>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <input type="file" id="pack-import-file" accept=".tscfg,.json" onchange="handlePackFileSelect(event)" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
-                            <button type="button" class="btn btn-sm btn-gray" onclick="document.getElementById('pack-import-file').click()"><i class="ri-folder-open-line"></i> ${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</button>
-                            <span id="pack-import-file-status" style="color:#6b7280;font-size:0.9em">${typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件'}</span>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.orPasteJson') : '或粘贴 JSON 内容'}</label>
-                        <textarea id="pack-import-content" placeholder='{"tscfg_version":"1.0", ...}' style="width:100%;height:150px;font-family:monospace"></textarea>
-                    </div>
-                    <div id="pack-import-result" class="result-box hidden" style="margin-top:10px"></div>
-                    <div id="pack-import-preview" class="hidden" style="margin-top:15px;padding:10px;background:#f8f9fa;border-radius:4px">
-                        <h4 style="margin:0 0 10px">${typeof t === 'function' ? t('securityPage.configPackInfo') : '配置包信息'}</h4>
-                        <div id="pack-preview-content"></div>
-                    </div>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm" onclick="hideConfigPackImportModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                        <button class="btn btn-sm btn-gray" onclick="verifyConfigPack()"><i class="ri-search-line"></i> ${typeof t === 'function' ? t('securityPage.verifyOnly') : '仅验证'}</button>
-                        <button class="btn btn-sm btn-service-style" onclick="importConfigPack()"><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('common.import') : '导入'}</button>
-                    </div>
+            <div class="modal hidden" id="pack-import-modal">${sheet(560, t('securityPage.importPackTitle'), `
+                <div class="acts" style="align-items:center;gap:12px;margin-bottom:12px" title="${escapeHtml(t('securityPage.importPackDesc'))}">
+                    <input type="file" id="pack-import-file" accept=".tscfg,.json" onchange="handlePackFileSelect(event)" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
+                    <button type="button" class="btn" onclick="document.getElementById('pack-import-file').click()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('common.selectFile')}</button>
+                    <span id="pack-import-file-status" class="t-note">${t('common.noFileSelected')}</span>
                 </div>
-            </div>
+                <div class="fl">
+                    <label>${t('securityPage.configPackContent')}</label>
+                    <textarea class="field mono" id="pack-import-content" style="height:96px" placeholder='{"tscfg_version":"1.0", ...}'></textarea>
+                </div>
+                <div id="pack-import-result" class="result-box hidden" style="margin-top:12px"></div>
+                <div id="pack-import-preview" class="hidden" style="margin-top:12px">${gt(t('securityPage.configPackInfo'))}<div id="pack-preview-content"></div></div>`,
+                `<button class="btn lg" onclick="hideConfigPackImportModal()">${t('common.cancel')}</button><button class="btn lg" onclick="verifyConfigPack()">${t('securityPage.verifyOnly')}</button><button class="btn lg primary" onclick="importConfigPack()">${t('common.import')}</button>`)}</div>
             
             <!-- 配置包：导出弹窗（仅 Developer 可用） -->
-            <div class="modal hidden" id="pack-export-modal">
-                <div class="modal-content" style="width:800px;max-width:90vw;height:auto;min-height:600px;max-height:90vh;overflow-y:auto">
-                    <h2>${typeof t === 'function' ? t('securityPage.exportPackTitle') : '导出加密配置包'}</h2>
-                    <p style="color:#6b7280;margin-bottom:15px">${typeof t === 'function' ? t('securityPage.exportPackDesc') : '选择配置文件并加密发送给目标设备（支持多选）'}</p>
-                    
-                    <!-- 文件浏览器 -->
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.selectConfigFiles') : '选择配置文件'} <span style="color:#9ca3af">(${typeof t === 'function' ? t('securityPage.multiSelect') : '可多选'})</span></label>
-                        <div style="display:flex;gap:8px;margin-bottom:8px">
-                            <input type="text" id="pack-export-browse-path" value="/sdcard/config" style="flex:1" readonly>
-                            <button class="btn btn-sm btn-gray" onclick="packExportBrowseUp()"><i class="ri-arrow-up-s-line"></i> ${typeof t === 'function' ? t('files.parentFolder') : '上级'}</button>
-                            <button class="btn btn-sm btn-gray" onclick="packExportBrowseRefresh()"><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('common.refresh') : '刷新'}</button>
-                        </div>
-                        <div style="display:flex;gap:8px;margin-bottom:8px">
-                            <button class="btn btn-sm btn-gray" onclick="packExportSelectAll()">${typeof t === 'function' ? t('common.selectAll') : '全选'}</button>
-                            <button class="btn btn-sm btn-gray" onclick="packExportDeselectAll()">${typeof t === 'function' ? t('common.deselectAll') : '取消全选'}</button>
-                            <button class="btn btn-sm btn-gray" onclick="packExportSelectDir()"><i class="ri-folder-open-line"></i> ${typeof t === 'function' ? t('securityPage.selectDirectory') : '选择整个目录'}</button>
-                        </div>
-                        <div id="pack-export-file-list" style="border:1px solid #ddd;border-radius:4px;height:180px;overflow-y:auto;background:#f9f9f9">
-                            <div style="padding:20px;text-align:center;color:#6b7280"><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('common.loading') : 'Loading...'}</div>
-                        </div>
-                        <div id="pack-export-selected" style="margin-top:8px;padding:8px;background:rgba(16,185,129,0.06);border-radius:4px;min-height:36px;display:none">
-                            <strong>${typeof t === 'function' ? t('securityPage.selected') : '已选择'}:</strong> <span id="pack-export-selected-file"></span>
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.configName') : '配置名称'}</label>
-                        <input type="text" id="pack-export-name" placeholder="${typeof t === 'function' ? t('securityPage.autoFromFilename') : '自动从文件名获取'}" required>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.descriptionOptional') : '描述 (可选)'}</label>
-                        <input type="text" id="pack-export-desc" placeholder="${typeof t === 'function' ? t('securityPage.configDescPlaceholder') : 'LED 特效配置'}">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.targetDeviceCert') : '目标设备证书 (PEM)'}</label>
-                        <textarea id="pack-export-recipient-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;height:100px;font-family:monospace" required></textarea>
-                        <div style="color:#6b7280;margin-top:4px"><i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.pasteTargetCert') : '粘贴目标设备导出的证书'}</div>
-                    </div>
-                    <div id="pack-export-result" class="result-box" style="margin-top:10px;min-height:24px;visibility:hidden"></div>
-                    <div id="pack-export-output" style="margin-top:15px">
-                        <label>${typeof t === 'function' ? t('securityPage.generatedConfigPack') : '生成的配置包 (.tscfg)'}</label>
-                        <textarea id="pack-export-tscfg" readonly style="width:100%;height:100px;font-family:monospace" placeholder="${typeof t === 'function' ? t('securityPage.packWillShowHere') : '配置包将在此显示...'}"></textarea>
-                        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-                            <button class="btn btn-sm btn-service-style" onclick="copyPackTscfgToClipboard()" id="btn-pack-copy" style="display:none"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('common.copyToClipboard') : '复制到剪贴板'}</button>
-                            <button class="btn btn-sm btn-service-style" onclick="downloadPackTscfg()" id="btn-pack-download" style="display:none"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('securityPage.downloadToLocal') : '下载到本地'}</button>
-                            <span id="pack-export-saved-path" style="color:#4caf50;display:none"></span>
-                        </div>
-                    </div>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm" onclick="hideConfigPackExportModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                        <button class="btn btn-sm btn-service-style" id="btn-pack-export-generate" onclick="exportConfigPack()" disabled><i class="ri-download-line"></i> ${typeof t === 'function' ? t('securityPage.generateConfigPack') : '生成配置包'}</button>
-                    </div>
+            <div class="modal hidden" id="pack-export-modal">${sheet(760, t('securityPage.configPackExport'), `
+                ${gt(t('securityPage.packExportPick'))}
+                ${grp(row(t('securityPage.dirShort'), `<input type="text" class="field mono" id="pack-export-browse-path" value="/sdcard/config" readonly style="width:200px"><button class="btn sm" onclick="packExportBrowseUp()">${t('files.parentFolder')}</button><button class="btn icon sm" onclick="packExportBrowseRefresh()" title="${escapeHtml(t('common.refresh'))}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>`))}
+                <div class="grp" id="pack-export-file-list" style="margin-top:8px;max-height:180px;overflow-y:auto"><div class="row"><div class="rl t-note">${t('common.loading')}</div></div></div>
+                <div class="acts" style="margin-top:8px">
+                    <button class="btn sm" onclick="packExportSelectAll()">${t('common.selectAll')}</button>
+                    <button class="btn sm" onclick="packExportDeselectAll()">${t('common.deselectAll')}</button>
+                    <button class="btn sm" onclick="packExportSelectDir()">${t('securityPage.selectDirectory')}</button>
                 </div>
-            </div>
+                <div id="pack-export-selected" class="result-box" style="margin-top:8px;display:none;white-space:pre-wrap"><span id="pack-export-selected-file"></span></div>
+                ${gt(t('securityPage.configPackInfo'))}
+                ${grp(row(t('common.name'), inp('pack-export-name', 200, t('securityPage.autoFromFilename'), '', 'required')) + row(t('common.description'), inp('pack-export-desc', 200, t('securityPage.configDescPlaceholder'))))}
+                ${gt(t('securityPage.recipientCert'))}
+                <textarea class="field mono" id="pack-export-recipient-cert" style="height:64px" placeholder="-----BEGIN CERTIFICATE-----" title="${escapeHtml(t('securityPage.pasteTargetCert'))}" required></textarea>
+                <div id="pack-export-result" class="result-box hidden" style="margin-top:12px"></div>
+                ${gt(t('securityPage.tscfgLabel'))}
+                <div id="pack-export-output">
+                    <textarea class="field mono" id="pack-export-tscfg" readonly style="height:64px" placeholder="${t('securityPage.packWillShowHere')}"></textarea>
+                    <div id="pack-export-saved-path" class="t-note" style="display:none;margin-top:6px"></div>
+                </div>`,
+                `<button class="btn lg" id="btn-pack-copy" onclick="copyPackTscfgToClipboard()" style="display:none"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" id="btn-pack-download" onclick="downloadPackTscfg()" style="display:none"><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.downloadToLocal')}</button><button class="btn lg" onclick="hideConfigPackExportModal()">${t('common.cancel')}</button><button class="btn lg primary" id="btn-pack-export-generate" onclick="exportConfigPack()" disabled>${t('securityPage.generateConfigPack')}</button>`)}</div>
             
-            <div class="modal hidden" id="pack-list-modal">
-                <div class="modal-content" style="max-width:800px">
-                    <h2>${typeof t === 'function' ? t('securityPage.packListTitle') : '配置包列表'}</h2>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.packListDirPath') : '目录路径'}</label>
-                        <div style="display:flex;gap:8px">
-                            <input type="text" id="pack-list-path" value="/sdcard/config" style="flex:1">
-                            <button class="btn btn-sm btn-service-style" onclick="refreshConfigPackList()"><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('common.refresh') : '刷新'}</button>
-                        </div>
-                    </div>
-                    <div id="pack-list-loading" style="text-align:center;padding:20px"><i class="ri-refresh-line"></i> ${t('common.loading')}</div>
-                    <table class="data-table hidden" id="pack-list-table">
-                        <thead>
-                            <tr><th>${typeof t === 'function' ? t('securityPage.fileName') : '文件名'}</th><th>${typeof t === 'function' ? t('files.size') : '大小'}</th><th>${typeof t === 'function' ? t('securityPage.signerLabel') : '签名者'}</th><th>${typeof t === 'function' ? t('securityPage.official') : '官方'}</th><th>${typeof t === 'function' ? t('common.status') : '状态'}</th><th>${typeof t === 'function' ? t('common.actions') : '操作'}</th></tr>
-                        </thead>
-                        <tbody id="pack-list-tbody"></tbody>
-                    </table>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm" onclick="hideConfigPackListModal()">${typeof t === 'function' ? t('securityPage.close') : '关闭'}</button>
-                    </div>
+            <div class="modal hidden" id="pack-list-modal">${sheet(560, t('securityPage.packListTitle'), `
+                <div style="display:flex;gap:8px;margin-bottom:12px">
+                    <input type="text" class="field mono" id="pack-list-path" value="/sdcard/config" style="flex:1" placeholder="${t('common.path')}" aria-label="${t('securityPage.packListDirPath')}">
+                    <button class="btn icon sm" onclick="refreshConfigPackList()" title="${escapeHtml(t('common.refresh'))}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                 </div>
-            </div>
+                <div id="pack-list-loading" class="t-note" style="text-align:center;padding:16px">${t('common.loading')}</div>
+                <div class="card hidden" id="pack-list-table" style="padding:0;background:var(--fill)"><div id="pack-list-tbody"></div></div>`,
+                `<button class="btn lg primary" onclick="hideConfigPackListModal()">${t('securityPage.close')}</button>`, 'hideConfigPackListModal()')}</div>
             
             <!-- 生成密钥弹窗 -->
-            <div class="modal hidden" id="keygen-modal">
-                <div class="modal-content" style="max-width:480px">
-                    <h2>${typeof t === 'function' ? t('securityPage.generateNewKey') : '生成新密钥'}</h2>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.keyId') : '密钥 ID'}</label>
-                        <input type="text" id="keygen-id" placeholder="${typeof t === 'function' ? t('securityPage.keyIdPlaceholder') : '如: default, mykey'}" required>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.keyType') : '密钥类型'}</label>
-                        <select id="keygen-type">
-                            <option value="rsa2048" selected>${typeof t === 'function' ? t('securityPage.rsaRecommended') : 'RSA 2048-bit (推荐)'}</option>
-                            <option value="rsa4096">RSA 4096-bit</option>
-                            <option value="ec256">ECDSA P-256</option>
-                            <option value="ec384">ECDSA P-384</option>
-                        </select>
-                        <div class="form-group-hint form-group-hint-warning"><i class="ri-alert-line"></i><span>${typeof t === 'function' ? t('securityPage.ecdsaWarning') : 'ECDSA 密钥暂不支持 SSH 公钥认证，请使用 RSA'}</span></div>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.commentOptional') : '备注 (可选)'}</label>
-                        <input type="text" id="keygen-comment" placeholder="${typeof t === 'function' ? t('securityPage.commentPlaceholder') : '如: TianshanOS@device'}">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.aliasOptional') : '别名 (可选)'}</label>
-                        <input type="text" id="keygen-alias" placeholder="${typeof t === 'function' ? t('securityPage.aliasPlaceholder') : '用于替代密钥 ID 显示'}">
-                        <div class="form-group-hint"><i class="ri-information-line"></i><span>${typeof t === 'function' ? t('securityPage.aliasHint') : '启用「隐藏密钥」时建议填写，用于显示'}</span></div>
-                    </div>
-                    <div class="form-group form-group-checkbox-row">
-                        <label class="form-group-checkbox-label"><input type="checkbox" id="keygen-exportable"> ${typeof t === 'function' ? t('securityPage.allowExportPrivateKey') : '允许导出私钥'}</label>
-                    </div>
-                    <div class="form-group form-group-checkbox-row">
-                        <label class="form-group-checkbox-label"><input type="checkbox" id="keygen-hidden"> ${typeof t === 'function' ? t('securityPage.hideKeyId') : '隐藏密钥 ID'}</label>
-                        <div class="form-group-hint"><i class="ri-information-line"></i><span>${typeof t === 'function' ? t('securityPage.hideKeyIdHint') : '启用后，低权限用户无法看到真实的密钥 ID'}</span></div>
-                    </div>
-                    <div class="form-actions">
-                        <button class="btn btn-sm" onclick="hideGenerateKeyModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                        <button class="btn btn-sm btn-service-style" onclick="generateKey()">${typeof t === 'function' ? t('common.generate') : '生成'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="keygen-modal">${sheet(560, t('securityPage.generateNewKey'),
+                grp(
+                    row(t('securityPage.keyId'), inp('keygen-id', 200, t('securityPage.keyIdPlaceholder'), 'mono', 'required')) +
+                    `<div class="row"><div class="rl">${t('securityPage.keysTableType')}<small id="keygen-ec-warn" class="hidden">${t('securityPage.ecdsaWarning')}</small></div><div class="rc"><select class="field" id="keygen-type" style="width:200px" onchange="document.getElementById('keygen-ec-warn').classList.toggle('hidden', this.value.indexOf('ec') !== 0)">
+                        <option value="rsa2048" selected>${t('securityPage.rsaRecommended')}</option>
+                        <option value="rsa4096">RSA 4096-bit</option>
+                        <option value="ec256">ECDSA P-256</option>
+                        <option value="ec384">ECDSA P-384</option>
+                    </select></div></div>` +
+                    row(t('securityPage.keysTableComment'), inp('keygen-comment', 200, t('securityPage.commentPlaceholder'))) +
+                    row(t('sshPage.keyAlias'), inp('keygen-alias', 200, t('securityPage.aliasPlaceholder')), '', t('securityPage.aliasHint')) +
+                    row(t('securityPage.keysTableExportable'), swc('keygen-exportable'), '', t('securityPage.allowExportPrivateKey')) +
+                    row(t('securityPage.hideShort'), swc('keygen-hidden'), '', t('securityPage.hideKeyIdHint'))),
+                `<button class="btn lg" onclick="hideGenerateKeyModal()">${t('common.cancel')}</button><button class="btn lg primary" onclick="generateKey()">${t('common.generate')}</button>`)}</div>
             
             <!-- 部署密钥弹窗 -->
-            <div class="modal hidden" id="deploy-key-modal">
-                <div class="modal-content cc-compact" style="max-width:500px">
-                    <div class="modal-header">
-                        <h2>${typeof t === 'function' ? t('securityPage.deployKeyTitle') : '部署公钥到远程服务器'}</h2>
-                        <button class="modal-close" onclick="hideDeployKeyModal()"><i class="ri-close-line"></i></button>
-                    </div>
-                    <div class="modal-body">
-                        <p style="margin-bottom:15px;color:#6b7280">${typeof t === 'function' ? t('securityPage.deployKeyDescPre') : '将公钥'} <code id="deploy-key-id"></code> ${typeof t === 'function' ? t('securityPage.deployKeyDescPost') : '部署到远程服务器的 authorized_keys'}</p>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('securityPage.targetHost') : '目标主机'}</label>
-                            <input type="text" id="deploy-host" placeholder="${typeof t === 'function' ? t('securityPage.hostPlaceholder') : '192.168.55.100 或 hostname'}" required>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group" style="flex:1">
-                                <label>${typeof t === 'function' ? t('securityPage.username') : '用户名'}</label>
-                                <input type="text" id="deploy-user" placeholder="root" required>
-                            </div>
-                            <div class="form-group" style="width:100px">
-                                <label>${typeof t === 'function' ? t('securityPage.port') : '端口'}</label>
-                                <input type="number" id="deploy-port" value="22" min="1" max="65535">
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('securityPage.authPassword') : '认证密码 (首次部署需要)'}</label>
-                            <input type="password" id="deploy-password" placeholder="${typeof t === 'function' ? t('securityPage.passwordPlaceholder') : '输入 SSH 登录密码'}" required>
-                        </div>
-                        <div style="background:#e3f2fd;border:1px solid #2196f3;border-radius:4px;padding:10px;margin:15px 0">
-                            <i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.deployInfoHint') : '部署成功后，该主机将自动添加到「已部署主机」列表，之后可使用此密钥免密登录'}
-                        </div>
-                        <div id="deploy-result" class="result-box hidden" style="margin-bottom:15px"></div>
-                        <div class="form-actions">
-                            <button class="btn btn-sm btn-gray" onclick="hideDeployKeyModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                            <button class="btn btn-sm btn-service-style" id="deploy-btn" onclick="deployKey()"><i class="ri-rocket-line"></i> ${typeof t === 'function' ? t('securityPage.startDeploy') : '开始部署'}</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="deploy-key-modal">${sheet(560, t('securityPage.deployKeyBrief'), `
+                <div class="t-note" style="margin-bottom:8px">${t('securityPage.deployKeyDescPre')} <span class="mono" id="deploy-key-id"></span> ${t('securityPage.deployKeyDescPost')}</div>
+                ${grp(
+                    row(t('securityPage.hostLabel'), inp('deploy-host', 200, t('securityPage.hostPlaceholder'), 'mono', 'required')) +
+                    row(t('securityPage.username'), inp('deploy-user', 200, 'root', '', 'required')) +
+                    row(t('securityPage.port'), inp('deploy-port', 80, '', '', 'type="number" min="1" max="65535" value="22"')) +
+                    row(t('securityPage.sshLoginPassword'), inp('deploy-password', 200, t('securityPage.passwordPlaceholder'), '', 'type="password" required')))}
+                <div id="deploy-result" class="result-box hidden" style="margin-top:12px"></div>`,
+                `<button class="btn lg" onclick="hideDeployKeyModal()">${t('common.cancel')}</button><button class="btn lg primary" id="deploy-btn" onclick="deployKey()" title="${escapeHtml(t('securityPage.deployInfoHint'))}">${t('securityPage.startDeploy')}</button>`)}</div>
             
             <!-- 撤销密钥弹窗 -->
-            <div class="modal hidden" id="revoke-key-modal">
-                <div class="modal-content cc-compact" style="max-width:500px">
-                    <div class="modal-header">
-                        <h2>${typeof t === 'function' ? t('securityPage.revokeKeyTitle') : '撤销公钥'}</h2>
-                        <button class="modal-close" onclick="hideRevokeKeyModal()"><i class="ri-close-line"></i></button>
-                    </div>
-                    <div class="modal-body">
-                        <p style="margin-bottom:15px;color:#6b7280">${typeof t === 'function' ? t('securityPage.revokeKeyDescPre') : '从远程服务器移除公钥'} <code id="revoke-key-id"></code></p>
-                        <div style="background:rgba(245,158,11,0.06);border:1px solid transparent;border-radius:4px;padding:10px;margin-bottom:15px">
-                            <strong><i class="ri-alert-line"></i> ${typeof t === 'function' ? t('common.warning') : '警告'}</strong>：${typeof t === 'function' ? t('securityPage.revokeWarning') : '撤销后将无法使用此密钥免密登录该服务器'}
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('securityPage.targetHost') : '目标主机'}</label>
-                            <input type="text" id="revoke-host" placeholder="${typeof t === 'function' ? t('securityPage.hostPlaceholder') : '192.168.55.100 或 hostname'}" required>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group" style="flex:1">
-                                <label>${typeof t === 'function' ? t('securityPage.username') : '用户名'}</label>
-                                <input type="text" id="revoke-user" placeholder="root" required>
-                            </div>
-                            <div class="form-group" style="width:100px">
-                                <label>${typeof t === 'function' ? t('securityPage.port') : '端口'}</label>
-                                <input type="number" id="revoke-port" value="22" min="1" max="65535">
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('securityPage.authPasswordRevoke') : '认证密码'}</label>
-                            <input type="password" id="revoke-password" placeholder="${typeof t === 'function' ? t('securityPage.passwordPlaceholder') : '输入 SSH 登录密码'}" required>
-                        </div>
-                        <div id="revoke-result" class="result-box hidden" style="margin-bottom:15px"></div>
-                        <div class="form-actions">
-                            <button class="btn btn-sm btn-gray" onclick="hideRevokeKeyModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                            <button class="btn btn-sm btn-danger" id="revoke-btn" onclick="revokeKey()"><i class="ri-alert-line"></i> ${typeof t === 'function' ? t('securityPage.revokeKey') : '撤销公钥'}</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="revoke-key-modal">${sheet(560, t('securityPage.revokeKeyTitle'), `
+                <div class="t-note" style="margin-bottom:8px">${t('securityPage.revokeKeyDescPre')} <span class="mono" id="revoke-key-id"></span></div>
+                ${grp(
+                    row(t('securityPage.hostLabel'), inp('revoke-host', 210, t('securityPage.hostPlaceholder'), 'mono', 'required')) +
+                    row(t('securityPage.username'), inp('revoke-user', 210, 'root', '', 'required')) +
+                    row(t('securityPage.port'), inp('revoke-port', 80, '', '', 'type="number" min="1" max="65535" value="22"')) +
+                    row(t('securityPage.sshLoginPassword'), inp('revoke-password', 210, t('securityPage.passwordPlaceholder'), '', 'type="password" required')))}
+                <div class="warnrow"><svg class="i"><use href="#ri-alert-line"/></svg><span>${t('securityPage.revokeWarning')}</span></div>
+                <div id="revoke-result" class="result-box hidden" style="margin-top:12px"></div>`,
+                `<button class="btn lg" onclick="hideRevokeKeyModal()">${t('common.cancel')}</button><button class="btn lg primary bad" id="revoke-btn" onclick="revokeKey()">${t('securityPage.revokeKey')}</button>`)}</div>
             
             <!-- 主机指纹不匹配警告弹窗 -->
-            <div class="modal hidden" id="host-mismatch-modal">
-                <div class="modal-content">
-                    <h2 style="color:#dc3545"><i class="ri-alert-line"></i> ${typeof t === 'function' ? t('securityPage.hostKeyMismatchTitle') : '安全警告：主机指纹不匹配!'}</h2>
-                    <div style="background:#f8d7da;border:1px solid #f5c6cb;border-radius:4px;padding:15px;margin:15px 0">
-                        <p style="margin:0 0 10px;font-weight:bold">${typeof t === 'function' ? t('securityPage.hostKeyChangedWarning') : '主机密钥已更改！这可能表明：'}</p>
-                        <ul style="margin:0;padding-left:20px">
-                            <li>${typeof t === 'function' ? t('securityPage.mitmAttack') : '中间人攻击（Man-in-the-Middle Attack）'}</li>
-                            <li>${typeof t === 'function' ? t('securityPage.serverReinstalled') : '服务器重新安装或密钥重新生成'}</li>
-                            <li>${typeof t === 'function' ? t('securityPage.ipReassigned') : 'IP 地址被分配给了不同的服务器'}</li>
-                        </ul>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.hostLabel') : '主机'}</label>
-                        <input type="text" id="mismatch-host" readonly style="background:#f5f5f5">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.storedFingerprint') : '存储的指纹'}</label>
-                        <input type="text" id="mismatch-stored-fp" readonly style="background:#f5f5f5;font-family:monospace;font-size:12px">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.currentFingerprint') : '当前指纹'}</label>
-                        <input type="text" id="mismatch-current-fp" readonly style="background:#fff3cd;font-family:monospace;font-size:12px">
-                    </div>
-                    <p style="color:#d97706;background:#fff3cd;padding:10px;border-radius:4px">
-                        <strong>${typeof t === 'function' ? t('securityPage.suggestion') : '建议'}</strong>：${typeof t === 'function' ? t('securityPage.hostKeyMismatchSuggestion') : '如果您确认服务器已重装或密钥已更新，可以点击"更新主机密钥"移除旧记录，然后重新连接以信任新密钥。'}
-                    </p>
-                    <div class="form-actions">
-                        <button class="btn btn-sm btn-gray" onclick="hideHostMismatchModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                        <button class="btn btn-sm btn-warning" onclick="removeAndRetry()"><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('securityPage.updateHostKey') : '更新主机密钥'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="host-mismatch-modal">${sheet(560, t('securityPage.mismatchTitle'), `
+                <div class="t-body" style="margin-bottom:8px">${t('securityPage.hostKeyChangedWarning')}</div>
+                <div class="t-body" style="color:var(--ink-2);line-height:22px;margin-bottom:14px">• ${t('securityPage.mitmAttack')}<br>• ${t('securityPage.serverReinstalled')}<br>• ${t('securityPage.ipReassigned')}</div>
+                ${grp(
+                    row(t('securityPage.hostLabel'), '<span class="mono" id="mismatch-host"></span>') +
+                    row(t('securityPage.storedFingerprint'), '<span class="mono t-label" id="mismatch-stored-fp"></span>') +
+                    row(t('securityPage.currentFingerprint'), '<span class="mono t-label" id="mismatch-current-fp"></span>'))}
+                <div class="t-note" style="margin-top:12px;line-height:18px">${t('securityPage.mismatchAdvice')}</div>`,
+                `<button class="btn lg" onclick="hideHostMismatchModal()">${t('common.cancel')}</button><button class="btn lg primary bad" onclick="removeAndRetry()">${t('securityPage.updateHostKey')}</button>`)}</div>
             
             <!-- HTTPS 证书：生成密钥对弹窗 -->
-            <div class="modal hidden" id="cert-genkey-modal">
-                <div class="modal-content" style="max-width:450px">
-                    <h2>${typeof t === 'function' ? t('securityPage.genHttpsKeyTitle') : '生成 HTTPS 密钥对'}</h2>
-                    <p style="color:#6b7280;margin-bottom:15px">${typeof t === 'function' ? t('securityPage.genHttpsKeyDesc') : '为设备生成 ECDSA P-256 密钥对，用于 mTLS 身份验证'}</p>
-                    <div id="cert-genkey-existing-warning" class="hidden" style="background:rgba(245,158,11,0.06);border:1px solid transparent;border-radius:4px;padding:10px;margin-bottom:15px">
-                        <i class="ri-alert-line"></i> ${typeof t === 'function' ? t('securityPage.existingKeyWarning') : '已存在密钥对，继续将覆盖现有密钥！'}
-                    </div>
-                    <div id="cert-genkey-result" class="result-box hidden" style="margin-bottom:15px"></div>
-                    <div class="form-actions">
-                        <button class="btn btn-sm btn-gray" onclick="hideCertGenKeyModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                        <button class="btn btn-sm btn-service-style" id="cert-genkey-btn" onclick="generateCertKeypair()"><i class="ri-key-line"></i> ${typeof t === 'function' ? t('common.generate') : '生成'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="cert-genkey-modal">${sheet(520, t('securityPage.genHttpsKeyTitle'), `
+                <div class="t-body" style="color:var(--ink-2)">${t('securityPage.genHttpsKeyDescFull')}</div>
+                <div id="cert-genkey-existing-warning" class="warnrow hidden"><svg class="i"><use href="#ri-alert-line"/></svg><span>${t('securityPage.existingKeyWarning')}</span></div>
+                <div id="cert-genkey-result" class="result-box hidden" style="margin-top:12px"></div>`,
+                `<button class="btn lg" onclick="hideCertGenKeyModal()">${t('common.cancel')}</button><button class="btn lg primary" id="cert-genkey-btn" onclick="generateCertKeypair()">${t('common.generate')}</button>`)}</div>
             
             <!-- HTTPS 证书：生成/查看 CSR 弹窗 -->
-            <div class="modal hidden" id="cert-csr-modal">
-                <div class="modal-content" style="max-width:600px">
-                    <h2>${typeof t === 'function' ? t('securityPage.csrTitle') : '证书签名请求 (CSR)'}</h2>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.deviceIdCn') : '设备 ID (CN)'}</label>
-                        <input type="text" id="csr-device-id" placeholder="TIANSHAN-RM01-0001">
-                        <div style="color:#6b7280;margin-top:4px">${typeof t === 'function' ? t('securityPage.leaveEmptyForDefault') : '留空则使用默认配置'}</div>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.organization') : '组织 (O)'}</label>
-                        <input type="text" id="csr-org" placeholder="HiddenPeak Labs">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.department') : '部门 (OU)'}</label>
-                        <input type="text" id="csr-ou" placeholder="Device">
-                    </div>
-                    <div id="csr-result-box" class="hidden" style="margin-top:15px">
-                        <label>${typeof t === 'function' ? t('securityPage.csrContentLabel') : 'CSR 内容（复制到 CA 服务器签发）'}</label>
-                        <textarea id="csr-pem-output" readonly style="width:100%;height:200px;font-family:monospace"></textarea>
-                        <button class="btn btn-sm btn-service-style" onclick="copyCSRToClipboard()" style="margin-top:8px"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('common.copyToClipboard') : '复制到剪贴板'}</button>
-                    </div>
-                    <div id="csr-gen-result" class="result-box hidden" style="margin-top:10px"></div>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm btn-gray" onclick="hideCertCSRModal()">${typeof t === 'function' ? t('common.close') : '关闭'}</button>
-                        <button class="btn btn-sm btn-service-style" id="csr-gen-btn" onclick="generateCSR()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('securityPage.generateCsr') : '生成 CSR'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="cert-csr-modal">${sheet(660, t('securityPage.csrGenerateTitle'), `
+                ${grp(
+                    row(t('securityPage.deviceIdCn'), inp('csr-device-id', 210, 'TIANSHAN-RM01-0001', 'mono'), '', t('securityPage.leaveEmptyForDefault')) +
+                    row(t('securityPage.orgBrief'), inp('csr-org', 210, 'HiddenPeak Labs')) +
+                    row(t('securityPage.deptBrief'), inp('csr-ou', 210, 'Device')))}
+                ${gt(t('securityPage.csrPemLabel'))}<div id="csr-result-box"><textarea class="field mono" id="csr-pem-output" readonly style="height:90px" placeholder="${t('securityPage.csrPlaceholder')}" title="${escapeHtml(t('securityPage.csrContentLabel'))}"></textarea></div>
+                <div id="csr-gen-result" class="result-box hidden" style="margin-top:12px"></div>`,
+                `<button class="btn lg" onclick="copyCSRToClipboard()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" onclick="hideCertCSRModal()">${t('common.close')}</button><button class="btn lg primary" id="csr-gen-btn" onclick="generateCSR()">${t('securityPage.csrGenerateTitle')}</button>`)}</div>
             
             <!-- HTTPS 证书：安装证书弹窗 -->
-            <div class="modal hidden" id="cert-install-modal">
-                <div class="modal-content" style="max-width:600px">
-                    <h2>${typeof t === 'function' ? t('securityPage.installCertTitle') : '安装设备证书'}</h2>
-                    <p style="color:#6b7280;margin-bottom:15px">${typeof t === 'function' ? t('securityPage.installCertDesc') : '粘贴 CA 签发的 PEM 格式证书'}</p>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.certPem') : '证书 PEM'}</label>
-                        <textarea id="cert-pem-input" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;height:200px;font-family:monospace"></textarea>
-                    </div>
-                    <div id="cert-install-result" class="result-box hidden" style="margin-top:10px"></div>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm" onclick="hideCertInstallModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                        <button class="btn btn-sm btn-service-style" id="cert-install-submit" onclick="installCertificate()"><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('common.install') : '安装'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="cert-install-modal">${sheet(560, t('securityPage.installCert'), `
+                <textarea class="field mono" id="cert-pem-input" style="height:120px" placeholder="-----BEGIN CERTIFICATE-----" title="${escapeHtml(t('securityPage.installCertDesc'))}"></textarea>
+                <div id="cert-install-result" class="result-box hidden" style="margin-top:12px"></div>`,
+                `<button class="btn lg" onclick="hideCertInstallModal()">${t('common.cancel')}</button><button class="btn lg primary" id="cert-install-submit" onclick="installCertificate()">${t('common.install')}</button>`)}</div>
             
             <!-- HTTPS 证书：安装 CA 链弹窗 -->
-            <div class="modal hidden" id="cert-ca-modal">
-                <div class="modal-content" style="max-width:600px">
-                    <h2>${typeof t === 'function' ? t('securityPage.installCaTitle') : '安装 CA 证书链'}</h2>
-                    <p style="color:#6b7280;margin-bottom:15px">${typeof t === 'function' ? t('securityPage.installCaDesc') : '粘贴根证书和中间证书（PEM 格式，可拼接多个）'}</p>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('securityPage.caCertPem') : 'CA 证书链 PEM'}</label>
-                        <textarea id="ca-pem-input" placeholder="-----BEGIN CERTIFICATE-----&#10;(Root CA)&#10;-----END CERTIFICATE-----&#10;-----BEGIN CERTIFICATE-----&#10;(Intermediate CA)&#10;-----END CERTIFICATE-----" style="width:100%;height:200px;font-family:monospace"></textarea>
-                    </div>
-                    <div id="ca-install-result" class="result-box hidden" style="margin-top:10px"></div>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm" onclick="hideCertInstallCAModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                        <button class="btn btn-sm btn-service-style" id="cert-ca-submit" onclick="installCAChain()"><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('common.install') : '安装'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="cert-ca-modal">${sheet(560, t('securityPage.installCa'), `
+                <textarea class="field mono" id="ca-pem-input" style="height:120px" placeholder="-----BEGIN CERTIFICATE-----" title="${escapeHtml(t('securityPage.installCaDesc'))}"></textarea>
+                <div id="ca-install-result" class="result-box hidden" style="margin-top:12px"></div>`,
+                `<button class="btn lg" onclick="hideCertInstallCAModal()">${t('common.cancel')}</button><button class="btn lg primary" id="cert-ca-submit" onclick="installCAChain()">${t('common.install')}</button>`)}</div>
             
             <!-- HTTPS 证书：查看证书弹窗 -->
-            <div class="modal hidden" id="cert-view-modal">
-                <div class="modal-content" style="max-width:600px">
-                    <h2>${typeof t === 'function' ? t('securityPage.viewCertTitle') : '查看设备证书'}</h2>
-                    <div id="cert-view-loading" style="text-align:center;padding:20px"><i class="ri-refresh-line"></i> ${typeof t === 'function' ? t('common.loading') : 'Loading...'}</div>
-                    <div id="cert-view-content" class="hidden">
-                        <textarea id="cert-view-pem" readonly style="width:100%;height:250px;font-family:monospace"></textarea>
-                        <button class="btn btn-sm btn-service-style" onclick="copyCertToClipboard()" style="margin-top:8px"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('common.copyToClipboard') : '复制到剪贴板'}</button>
-                    </div>
-                    <div class="form-actions" style="margin-top:15px">
-                        <button class="btn btn-sm" onclick="hideCertViewModal()">${typeof t === 'function' ? t('common.close') : '关闭'}</button>
-                    </div>
-                </div>
-            </div>
+            <div class="modal hidden" id="cert-view-modal">${sheet(560, t('securityPage.viewCert'), `
+                <div id="cert-view-loading" class="t-note" style="text-align:center;padding:20px">${t('common.loading')}</div>
+                <div id="cert-view-content" class="hidden"><textarea class="field mono" id="cert-view-pem" readonly style="height:140px"></textarea></div>`,
+                `<button class="btn lg" onclick="copyCertToClipboard()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg primary" onclick="hideCertViewModal()">${t('common.close')}</button>`)}</div>
         </div>
     `;
     
@@ -12360,26 +10294,26 @@ async function refreshSecurityPage() {
             allKeysHtml += keys.data.keys.map(key => {
                 // 隐藏密钥显示别名，否则显示真实 ID
                 const displayId = (key.hidden && key.alias) ? key.alias : key.id;
-                const hiddenIcon = key.hidden ? '<i class="ri-lock-line"></i> ' : '';
+                const hiddenIcon = key.hidden ? '<svg class="i"><use href="#ri-lock-line"/></svg> ' : '';
                 
                 return `
-                <tr>
-                    <td>
-                        <code>${hiddenIcon}${escapeHtml(displayId)}</code>
-                        ${key.alias && !key.hidden ? `<div style="color:#6b7280;margin-top:2px">${escapeHtml(key.alias)}</div>` : ''}
-                    </td>
-                    <td>${escapeHtml(key.type_desc || key.type)}</td>
-                    <td><span class="badge badge-service-style">SSH</span> ${(key.comment === 'use for control' && typeof t === 'function') ? t('securityPage.commentUseForControl') : (escapeHtml(key.comment) || '-')}</td>
-                    <td>${formatTimestamp(key.created)}</td>
-                    <td>${key.exportable ? (typeof t === 'function' ? t('common.yes') : '是') : (typeof t === 'function' ? t('common.no') : '否')}</td>
-                    <td>
-                        <button class="btn btn-sm btn-service-style" style="white-space:nowrap" onclick="exportKey('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'}><i class="ri-download-line"></i> ${typeof t === 'function' ? t('securityPage.publicKey') : 'Pub'}</button>
-                        <button class="btn btn-sm btn-service-style" style="white-space:nowrap" onclick="exportPrivateKey('${escapeHtml(key.id)}')" ${key.exportable === false ? 'disabled' : ''} title="${key.exportable === false ? (typeof t === 'function' ? t('securityPage.cannotExportPrivateKey') : 'Cannot export private key') : (typeof t === 'function' ? t('securityPage.exportPrivateKey') : 'Export private key')}" ${key.exportable === false ? 'style="color:#999;white-space:nowrap"' : 'style="white-space:nowrap"'}><i class="ri-key-line"></i> ${typeof t === 'function' ? t('securityPage.privateKey') : 'Priv'}</button>
-                        <button class="btn btn-sm btn-service-style" onclick="showDeployKeyModal('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'} title="${typeof t === 'function' ? t('securityPage.deployToServer') : '部署公钥到远程服务器'}"><i class="ri-rocket-line"></i> ${typeof t === 'function' ? t('securityPage.deploy') : '部署'}</button>
-                        <button class="btn btn-sm btn-warning" onclick="showRevokeKeyModal('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'} title="${typeof t === 'function' ? t('securityPage.revokeFromServer') : '从远程服务器撤销公钥'}"><i class="ri-alert-line"></i> ${typeof t === 'function' ? t('securityPage.revoke') : '撤销'}</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteKey('${escapeHtml(key.id)}')"><i class="ri-delete-bin-line"></i> ${typeof t === 'function' ? t('common.delete') : '删除'}</button>
-                    </td>
-                </tr>
+                <div class="tr cols-keys">
+                    <div>
+                        <span class="mono">${hiddenIcon}${escapeHtml(displayId)}</span>
+                        ${key.alias && !key.hidden ? `<div class="t-note">${escapeHtml(key.alias)}</div>` : ''}
+                    </div>
+                    <div>${escapeHtml(key.type_desc || key.type)}</div>
+                    <div><span class="tag">SSH</span> ${(key.comment === 'use for control') ? t('securityPage.commentUseForControl') : (escapeHtml(key.comment) || '-')}</div>
+                    <div>${formatTimestamp(key.created)}</div>
+                    <div>${key.exportable ? t('common.yes') : t('common.no')}</div>
+                    <div class="act">
+                        <button class="btn sm" onclick="exportKey('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'}><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.publicKey')}</button>
+                        <button class="btn sm" onclick="exportPrivateKey('${escapeHtml(key.id)}')" ${key.exportable === false ? 'disabled' : ''} title="${key.exportable === false ? t('securityPage.cannotExportPrivateKey') : t('securityPage.exportPrivateKey')}"><svg class="i"><use href="#ri-key-line"/></svg>${t('securityPage.privateKey')}</button>
+                        <button class="btn sm" onclick="showDeployKeyModal('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'} title="${t('securityPage.deployToServer')}"><svg class="i"><use href="#ri-upload-line"/></svg>${t('securityPage.deploy')}</button>
+                        <button class="btn sm dg" onclick="showRevokeKeyModal('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'} title="${t('securityPage.revokeFromServer')}">${t('securityPage.revoke')}</button>
+                        <button class="btn sm dg" onclick="deleteKey('${escapeHtml(key.id)}')">${t('common.delete')}</button>
+                    </div>
+                </div>
                 `;
             }).join('');
         }
@@ -12402,41 +10336,35 @@ async function refreshSecurityPage() {
             
             if (hasKeypair) {
                 // 已有密钥对
-                const comment = hasCert ? `CN=${certInfo.subject_cn || 'unknown'}` : (typeof t === 'function' ? t('securityPage.noCertInstalled') : '(未安装证书)');
+                const comment = hasCert ? `CN=${certInfo.subject_cn || 'unknown'}` : t('securityPage.noCertInstalled');
                 
                 allKeysHtml += `
-                <tr style="background:#f0f7ff">
-                    <td>
-                        <code><i class="ri-key-line"></i> https</code>
-                        <div style="color:#6b7280;margin-top:2px">${typeof t === 'function' ? t('securityPage.httpsServerKey') : 'HTTPS 服务器密钥'}</div>
-                    </td>
-                    <td>ECDSA P-256</td>
-                    <td><span class="badge badge-service-style">HTTPS</span> ${escapeHtml(comment)}</td>
-                    <td>-</td>
-                    <td>${typeof t === 'function' ? t('common.no') : '否'}</td>
-                    <td>
-                        <button class="btn btn-sm btn-service-style" onclick="showCertCSRModal()" title="${typeof t === 'function' ? t('securityPage.generateCsrTitle') : '生成证书签名请求'}"><i class="ri-file-text-line"></i> CSR</button>
-                        <button class="btn btn-sm btn-gray" onclick="showCertViewModal()" ${hasCert ? '' : 'disabled'} title="${typeof t === 'function' ? t('securityPage.viewCert') : '查看证书'}"><i class="ri-eye-line"></i> ${typeof t === 'function' ? t('securityPage.cert') : '证书'}</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteCertCredentials()" title="${typeof t === 'function' ? t('securityPage.deleteHttpsKeyAndCert') : '删除 HTTPS 密钥和证书'}"><i class="ri-delete-bin-line"></i> ${typeof t === 'function' ? t('common.delete') : '删除'}</button>
-                    </td>
-                </tr>
+                <div class="tr cols-keys">
+                    <div><span class="mono">https</span></div>
+                    <div>ECDSA P-256</div>
+                    <div><span class="tag">HTTPS</span> ${escapeHtml(comment)}</div>
+                    <div>-</div>
+                    <div>${t('common.no')}</div>
+                    <div class="act">
+                        <button class="btn sm" onclick="showCertCSRModal()" title="${t('securityPage.generateCsrTitle')}"><svg class="i"><use href="#ri-file-text-line"/></svg>CSR</button>
+                        <button class="btn sm" onclick="showCertViewModal()" ${hasCert ? '' : 'disabled'} title="${t('securityPage.viewCert')}"><svg class="i"><use href="#ri-eye-line"/></svg>${t('securityPage.cert')}</button>
+                        <button class="btn sm dg" onclick="deleteCertCredentials()" title="${t('securityPage.deleteHttpsKeyAndCert')}">${t('common.delete')}</button>
+                    </div>
+                </div>
                 `;
             } else {
                 // 未生成密钥对，显示提示行
                 allKeysHtml += `
-                <tr style="background:#fff8e1">
-                    <td>
-                        <code style="color:#9ca3af"><i class="ri-lock-line"></i> https</code>
-                        <div style="color:#999;margin-top:2px">${typeof t === 'function' ? t('securityPage.httpsServerKey') : 'HTTPS 服务器密钥'}</div>
-                    </td>
-                    <td style="color:#9ca3af">-</td>
-                    <td><span class="badge badge-service-style">HTTPS</span> <em style="color:#9ca3af">${typeof t === 'function' ? t('securityPage.noKeyGenerated') : '未生成密钥'}</em></td>
-                    <td>-</td>
-                    <td>-</td>
-                    <td>
-                        <button class="btn btn-sm btn-service-style" onclick="showCertGenKeyModal()" title="${typeof t === 'function' ? t('securityPage.generateHttpsKey') : '生成 HTTPS 密钥对'}"><i class="ri-key-line"></i> ${typeof t === 'function' ? t('securityPage.generateKey') : '生成密钥'}</button>
-                    </td>
-                </tr>
+                <div class="tr cols-keys">
+                    <div><span class="mono">https</span></div>
+                    <div>-</div>
+                    <div><span class="tag">HTTPS</span> <i class="t-note">${t('securityPage.noKeyGenerated')}</i></div>
+                    <div>-</div>
+                    <div>-</div>
+                    <div class="act">
+                        <button class="btn sm" onclick="showCertGenKeyModal()" title="${t('securityPage.generateHttpsKey')}"><svg class="i"><use href="#ri-key-line"/></svg>${t('securityPage.generateKey')}</button>
+                    </div>
+                </div>
                 `;
             }
         }
@@ -12449,7 +10377,7 @@ async function refreshSecurityPage() {
     if (allKeysHtml) {
         tbody.innerHTML = allKeysHtml;
     } else {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#9ca3af">${typeof t === 'function' ? t('securityPage.noKeysClickToGenerate') : '暂无密钥，点击上方按钮生成新密钥'}</td></tr>`;
+        tbody.innerHTML = `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noKeysClickToGenerate')}</div>`;
     }
     
     // SSH 已部署主机列表（加载数据并渲染到 DOM）
@@ -12475,61 +10403,71 @@ async function refreshSecurityPage() {
 /**
  * 仅加载 SSH hosts 数据到 window._sshHostsData（不渲染 DOM）
  */
+let sshHostsLoadVersion = 0;
+
 async function loadSshHostsData() {
+    const version = ++sshHostsLoadVersion;
     const pageCurrent = capturePageValidity();
     try {
-        const result = await api.call('ssh.hosts.list', {});
-        if (!pageCurrent()) return;
-        const hosts = result.data?.hosts || [];
-        window._sshHostsData = {};
-        hosts.forEach(h => { window._sshHostsData[h.id] = h; });
+        const result = requireApiSuccess(await api.call('ssh.hosts.list', {}), 'ssh.hosts.list');
+        if (!pageCurrent()) return false;
+        if (version !== sshHostsLoadVersion) return null; // Superseded, leave the newer list alone.
+        const hosts = result.data?.hosts;
+        if (!Array.isArray(hosts)) throw new Error(t('promptRepair.invalidResponse'));
+        const data = {};
+        hosts.forEach(h => { data[h.id] = h; });
+        window._sshHostsData = data;
         console.log('loadSshHostsData: loaded', Object.keys(window._sshHostsData).length, 'hosts');
+        return true;
     } catch (e) {
-        if (!pageCurrent()) return;
+        if (!pageCurrent()) return false;
+        if (version !== sshHostsLoadVersion) return null;
         console.error('loadSshHostsData error:', e);
-        window._sshHostsData = {};
+        return false;
     }
 }
 
 async function refreshSshHostsList() {
     const pageCurrent = capturePageValidity();
     // 首先加载 SSH hosts 数据（无需 DOM）
-    await loadSshHostsData();
-    if (!pageCurrent()) return;
+    const loaded = await loadSshHostsData();
+    if (!pageCurrent() || loaded === null) return false;
     
     const tbody = document.getElementById('ssh-hosts-table-body');
-    if (!tbody) return;  // DOM 渲染部分可选
+    if (!tbody) return loaded;  // DOM 渲染部分可选
     
     try {
+        if (!loaded) throw new Error(t('common.loadFailed'));
         const hosts = Object.values(window._sshHostsData || {});
+        window._sshHostsList = hosts;
         
         if (hosts.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${typeof t === 'function' ? t('securityPage.noDeployedHostsHint') : '暂无已部署主机，请先在上方密钥管理中点击「部署」'}</td></tr>`;
-            return;
+            tbody.innerHTML = `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noDeployedHostsHint')}</div>`;
+            return true;
         }
         
         tbody.innerHTML = hosts.map((h, idx) => `
-            <tr>
-                <td><code>${escapeHtml(h.id)}</code></td>
-                <td>${escapeHtml(h.host)}</td>
-                <td>${h.port}</td>
-                <td>${escapeHtml(h.username)}</td>
-                <td><span class="badge badge-service-style"><i class="ri-key-line"></i> ${escapeHtml(h.keyid || 'default')}</span></td>
-                <td>
-                    <button class="btn btn-sm btn-gray" onclick="testSshHostByIndex(${idx})" title="${typeof t === 'function' ? t('securityPage.testConnection') : '测试连接'}"><i class="ri-run-line"></i> ${typeof t === 'function' ? t('common.test') : '测试'}</button>
-                    <button class="btn btn-sm btn-service-style" onclick="exportSshHost('${escapeHtml(h.id)}')" title="${typeof t === 'function' ? t('securityPage.exportAsTscfg') : '导出配置为 .tscfg'}"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('common.export') : '导出'}</button>
-                    <button class="btn btn-sm btn-danger" onclick="revokeKeyFromHost(${idx})" title="${typeof t === 'function' ? t('securityPage.revokePubkey') : '撤销公钥'}"><i class="ri-lock-unlock-line"></i> ${typeof t === 'function' ? t('securityPage.revoke') : '撤销'}</button>
-                    <button class="btn btn-sm btn-gray" onclick="removeHostByIndex(${idx})" title="${typeof t === 'function' ? t('securityPage.removeLocalRecord') : '仅移除本地记录'}"><i class="ri-delete-bin-line"></i> ${typeof t === 'function' ? t('securityPage.remove') : '移除'}</button>
-                </td>
-            </tr>
+            <div class="tr cols-hosts">
+                <div><span class="mono">${escapeHtml(h.id)}</span></div>
+                <div>${escapeHtml(h.host)}</div>
+                <div>${h.port}</div>
+                <div>${escapeHtml(h.username)}</div>
+                <div><span class="tag">${escapeHtml(h.keyid || 'default')}</span></div>
+                <div class="act">
+                    <button class="btn sm" onclick="testSshHostByIndex(${idx})" title="${t('securityPage.testConnection')}">${t('common.test')}</button>
+                    <button class="btn sm" onclick="exportSshHost('${escapeHtml(h.id)}')" title="${t('securityPage.exportAsTscfg')}">${t('common.export')}</button>
+                    <button class="btn sm dg" onclick="revokeKeyFromHost(${idx})" title="${t('securityPage.revokePubkey')}">${t('securityPage.revoke')}</button>
+                    <button class="btn sm dg" onclick="removeHostByIndex(${idx})" title="${t('securityPage.removeLocalRecord')}">${t('securityPage.remove')}</button>
+                </div>
+            </div>
         `).join('');
         
-        // 存储主机列表供索引访问
-        window._sshHostsList = hosts;
+        return true;
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Refresh SSH hosts error:', e);
-        tbody.innerHTML = `<tr><td colspan="6" class="error">${typeof t === 'function' ? t('common.loadFailed') : '加载失败'}</td></tr>`;
+        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('common.loadFailed')}</span></div>`;
+        return false;
     }
 }
 
@@ -12547,7 +10485,7 @@ async function refreshKnownHostsList() {
         const hosts = result.data?.hosts || [];
         
         if (hosts.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${typeof t === 'function' ? t('securityPage.noKnownHostFingerprints') : '暂无已知主机指纹'}</td></tr>`;
+            tbody.innerHTML = `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noKnownHostFingerprints')}</div>`;
             return;
         }
         
@@ -12555,22 +10493,22 @@ async function refreshKnownHostsList() {
         window._knownHostsList = hosts;
         
         tbody.innerHTML = hosts.map((h, idx) => `
-            <tr>
-                <td><code>${escapeHtml(h.host)}</code></td>
-                <td>${h.port}</td>
-                <td><span class="badge badge-service-style">${escapeHtml(h.type)}</span></td>
-                <td><code style="font-size:0.8em;word-break:break-all">${escapeHtml(h.fingerprint.substring(0, 32))}...</code></td>
-                <td>${formatTimestamp(h.added)}</td>
-                <td>
-                    <button class="btn btn-sm btn-gray" onclick="showFullFingerprint(${idx})" title="${typeof t === 'function' ? t('securityPage.viewFullFingerprint') : 'View full fingerprint'}"><i class="ri-eye-line"></i> ${typeof t === 'function' ? t('common.view') : 'View'}</button>
-                    <button class="btn btn-sm btn-danger" onclick="removeKnownHost(${idx})" title="${typeof t === 'function' ? t('securityPage.deleteFingerprint') : 'Delete fingerprint record'}"><i class="ri-delete-bin-line"></i> ${typeof t === 'function' ? t('common.delete') : 'Delete'}</button>
-                </td>
-            </tr>
+            <div class="tr cols-known">
+                <div><span class="mono">${escapeHtml(h.host)}</span></div>
+                <div>${h.port}</div>
+                <div><span class="tag">${escapeHtml(h.type)}</span></div>
+                <div><span class="mono">${escapeHtml(h.fingerprint.substring(0, 32))}...</span></div>
+                <div>${formatTimestamp(h.added)}</div>
+                <div class="act" style="justify-content:flex-start">
+                    <button class="btn sm" onclick="showFullFingerprint(${idx})" title="${t('securityPage.viewFullFingerprint')}">${t('common.view')}</button>
+                    <button class="btn sm dg" onclick="removeKnownHost(${idx})" title="${t('securityPage.deleteFingerprint')}">${t('common.delete')}</button>
+                </div>
+            </div>
         `).join('');
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Refresh known hosts error:', e);
-        tbody.innerHTML = `<tr><td colspan="6" class="error">${typeof t === 'function' ? t('common.loadFailed') : 'Load failed'}</td></tr>`;
+        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('common.loadFailed')}</span></div>`;
     }
 }
 
@@ -12581,7 +10519,27 @@ function showFullFingerprint(index) {
     const host = window._knownHostsList?.[index];
     if (!host) return;
     
-    alert(typeof t === 'function' ? t('ui.alertHostFingerprint', { host: host.host, port: host.port, type: host.type, fingerprint: host.fingerprint }) : `主机: ${host.host}:${host.port}\n类型: ${host.type}\n指纹 (SHA256):\n${host.fingerprint}`);
+    document.getElementById('fingerprint-info-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'fingerprint-info-modal';
+    modal.className = 'modal';
+    modal.onclick = e => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = sheet(520, t('ui.fingerprintTitle'),
+        grp(row(t('common.host'), `<span class="mono">${escapeHtml(host.host)}:${escapeHtml(host.port)}</span>`) +
+            row(t('common.type'), `<span class="mono">${escapeHtml(host.type)}</span>`)) +
+        `<div class="gt">${t('ui.fingerprintLabel')}</div><div class="grp" style="padding:12px 16px"><div class="mono" id="fingerprint-info-value" style="user-select:text;word-break:break-all">${escapeHtml(host.fingerprint)}</div></div>`,
+        `<button type="button" class="btn lg" onclick="copyFingerprintInfo()">${t('ui.copyBtn')}</button><button type="button" class="btn lg primary" onclick="document.getElementById('fingerprint-info-modal').remove()">${t('common.close')}</button>`);
+    document.body.appendChild(modal);
+}
+
+async function copyFingerprintInfo() {
+    const text = document.getElementById('fingerprint-info-value')?.textContent || '';
+    try {
+        await navigator.clipboard.writeText(text);
+        showToast(t('toast.copied'), 'success');
+    } catch (e) {
+        showToast(t('toast.copyFailedMsg', { msg: e.message }), 'error');
+    }
 }
 
 /**
@@ -12591,7 +10549,7 @@ async function removeKnownHost(index) {
     const host = window._knownHostsList?.[index];
     if (!host) return;
     
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmDeleteFingerprint', { host: host.host, port: host.port }) : `确定要删除主机 ${host.host}:${host.port} 的指纹记录吗？\n\n删除后下次连接将重新验证服务器指纹。`)) return;
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteFingerprint', { host: host.host, port: host.port }) : `确定要删除主机 ${host.host}:${host.port} 的指纹记录吗？\n\n删除后下次连接将重新验证服务器指纹。`, { primary: t('common.delete'), tone: 'danger' })) return;
     
     try {
         const result = await api.call('hosts.remove', { host: host.host, port: host.port });
@@ -12673,7 +10631,10 @@ async function testSshHostByIndex(index) {
         let execResult = await api.call('ssh.exec', params);
         if ([1001, 1002].includes(execResult.code)) {
             const fingerprint = execResult.data?.fingerprint || execResult.data?.current_fingerprint;
-            if (fingerprint && confirm(runtimeText('confirmFingerprint') + '\n' + host.host + ':' + host.port + '\n' + fingerprint)) {
+            if (fingerprint && await confirmSheet({
+                title: t('ui.fingerprintTitle'),
+                bodyHtml: `${escapeHtml(runtimeText('confirmFingerprint'))}<div class="mono" style="margin-top:10px;user-select:text;word-break:break-all;white-space:pre-wrap">${escapeHtml(host.host + ':' + host.port)}\n${escapeHtml(fingerprint)}</div>`,
+                primary: t('ui.trustConnect') })) {
                 params.confirmed_fingerprint = fingerprint;
                 params.trust_new = execResult.code === 1002;
                 params.accept_changed = execResult.code === 1001;
@@ -12732,27 +10693,7 @@ function showExportSshHostModal(hostId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:600px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('securityPage.exportSshHostTitle') : 'Export SSH Host Config'}</h2>
-                <button class="modal-close" onclick="hideExportSshHostModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p style="color:#6b7280">${typeof t === 'function' ? t('securityPage.exportSshHostDesc', {hostId: escapeHtml(hostId)}) : 'Export host <strong>' + escapeHtml(hostId) + '</strong> config as encrypted package'}</p>
-                <div class="form-group" style="margin-top:15px">
-                    <label>${typeof t === 'function' ? t('securityPage.targetDeviceCert') : 'Target Device Certificate (PEM)'}</label>
-                    <textarea id="export-ssh-host-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;height:120px;font-family:monospace"></textarea>
-                    <div style="color:#6b7280;margin-top:4px"><i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.exportSshHostCertHint') : 'Paste target device certificate. Leave empty for self-encryption'}</div>
-                </div>
-                <div id="export-ssh-host-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideExportSshHostModal()">${typeof t === 'function' ? t('common.cancel') : 'Cancel'}</button>
-                    <button class="btn btn-service-style" id="export-ssh-host-btn" onclick="doExportSshHostFromModal('${escapeHtml(hostId)}')"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('common.export') : 'Export'}</button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = exportSheet('ssh-host', t('securityPage.exportSshHostTitle'), t('securityPage.exportSshHostDesc', {hostId: escapeHtml(hostId)}), t('securityPage.exportSshHostCertHint'), 'hideExportSshHostModal', `doExportSshHostFromModal('${escapeHtml(hostId)}')`);
     
     modal.classList.remove('hidden');
 }
@@ -12832,44 +10773,7 @@ function showImportSshHostModal() {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:550px">
-            <h2>${typeof t === 'function' ? t('securityPage.importSshHostTitle') : 'Import SSH Host Config'}</h2>
-            <p style="color:#6b7280">${typeof t === 'function' ? t('securityPage.importSshHostDesc') : 'Select .tscfg config file to import SSH host configuration'}</p>
-            
-            <!-- 步骤 1: 选择文件 -->
-            <div id="import-ssh-host-step1">
-                <div class="form-group" style="margin-top:15px">
-                    <label>${typeof t === 'function' ? t('common.selectFile') : 'Select File'}</label>
-                    <div style="display:flex;align-items:center;gap:8px">
-                        <input type="file" id="import-ssh-host-file" accept=".tscfg" onchange="previewSshHostImport()" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
-                        <button type="button" class="btn btn-sm btn-gray" onclick="document.getElementById('import-ssh-host-file').click()"><i class="ri-folder-open-line"></i> ${typeof t === 'function' ? t('common.selectFile') : 'Select File'}</button>
-                        <span id="import-ssh-host-file-status" style="color:#6b7280;font-size:0.9em">${typeof t === 'function' ? t('common.noFileSelected') : 'No file selected'}</span>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- 步骤 2: 预览 (默认隐藏) -->
-            <div id="import-ssh-host-step2" style="display:none">
-                <div class="info-card" style="background:#f8f9fa;padding:15px;border-radius:8px;margin-top:15px">
-                    <h4 style="margin:0 0 10px 0">${typeof t === 'function' ? t('securityPage.configPackContent') : 'Config Pack Content'}</h4>
-                    <div id="import-ssh-host-preview"></div>
-                </div>
-                <div class="form-group" style="margin-top:15px">
-                    <label>
-                        <input type="checkbox" id="import-ssh-host-overwrite"> ${typeof t === 'function' ? t('securityPage.overwriteExisting') : 'Overwrite existing config'}
-                    </label>
-                </div>
-            </div>
-            
-            <div id="import-ssh-host-result" class="result-box hidden" style="margin-top:10px"></div>
-            
-            <div class="form-actions" style="margin-top:15px">
-                <button class="btn" onclick="hideImportSshHostModal()">${typeof t === 'function' ? t('common.cancel') : 'Cancel'}</button>
-                <button class="btn btn-service-style" id="import-ssh-host-btn" onclick="confirmSshHostImport()" disabled><i class="ri-upload-line"></i> ${typeof t === 'function' ? t('common.confirmImport') : 'Confirm Import'}</button>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = importSheet('ssh-host', t('securityPage.importSshHostTitle'), t('securityPage.importSshHostDesc'), 'previewSshHostImport', 'confirmSshHostImport', 'hideImportSshHostModal', '', 520, t('common.confirmImport'));
     
     // 存储 tscfg 内容
     window._importSshHostTscfg = null;
@@ -12905,7 +10809,7 @@ async function previewSshHostImport() {
     resultBox.classList.remove('hidden', 'success', 'error', 'warning');
     resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
     importBtn.disabled = true;
-    step2.style.display = 'none';
+    previewDiv.innerHTML = importPlaceholder('ssh-host');
     
     try {
         const content = await file.text();
@@ -12921,27 +10825,7 @@ async function previewSshHostImport() {
         
         if (result.code === 0 && result.data?.valid) {
             const data = result.data;
-            const configIdLbl = typeof t === 'function' ? t('securityPage.configId') : 'Config ID';
-            const signerLbl = typeof t === 'function' ? t('ssh.signer') : 'Signer';
-            const officialVal = data.official ? (typeof t === 'function' ? ' (' + t('ssh.official') + ')' : '（官方）') : '';
-            const noteLbl = typeof t === 'function' ? t('securityPage.noteLabel') : 'Note';
-            const defaultNote = typeof t === 'function' ? t('ssh.restartToLoad') : 'Load after restart';
-            
-            // 构建预览 HTML（轻量级验证只返回基本信息）
-            let html = `
-                <table style="width:100%;font-size:0.9em">
-                    <tr><td style="width:80px;color:#6b7280">${configIdLbl}:</td><td><code>${escapeHtml(data.id)}</code></td></tr>
-                    <tr><td style="color:#6b7280">${signerLbl}:</td><td>${escapeHtml(data.signer)}${officialVal}</td></tr>
-                    <tr><td style="color:#6b7280">${noteLbl}:</td><td style="color:#9ca3af;font-size:0.85em">${escapeHtml(data.note || defaultNote)}</td></tr>
-                </table>
-            `;
-            
-            if (data.exists) {
-                html += `<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#d97706"><i class="ri-alert-line"></i> ${typeof t === 'function' ? t('securityPage.configExistsWarning') : '该配置已存在，导入将覆盖现有文件'}</div>`;
-            }
-            
-            previewDiv.innerHTML = html;
-            step2.style.display = 'block';
+            renderImportPreview('ssh-host', data, '');
             resultBox.className = 'result-box success';
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
@@ -13014,7 +10898,7 @@ async function removeHostByIndex(index) {
         return;
     }
     
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmRemoveHostLocal', { id: host.id }) : `确定要从列表中移除主机 "${host.id}" 吗？\n\n注意：这只会移除本地记录，不会删除已部署到服务器上的公钥。如需撤销公钥，请点击「撤销」按钮。`)) return;
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRemoveHostLocal', { id: host.id }) : `确定要从列表中移除主机 "${host.id}" 吗？\n\n注意：这只会移除本地记录，不会删除已部署到服务器上的公钥。如需撤销公钥，请点击「撤销」按钮。`, { primary: t('securityPage.remove'), tone: 'danger' })) return;
     
     try {
         const result = await api.call('ssh.hosts.remove', { id: host.id });
@@ -13047,28 +10931,12 @@ function revokeKeyFromHost(index) {
         modal.className = 'modal';
         document.body.appendChild(modal);
     }
-    
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:500px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('securityPage.revokeKeyFromHost') : 'Revoke & Remove Host'}</h2>
-                <button class="modal-close" onclick="hideRevokeHostModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p>${typeof t === 'function' ? t('securityPage.revokeKeyFromHostDesc', {host: escapeHtml(host.username) + '@' + escapeHtml(host.host) + ':' + host.port, keyid: escapeHtml(host.keyid || 'default')}) : 'Revoke key <code>' + escapeHtml(host.keyid || 'default') + '</code> from server <strong>' + escapeHtml(host.username) + '@' + escapeHtml(host.host) + ':' + host.port + '</strong>'}</p>
-                <p style="color:#6b7280;margin-top:10px">${typeof t === 'function' ? t('securityPage.revokeHostHint') : 'Host will be removed from list after successful revocation'}</p>
-                <div class="form-group" style="margin-top:15px">
-                    <label>${typeof t === 'function' ? t('securityPage.serverPassword') : 'Server Password'}</label>
-                    <input type="password" id="revoke-host-password" class="form-control" placeholder="${typeof t === 'function' ? t('securityPage.serverPasswordPlaceholder') : 'Enter SSH password'}">
-                </div>
-                <div id="revoke-host-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideRevokeHostModal()">${typeof t === 'function' ? t('common.cancel') : 'Cancel'}</button>
-                    <button class="btn btn-danger" id="revoke-host-btn" onclick="doRevokeFromHost(${index})"><i class="ri-lock-unlock-line"></i> ${typeof t === 'function' ? t('securityPage.revokeAndRemove') : 'Revoke & Remove'}</button>
-                </div>
-            </div>
-        </div>
-    `;
+
+    modal.innerHTML = sheet(560, t('securityPage.revokeKeyFromHost'),
+        `<div class="t-note" style="margin-bottom:8px">${t('securityPage.revokeKeyFromHostDesc', {host: escapeHtml(host.username) + '@' + escapeHtml(host.host) + ':' + host.port, keyid: escapeHtml(host.keyid || 'default')})}</div>` +
+        grp(row(t('securityPage.serverPassword'), inp('revoke-host-password', 210, t('securityPage.serverPasswordPlaceholder'), '', 'type="password"'))) +
+        `<div id="revoke-host-result" class="result-box hidden" style="margin-top:12px"></div>`,
+        `<button class="btn lg" onclick="hideRevokeHostModal()">${t('common.cancel')}</button><button class="btn lg primary bad" id="revoke-host-btn" onclick="doRevokeFromHost(${index})" title="${escapeHtml(t('securityPage.revokeHostHint'))}">${t('securityPage.revokeAndRemove')}</button>`);
     
     modal.classList.remove('hidden');
     document.getElementById('revoke-host-password').focus();
@@ -13116,7 +10984,7 @@ async function doRevokeFromHost(index) {
             resultBox.classList.add('error');
             
             // 提供移除本地记录的选项
-            revokeBtn.innerHTML = '<i class="ri-delete-bin-line"></i> ' + (typeof t === 'function' ? t('securityPage.removeLocalRecord') : 'Remove Local Record Only');
+            revokeBtn.innerHTML = '<svg class="i"><use href="#ri-delete-bin-line"/></svg> ' + (typeof t === 'function' ? t('securityPage.removeLocalRecord') : 'Remove Local Record Only');
             revokeBtn.onclick = async () => {
                 requireApiSuccess(await api.call('ssh.hosts.remove', { id: host.id }), 'call');
                 showToast(typeof t === 'function' ? t('securityPage.removedLocalRecord') : 'Removed local host record', 'success');
@@ -13140,7 +11008,7 @@ async function doRevokeFromHost(index) {
  * 从安全页面删除 SSH 主机（保留兼容性）
  */
 async function deleteSshHostFromSecurity(id) {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmRemoveHostLocal2', { id }) : `确定要从列表中移除主机 "${id}" 吗？\n\n注意：这只会移除本地记录，不会删除已部署到服务器上的公钥。如需撤销公钥，请使用密钥管理中的「撤销」功能。`)) return;
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRemoveHostLocal2', { id }) : `确定要从列表中移除主机 "${id}" 吗？\n\n注意：这只会移除本地记录，不会删除已部署到服务器上的公钥。如需撤销公钥，请使用密钥管理中的「撤销」功能。`, { primary: t('securityPage.remove'), tone: 'danger' })) return;
     
     try {
         const result = await api.call('ssh.hosts.remove', { id });
@@ -13156,7 +11024,7 @@ async function deleteSshHostFromSecurity(id) {
 }
 
 async function deleteKey(id) {
-    if (confirmAction(typeof t === 'function' ? t('ui.confirmDeleteKey', { id }) : `确定要删除密钥 "${id}" 吗？此操作不可撤销！`)) {
+    if (await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteKey', { id }) : `确定要删除密钥 "${id}" 吗？此操作不可撤销！`, { primary: t('common.delete'), tone: 'danger' })) {
         try {
             requireApiSuccess(await api.keyDelete(id), 'keyDelete');
             showToast((typeof t === 'function' ? t('toast.keyDeleted') : '密钥已删除'), 'success');
@@ -13183,7 +11051,7 @@ async function exportKey(id) {
 
 async function exportPrivateKey(id) {
     // 安全确认
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmExportPrivateKey', { id }) : `安全警告\n\n您正在导出私钥 "${id}"。\n\n私钥是高度敏感的安全凭证，请确保：\n• 不要在公共网络传输\n• 不要分享给他人\n• 安全存储在本地\n\n确定要继续吗？`)) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmExportPrivateKey', { id }) : `安全警告\n\n您正在导出私钥 "${id}"。\n\n私钥是高度敏感的安全凭证，请确保：\n• 不要在公共网络传输\n• 不要分享给他人\n• 安全存储在本地\n\n确定要继续吗？`, { primary: t('ui.exportAnyway'), tone: 'danger' })) {
         return;
     }
     
@@ -13209,26 +11077,9 @@ function showPubkeyModal(id, pubkey, type, comment) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:700px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('securityPage.pubkeyExport') : 'Public Key Export'} - ${escapeHtml(id)}</h2>
-                <button class="modal-close" onclick="closePubkeyModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p style="margin-bottom:10px;color:#6b7280">${typeof t === 'function' ? t('securityPage.keyTypeLabel') : 'Type'}: ${escapeHtml(type)}${comment ? ' | ' + (typeof t === 'function' ? t('securityPage.commentLabel') : 'Comment') + ': ' + escapeHtml(comment) : ''}</p>
-                <textarea id="pubkey-content" readonly style="width:100%;height:150px;font-family:monospace;font-size:12px;resize:vertical">${escapeHtml(pubkey)}</textarea>
-                <p style="margin-top:10px;color:#9ca3af">
-                    <i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.pubkeyHint') : 'Add this public key to the remote server\'s ~/.ssh/authorized_keys file to enable passwordless login'}
-                </p>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="closePubkeyModal()">${typeof t === 'function' ? t('common.close') : 'Close'}</button>
-                    <button class="btn btn-service-style" onclick="copyPubkey()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('common.copyToClipboard') : 'Copy to Clipboard'}</button>
-                    <button class="btn btn-service-style" onclick="downloadPubkey('${escapeHtml(id)}')"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('files.downloadFile') : 'Download File'}</button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = sheet(560, `${t('securityPage.pubkeyExport')} - ${escapeHtml(id)}`,
+        `<div class="t-note" style="margin-bottom:10px">${t('securityPage.keyTypeLabel')}: ${escapeHtml(type)}${comment ? ' | ' + t('securityPage.commentLabel') + ': ' + escapeHtml(comment) : ''}</div><textarea class="field mono" id="pubkey-content" readonly style="height:150px" title="${escapeHtml(t('securityPage.pubkeyHint'))}">${escapeHtml(pubkey)}</textarea>`,
+        `<button class="btn lg" onclick="copyPubkey()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" onclick="downloadPubkey('${escapeHtml(id)}')"><svg class="i"><use href="#ri-download-line"/></svg>${t('files.downloadFile')}</button><button class="btn lg primary" onclick="closePubkeyModal()">${t('common.close')}</button>`);
     
     modal.classList.remove('hidden');
 }
@@ -13248,24 +11099,9 @@ function showPrivkeyModal(id, privkey, type, comment) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:700px">
-            <h2>${typeof t === 'function' ? t('securityPage.privkeyExport') : 'Private Key Export'} - ${escapeHtml(id)}</h2>
-            <div style="background:rgba(245,158,11,0.06);border:1px solid transparent;border-radius:4px;padding:10px;margin-bottom:15px">
-                <strong><i class="ri-alert-line"></i> ${typeof t === 'function' ? t('securityPage.securityWarning') : 'Security Warning'}</strong>: ${typeof t === 'function' ? t('securityPage.privkeyWarning') : 'Private key is sensitive information, please keep it safe!'}
-            </div>
-            <p style="margin-bottom:10px;color:#6b7280">${typeof t === 'function' ? t('securityPage.keyTypeLabel') : 'Type'}: ${escapeHtml(type)}${comment ? ' | ' + (typeof t === 'function' ? t('securityPage.commentLabel') : 'Comment') + ': ' + escapeHtml(comment) : ''}</p>
-            <textarea id="privkey-content" readonly style="width:100%;height:200px;font-family:monospace;resize:vertical;background:#2d2d2d;color:#00ff00">${escapeHtml(privkey)}</textarea>
-            <p style="margin-top:10px;color:#9ca3af">
-                <i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.privkeyHint', {id}) : 'Save as ~/.ssh/' + escapeHtml(id) + ' and set permissions chmod 600'}
-            </p>
-            <div class="form-actions" style="margin-top:15px">
-                <button class="btn btn-gray" onclick="closePrivkeyModal()">${typeof t === 'function' ? t('common.close') : 'Close'}</button>
-                <button class="btn btn-service-style" onclick="copyPrivkey()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('common.copyToClipboard') : 'Copy to Clipboard'}</button>
-                <button class="btn btn-service-style" onclick="downloadPrivkey('${escapeHtml(id)}')"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('files.downloadFile') : 'Download File'}</button>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = sheet(560, `${t('securityPage.privkeyExport')} - ${escapeHtml(id)}`,
+        `<div class="warnrow" style="margin:0 0 10px"><svg class="i"><use href="#ri-alert-line"/></svg><span><strong>${t('securityPage.securityWarning')}</strong>: ${t('securityPage.privkeyWarning')}</span></div><div class="t-note" style="margin-bottom:10px">${t('securityPage.keyTypeLabel')}: ${escapeHtml(type)}${comment ? ' | ' + t('securityPage.commentLabel') + ': ' + escapeHtml(comment) : ''}</div><textarea class="field mono" id="privkey-content" readonly style="height:200px" title="${escapeHtml(t('securityPage.privkeyHint', {id}))}">${escapeHtml(privkey)}</textarea>`,
+        `<button class="btn lg" onclick="copyPrivkey()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" onclick="downloadPrivkey('${escapeHtml(id)}')"><svg class="i"><use href="#ri-download-line"/></svg>${t('files.downloadFile')}</button><button class="btn lg primary" onclick="closePrivkeyModal()">${t('common.close')}</button>`);
     
     modal.classList.remove('hidden');
 }
@@ -13359,6 +11195,8 @@ function hideDeployKeyModal() {
 
 async function deployKey() {
     if (!currentDeployKeyId) return;
+    const keyId = currentDeployKeyId;
+    const pageCurrent = capturePageValidity();
     
     const host = document.getElementById('deploy-host').value.trim();
     const user = document.getElementById('deploy-user').value.trim();
@@ -13373,25 +11211,49 @@ async function deployKey() {
     const resultBox = document.getElementById('deploy-result');
     const deployBtn = document.getElementById('deploy-btn');
     
-    resultBox.classList.remove('hidden', 'success', 'error');
+    resultBox.classList.remove('hidden', 'success', 'warning', 'error');
     resultBox.textContent = typeof t === 'function' ? t('sshPage.deployingKey') : '正在部署密钥...';
     deployBtn.disabled = true;
     
     try {
         // 调用 ssh.copyid API（与 CLI 逻辑一致）
-        const result = requireApiSuccess(await api.sshCopyid(host, user, password, currentDeployKeyId, port, true), 'ssh.copyid');
-        
-        if (result.data?.deployed === true) {
-            const verified = result.data.verified === true;
-            resultBox.textContent = t(verified ? 'promptRepair.keyVerified' : 'promptRepair.keyUnverified', {id: currentDeployKeyId, target: `${user}@${host}`});
-            resultBox.classList.add(verified ? 'success' : 'warning');
-            showToast(resultBox.textContent, verified ? 'success' : 'warning', 6000);
-            // 刷新已部署主机列表（后端 ssh.copyid 会自动注册主机）
-            await loadSshHostsData();
-        } else {
-            throw new Error(t('promptRepair.resultUnknown'));
+        const result = await api.sshCopyid(host, user, password, keyId, port, true);
+        if (!pageCurrent()) return;
+        const data = result?.data;
+        // Registration failure must retain the acknowledged remote deployment.
+        if (!(data?.deployed === true && data.registered === false)) {
+            requireApiSuccess(result, 'ssh.copyid');
         }
+        if (data?.deployed !== true) throw new Error(t('promptRepair.resultUnknown'));
+
+        const refreshed = await refreshSshHostsList();
+        if (!pageCurrent()) return;
+        const registered = data.registered === true ||
+            (data.registered === undefined && refreshed &&
+             Object.values(window._sshHostsData || {}).some(h =>
+                 h.host === host && Number(h.port) === port &&
+                 h.username === user && h.keyid === keyId));
+        const target = `${user}@${host}`;
+        let tone = registered && data.verified === true ? 'success' : 'warning';
+        if (data.registered === false) {
+            const error = data.registration_error || '';
+            const reason = t(error === 'ESP_ERR_INVALID_STATE' ? 'promptRepair.hostRegistrationBusy'
+                           : error === 'ESP_ERR_NO_MEM' ? 'promptRepair.hostRegistrationFull'
+                           : 'promptRepair.hostRegistrationStorage', {detail: error || t('promptRepair.resultUnknown')});
+            resultBox.textContent = t('promptRepair.keyRegistrationFailed', {id: keyId, target, reason});
+        } else if (!registered) {
+            resultBox.textContent = t('promptRepair.keyRegistrationUnconfirmed', {id: keyId, target});
+        } else {
+            resultBox.textContent = t(data.verified === true ? 'promptRepair.keyVerified' : 'promptRepair.keyUnverified', {id: keyId, target});
+        }
+        if (!refreshed) {
+            resultBox.textContent += '\n' + t('promptRepair.deployedHostsRefreshFailed');
+            tone = 'warning';
+        }
+        resultBox.classList.add(tone);
+        showToast(resultBox.textContent, tone, 6000);
     } catch (e) {
+        if (!pageCurrent()) return;
         resultBox.textContent = (typeof t === 'function' ? t('pkiPage.deployFailedMsg', { msg: e.message }) : '部署失败: ' + e.message);
         resultBox.classList.add('error');
     } finally {
@@ -13471,9 +11333,9 @@ let currentMismatchInfo = null;
 
 function showHostMismatchModal(info) {
     currentMismatchInfo = info;
-    document.getElementById('mismatch-host').value = `${info.host}:${info.port || 22}`;
-    document.getElementById('mismatch-stored-fp').value = info.stored_fingerprint || t('common.unknown');
-    document.getElementById('mismatch-current-fp').value = info.current_fingerprint || t('common.unknown');
+    document.getElementById('mismatch-host').textContent = `${info.host}:${info.port || 22}`;
+    document.getElementById('mismatch-stored-fp').textContent = info.stored_fingerprint || t('common.unknown');
+    document.getElementById('mismatch-current-fp').textContent = info.current_fingerprint || t('common.unknown');
     document.getElementById('host-mismatch-modal').classList.remove('hidden');
 }
 
@@ -13497,7 +11359,7 @@ async function removeAndRetry() {
 }
 
 async function removeHost(host, port) {
-    if (confirmAction(typeof t === 'function' ? t('ui.confirmRemoveKnownHost', { host, port }) : `确定要移除主机 "${host}:${port}" 的记录吗？`)) {
+    if (await confirmAction(typeof t === 'function' ? t('ui.confirmRemoveKnownHost', { host, port }) : `确定要移除主机 "${host}:${port}" 的记录吗？`, { primary: t('securityPage.remove'), tone: 'danger' })) {
         try {
             requireApiSuccess(await api.hostsRemove(host, port), 'hostsRemove');
             showToast((typeof t === 'function' ? t('toast.hostRemoved') : '主机已移除'), 'success');
@@ -13509,7 +11371,7 @@ async function removeHost(host, port) {
 }
 
 async function clearAllHosts() {
-    if (confirmAction(typeof t === 'function' ? t('ui.confirmClearKnownHosts') : '确定要清除所有已知主机记录吗？此操作不可撤销！')) {
+    if (await confirmAction(typeof t === 'function' ? t('ui.confirmClearKnownHosts') : '确定要清除所有已知主机记录吗？此操作不可撤销！', { primary: t('common.clear'), tone: 'danger' })) {
         try {
             requireApiSuccess(await api.hostsClear(), 'hostsClear');
             showToast((typeof t === 'function' ? t('toast.allHostsCleared') : '已清除所有已知主机'), 'success');
@@ -13551,13 +11413,13 @@ async function refreshConfigPackStatus() {
         const canExport = data.can_export;
         const deviceType = data.device_type;
         
-        statusIcon.innerHTML = canExport ? '<i class="ri-tools-line"></i>' : '<i class="ri-smartphone-line"></i>';
+        statusIcon.textContent = '';
         statusText.textContent = canExport ? (typeof t === 'function' ? t('securityPage.developerDevice') : 'Developer 设备') : (typeof t === 'function' ? t('securityPage.normalDevice') : 'Device 设备');
         
         // 设备类型徽章
         deviceTypeBadge.style.display = 'inline-block';
         deviceTypeBadge.textContent = deviceType;
-        deviceTypeBadge.className = 'badge ' + (canExport ? 'badge-service-style' : 'badge-info');
+        deviceTypeBadge.className = 'tag';
         
         // 显示详细信息
         infoDetails.style.display = 'block';
@@ -13577,7 +11439,7 @@ async function refreshConfigPackStatus() {
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Refresh config pack status error:', e);
-        statusIcon.innerHTML = '<i class="ri-close-line"></i>';
+        statusIcon.textContent = '';
         statusText.textContent = (typeof t === 'function' ? t('common.loadFailed') : '加载失败');
         if (deviceTypeBadge) deviceTypeBadge.style.display = 'none';
         if (infoDetails) infoDetails.style.display = 'none';
@@ -13683,14 +11545,11 @@ async function verifyConfigPack() {
             // 显示签名信息
             if (data.signature) {
                 const sig = data.signature;
-                document.getElementById('pack-preview-content').innerHTML = `
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.9em">
-                        <div><strong>${t('ssh.signer')}: </strong>${sig.signer_cn || '-'}</div>
-                        <div><strong>${t('promptRepair.organization')}: </strong>${sig.signer_ou || '-'}</div>
-                        <div><strong>${t('securityPage.officialSignature')}: </strong>${sig.is_official ? t('common.yes') : t('common.no')}</div>
-                        <div><strong>${t('securityPage.signedAt')}: </strong>${sig.signed_at ? formatTimestamp(sig.signed_at) : '-'}</div>
-                    </div>
-                `;
+                document.getElementById('pack-preview-content').innerHTML = grp(
+                    row(t('ssh.signer'), escapeHtml(sig.signer_cn || '-')) +
+                    row(t('promptRepair.organization'), escapeHtml(sig.signer_ou || '-')) +
+                    row(t('securityPage.officialSignature'), sig.is_official ? t('common.yes') : t('common.no')) +
+                    row(t('securityPage.signedAt'), sig.signed_at ? formatTimestamp(sig.signed_at) : '-'));
                 preview.classList.remove('hidden');
             }
         } else {
@@ -13731,21 +11590,16 @@ async function importConfigPack() {
         const sig = data.signature || {};
         const yesStr = typeof t === 'function' ? t('common.yes') : 'Yes';
         const noStr = typeof t === 'function' ? t('common.no') : 'No';
-        document.getElementById('pack-preview-content').innerHTML = `
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.9em">
-                <div><strong>${typeof t === 'function' ? t('securityPage.configName') : 'Config Name'}:</strong> ${data.name || '-'}</div>
-                <div><strong>${typeof t === 'function' ? t('common.description') : 'Description'}:</strong> ${data.description || '-'}</div>
-                <div><strong>${typeof t === 'function' ? t('securityPage.targetDevice') : 'Target Device'}:</strong> ${data.target_device || '-'}</div>
-                <div><strong>${typeof t === 'function' ? t('securityPage.createdAt') : 'Created At'}:</strong> ${data.created_at ? formatTimestamp(data.created_at) : '-'}</div>
-                <div><strong>${typeof t === 'function' ? t('securityPage.signer') : 'Signer'}:</strong> ${sig.signer_cn || '-'} (${sig.signer_ou || '-'})</div>
-                <div><strong>${typeof t === 'function' ? t('securityPage.signedAt') : 'Signed At'}:</strong> ${sig.signed_at ? formatTimestamp(sig.signed_at) : '-'}</div>
-                <div><strong>${typeof t === 'function' ? t('securityPage.officialSignature') : 'Official Signature'}:</strong> ${sig.is_official ? yesStr : noStr}</div>
-                <div><strong>${typeof t === 'function' ? t('securityPage.savePath') : 'Save Path'}:</strong> ${data.saved_path || '-'}</div>
-            </div>
-            <div style="margin-top:10px;padding:8px;background:rgba(16,185,129,0.06);border-radius:4px;font-size:12px">
-                ${typeof t === 'function' ? t('securityPage.packEncryptedHint') : 'Config pack saved encrypted, use <code>config.pack.content</code> API to decrypt as needed'}
-            </div>
-        `;
+        document.getElementById('pack-preview-content').innerHTML = grp(
+            row(t('securityPage.configName'), escapeHtml(data.name || '-')) +
+            row(t('common.description'), escapeHtml(data.description || '-')) +
+            row(t('securityPage.targetDevice'), escapeHtml(data.target_device || '-')) +
+            row(t('securityPage.createdAt'), data.created_at ? formatTimestamp(data.created_at) : '-') +
+            row(t('securityPage.signer'), `${escapeHtml(sig.signer_cn || '-')} (${escapeHtml(sig.signer_ou || '-')})`) +
+            row(t('securityPage.signedAt'), sig.signed_at ? formatTimestamp(sig.signed_at) : '-') +
+            row(t('securityPage.officialSignature'), sig.is_official ? yesStr : noStr) +
+            row(t('securityPage.savePath'), escapeHtml(data.saved_path || '-'))) +
+            '<div class="t-note" style="margin-top:8px">' + t('securityPage.packEncryptedHint') + '</div>';
         preview.classList.remove('hidden');
         
     } catch (e) {
@@ -13769,30 +11623,12 @@ function showConfigPackApplyConfirm(path, packInfo, verificationCurrent = () => 
     const dialog = document.createElement('div');
     dialog.className = 'modal';
     dialog.id = 'config-pack-apply-confirm';
-    dialog.innerHTML = `
-        <div class="modal-content" style="max-width:450px">
-            <div class="modal-header">
-                <span class="modal-title">${typeof t === 'function' ? t('securityPage.configPackUploaded') : 'Config Pack Uploaded'}</span>
-            </div>
-            <div class="modal-body">
-                <div style="background:rgba(16,185,129,0.06);padding:12px;border-radius:6px;margin-bottom:15px">
-                    <div style="color:#059669;font-weight:bold;margin-bottom:8px">${typeof t === 'function' ? t('securityPage.verifySuccess') : 'Verification Successful'}</div>
-                    <div style="font-size:0.9em;color:#333">
-                        <div>${typeof t === 'function' ? t('securityPage.fileName') : 'File'}: <code>${escapeHtml(path.split('/').pop())}</code></div>
-                        <div>${typeof t === 'function' ? t('securityPage.signer') : 'Signer'}: ${escapeHtml(signerInfo)}</div>
-                        ${sig.is_official ? '<div style="color:#1976d2">' + (typeof t === 'function' ? t('securityPage.officialSignature') : 'Official Signature') + '</div>' : ''}
-                    </div>
-                </div>
-                <p style="margin:0;color:#6b7280;font-size:0.9em">
-                    ${typeof t === 'function' ? t('securityPage.configPackSavedApplyNow') : 'Config pack saved to device. Apply this config now?'}
-                </p>
-            </div>
-            <div class="modal-footer">
-                <button class="btn" onclick="closeConfigPackApplyConfirm()">${typeof t === 'function' ? t('securityPage.applyLater') : 'Apply Later'}</button>
-                <button class="btn btn-service-style" id="config-pack-apply-button">${typeof t === 'function' ? t('securityPage.applyNow') : 'Apply Now'}</button>
-            </div>
-        </div>
-    `;
+    dialog.innerHTML = sheet(420, t('securityPage.configPackUploaded'),
+        `<div style="margin-bottom:12px"><span class="state ok">${t('securityPage.verifySuccess')}</span></div>` +
+        grp(row(t('securityPage.fileName'), `<span class="mono">${escapeHtml(path.split('/').pop())}</span>`) +
+            row(t('securityPage.signer'), escapeHtml(signerInfo) + (sig.is_official ? ` <span class="state ok">${t('securityPage.officialSignature')}</span>` : ''))) +
+        `<div class="t-body" style="color:var(--ink-2);margin-top:12px">${t('securityPage.configPackSavedApplyNow')}</div>`,
+        `<button class="btn lg" onclick="closeConfigPackApplyConfirm()">${t('securityPage.applyLater')}</button><button class="btn lg primary" id="config-pack-apply-button">${t('securityPage.applyNow')}</button>`);
     
     document.body.appendChild(dialog);
     dialog.verificationCurrent = verificationCurrent;
@@ -13869,7 +11705,6 @@ function showConfigPackExportModal() {
     document.getElementById('pack-export-desc').value = '';
     document.getElementById('pack-export-recipient-cert').value = '';
     document.getElementById('pack-export-result').classList.add('hidden');
-    document.getElementById('pack-export-output').classList.add('hidden');
     document.getElementById('pack-export-selected').style.display = 'none';
     document.getElementById('btn-pack-export-generate').disabled = true;
     
@@ -13896,7 +11731,7 @@ function hideConfigPackExportModal() {
 // 文件浏览器：刷新当前目录
 async function packExportBrowseRefresh() {
     const fileList = document.getElementById('pack-export-file-list');
-    fileList.innerHTML = '<div style="padding:20px;text-align:center;color:#6b7280"><i class="ri-refresh-line"></i> ' + t('common.loading') + '</div>';
+    fileList.innerHTML = '<div class="row"><div class="rl t-note">' + t('common.loading') + '</div></div>';
     
     try {
         const result = await api.storageList(packExportCurrentPath);
@@ -13920,47 +11755,32 @@ async function packExportBrowseRefresh() {
         packExportCurrentEntries = filteredEntries;
         
         if (filteredEntries.length === 0) {
-            fileList.innerHTML = ("<div style=\"padding:20px;text-align:center;color:#999\"><i class=\"ri-folder-line\"></i> " + t('pkiPage.noConfigFiles') + "</div>");
+            fileList.innerHTML = '<div class="row"><div class="rl t-note">' + t('pkiPage.noConfigFiles') + '</div></div>';
             return;
         }
         
-        let html = '<div class="pack-export-file-list-inner">';
+        let html = '';
         for (const entry of filteredEntries) {
             const fullPath = packExportCurrentPath + '/' + entry.name;
             const isSelected = packExportSelectedFiles.has(fullPath);
-            const bgColor = isSelected ? '#e3f2fd' : '';
             // 转义文件名中的特殊字符
             const safeName = entry.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
             
             if (entry.type === 'dir') {
                 // 目录：点击进入，无复选框
-                html += `<div onclick="packExportBrowseInto('${safeName}')" 
-                    class="pack-export-file-row pack-export-dir-row" 
-                    onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">
-                    <span class="pack-export-row-icon"><i class="ri-folder-line"></i></span>
-                    <span class="pack-export-row-name">${escapeHtml(entry.name)}</span>
-                </div>`;
+                html += `<div class="row" style="cursor:pointer" onclick="packExportBrowseInto('${safeName}')"><div class="rl"><span style="display:flex;gap:10px;align-items:center"><svg class="i"><use href="#ri-folder-line"/></svg>${escapeHtml(entry.name)}</span></div><div class="rc"></div></div>`;
             } else {
-                // 文件：网格四列 复选框|图标|文件名|大小，避免错位
                 const checkboxId = 'pack-export-cb-' + entry.name.replace(/[^a-zA-Z0-9]/g, '_');
-                const sizeStr = formatFileSize(entry.size);
-                html += `<div class="pack-export-file-row pack-export-file-row-with-cb" style="background:${bgColor}">
-                    <input type="checkbox" id="${checkboxId}" ${isSelected ? 'checked' : ''} 
-                        onclick="packExportToggleFile('${safeName}', this.checked)" class="pack-export-row-cb">
-                    <span class="pack-export-row-icon"><i class="ri-file-text-line"></i></span>
-                    <label for="${checkboxId}" class="pack-export-row-label"><span class="pack-export-row-name">${escapeHtml(entry.name)}</span></label>
-                    <span class="pack-export-row-size">(${sizeStr})</span>
-                </div>`;
+                html += `<div class="row"><div class="rl"><label style="display:flex;gap:10px;align-items:center" for="${checkboxId}"><input type="checkbox" id="${checkboxId}" ${isSelected ? 'checked' : ''} onclick="packExportToggleFile('${safeName}', this.checked)">${escapeHtml(entry.name)}</label></div><div class="rc"><span class="t-note num">${formatFileSize(entry.size)}</span></div></div>`;
             }
         }
-        html += '</div>';
         fileList.innerHTML = html;
         
         // 更新选择状态显示
         packExportUpdateSelectedDisplay();
         
     } catch (e) {
-        fileList.innerHTML = `<div style="padding:20px;text-align:center;color:#f43f5e"><i class="ri-error-warning-line"></i> ${t('common.loadFailed')}:  ${escapeHtml(e.message)}</div>`;
+        fileList.innerHTML = `<div class="row"><div class="rl"><span class="state bad">${t('common.loadFailed')}: ${escapeHtml(e.message)}</span></div></div>`;
     }
 }
 
@@ -14048,14 +11868,14 @@ function packExportUpdateSelectedDisplay() {
     let text = t('promptRepair.filesSelected', {count: files.length});
     if (loadingFiles.length > 0) {
         text += ` (${loadingFiles.length} ${t('securityPage.filesLoading')})`;
-        selectedDiv.style.background = 'rgba(245, 158, 11, 0.06)';
+        selectedDiv.className = 'result-box';
         generateBtn.disabled = true;
     } else if (errorFiles.length > 0) {
         text += '\n' + t('promptRepair.fileErrors', {count: errorFiles.length, message: errorFiles[0][1].error});
-        selectedDiv.style.background = 'rgba(244, 63, 94, 0.06)';
+        selectedDiv.className = 'result-box error';
         generateBtn.disabled = errorFiles.length === files.length;  // 全部错误则禁用
     } else {
-        selectedDiv.style.background = 'rgba(16, 185, 129, 0.06)';
+        selectedDiv.className = 'result-box success';
         generateBtn.disabled = false;
     }
     
@@ -14194,8 +12014,10 @@ async function exportConfigPack() {
         
         // 显示按钮
         if (tscfgContent) {
-            copyBtn.style.display = 'inline-block';
-            downloadBtn.style.display = 'inline-block';
+            copyBtn.style.display = '';
+            downloadBtn.style.display = '';
+            copyBtn.disabled = false;
+            downloadBtn.disabled = false;
         }
         
         // 显示保存路径
@@ -14274,31 +12096,23 @@ async function refreshConfigPackList() {
         const data = result.data;
         const files = data.files || [];
         
-        tbody.innerHTML = '';
-        
         if (files.length === 0) {
-            const noFiles = typeof t === 'function' ? t('securityPage.noTscfgInDir') : '目录中没有 .tscfg 文件';
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#6b7280">' + noFiles + '</td></tr>';
+            tbody.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('securityPage.noPacks') + '</div>';
         } else {
-            const yesStr = typeof t === 'function' ? t('common.yes') : '是';
-            const noStr = typeof t === 'function' ? t('common.no') : '否';
-            const validStr = typeof t === 'function' ? t('common.valid') : '有效';
-            const invalidStr = typeof t === 'function' ? t('common.invalid') : '无效';
-            const importStr = typeof t === 'function' ? t('securityPage.importBtn') : '导入';
-            files.forEach(file => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>${escapeHtml(file.name)}</td>
-                    <td>${formatBytes(file.size || 0)}</td>
-                    <td>${escapeHtml(file.signer || '-')}</td>
-                    <td>${file.is_official ? yesStr : noStr}</td>
-                    <td>${file.valid ? '<span style="color:green">' + validStr + '</span>' : '<span style="color:red">' + invalidStr + '</span>'}</td>
-                    <td>
-                        <button class="btn btn-small" onclick="importPackFromList('${escapeHtml(path)}/${escapeHtml(file.name)}')"><i class="ri-download-line"></i> ${importStr}</button>
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
+            const yesStr = t('common.yes');
+            const noStr = t('common.no');
+            const validStr = t('common.valid');
+            const invalidStr = t('common.invalid');
+            const importStr = t('securityPage.importBtn');
+            tbody.innerHTML = '<div class="tr th cols-packs"><div>' + t('securityPage.fileName') + '</div><div>' + t('files.size') + '</div><div>' + t('securityPage.signerLabel') + '</div><div>' + t('securityPage.official') + '</div><div>' + t('common.status') + '</div><div></div></div>' + files.map(file => `
+                <div class="tr cols-packs">
+                    <div class="mono">${escapeHtml(file.name)}</div>
+                    <div>${formatBytes(file.size || 0)}</div>
+                    <div>${escapeHtml(file.signer || '-')}</div>
+                    <div>${file.is_official ? yesStr : noStr}</div>
+                    <div>${file.valid ? '<span class="state ok">' + validStr + '</span>' : '<span class="state bad">' + invalidStr + '</span>'}</div>
+                    <div class="act"><button class="btn sm" onclick="importPackFromList('${escapeHtml(path)}/${escapeHtml(file.name)}')">${importStr}</button></div>
+                </div>`).join('');
         }
         
         loading.style.display = 'none';
@@ -14312,7 +12126,7 @@ async function refreshConfigPackList() {
 
 async function importPackFromList(filePath) {
     const msg = typeof t === 'function' ? t('securityPage.confirmImportPack', { path: filePath }) : '确定要导入配置包: ' + filePath + ' ?';
-    if (!confirmAction(msg)) return;
+    if (!await confirmAction(msg, { primary: t('common.import'), tone: 'neutral' })) return;
     
     try {
         const result = await api.configPackImport(null, filePath, false);
@@ -14386,12 +12200,13 @@ async function refreshCertStatus() {
         document.getElementById('cert-status-text').textContent = certValidity(data.validity);
         const stored = certText('pkiRepair.stored', 'Saved');
         const missing = certText('pkiRepair.missing', 'Missing');
+        const colon = certText('pkiRepair.colon', ': ');
         document.getElementById('cert-material-state').textContent =
-            `${certText('pkiRepair.key', 'Key')}: ${data.has_private_key ? stored : missing} · ` +
-            `${certText('pkiRepair.certificate', 'Certificate')}: ${data.has_certificate ? stored : missing} · ` +
-            `${certText('pkiRepair.clientCa', 'Client verification CA')}: ${data.has_ca_chain ? stored : missing}`;
+            `${certText('pkiRepair.key', 'Key')}${colon}${data.has_private_key ? stored : missing} · ` +
+            `${certText('pkiRepair.certificate', 'Certificate')}${colon}${data.has_certificate ? stored : missing} · ` +
+            `${certText('pkiRepair.clientCa', 'Client verification CA')}${colon}${data.has_ca_chain ? stored : missing}`;
         const https = data.https;
-        document.getElementById('cert-https-state').textContent = 'HTTPS: ' +
+        document.getElementById('cert-https-state').textContent = 'HTTPS' + colon +
             (typeof https?.running !== 'boolean' ? certValidity() :
                 certText(https.running ? 'pkiRepair.running' : 'pkiRepair.stopped', https.running ? 'Running' : 'Not running')) +
             (https?.port ? ` (${https.port})` : '') +
@@ -14401,7 +12216,7 @@ async function refreshCertStatus() {
         document.getElementById('cert-restart-state').textContent = data.restart_required ?
             certText('pkiRepair.restart', 'Stored materials changed. The running service still uses the previous materials. Restart the device to apply; startup conditions must be met.') : '';
         document.getElementById('cert-active-fingerprint').textContent = https?.loaded_certificate_sha256 ?
-            `${certText('pkiRepair.activeFingerprint', 'Active certificate SHA-256')}: ${https.loaded_certificate_sha256}` : '';
+            `${certText('pkiRepair.activeFingerprint', 'Active certificate SHA-256')}${colon}${https.loaded_certificate_sha256}` : '';
         document.getElementById('cert-no-key-hint').style.display = data.has_private_key ? 'none' : 'block';
         document.getElementById('cert-info-details').style.display = data.has_certificate ? 'block' : 'none';
         updateCertInfoDetails(data.cert_info);
@@ -14411,7 +12226,7 @@ async function refreshCertStatus() {
             if (!pageCurrent()) return;
             if (time.code !== 0 || !time.data) throw new Error('Time unavailable');
             document.getElementById('cert-device-time').textContent =
-                `${certText('pkiRepair.deviceTime', 'Device time')}: ${time.data.datetime || '—'} · ${time.data.source || '—'} · ` +
+                `${certText('pkiRepair.deviceTime', 'Device time')}${colon}${time.data.datetime || '—'} · ${time.data.source || '—'} · ` +
                 certText(time.data.synced ? 'pkiRepair.synced' : 'pkiRepair.unsynced', time.data.synced ? 'Synchronized' : 'Not synchronized');
         } catch (_) {
             if (!pageCurrent()) return;
@@ -14460,6 +12275,7 @@ function showCertGenKeyModal() {
     }
     
     resultBox.classList.add('hidden');
+    document.getElementById('cert-genkey-btn').classList.toggle('bad', !!window._certPkiStatus?.has_private_key);
     modal.classList.remove('hidden');
 }
 
@@ -14501,7 +12317,6 @@ async function generateCertKeypair() {
 
 function showCertCSRModal() {
     const modal = document.getElementById('cert-csr-modal');
-    document.getElementById('csr-result-box').classList.add('hidden');
     document.getElementById('csr-gen-result').classList.add('hidden');
     document.getElementById('csr-pem-output').value = '';
     modal.classList.remove('hidden');
@@ -14654,7 +12469,7 @@ function copyCertToClipboard() {
 }
 
 async function deleteCertCredentials() {
-    if (!confirmAction(certText('ui.confirmDeletePKI', '确定要删除所有 PKI 凭证吗？\n\n这将删除：\n• 私钥\n• 设备证书\n• CA 证书链\n\n此操作不可撤销！'))) {
+    if (!await confirmAction(certText('ui.confirmDeletePKI', '确定要删除所有 PKI 凭证吗？\n\n这将删除：\n• 私钥\n• 设备证书\n• CA 证书链\n\n此操作不可撤销！'), { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
     
@@ -14677,6 +12492,7 @@ function showGenerateKeyModal() {
     document.getElementById('keygen-type').value = 'rsa2048';  // RSA 是唯一支持 SSH 公钥认证的类型
     document.getElementById('keygen-comment').value = '';
     document.getElementById('keygen-exportable').checked = false;
+    document.getElementById('keygen-ec-warn').classList.add('hidden');
 }
 
 function hideGenerateKeyModal() {
@@ -14729,10 +12545,10 @@ function formatUptime(ms) {
     const m = typeof t === 'function' ? t('common.minutes') : 'min';
     const s = typeof t === 'function' ? t('common.seconds') : 's';
     
-    if (days > 0) return `${days}${d} ${hours % 24}${h}`;
-    if (hours > 0) return `${hours}${h} ${minutes % 60}${m}`;
-    if (minutes > 0) return `${minutes}${m}`;
-    return `${seconds}${s}`;
+    if (days > 0) return `${days} ${d} ${hours % 24} ${h}`;
+    if (hours > 0) return `${hours} ${h} ${minutes % 60} ${m}`;
+    if (minutes > 0) return `${minutes} ${m}`;
+    return `${seconds} ${s}`;
 }
 
 function formatBytes(bytes) {
@@ -14742,12 +12558,47 @@ function formatBytes(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function confirmAction(message) {
+// 确认弹窗（替代原生 confirm）：返回 Promise。tone='danger' 时主按钮为红色且不响应 Enter；third 为中间的第二选项（返回 'alt'）
+let confirmSheetSeq = 0;
+function confirmSheet({ title, body = '', bodyHtml = '', primary, tone = 'neutral', secondary, third, width = 420 } = {}) {
+    return new Promise(resolve => {
+        const modal = document.createElement('div');
+        modal.className = 'modal confirm-sheet';
+        modal.id = 'confirm-sheet-' + (++confirmSheetSeq);
+        let settled = false;
+        const finish = v => {
+            if (settled) return;
+            settled = true;
+            document.removeEventListener('keydown', onKey, true);
+            modal.remove();
+            resolve(v);
+        };
+        const onKey = e => {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+            else if (e.key === 'Enter' && tone !== 'danger' && e.target.tagName !== 'BUTTON') { e.preventDefault(); finish(true); }
+        };
+        modal.innerHTML = sheet(width, escapeHtml(title), `<div class="t-body" style="color:var(--ink-2);white-space:pre-line">${bodyHtml || escapeHtml(body)}</div>`,
+            `<button type="button" class="btn lg" data-r="0">${secondary || t('common.cancel')}</button>` +
+            (third ? `<button type="button" class="btn lg" data-r="alt">${third}</button>` : '') +
+            `<button type="button" class="btn lg primary${tone === 'danger' ? ' bad' : ''}" data-r="1">${primary || t('common.confirm')}</button>`);
+        modal.onclick = e => {
+            if (e.target === modal) return finish(false);
+            const b = e.target.closest('button[data-r]');
+            if (b) finish(b.dataset.r === '1' ? true : b.dataset.r === 'alt' ? 'alt' : false);
+        };
+        document.body.appendChild(modal);
+        document.addEventListener('keydown', onKey, true);
+        // 破坏性确认默认聚焦"取消"，避免误触
+        modal.querySelector(tone === 'danger' ? 'button[data-r="0"]' : 'button[data-r="1"]').focus();
+    });
+}
+
+async function confirmAction(message, opts = {}) {
     if (!window.i18n?.isReady() || !message || message.includes(i18n.unavailable())) {
         showToast(i18n.unavailable(), 'error');
         return false;
     }
-    return window.confirm(message);
+    return confirmSheet({ title: opts.title || t('common.confirm'), body: message, primary: opts.primary, tone: opts.tone, secondary: opts.secondary });
 }
 
 let toastTimer = null;
@@ -14790,249 +12641,32 @@ async function loadTerminalPage() {
     
     const content = document.getElementById('page-content');
     content.innerHTML = `
-        <div class="terminal-page">
-            <div class="terminal-header">
-                <div class="terminal-actions">
-                    <button class="btn btn-sm btn-service-style" onclick="console.log('Button clicked!'); window.showTerminalLogsModal();"><i class="ri-file-list-line"></i> ${t('terminal.systemLogsButton')}</button>
-                    <button class="btn btn-sm btn-service-style" onclick="terminalClear()"><i class="ri-delete-bin-line"></i> ${t('terminal.clearScreen')}</button>
-                    <button class="btn btn-sm btn-danger" onclick="terminalDisconnect()"><i class="ri-link-unlink"></i> ${t('terminal.disconnect')}</button>
-                </div>
+        <div class="page page-terminal">
+            <div class="acts">
+                <button class="btn sm" onclick="window.showTerminalLogsModal();"><svg class="i"><use href="#ri-file-text-line"/></svg>${t('terminal.systemLogsButton')}</button>
+                <button class="btn sm" onclick="terminalClear()"><svg class="i"><use href="#ri-delete-bin-line"/></svg>${t('terminal.clearScreen')}</button>
+                <button class="btn sm dg" onclick="terminalDisconnect()">${t('terminal.disconnect')}</button>
             </div>
-            <div class="terminal-container" id="terminal-container"></div>
-            <div class="terminal-help">
-                <span><i class="ri-information-line"></i> ${t('terminal.terminalHint')}</span>
-            </div>
+            <div class="terminal-box"><div class="terminal-container" id="terminal-container"></div></div>
+            <div class="t-note terminal-help"><svg class="i"><use href="#ri-information-line"/></svg><span>${t('terminal.terminalHintBrief')}</span></div>
         </div>
         
-        <!-- 日志模态框 -->
-        <div id="terminal-logs-modal" class="modal" style="display:none" onclick="if(event.target===this) closeTerminalLogsModal()">
-            <div class="modal-content cc-compact" style="width:90%; max-width:1200px; height:85vh">
-                <div class="modal-header">
-                    <h2>${t('terminal.systemLogTitle')}</h2>
-                    <button class="modal-close" onclick="closeTerminalLogsModal()"><i class="ri-close-line"></i></button>
-                </div>
-                <div class="modal-body" style="padding:0; display:flex; flex-direction:column; height:calc(100% - 60px); max-height:none">
-                    <!-- 工具栏 -->
-                    <div class="log-toolbar" style="margin:15px; margin-bottom:10px">
-                        <div class="toolbar-left">
-                            <div class="toolbar-item">
-                                <label>${t('terminal.levelLabel')}</label>
-                                <select id="modal-log-level-filter" class="form-control" onchange="updateModalLogFilter()">
-                                    <option value="5">${t('terminal.levelAll')}</option>
-                                    <option value="1">ERROR</option>
-                                    <option value="2">WARN+</option>
-                                    <option value="3" selected>INFO+</option>
-                                    <option value="4">DEBUG+</option>
-                                </select>
-                            </div>
-                            <div class="toolbar-item">
-                                <label>TAG</label>
-                                <input type="text" id="modal-log-tag-filter" class="form-control" 
-                                       placeholder="${t('common.filterTag')}" onkeyup="debounceRenderModalLogs()">
-                            </div>
-                            <div class="toolbar-item search">
-                                <label>${t('common.search')}</label>
-                                <input type="text" id="modal-log-keyword-filter" class="form-control" 
-                                       placeholder="${t('common.searchLogs')}" onkeyup="debounceRenderModalLogs()">
-                            </div>
-                        </div>
-                        <div class="toolbar-right">
-                            <span id="modal-ws-status" class="ws-status connecting" title="${t('common.wsStatus')}">
-                                <span class="dot"></span>
-                            </span>
-                            <span id="modal-log-stats" class="log-stats"></span>
-                            <label class="auto-scroll-toggle">
-                                <input type="checkbox" id="modal-log-auto-scroll" checked>
-                                <span>${t('terminal.autoScroll')}</span>
-                            </label>
-                            <button class="btn btn-small" onclick="loadModalHistoryLogs()" title="${t('common.refreshLogs')}"><i class="ri-refresh-line"></i></button>
-                            <button class="btn btn-small btn-danger" onclick="clearModalLogs()" title="${t('common.clearLogs')}"><i class="ri-delete-bin-line"></i></button>
-                        </div>
-                    </div>
-                    
-                    <!-- 日志内容 -->
-                    <div class="log-panel" style="flex:1; margin:0 15px 15px; overflow:hidden">
-                        <div id="modal-log-container" class="log-viewer">
-                            <div class="log-empty">
-                                <div class="icon"><i class="ri-file-list-line"></i></div>
-                                <div class="text">${t('terminal.waitingLogs')}</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+        <!-- 日志弹窗 -->
+        <div id="terminal-logs-modal" class="modal" style="display:none" onclick="if(event.target===this) closeTerminalLogsModal()">${sheet(760, t('terminal.systemLogTitle'), `
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+                <select class="field" id="modal-log-level-filter" style="width:100px" onchange="updateModalLogFilter()">
+                    <option value="5">${t('terminal.levelAll')}</option>
+                    <option value="1">ERROR</option>
+                    <option value="2">WARN+</option>
+                    <option value="3" selected>INFO+</option>
+                    <option value="4">DEBUG+</option>
+                </select>
+                <input type="text" class="field" id="modal-log-tag-filter" placeholder="${t('common.filterTag')}" aria-label="${t('common.filterTag')}" style="width:150px" onkeyup="debounceRenderModalLogs()">
+                <input type="text" class="field" id="modal-log-keyword-filter" placeholder="${t('common.searchLogs')}" aria-label="${t('common.searchLogs')}" style="flex:1;min-width:0" onkeyup="debounceRenderModalLogs()">
+                <label style="display:flex;gap:6px;align-items:center;margin-left:8px"><input type="checkbox" class="switch" role="switch" id="modal-log-auto-scroll" checked><span class="t-label">${t('terminal.autoScroll')}</span></label>
             </div>
-        </div>
-        
-        <style>
-            /* 日志工具栏 */
-            .log-toolbar {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 15px;
-                padding: 12px 15px;
-                background: var(--bg-card);
-                border-radius: var(--radius);
-                flex-wrap: wrap;
-            }
-            .toolbar-left {
-                display: flex;
-                gap: 12px;
-                flex-wrap: wrap;
-                align-items: center;
-            }
-            .toolbar-right {
-                display: flex;
-                gap: 10px;
-                align-items: center;
-                flex-wrap: wrap;
-            }
-            .toolbar-item {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            .toolbar-item label {
-                font-size: 0.85em;
-                color: var(--text-secondary);
-                white-space: nowrap;
-            }
-            .toolbar-item .form-control {
-                padding: 6px 10px;
-                font-size: 0.9em;
-                min-width: 100px;
-            }
-            .toolbar-item.search .form-control {
-                min-width: 150px;
-            }
-            
-            .log-stats {
-                font-size: 0.85em;
-                color: var(--text-secondary);
-            }
-            
-            .auto-scroll-toggle {
-                display: flex;
-                align-items: center;
-                gap: 4px;
-                font-size: 0.85em;
-                color: var(--text-secondary);
-                cursor: pointer;
-            }
-            .auto-scroll-toggle input {
-                cursor: pointer;
-            }
-            
-            /* 日志面板 */
-            .log-panel {
-                flex: 1;
-                background: var(--bg-card);
-                border-radius: var(--radius);
-                overflow: hidden;
-                display: flex;
-                flex-direction: column;
-            }
-            
-            .log-viewer {
-                flex: 1;
-                font-family: 'SF Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
-                font-size: 12px;
-                line-height: 1.6;
-                background: #1e293b;
-                color: #eee;
-                padding: 12px;
-                overflow-y: auto;
-                min-height: 400px;
-            }
-            
-            .log-entry {
-                padding: 3px 8px;
-                border-radius: var(--radius-sm);
-                margin: 2px 0;
-                display: flex;
-                align-items: baseline;
-                gap: 8px;
-            }
-            .log-entry:hover {
-                background: rgba(255,255,255,0.05);
-            }
-            .log-time {
-                color: var(--text-muted);
-                font-size: 0.9em;
-                flex-shrink: 0;
-            }
-            .log-level {
-                font-weight: 600;
-                font-size: 0.85em;
-                padding: 1px 6px;
-                border-radius: var(--radius-sm);
-                flex-shrink: 0;
-                min-width: 55px;
-                text-align: center;
-            }
-            .log-tag {
-                color: var(--cyan-500);
-                flex-shrink: 0;
-                max-width: 150px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-            .log-message {
-                flex: 1;
-                word-break: break-word;
-            }
-            .log-task {
-                color: var(--text-muted);
-                font-size: 0.85em;
-                flex-shrink: 0;
-            }
-            
-            /* 日志级别颜色 */
-            .level-error { border-left: 3px solid var(--rose-500); }
-            .level-error .log-level { background: var(--rose-500); color: #fff; }
-            .level-warn { border-left: 3px solid var(--amber-500); }
-            .level-warn .log-level { background: var(--amber-500); color: var(--text-primary); }
-            .level-info { border-left: 3px solid var(--emerald-500); }
-            .level-info .log-level { background: var(--emerald-50); color: var(--emerald-600); }
-            .level-debug { border-left: 3px solid var(--blue-500); }
-            .level-debug .log-level { background: var(--blue-50); color: var(--blue-600); }
-            .level-verbose { border-left: 3px solid var(--text-muted); }
-            .level-verbose .log-level { background: var(--bg-muted); color: var(--text-muted); }
-            
-            .log-empty {
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 200px;
-                color: var(--text-muted);
-            }
-            .log-empty .icon {
-                font-size: 3em;
-                margin-bottom: 10px;
-                opacity: 0.5;
-            }
-            .log-empty .text {
-                font-size: 1.1em;
-            }
-            
-            .log-highlight {
-                background: var(--amber-500);
-                color: var(--text-primary);
-                padding: 0 3px;
-                border-radius: 2px;
-            }
-            
-            /* WebSocket 状态动画 */
-            @keyframes pulse {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.5; }
-            }
-            @keyframes blink {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.3; }
-            }
-        </style>
+            <div class="term logv" id="modal-log-container"><div class="log-empty">${t('terminal.waitingLogs')}</div></div>`,
+            `<span class="inl" style="margin-right:auto"><span id="modal-ws-status" class="ws-status connecting" title="${t('common.wsStatus')}"></span><span id="modal-log-stats" class="t-note"></span></span><button class="btn lg" onclick="loadModalHistoryLogs()"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.refreshLogs')}</button><button class="btn lg" onclick="clearModalLogs()">${t('common.clearLogs')}</button><button class="btn lg primary" onclick="closeTerminalLogsModal()">${t('common.close')}</button>`)}</div>
     `;
     
     // 初始化终端（标签页可见时才连接，避免后台标签抢占当前会话导致 session_closed）
@@ -15202,12 +12836,7 @@ function renderModalLogs() {
     }
     
     if (filtered.length === 0) {
-        container.innerHTML = `
-            <div class="log-empty">
-                <div class="icon"><i class="ri-file-list-line"></i></div>
-                <div class="text">${typeof t === 'function' ? t('fanPage.noLogs') : '暂无日志'}</div>
-            </div>
-        `;
+        container.innerHTML = `<div class="log-empty">${t('fanPage.noLogs')}</div>`;
         return;
     }
     
@@ -15226,10 +12855,9 @@ function renderModalLogs() {
         return `
             <div class="log-entry ${levelClass}">
                 <span class="log-time">${time}</span>
-                <span class="log-level">${entry.levelName}</span>
+                <span class="log-level">${entry.levelName.charAt(0)}</span>
                 <span class="log-tag">${escapeHtml(entry.tag)}</span>
-                <span class="log-message">${message}</span>
-                ${entry.task ? `<span class="log-task">[${escapeHtml(entry.task)}]</span>` : ''}
+                <span class="log-message">${message}${entry.task ? ` <span class="log-task">[${escapeHtml(entry.task)}]</span>` : ''}</span>
             </div>
         `;
     }).join('');
@@ -15486,463 +13114,81 @@ document.addEventListener('DOMContentLoaded', function() {
 async function loadOtaPage() {
     const pageCurrent = capturePageValidity();
     clearInterval(refreshInterval);
-    
+
     // 取消系统页面的订阅
-    
+
     const content = document.getElementById('page-content');
     content.innerHTML = `
-        <div class="page-ota">
-            <h1>${t('ota.firmwareUpgrade')}</h1>
+        <div class="page page-ota">
+          <div class="ota-col">
+            <h1 class="t-title">${t('ota.firmwareUpgrade')}</h1>
             
-            <!-- 核心信息区：版本 + OTA服务器 -->
-            <div class="ota-main-card">
-                <!-- 第一行：版本号（最醒目） -->
-                <div class="ota-current-version">
-                    <span class="version-label">${t('ota.currentVersion')}</span>
-                    <span class="version-number" id="ota-current-version">-</span>
+            <!-- 核心信息区：版本 + OTA 服务器 -->
+            <div class="card">
+                <div class="ota-ver">
+                    <span class="t-label">${t('ota.currentVersion')}</span>
+                    <span class="t-value ota-vnum" id="ota-current-version">-</span>
                 </div>
-                <div class="version-meta" id="ota-version-meta">${t('common.loading')}</div>
-                
-                <!-- 第二行：OTA服务器 -->
-                <div class="ota-server-row">
-                    <label class="server-label">${t('ota.serverUrl')}</label>
-                    <div class="server-input-group">
-                        <input type="text" id="ota-server-input" class="form-input" 
-                               placeholder="http://192.168.1.100:57807">
-                        <button class="btn btn-icon btn-gray" onclick="saveOtaServer()" title="${t('ota.saveToDevice')}">${t('ota.saveServer')}</button>
-                        <button class="btn btn-service-style" onclick="checkForUpdates()">${t('ota.checkUpdate')}</button>
-                    </div>
+                <div class="t-note" style="margin-top:4px" id="ota-version-meta">${t('common.loading')}</div>
+                <hr class="sep" style="margin:16px 0">
+                <div class="ota-server">
+                    <span class="t-label">${t('ota.serverUrl')}</span>
+                    <input type="text" id="ota-server-input" class="field" style="flex:1" placeholder="http://192.168.1.100:57807" aria-label="${t('ota.serverUrl')}">
+                    <button class="btn" onclick="saveOtaServer()" title="${t('ota.saveToDevice')}">${t('ota.saveServer')}</button>
+                    <button class="btn primary" onclick="checkForUpdates()">${t('ota.checkUpdate')}</button>
                 </div>
-                
                 <!-- 更新状态区（动态显示） -->
                 <div id="ota-update-status" class="ota-update-status" style="display:none"></div>
-                
-                <!-- 升级进度区（动态显示） -->
-                <div id="ota-progress-section" class="ota-progress-section" style="display:none">
-                    <div class="progress-header">
-                        <span class="progress-state" id="ota-state-text">${t('ota.preparing')}</span>
-                        <span class="progress-percent" id="ota-progress-percent">0%</span>
-                    </div>
-                    <div class="progress-bar-container">
-                        <div class="progress-bar-fill" id="ota-progress-bar" style="width:0%"></div>
-                    </div>
-                    <div class="progress-footer">
-                        <span id="ota-progress-size">0 / 0</span>
-                        <span id="ota-message"></span>
-                    </div>
-                    <div class="progress-actions">
-                        <button class="btn btn-danger btn-small" id="ota-abort-btn" onclick="abortOta()">${t('ota.abort')}</button>
-                    </div>
-                </div>
             </div>
             
-            <!-- 分区管理（放在升级方式之前，让用户先了解当前状态） -->
-            <details class="ota-section" open>
-                <summary>${t('ota.partitionManage')}</summary>
+            <!-- 分区管理 -->
+            <details class="card ota-section" style="padding:0" open>
+                <summary class="dis">${t('ota.partitionManage')}</summary>
                 <div class="ota-partitions" id="ota-partitions">
-                    <div class="loading">${t('common.loading')}</div>
+                    <div class="t-note">${t('common.loading')}</div>
                 </div>
             </details>
             
-            <!-- 手动升级（可折叠） -->
-            <details class="ota-section">
-                <summary>${t('ota.manualUpgrade')}</summary>
-                <div class="ota-methods">
-                    <div class="ota-method">
-                        <h4>${t('ota.fromUrl')}</h4>
-                        <div class="method-content">
-                            <input type="text" id="ota-url-input" class="form-input" 
-                                   placeholder="http://example.com/firmware.bin">
-                            <div class="method-options">
-                                <label><input type="checkbox" id="ota-url-include-www" checked> ${t('ota.includeWebUI')}</label>
-                                <label><input type="checkbox" id="ota-url-skip-verify"> ${t('ota.skipVerify')}</label>
-                            </div>
-                            <button class="btn btn-service-style btn-small" onclick="otaFromUrl()">${t('ota.upgrade')}</button>
+            <!-- 手动升级 -->
+            <details class="card ota-section" style="padding:0" id="ota-manual">
+                <summary class="dis">${t('ota.manualUpgrade')}</summary>
+                <div class="ota-manual-body">
+                    <div class="fl">
+                        <label>${t('ota.fromUrl')}</label>
+                        <div class="acts">
+                            <input type="text" id="ota-url-input" class="field" style="flex:1" placeholder="http://example.com/firmware.bin" aria-label="${t('ota.fromUrl')}">
+                            <button class="btn primary" onclick="otaFromUrl()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('ota.upgrade')}</button>
+                        </div>
+                        <div class="ota-opts">
+                            <label><input type="checkbox" id="ota-url-include-www" checked>${t('ota.includeWww')}</label>
+                            <label><input type="checkbox" id="ota-url-skip-verify">${t('ota.skipCertVerify')}</label>
                         </div>
                     </div>
-                    <div class="ota-method">
-                        <h4>${t('ota.fromSd')}</h4>
-                        <div class="method-content">
-                            <input type="text" id="ota-file-input" class="form-input" 
-                                   placeholder="/sdcard/firmware.bin">
-                            <div class="method-options">
-                                <label><input type="checkbox" id="ota-file-include-www" checked> ${t('ota.includeWebUI')}</label>
-                            </div>
-                            <button class="btn btn-service-style btn-small" onclick="otaFromFile()">${t('ota.upgrade')}</button>
+                    <hr class="sep">
+                    <div class="fl">
+                        <label>${t('ota.fromFile')}</label>
+                        <div class="acts">
+                            <input type="text" id="ota-file-input" class="field" style="flex:1" placeholder="/sdcard/firmware.bin" aria-label="${t('ota.fromFile')}">
+                            <button class="btn primary" onclick="otaFromFile()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('ota.upgrade')}</button>
                         </div>
+                        <div class="ota-opts">
+                            <label><input type="checkbox" id="ota-file-include-www" checked>${t('ota.includeWww')}</label>
+                        </div>
+                    </div>
+                    <!-- 升级进度区（动态显示） -->
+                    <div id="ota-progress-section" style="display:none">
+                        <hr class="sep" style="margin-bottom:12px">
+                        <div class="ota-prog">
+                            <div class="bar" style="flex:1"><i id="ota-progress-bar" style="width:0%"></i></div>
+                            <span class="t-value num" id="ota-progress-percent">0%</span>
+                            <button class="btn sm dg" id="ota-abort-btn" onclick="abortOta()"><svg class="i"><use href="#ri-stop-line"/></svg>${t('ota.abort')}</button>
+                        </div>
+                        <div class="t-note ota-prog-note"><span id="ota-state-text">${t('ota.preparing')}</span> · <span id="ota-progress-size">0 / 0</span> <span id="ota-message"></span></div>
                     </div>
                 </div>
             </details>
+          </div>
         </div>
-        
-        <style>
-        .page-ota {
-            padding: 15px;
-            max-width: 700px;
-            margin: 0 auto;
-        }
-        
-        .page-ota h1 {
-            margin: 0 0 15px 0;
-            font-size: 1.4em;
-        }
-        
-        /* 主卡片 */
-        .ota-main-card {
-            background: var(--bg-card);
-            border-radius: var(--radius-lg);
-            padding: 20px;
-            box-shadow: var(--shadow);
-            margin-bottom: 15px;
-        }
-        
-        /* 版本显示 */
-        .ota-current-version {
-            display: flex;
-            align-items: baseline;
-            gap: 12px;
-            margin-bottom: 4px;
-        }
-        
-        .version-label {
-            font-size: 0.9em;
-            color: var(--text-secondary);
-        }
-        
-        .version-number {
-            font-size: 1em;
-            font-weight: 700;
-            color: var(--text-primary);
-            font-family: 'SF Mono', 'Courier New', monospace;
-            letter-spacing: -0.5px;
-        }
-        
-        .version-meta {
-            font-size: 0.85em;
-            color: var(--text-muted);
-            margin-bottom: 16px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--border);
-        }
-        
-        /* OTA 服务器行 */
-        .ota-server-row {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        
-        .server-label {
-            font-size: 0.9em;
-            color: var(--text-secondary);
-            white-space: nowrap;
-        }
-        
-        .server-input-group {
-            flex: 1;
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        
-        .server-input-group .form-input {
-            flex: 1;
-            padding: 10px 12px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            font-size: 0.95em;
-            min-width: 0;
-        }
-        
-        .server-input-group .form-input:focus {
-            outline: none;
-            border-color: var(--blue-500);
-        }
-        
-        .server-input-group .btn,
-        .server-input-group .btn-icon {
-            min-height: 40px;
-            padding: 10px 14px;
-            box-sizing: border-box;
-            font-size: 0.95em;
-            line-height: 1.2;
-            border-radius: var(--radius-sm);
-        }
-        
-        .server-input-group .btn-icon {
-            border: 1px solid var(--border);
-            background: var(--bg-muted);
-            cursor: pointer;
-        }
-        
-        .server-input-group .btn-icon:hover {
-            background: var(--border-hover);
-        }
-        
-        /* 更新状态 */
-        .ota-update-status {
-            margin-top: 15px;
-            padding: 15px;
-            border-radius: var(--radius);
-            animation: fadeIn 0.3s ease;
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .ota-update-status.has-update {
-            background: var(--emerald-50);
-            border: 1px solid var(--emerald-500);
-        }
-        
-        .ota-update-status.no-update {
-            background: var(--blue-50);
-            border: 1px solid var(--blue-500);
-        }
-        
-        .ota-update-status.downgrade {
-            background: var(--amber-50);
-            border: 1px solid var(--amber-500);
-        }
-        
-        .ota-update-status.error {
-            background: var(--rose-50);
-            border: 1px solid transparent;
-        }
-        
-        /* 进度区 */
-        .ota-progress-section {
-            margin-top: 15px;
-            padding: 15px;
-            background: var(--bg-muted);
-            border-radius: var(--radius);
-        }
-        
-        .progress-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        
-        .progress-state {
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-        
-        .progress-percent {
-            font-weight: 700;
-            font-size: 1.2em;
-            color: var(--emerald-500);
-        }
-        
-        .progress-bar-container {
-            height: 8px;
-            background: var(--border);
-            border-radius: var(--radius-sm);
-            overflow: hidden;
-        }
-        
-        .progress-bar-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--emerald-500), var(--emerald-600));
-            transition: width 0.3s ease;
-        }
-        
-        .progress-footer {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.85em;
-            color: var(--text-secondary);
-            margin-top: 8px;
-        }
-        
-        .progress-actions {
-            margin-top: 10px;
-            text-align: right;
-        }
-        
-        /* 可折叠区 */
-        .ota-section {
-            background: var(--bg-card);
-            border-radius: var(--radius);
-            margin-bottom: 10px;
-            box-shadow: var(--shadow-sm);
-        }
-        
-        .ota-section summary {
-            padding: 12px 15px;
-            cursor: pointer;
-            font-weight: 600;
-            color: var(--text-primary);
-            user-select: none;
-        }
-        
-        .ota-section summary:hover {
-            background: var(--bg-muted);
-        }
-        
-        .ota-section[open] summary {
-            border-bottom: 1px solid var(--border);
-        }
-        
-        /* 升级方式 */
-        .ota-methods {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 15px;
-            padding: 15px;
-        }
-        
-        .ota-method {
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 15px;
-        }
-        
-        .ota-method h4 {
-            margin: 0 0 10px 0;
-            font-size: 1em;
-            color: var(--text-secondary);
-        }
-        
-        .method-content {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        
-        .method-content .form-input {
-            padding: 8px 10px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-            font-size: 0.9em;
-        }
-        
-        .method-options {
-            display: flex;
-            gap: 15px;
-            font-size: 0.85em;
-            color: var(--text-secondary);
-        }
-        
-        .method-options label {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            cursor: pointer;
-        }
-        
-        /* 分区管理 - 合并后的样式 */
-        .ota-partitions {
-            padding: 15px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 12px;
-        }
-        
-        .partition-card {
-            border: 2px solid var(--border);
-            border-radius: var(--radius);
-            padding: 15px;
-            background: var(--bg-muted);
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .partition-card.running {
-            border-color: var(--emerald-500);
-            background: var(--emerald-50);
-        }
-        
-        .partition-card.bootable {
-            border-color: var(--amber-500);
-            background: var(--amber-50);
-        }
-        
-        .partition-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        
-        .partition-name {
-            font-weight: 600;
-            font-family: monospace;
-            font-size: 1.1em;
-        }
-        
-        .partition-badge {
-            font-size: 0.75em;
-            padding: 3px 10px;
-            border-radius: var(--radius-full);
-            color: white;
-            font-weight: 500;
-        }
-        
-        .partition-badge.running { background: var(--emerald-500); }
-        .partition-badge.bootable { background: var(--amber-500); }
-        .partition-badge.idle { background: var(--text-muted); }
-        
-        .partition-version {
-            font-size: 1em;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 4px;
-        }
-        
-        .partition-info {
-            font-size: 0.85em;
-            color: var(--text-secondary);
-            margin-bottom: 12px;
-        }
-        
-        .partition-action {
-            margin-top: auto;
-            padding-top: 10px;
-            border-top: 1px solid var(--border);
-        }
-        
-        .partition-action .btn {
-            width: 100%;
-            justify-content: center;
-        }
-        
-        .partition-action-desc {
-            font-size: 0.8em;
-            color: var(--text-muted);
-            margin-top: 6px;
-            text-align: center;
-        }
-        
-        /* 移动端适配 */
-        @media (max-width: 600px) {
-            .ota-server-row {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .server-label {
-                margin-bottom: 5px;
-            }
-            
-            .server-input-group {
-                flex-wrap: wrap;
-            }
-            
-            .server-input-group .form-input {
-                width: 100%;
-                flex: none;
-            }
-            
-            .server-input-group .btn {
-                flex: 1;
-            }
-        }
-        </style>
     `;
     
     // 加载数据
@@ -15995,27 +13241,21 @@ function displayPartitionsCompact(data) {
     const container = document.getElementById('ota-partitions');
     let html = '';
     
+    const addr = p => '0x' + p.address.toString(16).toUpperCase().padStart(8, '0');
+    const tile = (p, stateHtml, version, action, desc) => `
+        <div class="w-tile partition-card">
+            <div class="between"><span class="mono" style="font-weight:600">${p.label}</span>${stateHtml}</div>
+            <div class="t-body" style="font-weight:500">${version}</div>
+            <div class="t-note num">${addr(p)} · ${formatSize(p.size)}</div>
+            ${action}
+            <div class="t-note" style="text-align:center">${desc}</div>
+        </div>`;
+
     // 运行中的分区
     if (data.running) {
         const p = data.running;
-        html += `
-            <div class="partition-card running">
-                <div class="partition-header">
-                    <span class="partition-name">${p.label}</span>
-                    <span class="partition-badge running">${t('ota.partitionRunning')}</span>
-                </div>
-                <div class="partition-version">${p.version || '—'}</div>
-                <div class="partition-info">
-                    0x${p.address.toString(16).toUpperCase().padStart(8,'0')} · ${formatSize(p.size)}
-                </div>
-                <div class="partition-action">
-                    <button class="btn btn-success btn-small" onclick="validateOta()">
-                        ${t('ota.markValid')}
-                    </button>
-                    <div class="partition-action-desc">${t('ota.disableRollbackDesc')}</div>
-                </div>
-            </div>
-        `;
+        html += tile(p, `<span class="state ok">${t('ota.partitionRunning')}</span>`, p.version || '—',
+            `<button class="btn" style="width:100%" onclick="validateOta()">${t('ota.markValid')}</button>`, t('ota.disableRollbackDesc'));
     }
     
     // 备用分区
@@ -16023,35 +13263,13 @@ function displayPartitionsCompact(data) {
         const p = data.next;
         const hasVersion = p.is_bootable && p.version;
         const canRollback = data.can_rollback;  // 使用 API 返回的实际可回滚状态
-        html += `
-            <div class="partition-card ${p.is_bootable ? 'bootable' : ''}">
-                <div class="partition-header">
-                    <span class="partition-name">${p.label}</span>
-                    <span class="partition-badge ${p.is_bootable ? 'bootable' : 'idle'}">${p.is_bootable ? t('ota.partitionBootable') : t('ota.partitionIdle')}</span>
-                </div>
-                <div class="partition-version">${hasVersion ? p.version : (p.is_bootable ? t('otaPage.prevVersion') : t('otaPage.noFirmware'))}</div>
-                <div class="partition-info">
-                    0x${p.address.toString(16).toUpperCase().padStart(8,'0')} · ${formatSize(p.size)}
-                </div>
-                ${canRollback ? `
-                <div class="partition-action">
-                    <button class="btn btn-warning btn-small" onclick="confirmRollback()">
-                        ${t('ota.rollbackToThis')}
-                    </button>
-                    <div class="partition-action-desc">${t('ota.loadAfterReboot')}</div>
-                </div>
-                ` : `
-                <div class="partition-action">
-                    <div class="partition-action-desc" style="text-align:center;color:#999">
-                        ${p.is_bootable ? t('otaPage.cannotRollback') : t('otaPage.partitionEmpty')}
-                    </div>
-                </div>
-                `}
-            </div>
-        `;
+        html += tile(p, `<span class="state${p.is_bootable ? ' warn' : ''}">${p.is_bootable ? t('ota.partitionBootable') : t('ota.partitionIdle')}</span>`,
+            hasVersion ? p.version : (p.is_bootable ? t('otaPage.prevVersion') : t('otaPage.noFirmware')),
+            canRollback ? `<button class="btn dg" style="width:100%" onclick="confirmRollback()">${t('ota.rollbackToThis')}</button>` : '',
+            canRollback ? t('ota.loadAfterReboot') : (p.is_bootable ? t('otaPage.cannotRollback') : t('otaPage.partitionEmpty')));
     }
     
-    container.innerHTML = html || '<p style="color:#9ca3af;padding:10px">' + (typeof t === 'function' ? t('otaPage.noPartitionInfo') : '无分区信息') + '</p>';
+    container.innerHTML = html || '<p class="t-note">' + t('otaPage.noPartitionInfo') + '</p>';
 }
 
 async function refreshOtaInfo() {
@@ -16177,7 +13395,7 @@ async function refreshOtaProgress() {
             stateEl.textContent = stepText + (stateMap[state] || state);
             
             if (state !== 'idle') {
-                progressSection.style.display = 'block';
+                progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
                 
                 // 更新进度条
                 document.getElementById('ota-progress-bar').style.width = percent + '%';
@@ -16190,7 +13408,7 @@ async function refreshOtaProgress() {
                 
                 // 显示中止按钮（除非已完成或出错）
                 if (state !== 'pending_reboot' && state !== 'completed' && state !== 'error') {
-                    abortBtn.style.display = 'inline-block';
+                    abortBtn.style.display = '';
                 } else {
                     abortBtn.style.display = 'none';
                 }
@@ -16432,13 +13650,13 @@ async function otaFromUrl() {
     
     // 立即显示进度区域，提供即时反馈
     const progressSection = document.getElementById('ota-progress-section');
-    progressSection.style.display = 'block';
+    progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
     document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.step1Connecting') : '[1/2] 正在连接服务器...';
     document.getElementById('ota-progress-bar').style.width = '0%';
     document.getElementById('ota-progress-percent').textContent = '0%';
     document.getElementById('ota-progress-size').textContent = typeof t === 'function' ? t('otaPage.preparing') : '准备中...';
     document.getElementById('ota-message').textContent = url;
-    document.getElementById('ota-abort-btn').style.display = 'inline-block';
+    document.getElementById('ota-abort-btn').style.display = '';
     
     try {
         showToast(typeof t === 'function' ? t('toast.twoStepUpgrade') : '开始两步升级：固件 + WebUI', 'info');
@@ -16498,14 +13716,14 @@ async function otaFromFile() {
     
     // 立即显示进度区域
     const progressSection = document.getElementById('ota-progress-section');
-    progressSection.style.display = 'block';
+    progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
     const stepText = includeWww ? '[1/2] ' : '';
     document.getElementById('ota-state-text').textContent = stepText + (typeof t === 'function' ? t('otaPage.readingFile') : '正在读取文件...');
     document.getElementById('ota-progress-bar').style.width = '0%';
     document.getElementById('ota-progress-percent').textContent = '0%';
     document.getElementById('ota-progress-size').textContent = typeof t === 'function' ? t('otaPage.preparing') : '准备中...';
     document.getElementById('ota-message').textContent = paths.firmware;
-    document.getElementById('ota-abort-btn').style.display = 'inline-block';
+    document.getElementById('ota-abort-btn').style.display = '';
     
     try {
         showToast(typeof t === 'function' ? t('toast.startingFileUpgrade') : '开始从文件升级固件...', 'info');
@@ -16534,7 +13752,7 @@ async function otaFromFile() {
 }
 
 async function validateOta() {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmMarkFirmwareValid') : '确认将当前固件标记为有效？\n这将取消自动回滚保护。')) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmMarkFirmwareValid') : '确认将当前固件标记为有效？\n这将取消自动回滚保护。', { primary: t('ota.markValid'), tone: 'neutral' })) {
         return;
     }
     
@@ -16552,8 +13770,8 @@ async function validateOta() {
     }
 }
 
-function confirmRollback() {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmRollback') : '确认回滚到上一版本固件？\n\n系统将立即重启并加载上一个分区的固件。\n请确保上一版本固件可用！')) {
+async function confirmRollback() {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRollback') : '确认回滚到上一版本固件？\n\n系统将立即重启并加载上一个分区的固件。\n请确保上一版本固件可用！', { primary: t('ui.rollbackReboot'), tone: 'danger' })) {
         return;
     }
     
@@ -16577,7 +13795,7 @@ async function rollbackOta() {
 }
 
 async function abortOta() {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmAbortUpgrade') : '确认中止当前升级？')) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmAbortUpgrade') : '确认中止当前升级？', { primary: t('ui.abortUpgrade'), tone: 'neutral' })) {
         return;
     }
     
@@ -16734,7 +13952,7 @@ async function checkForUpdates() {
     const statusDiv = document.getElementById('ota-update-status');
     statusDiv.style.display = 'block';
     statusDiv.className = 'ota-update-status';
-    statusDiv.innerHTML = ("<p><i class=\"ri-search-line\"></i> " + t('otaPage.checking') + "</p>");
+    statusDiv.innerHTML = '<span class="t-label">' + t('otaPage.checking') + '</span>';
     
     try {
         // 尝试通过设备测试连接（如果 API 存在）
@@ -16802,53 +14020,40 @@ async function checkForUpdates() {
             const localParts = parseVersion(localVersion);
             const serverParts = parseVersion(serverVersion);
             if (serverParts.major > localParts.major) {
-                updateType = '<span style="color:#f43f5e;font-weight:bold">' + (typeof t === 'function' ? t('otaPage.majorUpdate') : '主版本更新') + '</span>';
+                updateType = '<span class="state warn">' + t('otaPage.majorUpdate') + '</span>';
             } else if (serverParts.minor > localParts.minor) {
-                updateType = '<span style="color:#f39c12;font-weight:bold">' + (typeof t === 'function' ? t('otaPage.featureUpdate') : '功能更新') + '</span>';
+                updateType = '<span class="state warn">' + t('otaPage.featureUpdate') + '</span>';
             } else {
-                updateType = '<span style="color:#059669;font-weight:bold">' + (typeof t === 'function' ? t('otaPage.patchUpdate') : '补丁更新') + '</span>';
+                updateType = '<span class="state ok">' + t('otaPage.patchUpdate') + '</span>';
             }
         }
         
         if (hasUpdate) {
             statusDiv.className = 'ota-update-status has-update';
             statusDiv.innerHTML = `
-                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+                <div class="between wrap">
                     <div>
-                        <span style="font-weight:600">${typeof t === 'function' ? t('otaPage.newVersionFound') : '发现新版本'}</span>
-                        ${updateType ? ` · ${updateType}` : ''}
-                        <div style="margin-top:5px;font-size:0.9em;color:#6b7280">
-                            <code>${localVersion}</code> → <code style="color:#059669;font-weight:bold">${serverVersion}</code>
-                            <span style="margin-left:10px">${formatSize(serverSize)}</span>
-                        </div>
+                        <div class="acts"><span class="t-value">${t('otaPage.newVersionFound')}</span>${updateType}</div>
+                        <div class="t-note num" style="margin-top:2px"><span class="mono">${localVersion}</span> → <span class="mono">${serverVersion}</span> · ${formatSize(serverSize)}</div>
                     </div>
-                    <button class="btn btn-success btn-small" onclick="upgradeFromServer()">
-                        ${t('otaPage.upgradeNow')}
-                    </button>
+                    <button class="btn sm primary" onclick="upgradeFromServer()">${t('otaPage.upgradeNow')}</button>
                 </div>
             `;
         } else if (versionComparison < 0) {
             statusDiv.className = 'ota-update-status downgrade';
             statusDiv.innerHTML = `
-                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+                <div class="between wrap">
                     <div>
-                        <span style="font-weight:600">${typeof t === 'function' ? t('otaPage.serverVersionOlder') : '服务器版本较旧'}</span>
-                        <div style="margin-top:5px;font-size:0.9em;color:#6b7280">
-                            <code>${localVersion}</code> → <code style="color:#ff9800">${serverVersion}</code>
-                        </div>
+                        <div class="t-value">${t('otaPage.serverVersionOlder')}</div>
+                        <div class="t-note num" style="margin-top:2px"><span class="mono">${localVersion}</span> → <span class="mono">${serverVersion}</span></div>
                     </div>
-                    <button class="btn btn-warning btn-small" onclick="upgradeFromServer()">
-                        ${t('otaPage.downgrade')}
-                    </button>
+                    <button class="btn sm dg" onclick="upgradeFromServer()">${t('otaPage.downgrade')}</button>
                 </div>
             `;
         } else {
             statusDiv.className = 'ota-update-status no-update';
             statusDiv.innerHTML = `
-                <div style="display:flex;align-items:center;gap:10px">
-                    <span style="font-weight:600">${typeof t === 'function' ? t('otaPage.alreadyLatest') : '已是最新版本'}</span>
-                    <code style="color:#2196f3">${localVersion}</code>
-                </div>
+                <div class="acts"><span class="state ok">${t('otaPage.alreadyLatest')}</span><span class="t-note mono">${localVersion}</span></div>
             `;
         }
         
@@ -16857,8 +14062,8 @@ async function checkForUpdates() {
         statusDiv.className = 'ota-update-status error';
         statusDiv.innerHTML = `
             <div>
-                <span style="font-weight:600">${typeof t === 'function' ? t('otaPage.checkUpdateFailed') : '检查更新失败'}</span>
-                <div style="margin-top:5px;font-size:0.9em;color:#6b7280">${escapeHtml(error.message)}</div>
+                <div class="state bad">${t('otaPage.checkUpdateFailed')}</div>
+                <div class="t-note" style="margin-top:2px">${escapeHtml(error.message)}</div>
             </div>
         `;
     }
@@ -16873,7 +14078,7 @@ async function upgradeFromServer() {
     
     // 立即显示进度区域，给用户即时反馈
     const progressSection = document.getElementById('ota-progress-section');
-    progressSection.style.display = 'block';
+    progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
     document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('ui.preparingUpgrade') : 'Preparing upgrade...';
     document.getElementById('ota-progress-bar').style.width = '0%';
     document.getElementById('ota-progress-percent').textContent = '';
@@ -17186,24 +14391,18 @@ function renderTaskRows(tasks, formatBytes) {
         const alloc = task.stack_alloc || 0;
         const used = task.stack_used || 0;
         const usagePct = task.stack_usage_pct || 0;
-        const hwmColor = hwm < 256 ? '#e11d48' : hwm < 512 ? '#d97706' : '#059669';
-        const usageColor = usagePct >= 90 ? '#e11d48' : usagePct >= 75 ? '#d97706' : '#059669';
-        const stateIcon = {
-            'Running': '<i class="ri-checkbox-blank-circle-fill" style="color:#059669"></i>',
-            'Ready': '<i class="ri-checkbox-blank-circle-fill" style="color:#3b82f6"></i>', 
-            'Blocked': '<i class="ri-checkbox-blank-circle-fill" style="color:#d97706"></i>',
-            'Suspended': '<i class="ri-checkbox-blank-circle-fill" style="color:#6b7280"></i>',
-            'Deleted': '<i class="ri-checkbox-blank-circle-fill" style="color:#e11d48"></i>'
-        }[task.state] || '<i class="ri-checkbox-blank-circle-fill" style="color:#6b7280"></i>';
+        const hwmState = hwm < 256 ? 'bad' : hwm < 512 ? 'warn' : '';
+        const usageState = usagePct >= 90 ? 'bad' : usagePct >= 75 ? 'warn' : '';
+        const stateCls = { 'Running': 'ok', 'Blocked': 'warn', 'Deleted': 'bad' }[task.state] || '';
         return `
         <tr>
-            <td><code>${task.name}</code></td>
+            <td class="mono">${task.name}</td>
             <td>${alloc ? formatBytes(alloc) : '-'}</td>
             <td>${used ? formatBytes(used) : '-'}</td>
-            <td style="color:${hwmColor};font-weight:bold">${formatBytes(hwm)}</td>
-            <td><span style="color:${usageColor}">${usagePct}%</span></td>
+            <td><span class="state ${hwmState}" style="font-size:inherit;font-weight:500">${formatBytes(hwm)}</span></td>
+            <td><span class="state ${usageState}" style="font-size:inherit">${usagePct}%</span></td>
             <td>${task.priority}</td>
-            <td>${stateIcon} ${userStateLabel(task.state)}</td>
+            <td><span class="state ${stateCls}" style="font-size:inherit">${userStateLabel(task.state)}</span></td>
             ${task.cpu_percent !== undefined ? `<td>${task.cpu_percent}%</td>` : ''}
         </tr>
         `;
@@ -17287,6 +14486,9 @@ function initTaskTableSort() {
  */
 async function showMemoryDetailModal() {
     const modal = document.getElementById('memory-detail-modal');
+    modal.innerHTML = sheet(720, t('system.memoryDetailTitle'), `<div id="memory-detail-body"></div>`,
+        `<span id="memory-detail-timestamp" class="t-note num" style="margin-right:auto">-</span><button class="btn lg" onclick="hideMemoryDetailModal()">${t('common.close')}</button><button class="btn lg primary" onclick="refreshMemoryDetail()"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.refresh')}</button>`,
+        'hideMemoryDetailModal()', 'mem hl');
     modal.classList.remove('hidden');
     await refreshMemoryDetail();
 }
@@ -17306,12 +14508,12 @@ async function refreshMemoryDetail() {
     const body = document.getElementById('memory-detail-body');
     const timestamp = document.getElementById('memory-detail-timestamp');
     
-    body.innerHTML = '<div class="loading">' + t('common.loading') + '</div>';
+    body.innerHTML = '<div class="t-note" style="text-align:center;padding:20px">' + t('common.loading') + '</div>';
     
     try {
         const result = await api.getMemoryDetail();
         if (result.code !== 0 || !result.data) {
-            throw new Error(result.message || (typeof t === 'function' ? t('memoryPage.getDataFailed') : '获取数据失败'));
+            throw new Error(result.message || t('memoryPage.getDataFailed'));
         }
         
         const data = result.data;
@@ -17331,323 +14533,90 @@ async function refreshMemoryDetail() {
             if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
             return bytes + ' B';
         };
-        
-        // 获取进度条颜色
-        const getProgressColor = (percent) => {
-            if (percent >= 85) return '#e11d48';
-            if (percent >= 70) return '#d97706';
-            return '#059669';
+        // 占用率：≥85 警告（琥珀），≥95 故障（红），其余中性
+        // 概览里的数字：KB 取整、MB 一位小数
+        const sumBytes = bytes => bytes >= 1024 * 1024 ? (bytes / 1024 / 1024).toFixed(1) + ' MB' : bytes >= 1024 ? Math.round(bytes / 1024) + ' KB' : bytes + ' B';
+        const usedState = pct => pct >= 95 ? 'bad' : pct >= 85 ? 'warn' : '';
+        const usedColor = pct => pct >= 95 ? 'var(--bad-dot)' : pct >= 85 ? 'var(--warn-dot)' : 'var(--accent)';
+        const gauge = (name, m) => {
+            const pct = m.used_percent || 0;
+            const total = sumBytes(m.total || 0);
+            let used = sumBytes(m.used || 0);
+            if (used.split(' ')[1] === total.split(' ')[1]) used = used.split(' ')[0];
+            return `<div>
+                <div class="between" style="align-items:baseline"><span class="t-label">${name}</span><span class="state ${usedState(pct)}">${pct}% ${t('memoryPage.used')}</span></div>
+                <div style="display:flex;align-items:baseline;gap:6px;margin:6px 0 10px"><span class="t-big">${used}</span><span class="t-unit">/ ${total}</span></div>
+                <div class="bar"><i style="width:${Math.min(100, pct)}%;background:${usedColor(pct)}"></i></div>
+            </div>`;
         };
-        
-        const getFragColor = (frag) => {
-            if (frag >= 60) return '#e11d48';
-            if (frag >= 40) return '#d97706';
-            return '#059669';
-        };
+        // 表格：表头 + 行（第一列加粗）
+        const grid = (cols, head, rows) => `<div class="mgrid t-note" style="grid-template-columns:${cols}">${head.map(h => `<span>${h}</span>`).join('')}</div>` +
+            rows.map(r => `<div class="mgrid t-body num" style="grid-template-columns:${cols}">${r.map((c, i) => `<span${i === 0 ? ' style="font-weight:500"' : ''}>${c}</span>`).join('')}</div>`).join('');
+        const sect = (title, inner, note = '') => `<div style="margin-top:24px"><div class="t-section" style="margin-bottom:8px">${title}${note}</div>${inner}</div>`;
+        const kvs = items => `<div class="kv-grid k2">${items.map(([k, v, d]) => kvRow(k + (d ? ` <span class="t-note">${d}</span>` : ''), v)).join('')}</div>`;
         
         let tipsHtml = '';
         if (tips.length > 0) {
-            // Translate tip codes
-            const translateTip = (code) => {
-                const tipMap = {
-                    'dram_fragmented': typeof t === 'function' ? t('memoryPage.dramFragmented') : 'DRAM severely fragmented, recommend system restart',
-                    'psram_sufficient': typeof t === 'function' ? t('memoryPage.psramSufficient') : 'PSRAM space sufficient, available for large buffers',
-                    'dram_low': typeof t === 'function' ? t('memoryPage.dramLow') : 'DRAM running low, consider freeing memory',
-                    'psram_low': typeof t === 'function' ? t('memoryPage.psramLow') : 'PSRAM running low'
-                };
-                return tipMap[code] || code;
+            const tipMap = {
+                'dram_fragmented': t('memoryPage.dramFragmented'),
+                'psram_sufficient': t('memoryPage.psramSufficient'),
+                'dram_low': t('memoryPage.dramLow'),
+                'psram_low': t('memoryPage.psramLow')
             };
-            tipsHtml = `
-                <div class="memory-tips">
-                    <h4>${typeof t === 'function' ? t('memoryPage.optimizationTips') : 'Optimization Tips'}</h4>
-                    ${tips.map(tip => {
-                        const [level, msg] = tip.split(':');
-                        const translatedMsg = translateTip(msg);
-                        const iconColor = level === 'critical' ? '#ef4444' : level === 'warning' ? '#f59e0b' : '#3b82f6';
-                        const icon = `<i class="ri-checkbox-blank-circle-fill" style="color:${iconColor}"></i>`;
-                        const bgColor = level === 'critical' ? 'rgba(244,63,94,0.06)' : level === 'warning' ? 'rgba(245,158,11,0.06)' : 'rgba(59,130,246,0.06)';
-                        return `<div class="memory-tip" style="background:${bgColor}">${icon} ${translatedMsg}</div>`;
-                    }).join('')}
-                </div>
-            `;
+            tipsHtml = sect(t('memoryPage.optimizationTips'), tips.map(tip => {
+                const [level, msg] = tip.split(':');
+                return `<div class="tr" style="--cols:1fr;min-height:36px;padding:0"><span class="state ${level === 'critical' ? 'bad' : level === 'warning' ? 'warn' : ''}">${tipMap[msg] || msg}</span></div>`;
+            }).join(''));
         }
         
+        const heapRows = [['DRAM', formatBytes(dram.largest_block || 0), `${(dram.fragmentation || 0).toFixed(1)}%`, dram.alloc_blocks || '-', dram.free_blocks || '-', formatBytes(dram.min_free_ever || 0)]];
+        if (psram.total) heapRows.push(['PSRAM', formatBytes(psram.largest_block || 0), `${(psram.fragmentation || 0).toFixed(1)}%`, psram.alloc_blocks || '-', psram.free_blocks || '-', formatBytes(psram.min_free_ever || 0)]);
+        if (dma.total) heapRows.push(['DMA', formatBytes(dma.largest_block || 0), '-', '-', '-', '-']);
+
+        const capRows = [
+            [t('memoryPage.cap8bit'), formatBytes(caps.d8_free || 0), formatBytes(caps.d8_total || 0), t('memoryPage.cap8bitDesc')],
+            [t('memoryPage.cap32bit'), formatBytes(caps.d32_free || 0), formatBytes(caps.d32_total || 0), t('memoryPage.cap32bitDesc')],
+            [t('memoryPage.capDefault'), formatBytes(caps.default_free || 0), formatBytes(caps.default_total || 0), t('memoryPage.capDefaultDesc')]
+        ];
+        if (dma.total) capRows.push([t('memoryPage.capDma'), formatBytes(dma.free || 0), formatBytes(dma.total || 0), t('memoryPage.capDmaDesc')]);
+
         body.innerHTML = `
-            <!-- 概览卡片 -->
-            <div class="memory-overview">
-                <div class="memory-gauge dram">
-                    <div class="gauge-ring">
-                        <svg viewBox="0 0 100 100">
-                            <circle cx="50" cy="50" r="45" fill="none" stroke="#e0e0e0" stroke-width="8"/>
-                            <circle cx="50" cy="50" r="45" fill="none" stroke="${getProgressColor(dram.used_percent || 0)}" stroke-width="8"
-                                stroke-dasharray="${(dram.used_percent || 0) * 2.83} 283" stroke-linecap="round"
-                                transform="rotate(-90 50 50)"/>
-                        </svg>
-                        <div class="gauge-text">
-                            <span class="gauge-percent">${dram.used_percent || 0}%</span>
-                            <span class="gauge-label">DRAM</span>
-                        </div>
-                    </div>
-                    <div class="gauge-info">
-                        <div class="info-row">
-                            <span>${typeof t === 'function' ? t('memoryPage.total') : '总计'}</span>
-                            <strong>${formatBytes(dram.total || 0)}</strong>
-                        </div>
-                        <div class="info-row">
-                            <span>${typeof t === 'function' ? t('memoryPage.used') : '已用'}</span>
-                            <strong style="color:${getProgressColor(dram.used_percent || 0)}">${formatBytes(dram.used || 0)}</strong>
-                        </div>
-                        <div class="info-row">
-                            <span>${typeof t === 'function' ? t('memoryPage.free') : '空闲'}</span>
-                            <strong style="color:#059669">${formatBytes(dram.free || 0)}</strong>
-                        </div>
-                    </div>
-                </div>
-                
-                ${psram.total ? `
-                <div class="memory-gauge psram">
-                    <div class="gauge-ring">
-                        <svg viewBox="0 0 100 100">
-                            <circle cx="50" cy="50" r="45" fill="none" stroke="#e0e0e0" stroke-width="8"/>
-                            <circle cx="50" cy="50" r="45" fill="none" stroke="${getProgressColor(psram.used_percent || 0)}" stroke-width="8"
-                                stroke-dasharray="${(psram.used_percent || 0) * 2.83} 283" stroke-linecap="round"
-                                transform="rotate(-90 50 50)"/>
-                        </svg>
-                        <div class="gauge-text">
-                            <span class="gauge-percent">${psram.used_percent || 0}%</span>
-                            <span class="gauge-label">PSRAM</span>
-                        </div>
-                    </div>
-                    <div class="gauge-info">
-                        <div class="info-row">
-                            <span>${typeof t === 'function' ? t('memoryPage.total') : '总计'}</span>
-                            <strong>${formatBytes(psram.total || 0)}</strong>
-                        </div>
-                        <div class="info-row">
-                            <span>${typeof t === 'function' ? t('memoryPage.used') : '已用'}</span>
-                            <strong>${formatBytes(psram.used || 0)}</strong>
-                        </div>
-                        <div class="info-row">
-                            <span>${typeof t === 'function' ? t('memoryPage.free') : '空闲'}</span>
-                            <strong style="color:#059669">${formatBytes(psram.free || 0)}</strong>
-                        </div>
-                    </div>
-                </div>
-                ` : ''}
-            </div>
-            
-            <div class="memory-static-sections">
-                <h4>${typeof t === 'function' ? t('memoryPage.staticMemory') : '静态内存占用 (编译时固定)'}</h4>
-                <div class="static-grid">
-                    <div class="static-item">
-                        <span class="static-label">.data</span>
-                        <span class="static-value">${formatBytes(staticMem.data_size || 0)}</span>
-                        <span class="static-desc">${typeof t === 'function' ? t('memoryPage.dataDesc') : '初始化全局变量'}</span>
-                    </div>
-                    <div class="static-item">
-                        <span class="static-label">.bss</span>
-                        <span class="static-value">${formatBytes(staticMem.bss_size || 0)}</span>
-                        <span class="static-desc">${typeof t === 'function' ? t('memoryPage.bssDesc') : '未初始化全局变量'}</span>
-                    </div>
-                    <div class="static-item">
-                        <span class="static-label">.rodata</span>
-                        <span class="static-value">${formatBytes(staticMem.rodata_size || 0)}</span>
-                        <span class="static-desc">${typeof t === 'function' ? t('memoryPage.rodataDesc') : '只读数据 (Flash)'}</span>
-                    </div>
-                    <div class="static-item highlight">
-                        <span class="static-label">${typeof t === 'function' ? t('memoryPage.dramStaticTotal') : 'DRAM 静态总计'}</span>
-                        <span class="static-value">${formatBytes(staticMem.total_dram_static || 0)}</span>
-                        <span class="static-desc">${typeof t === 'function' ? t('memoryPage.staticDataBss') : '.data + .bss'}</span>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="memory-iram">
-                <h4>${typeof t === 'function' ? t('memoryPage.iramTitle') : 'IRAM (指令内存)'}</h4>
-                <div class="iram-grid">
-                    <div class="iram-item">
-                        <span class="iram-label">${typeof t === 'function' ? t('memoryPage.codeSection') : '代码段'}</span>
-                        <span class="iram-value">${formatBytes(iram.text_size || 0)}</span>
-                    </div>
-                    <div class="iram-item">
-                        <span class="iram-label">${typeof t === 'function' ? t('memoryPage.heapTotal') : '堆总计'}</span>
-                        <span class="iram-value">${formatBytes(iram.heap_total || 0)}</span>
-                    </div>
-                    <div class="iram-item">
-                        <span class="iram-label">${typeof t === 'function' ? t('memoryPage.heapFree') : '堆空闲'}</span>
-                        <span class="iram-value" style="color:#059669">${formatBytes(iram.heap_free || 0)}</span>
-                    </div>
-                </div>
-            </div>
-            
-            ${rtc.total_available ? `
-            <div class="memory-rtc">
-                <h4>${typeof t === 'function' ? t('memoryPage.rtcMemory') : 'RTC 内存 (深度睡眠保持)'}</h4>
-                <div class="rtc-bar">
-                    <div class="progress-bar" style="height:12px;background:#f0f0f0">
-                        <div class="progress" style="width:${(rtc.total_used / rtc.total_available * 100) || 0}%;background:#9b59b6"></div>
-                    </div>
-                    <div class="rtc-labels">
-                        <span>${typeof t === 'function' ? t('memoryPage.rtcUsed') : '已用'} ${formatBytes(rtc.total_used || 0)}</span>
-                        <span>${typeof t === 'function' ? t('memoryPage.rtcTotal') : '总计'} ${formatBytes(rtc.total_available)}</span>
-                    </div>
-                </div>
-            </div>
-            ` : ''}
-            
-            <div class="memory-details">
-                <h4>${typeof t === 'function' ? t('memoryPage.heapDetailStats') : '堆内存详细统计'}</h4>
-                <table class="memory-table">
-                    <thead>
-                        <tr>
-                            <th>${typeof t === 'function' ? t('memoryPage.typeCol') : '类型'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.largestBlock') : '最大块'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.fragmentation') : '碎片率'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.allocBlocks') : '分配块'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.freeBlocks') : '空闲块'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.minFreeEver') : '历史最低'}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td><strong>DRAM</strong></td>
-                            <td>${formatBytes(dram.largest_block || 0)}</td>
-                            <td><span style="color:${getFragColor(dram.fragmentation || 0)}">${(dram.fragmentation || 0).toFixed(1)}%</span></td>
-                            <td>${dram.alloc_blocks || '-'}</td>
-                            <td>${dram.free_blocks || '-'}</td>
-                            <td>${formatBytes(dram.min_free_ever || 0)}</td>
-                        </tr>
-                        ${psram.total ? `
-                        <tr>
-                            <td><strong>PSRAM</strong></td>
-                            <td>${formatBytes(psram.largest_block || 0)}</td>
-                            <td><span style="color:${getFragColor(psram.fragmentation || 0)}">${(psram.fragmentation || 0).toFixed(1)}%</span></td>
-                            <td>${psram.alloc_blocks || '-'}</td>
-                            <td>${psram.free_blocks || '-'}</td>
-                            <td>${formatBytes(psram.min_free_ever || 0)}</td>
-                        </tr>
-                        ` : ''}
-                        ${dma.total ? `
-                        <tr>
-                            <td><strong>DMA</strong></td>
-                            <td>${formatBytes(dma.largest_block || 0)}</td>
-                            <td>-</td>
-                            <td>-</td>
-                            <td>-</td>
-                            <td>-</td>
-                        </tr>
-                        ` : ''}
-                    </tbody>
-                </table>
-            </div>
-            
-            <div class="memory-caps">
-                <h4>${typeof t === 'function' ? t('memoryPage.memCapability') : '内存能力分布'}</h4>
-                <table class="memory-table">
-                    <thead>
-                        <tr>
-                            <th>${typeof t === 'function' ? t('memoryPage.capType') : '能力类型'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.free') : '空闲'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.total') : '总计'}</th>
-                            <th>${typeof t === 'function' ? t('memoryPage.capDesc') : '说明'}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td>${typeof t === 'function' ? t('memoryPage.cap8bit') : '8-bit 可访问'}</td>
-                            <td>${formatBytes(caps.d8_free || 0)}</td>
-                            <td>${formatBytes(caps.d8_total || 0)}</td>
-                            <td>${typeof t === 'function' ? t('memoryPage.cap8bitDesc') : 'char/byte 数组'}</td>
-                        </tr>
-                        <tr>
-                            <td>${typeof t === 'function' ? t('memoryPage.cap32bit') : '32-bit 可访问'}</td>
-                            <td>${formatBytes(caps.d32_free || 0)}</td>
-                            <td>${formatBytes(caps.d32_total || 0)}</td>
-                            <td>${typeof t === 'function' ? t('memoryPage.cap32bitDesc') : 'int/指针'}</td>
-                        </tr>
-                        <tr>
-                            <td>${typeof t === 'function' ? t('memoryPage.capDefault') : '默认 (malloc)'}</td>
-                            <td>${formatBytes(caps.default_free || 0)}</td>
-                            <td>${formatBytes(caps.default_total || 0)}</td>
-                            <td>${typeof t === 'function' ? t('memoryPage.capDefaultDesc') : '普通 malloc()'}</td>
-                        </tr>
-                        ${dma.total ? `
-                        <tr>
-                            <td>${typeof t === 'function' ? t('memoryPage.capDma') : 'DMA 可用'}</td>
-                            <td>${formatBytes(dma.free || 0)}</td>
-                            <td>${formatBytes(dma.total || 0)}</td>
-                            <td>${typeof t === 'function' ? t('memoryPage.capDmaDesc') : 'DMA 传输缓冲'}</td>
-                        </tr>
-                        ` : ''}
-                    </tbody>
-                </table>
-            </div>
-            
-            ${nvs.total_entries ? `
-            <div class="memory-nvs">
-                <h4>${typeof t === 'function' ? t('memoryPage.nvsStorage') : 'NVS 存储使用'}</h4>
-                <div class="nvs-bar">
-                    <div class="progress-bar" style="height:16px;background:#f0f0f0">
-                        <div class="progress" style="width:${nvs.used_percent || 0}%;background:${getProgressColor(nvs.used_percent || 0)}"></div>
-                    </div>
-                    <div class="nvs-stats">
-                        <span>${typeof t === 'function' ? t('memoryPage.usedEntries') : '已用条目'}: <strong>${nvs.used_entries}</strong></span>
-                        <span>${typeof t === 'function' ? t('memoryPage.freeEntries') : '空闲条目'}: <strong>${nvs.free_entries}</strong></span>
-                        <span>${typeof t === 'function' ? t('memoryPage.namespaceCount') : '命名空间'}: <strong>${nvs.namespace_count}</strong></span>
-                        <span>${typeof t === 'function' ? t('memoryPage.usagePercent') : '使用率'}: <strong>${nvs.used_percent}%</strong></span>
-                    </div>
-                </div>
-            </div>
-            ` : ''}
-            
-            <!-- 优化建议 -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">${gauge('DRAM', dram)}${psram.total ? gauge('PSRAM', psram) : ''}</div>
+            ${sect(t('memoryPage.heapShort'), grid('1.1fr repeat(5,1fr)', [t('memoryPage.typeCol'), t('memoryPage.largestBlock'), t('memoryPage.fragmentation'), t('memoryPage.allocBlocks'), t('memoryPage.freeBlocks'), t('memoryPage.minFreeEver')], heapRows))}
+            ${sect(t('memoryPage.staticMemory'), kvs([
+                ['.data', formatBytes(staticMem.data_size || 0), t('memoryPage.dataDesc')],
+                ['.bss', formatBytes(staticMem.bss_size || 0), t('memoryPage.bssDesc')],
+                ['.rodata', formatBytes(staticMem.rodata_size || 0), t('memoryPage.rodataDesc')],
+                [t('memoryPage.dramStaticTotal'), formatBytes(staticMem.total_dram_static || 0), t('memoryPage.staticDataBss')]]))}
+            ${sect(t('memoryPage.iramTitle'), kvs([
+                [t('memoryPage.codeSection'), formatBytes(iram.text_size || 0)],
+                [t('memoryPage.heapTotal'), formatBytes(iram.heap_total || 0)],
+                [t('memoryPage.heapFree'), formatBytes(iram.heap_free || 0)]]))}
+            ${rtc.total_available ? sect(t('memoryPage.rtcMemory'), `<div class="bar"><i style="width:${Math.min(100, (rtc.total_used / rtc.total_available * 100) || 0)}%"></i></div><div class="between t-note" style="margin-top:6px"><span>${t('memoryPage.rtcUsed')} ${formatBytes(rtc.total_used || 0)}</span><span>${t('memoryPage.rtcTotal')} ${formatBytes(rtc.total_available)}</span></div>`) : ''}
+            ${sect(t('memoryPage.memCapability'), grid('1.4fr 1fr 1fr 1.4fr', [t('memoryPage.capType'), t('memoryPage.free'), t('memoryPage.total'), t('memoryPage.capDesc')], capRows))}
+            ${nvs.total_entries ? sect(t('memoryPage.nvsStorage'), `<div class="bar"><i style="width:${Math.min(100, nvs.used_percent || 0)}%;background:${usedColor(nvs.used_percent || 0)}"></i></div>${kvs([
+                [t('memoryPage.usedEntries'), nvs.used_entries], [t('memoryPage.freeEntries'), nvs.free_entries],
+                [t('memoryPage.namespaceCount'), nvs.namespace_count], [t('memoryPage.usagePercent'), nvs.used_percent + '%']])}`) : ''}
             ${tipsHtml}
-            
-            ${data.tasks && data.tasks.length > 0 ? `
-            <div class="memory-tasks">
-                <h4>${typeof t === 'function' ? t('memoryPage.taskStackUsage') : '任务栈使用'} (${typeof t === 'function' ? t('memoryPage.taskCountLabel', { count: data.tasks.length }) : '共 ' + data.tasks.length + ' 个任务'}) <span style="font-size:0.8em;color:#9ca3af;font-weight:normal">${typeof t === 'function' ? t('memoryPage.clickToSort') : '点击表头排序'}</span></h4>
-                <table class="memory-table task-table sortable-table" id="task-memory-table">
-                    <thead>
-                        <tr>
-                            <th>${typeof t === 'function' ? t('memoryPage.taskName') : '任务名'}</th>
-                            <th data-sort="stack_alloc" class="sortable">${typeof t === 'function' ? t('memoryPage.allocStack') : '分配栈'} ⇅</th>
-                            <th data-sort="stack_used" class="sortable">${typeof t === 'function' ? t('memoryPage.usedStack') : '已用栈'} ⇅</th>
-                            <th data-sort="stack_hwm" class="sortable">${typeof t === 'function' ? t('memoryPage.remainStack') : '剩余栈'} ⇅</th>
-                            <th data-sort="stack_usage_pct" class="sortable">${typeof t === 'function' ? t('memoryPage.usage') : '使用率'} ⇅</th>
-                            <th data-sort="priority" class="sortable">${typeof t === 'function' ? t('memoryPage.priority') : '优先级'} ⇅</th>
-                            <th data-sort="state" class="sortable">${typeof t === 'function' ? t('memoryPage.state') : '状态'} ⇅</th>
-                            ${data.tasks[0]?.cpu_percent !== undefined ? '<th data-sort="cpu_percent" class="sortable">' + (typeof t === 'function' ? t('memoryPage.cpu') : 'CPU') + ' ⇅</th>' : ''}
-                        </tr>
-                    </thead>
-                    <tbody id="task-table-body">
-                        ${renderTaskRows(data.tasks, formatBytes)}
-                    </tbody>
+            ${data.tasks && data.tasks.length > 0 ? sect(t('memoryPage.taskStackUsage') + ' (' + t('memoryPage.taskCountLabel', { count: data.tasks.length }) + ')', `
+                <table class="mtable" id="task-memory-table">
+                    <thead><tr>
+                        <th>${t('memoryPage.taskName')}</th>
+                        <th data-sort="stack_alloc" class="sortable">${t('memoryPage.allocStack')} ⇅</th>
+                        <th data-sort="stack_used" class="sortable">${t('memoryPage.usedStack')} ⇅</th>
+                        <th data-sort="stack_hwm" class="sortable">${t('memoryPage.remainStack')} ⇅</th>
+                        <th data-sort="stack_usage_pct" class="sortable">${t('memoryPage.usage')} ⇅</th>
+                        <th data-sort="priority" class="sortable">${t('memoryPage.priority')} ⇅</th>
+                        <th data-sort="state" class="sortable">${t('memoryPage.state')} ⇅</th>
+                        ${data.tasks[0]?.cpu_percent !== undefined ? '<th data-sort="cpu_percent" class="sortable">' + t('memoryPage.cpu') + ' ⇅</th>' : ''}
+                    </tr></thead>
+                    <tbody id="task-table-body">${renderTaskRows(data.tasks, formatBytes)}</tbody>
                 </table>
-                ${data.total_stack_allocated ? `
-                <p style="font-size:0.85em;color:#6b7280;margin-top:8px">
-                    ${typeof t === 'function' ? t('memoryPage.taskStackTotal') : '任务栈总分配'}: <strong>${formatBytes(data.total_stack_allocated)}</strong> | 
-                    ${typeof t === 'function' ? t('memoryPage.totalTaskCount') : '任务总数'}: <strong>${data.task_count}</strong>
-                </p>
-                ` : ''}
-                <p style="font-size:0.85em;color:#9ca3af;margin-top:4px">
-                    ${typeof t === 'function' ? t('memoryPage.stackHint') : '剩余栈 <256B 为危险区域，<512B 为警告区域'}
-                </p>
-            </div>
-            ` : ''}
-            
-            <div class="memory-history">
-                <h4>${typeof t === 'function' ? t('memoryPage.runtimeStats') : '运行时统计'}</h4>
-                <div class="history-stats">
-                    <div class="history-item">
-                        <span class="history-label">${typeof t === 'function' ? t('memoryPage.historyMinFreeHeap') : '历史最低空闲堆'}</span>
-                        <span class="history-value">${formatBytes(data.history?.min_free_heap_ever || 0)}</span>
-                    </div>
-                    <div class="history-item">
-                        <span class="history-label">${typeof t === 'function' ? t('memoryPage.currentTaskCount') : '当前运行任务数'}</span>
-                        <span class="history-value">${data.task_count || 0}</span>
-                    </div>
-                </div>
-            </div>
+                ${data.total_stack_allocated ? `<div class="t-note" style="margin-top:8px">${t('memoryPage.taskStackTotal')}: ${formatBytes(data.total_stack_allocated)} · ${t('memoryPage.totalTaskCount')}: ${data.task_count}</div>` : ''}
+                <div class="t-note" style="margin-top:4px">${t('memoryPage.stackHint')} · ${t('memoryPage.clickToSort')}</div>`) : ''}
+            ${sect(t('memoryPage.runtimeStats'), kvs([
+                [t('memoryPage.historyMinFreeHeap'), formatBytes(data.history?.min_free_heap_ever || 0)],
+                [t('memoryPage.currentTaskCount'), data.task_count || 0]]))}
         `;
         
         // 缓存任务数据并初始化排序
@@ -17663,16 +14632,11 @@ async function refreshMemoryDetail() {
             initTaskTableSort();
         }
         
-        timestamp.textContent = (typeof t === 'function' ? t('memoryPage.updateTime') : '更新时间: ') + new Date().toLocaleTimeString();
+        timestamp.textContent = t('memoryPage.updatedAt', { time: new Date().toLocaleTimeString() });
         
     } catch (error) {
         console.error('Memory detail error:', error);
-        body.innerHTML = `
-            <div class="error-message">
-                <p>${typeof t === 'function' ? t('memoryPage.loadFailed') : '获取内存详情失败'}</p>
-                <p style="font-size:0.9em;color:#6b7280">${escapeHtml(error.message)}</p>
-            </div>
-        `;
+        body.innerHTML = `<div class="state bad">${t('memoryPage.loadFailed')}</div><div class="t-note" style="margin-top:4px">${escapeHtml(error.message)}</div>`;
     }
 }
 
@@ -17705,70 +14669,53 @@ async function loadAutomationPage() {
     
     const content = document.getElementById('page-content');
     content.innerHTML = `
-        <div class="page-automation">
-            <div class="page-header-row">
-                <div class="header-actions">
-                    <button class="btn btn-success btn-file-action" onclick="automationControl('start')"><i class="ri-play-line"></i> ${t('common.start')}</button>
-                    <button class="btn btn-danger btn-file-action" onclick="automationControl('stop')"><i class="ri-stop-line"></i> ${t('common.stop')}</button>
-                    <button class="btn btn-service-style btn-file-action" onclick="automationControl('pause')"><i class="ri-pause-line"></i> ${t('common.pause')}</button>
-                    <button class="btn btn-service-style btn-file-action" onclick="automationControl('reload')"><i class="ri-refresh-line"></i> ${t('common.reload')}</button>
-                </div>
+        <div class="page page-automation">
+            <div class="acts">
+                <button class="btn sm pw ok" onclick="automationControl('start')"><svg class="i"><use href="#ri-play-line"/></svg>${t('common.start')}</button>
+                <button class="btn sm pw bad" onclick="automationControl('stop')"><svg class="i"><use href="#ri-stop-line"/></svg>${t('common.stop')}</button>
+                <button class="btn sm" onclick="automationControl('pause')"><svg class="i"><use href="#ri-pause-line"/></svg>${t('common.pause')}</button>
+                <button class="btn sm" onclick="automationControl('reload')"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.reload')}</button>
             </div>
             
-            <!-- 状态卡片 -->
-            <div class="status-grid" id="automation-status">
-                <div class="status-card loading">${t('common.loading')}</div>
+            <!-- 状态 -->
+            <div class="card stat" id="automation-status" style="padding:16px 20px">
+                <div class="t-note" style="grid-column:1/-1">${t('common.loading')}</div>
             </div>
             
-            <!-- 数据源列表 -->
-            <div class="section">
-                <div class="section-header">
-                    <h2>${t('automation.sources')}</h2>
-                    <div class="section-actions">
-                        <button class="btn btn-success btn-sm" onclick="showAddSourceModal()"><i class="ri-add-line"></i> ${t('common.add')}</button>
-                        <button class="btn btn-sm btn-gray" onclick="showImportSourceModal()" title="${t('securityPage.importConfigPack')}"><i class="ri-download-line"></i> ${t('common.import')}</button>
-                        <button type="button" class="btn btn-sm btn-gray automation-refresh-btn" onclick="refreshSources()" title="${t('common.refresh')}"><i class="ri-refresh-line"></i></button>
+            <div>
+                <div class="sec-h">
+                    <span class="t-section sec-t">${t('automation.sources')}</span>
+                    <div class="acts">
+                        <button class="btn sm" onclick="showAddSourceModal()"><svg class="i"><use href="#ri-add-line"/></svg>${t('common.add')}</button>
+                        <button class="btn sm" onclick="showImportSourceModal()" title="${t('securityPage.importConfigPack')}"><svg class="i"><use href="#ri-download-line"/></svg>${t('common.import')}</button>
+                        <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshSources()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card compact">
-                    <div id="sources-list" class="card-content">
-                        <div class="loading-small">${t('common.loading')}</div>
-                    </div>
-                </div>
+                <div class="card" style="padding:0" id="sources-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
             
-            <!-- 规则列表 -->
-            <div class="section">
-                <div class="section-header">
-                    <h2>${t('automation.rules')}</h2>
-                    <div class="section-actions">
-                        <button class="btn btn-success btn-sm" onclick="showAddRuleModal()"><i class="ri-add-line"></i> ${t('common.add')}</button>
-                        <button class="btn btn-sm btn-gray" onclick="showImportRuleModal()" title="${t('securityPage.importConfigPack')}"><i class="ri-download-line"></i> ${t('common.import')}</button>
-                        <button type="button" class="btn btn-sm btn-gray automation-refresh-btn" onclick="refreshRules()" title="${t('common.refresh')}"><i class="ri-refresh-line"></i></button>
+            <div>
+                <div class="sec-h">
+                    <span class="t-section sec-t">${t('automation.rules')}</span>
+                    <div class="acts">
+                        <button class="btn sm" onclick="showAddRuleModal()"><svg class="i"><use href="#ri-add-line"/></svg>${t('common.add')}</button>
+                        <button class="btn sm" onclick="showImportRuleModal()" title="${t('securityPage.importConfigPack')}"><svg class="i"><use href="#ri-download-line"/></svg>${t('common.import')}</button>
+                        <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshRules()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card compact">
-                    <div id="rules-list" class="card-content">
-                        <div class="loading-small">${t('common.loading')}</div>
-                    </div>
-                </div>
+                <div class="card" style="padding:0" id="rules-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
             
-            <!-- 动作模板管理 -->
-            <div class="section">
-                <div class="section-header">
-                    <h2>${t('automation.actions')}</h2>
-                    <div class="section-actions">
-                        <button class="btn btn-success btn-sm" onclick="showAddActionModal()"><i class="ri-add-line"></i> ${t('common.add')}</button>
-                        <button class="btn btn-sm btn-gray" onclick="showImportActionModal()" title="${t('securityPage.importConfigPack')}"><i class="ri-download-line"></i> ${t('common.import')}</button>
-                        <button type="button" class="btn btn-sm btn-gray automation-refresh-btn" onclick="refreshActions()" title="${t('common.refresh')}"><i class="ri-refresh-line"></i></button>
+            <div>
+                <div class="sec-h">
+                    <span class="t-section sec-t">${t('automation.actions')}</span>
+                    <div class="acts">
+                        <button class="btn sm" onclick="showAddActionModal()"><svg class="i"><use href="#ri-add-line"/></svg>${t('common.add')}</button>
+                        <button class="btn sm" onclick="showImportActionModal()" title="${t('securityPage.importConfigPack')}"><svg class="i"><use href="#ri-download-line"/></svg>${t('common.import')}</button>
+                        <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshActions()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card compact">
-                    <div id="actions-list" class="card-content">
-                        <div class="loading-small">${t('common.loading')}</div>
-                    </div>
-                </div>
+                <div class="card" style="padding:0" id="actions-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
         </div>
     `;
@@ -17796,57 +14743,24 @@ async function refreshAutomationStatus() {
         if (!pageCurrent()) return;
         if (result.code === 0 && result.data) {
             const d = result.data;
-            const stateClass = d.state === 'running' ? 'running' : d.state === 'paused' ? 'paused' : 'stopped';
-            const stateText = d.state === 'running' ? (typeof t === 'function' ? t('automationPage.stateRunning') : '运行中') : d.state === 'paused' ? (typeof t === 'function' ? t('automationPage.statePaused') : '已暂停') : (typeof t === 'function' ? t('automationPage.stateStopped') : '已停止');
+            const stateClass = d.state === 'running' ? 'ok' : d.state === 'paused' ? 'warn' : '';
+            const stateText = t(d.state === 'running' ? 'automationPage.stateRunning' : d.state === 'paused' ? 'automationPage.statePaused' : 'automationPage.stateStopped');
+            const cell = (value, label) => `<div><div class="t-value stat-v">${value}</div><div class="t-label" style="margin-top:2px">${t(label)}</div></div>`;
             
-            const uptimeSec = Math.floor((d.uptime_ms || 0) / 1000);
-            
-            container.innerHTML = `
-                <div class="status-card">
-                    <div class="status-card-value-row">
-                        <span class="status-icon state-${stateClass}">●</span>
-                        <span class="status-value">${stateText}</span>
-                    </div>
-                    <div class="status-label">${typeof t === 'function' ? t('automationPage.engineStatus') : '引擎状态'}</div>
-                </div>
-                <div class="status-card">
-                    <div class="status-card-value-row">
-                        <span class="status-value">${d.rules_count || 0}</span>
-                    </div>
-                    <div class="status-label">${typeof t === 'function' ? t('automationPage.rulesLabel') : '规则'}</div>
-                </div>
-                <div class="status-card">
-                    <div class="status-card-value-row">
-                        <span class="status-value">${d.variables_count || 0}</span>
-                    </div>
-                    <div class="status-label">${typeof t === 'function' ? t('automationPage.variablesLabel') : '变量'}</div>
-                </div>
-                <div class="status-card">
-                    <div class="status-card-value-row">
-                        <span class="status-value">${d.sources_count || 0}</span>
-                    </div>
-                    <div class="status-label">${typeof t === 'function' ? t('automationPage.sourcesLabel') : '数据源'}</div>
-                </div>
-                <div class="status-card">
-                    <div class="status-card-value-row">
-                        <span class="status-value">${d.rule_triggers || 0}</span>
-                    </div>
-                    <div class="status-label">${typeof t === 'function' ? t('automationPage.triggerCountLabel') : '触发次数'}</div>
-                </div>
-                <div class="status-card">
-                    <div class="status-card-value-row">
-                        <span class="status-value">${formatUptimeSec(uptimeSec)}</span>
-                    </div>
-                    <div class="status-label">${typeof t === 'function' ? t('automationPage.runtimeLabel') : '运行时长'}</div>
-                </div>
-            `;
+            container.innerHTML =
+                cell(`<span class="stat-st ${stateClass}"><i></i>${stateText}</span>`, 'automationPage.engineStatus') +
+                cell(d.rules_count || 0, 'automationPage.rulesLabel') +
+                cell(d.variables_count || 0, 'automationPage.variablesLabel') +
+                cell(d.sources_count || 0, 'automationPage.sourcesLabel') +
+                cell(d.rule_triggers || 0, 'automationPage.triggerCountLabel') +
+                cell(formatUptimeSec(Math.floor((d.uptime_ms || 0) / 1000)), 'automationPage.runtimeLabel');
         } else {
-            container.innerHTML = '<div class="status-card error"><span>' + (result.message || (typeof t === 'function' ? t('automationPage.getStatusFailed') : '获取状态失败')) + '</span></div>';
+            container.innerHTML = '<div class="t-note" style="grid-column:1/-1">' + (result.message || (typeof t === 'function' ? t('automationPage.getStatusFailed') : '获取状态失败')) + '</div>';
         }
     } catch (error) {
         if (!pageCurrent()) return;
         const isNetworkError = error.message.includes('fetch') || error.message.includes('network');
-        container.innerHTML = '<div class="status-card error"><span>' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</span></div>';
+        container.innerHTML = '<div class="t-note" style="grid-column:1/-1">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</div>';
     }
 }
 
@@ -17854,18 +14768,9 @@ async function refreshAutomationStatus() {
  * 格式化运行时长（秒）
  */
 function formatUptimeSec(seconds) {
-    if (typeof t === 'function') {
-        if (seconds < 60) return t('automationPage.uptimeSecsOnly', { n: seconds });
-        if (seconds < 3600) return t('automationPage.uptimeMinSec', { m: Math.floor(seconds / 60), s: seconds % 60 });
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        return t('automationPage.uptimeHrMin', { h, m });
-    }
-    if (seconds < 60) return seconds + t('common.seconds');
-    if (seconds < 3600) return Math.floor(seconds / 60) + t('common.minutesShort') + (seconds % 60) + t('common.seconds');
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    return h + t('common.hoursShort') + m + t('common.minutesShort');
+    if (seconds < 60) return t('automationPage.uptimeSecsBrief', { n: seconds });
+    if (seconds < 3600) return t('automationPage.uptimeMinSecBrief', { m: Math.floor(seconds / 60), s: seconds % 60 });
+    return t('automationPage.uptimeHrMinBrief', { h: Math.floor(seconds / 3600), m: Math.floor((seconds % 3600) / 60) });
 }
 
 /**
@@ -17897,67 +14802,36 @@ async function refreshRules() {
         if (result.code === 0 && result.data && result.data.rules) {
             const rules = result.data.rules;
             if (rules.length === 0) {
-                container.innerHTML = '<p style="text-align:center;color:var(--text-secondary)">' + (typeof t === 'function' ? t('automationPage.noRules') : '暂无规则，点击"添加"创建第一条') + '</p>';
+                container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noRules') + '</p></div>';
                 return;
             }
             
-            const ap = typeof t === 'function' ? t : () => '';
+            const cols = 'style="--cols:1.2fr 1.4fr 1fr .6fr .6fr .7fr 196px"';
             container.innerHTML = `
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th style="width:40px"></th>
-                            <th>ID</th>
-                            <th>${ap('automationPage.ruleNameHeader') || t('common.name')}</th>
-                            <th>${ap('automationPage.statusHeader') || t('common.status')}</th>
-                            <th>${ap('automationPage.conditionHeader') || t('automationPage.conditionHeader')}</th>
-                            <th>${ap('automationPage.actionHeader') || t('automationPage.actionHeader')}</th>
-                            <th>${ap('automationPage.triggerHeader') || t('automation.triggerCount')}</th>
-                            <th>${ap('automationPage.operationHeader') || t('common.actions')}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${rules.map(r => {
-                            const iconValue = r.icon || 'ri-thunderstorms-line';
-                            let iconHtml;
-                            if (iconValue.startsWith('/sdcard/')) {
-                                iconHtml = `<img src="/api/v1/file/download?path=${encodeURIComponent(iconValue)}" style="width:24px;height:24px;object-fit:contain" onerror="this.outerHTML='<i class=\\'ri-thunderstorms-line\\' style=\\'font-size:1.2em\\'></i>'">`
-                            } else if (iconValue.startsWith('ri-')) {
-                                iconHtml = `<i class="${iconValue}" style="font-size:1.2em"></i>`;
-                            } else {
-                                iconHtml = `<i class="${getRuleIconRi(iconValue)}" style="font-size:1.2em"></i>`;
-                            }
-                            const manualBadge = r.manual_trigger ? '<span class="badge" style="background:var(--emerald-500);font-size:0.7em">' + (typeof t === 'function' ? t('common.manual') : '手动') + '</span>' : '';
-                            const enabledStr = typeof t === 'function' ? t('common.enabled') : '启用';
-                            const disabledStr = typeof t === 'function' ? t('common.disabled') : '禁用';
-                            return `
-                            <tr>
-                                <td style="font-size:1.2em;text-align:center">${iconHtml}</td>
-                                <td><code>${r.id}</code></td>
-                                <td>${r.name || r.id} ${manualBadge}</td>
-                                <td><span class="status-badge ${r.enabled ? 'status-running' : 'status-stopped'}">${r.enabled ? enabledStr : disabledStr}</span></td>
-                                <td>${r.conditions_count || 0}</td>
-                                <td>${r.actions_count || 0}</td>
-                                <td>${r.trigger_count || 0}</td>
-                                <td style="white-space:nowrap">
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="toggleRule('${r.id}', ${!r.enabled})" title="${r.enabled ? disabledStr : enabledStr}"><i class="${r.enabled ? 'ri-stop-circle-line' : 'ri-play-circle-line'}"></i></button>
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="triggerRule('${r.id}')" title="${typeof t === 'function' ? t('automation.manualTrigger') : '手动触发'}"><i class="ri-play-line"></i></button>
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="editRule('${r.id}')" title="${typeof t === 'function' ? t('common.edit') : '编辑'}"><i class="ri-edit-line"></i></button>
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="showExportRuleModal('${r.id}')" title="${typeof t === 'function' ? t('securityPage.exportConfigPack') || '导出配置包' : '导出配置包'}"><i class="ri-download-line"></i></button>
-                                    <button class="btn btn-sm btn-danger btn-icon-square" onclick="deleteRule('${r.id}')" title="${typeof t === 'function' ? t('common.delete') : '删除'}"><i class="ri-delete-bin-line"></i></button>
-                                </td>
-                            </tr>
-                        `}).join('')}
-                    </tbody>
-                </table>
+                <div class="tr th" ${cols}>
+                    <div>ID</div><div>${t('automationPage.ruleNameHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.conditionHeader')}</div><div>${t('automationPage.actionHeader')}</div><div>${t('automationPage.triggerHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
+                </div>
+                ${rules.map(r => {
+                    const label = r.enabled ? t('common.disabled') : t('common.enabled');
+                    return `
+                    <div class="tr" ${cols}>
+                        <div><span class="mono">${r.id}</span></div>
+                        <div>${r.name || r.id}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
+                        <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="toggleRule('${r.id}', ${!r.enabled})"></button></div>
+                        <div>${r.conditions_count || 0}</div>
+                        <div>${r.actions_count || 0}</div>
+                        <div>${r.trigger_count || 0}</div>
+                        <div class="act">${icoBtn('ri-play-line', t('automation.manualTrigger'), `triggerRule('${r.id}')`)}${icoBtn('ri-edit-line', t('common.edit'), `editRule('${r.id}')`)}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), `showExportRuleModal('${r.id}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteRule('${r.id}')`, 'dg')}</div>
+                    </div>`;
+                }).join('')}
             `;
         } else {
-            container.innerHTML = '<p style="text-align:center;color:var(--text-secondary)">' + (result.message || (typeof t === 'function' ? t('automationPage.getRulesFailed') : '获取规则失败')) + '</p>';
+            container.innerHTML = '<div class="empty"><p class="t-note">' + (result.message || (typeof t === 'function' ? t('automationPage.getRulesFailed') : '获取规则失败')) + '</p></div>';
         }
     } catch (error) {
         if (!pageCurrent()) return;
         const isNetworkError = error.message.includes('fetch') || error.message.includes('network');
-        container.innerHTML = '<p style="text-align:center;color:var(--rose-500)">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</p>';
+        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</p></div>';
     }
 }
 
@@ -18003,51 +14877,35 @@ async function refreshSources() {
         if (result.code === 0 && result.data && result.data.sources) {
             const sources = result.data.sources;
             if (sources.length === 0) {
-                container.innerHTML = '<p style="text-align:center;color:var(--text-secondary)">' + (typeof t === 'function' ? t('automationPage.noSources') : '暂无数据源，点击"添加"创建第一个') + '</p>';
+                container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noSources') + '</p></div>';
                 return;
             }
             
-            const secStr = typeof t === 'function' ? t('time.seconds') : '秒';
-            const enStr = typeof t === 'function' ? t('common.enabled') : '启用';
-            const disStr = typeof t === 'function' ? t('common.disabled') : '禁用';
+            const cols = 'style="--cols:1.2fr 1.2fr .8fr 1fr .8fr 156px"';
             container.innerHTML = `
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>${typeof t === 'function' ? t('automationPage.labelHeader') : '标签'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.typeHeader') : '类型'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.statusHeader') : '状态'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.updateIntervalHeader') : '更新间隔'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.operationHeader') : '操作'}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${sources.map(s => `
-                            <tr>
-                                <td><code>${s.id}</code></td>
-                                <td>${s.label || s.id}</td>
-                                <td><span class="btn-service-style" style="display:inline-block;font-size:0.85em">${s.type || 'unknown'}</span></td>
-                                <td><span class="status-badge ${s.enabled ? 'status-running' : 'status-stopped'}">${s.enabled ? enStr : disStr}</span></td>
-                                <td>${s.poll_interval_ms ? (s.poll_interval_ms / 1000) + secStr : '-'}</td>
-                                <td style="white-space:nowrap">
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="showSourceVariables('${s.id}')" title="${typeof t === 'function' ? t('automation.viewVariables') : '查看变量'}"><i class="ri-bar-chart-box-line"></i></button>
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="toggleSource('${s.id}', ${!s.enabled})" title="${s.enabled ? disStr : enStr}"><i class="${s.enabled ? 'ri-stop-circle-line' : 'ri-play-circle-line'}"></i></button>
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="showExportSourceModal('${s.id}')" title="${typeof t === 'function' ? (t('securityPage.exportConfigPack') || '导出配置包') : '导出配置包'}"><i class="ri-download-line"></i></button>
-                                    <button class="btn btn-sm btn-danger btn-icon-square" onclick="deleteSource('${s.id}')" title="${typeof t === 'function' ? t('common.delete') : '删除'}"><i class="ri-delete-bin-line"></i></button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
+                <div class="tr th" ${cols}>
+                    <div>ID</div><div>${t('automationPage.labelHeader')}</div><div>${t('automationPage.typeHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.updateIntervalHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
+                </div>
+                ${sources.map(s => {
+                    const label = s.enabled ? t('common.disabled') : t('common.enabled');
+                    return `
+                    <div class="tr" ${cols}>
+                        <div><span class="mono">${s.id}</span></div>
+                        <div>${s.label || s.id}</div>
+                        <div>${s.type || 'unknown'}</div>
+                        <div><button class="switch ${s.enabled ? 'on' : ''}" role="switch" aria-checked="${!!s.enabled}" aria-label="${label}" title="${label}" onclick="toggleSource('${s.id}', ${!s.enabled})"></button></div>
+                        <div>${s.poll_interval_ms ? (s.poll_interval_ms / 1000) + ' ' + t('time.seconds') : '-'}</div>
+                        <div class="act">${icoBtn('ri-eye-line', t('automation.viewVariables'), `showSourceVariables('${s.id}')`)}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), `showExportSourceModal('${s.id}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteSource('${s.id}')`, 'dg')}</div>
+                    </div>`;
+                }).join('')}
             `;
         } else {
-            container.innerHTML = '<p style="text-align:center;color:var(--text-secondary)">' + (result.message || (typeof t === 'function' ? t('automationPage.getSourcesFailed') : '获取数据源失败')) + '</p>';
+            container.innerHTML = '<div class="empty"><p class="t-note">' + (result.message || (typeof t === 'function' ? t('automationPage.getSourcesFailed') : '获取数据源失败')) + '</p></div>';
         }
     } catch (error) {
         if (!pageCurrent()) return;
         const isNetworkError = error.message.includes('fetch') || error.message.includes('network');
-        container.innerHTML = '<p style="text-align:center;color:var(--rose-500)">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</p>';
+        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</p></div>';
     }
 }
 
@@ -18073,11 +14931,11 @@ async function refreshVariables() {
             if (countBadge) countBadge.textContent = allVariables.length;
             renderVariables(allVariables);
         } else {
-            container.innerHTML = `<p style="text-align:center;color:var(--text-secondary)">${escapeHtml(result.message || (typeof t === 'function' ? t('sshPage.getVarFailed') : '获取变量失败'))}</p>`;
+            container.innerHTML = `<p style="text-align:center;color:var(--ink-3)">${escapeHtml(result.message || (typeof t === 'function' ? t('sshPage.getVarFailed') : '获取变量失败'))}</p>`;
         }
     } catch (error) {
         if (!pageCurrent()) return;
-        container.innerHTML = `<p style="text-align:center;color:var(--rose-500)">${escapeHtml(error.message)}</p>`;
+        container.innerHTML = `<p style="text-align:center;color:var(--bad)">${escapeHtml(error.message)}</p>`;
     }
 }
 
@@ -18105,7 +14963,7 @@ function renderVariables(variables) {
     if (!container) return;
     
     if (variables.length === 0) {
-        container.innerHTML = '<p style="text-align:center;color:var(--text-secondary)">' + (typeof t === 'function' ? t('automationPage.noVariables') : '暂无变量数据') + '</p>';
+        container.innerHTML = '<p style="text-align:center;color:var(--ink-3)">' + (typeof t === 'function' ? t('automationPage.noVariables') : '暂无变量数据') + '</p>';
         return;
     }
     
@@ -18122,7 +14980,7 @@ function renderVariables(variables) {
         html += `
             <details class="variable-group" open>
                 <summary class="variable-group-header">
-                    <span class="source-name"><i class="ri-signal-wifi-3-line"></i> ${source}</span>
+                    <span class="source-name"><svg class="i"><use href="#ri-signal-wifi-3-line"/></svg> ${source}</span>
                     <span class="variable-count">${t('promptRepair.variableCount', {count: vars.length})}</span>
                 </summary>
                 <div class="variable-items">
@@ -18167,7 +15025,7 @@ function formatVariableValue(value, type) {
             return `<span class="number-value">${num % 1 === 0 ? num : num.toFixed(2)}</span>`;
         }
     } else if (type === 'boolean') {
-        return value ? '<span class="bool-true"><i class="ri-check-line"></i> true</span>' : '<span class="bool-false"><i class="ri-close-line"></i> false</span>';
+        return value ? '<span class="bool-true"><svg class="i"><use href="#ri-check-line"/></svg> true</span>' : '<span class="bool-false"><svg class="i"><use href="#ri-close-line"/></svg> false</span>';
     } else if (type === 'string') {
         const str = String(value);
         if (str.length > 50) {
@@ -18241,45 +15099,28 @@ async function refreshActions() {
         const actions = result.data?.templates || [];
         
         if (actions.length === 0) {
-            container.innerHTML = '<p style="text-align:center;color:var(--text-secondary)">' + (typeof t === 'function' ? t('automationPage.noActions') : '暂无动作模板，点击"添加"创建') + '</p>';
+            container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noActions') + '</p></div>';
         } else {
-            const asyncStr = typeof t === 'function' ? t('automation.asyncAction') : '异步';
-            const syncStr = typeof t === 'function' ? (t('automationPage.syncMode') || '同步') : '同步';
+            const cols = 'style="--cols:1.2fr 1.2fr .8fr .9fr 1.4fr 196px"';
             container.innerHTML = `
-                <table class="data-table compact">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>${typeof t === 'function' ? t('automationPage.actionNameHeader') : '名称'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.actionTypeHeader') : '类型'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.actionModeHeader') : '模式'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.descriptionHeader') : '描述'}</th>
-                            <th>${typeof t === 'function' ? t('automationPage.operationHeader') : '操作'}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${actions.map(a => `
-                            <tr>
-                                <td><code>${a.id}</code></td>
-                                <td>${a.name || a.id}</td>
-                                <td><span class="badge badge-${getActionTypeBadge(a.type)}">${getActionTypeLabel(a.type)}</span></td>
-                                <td>${a.async ? '<span class="badge badge-warning">' + asyncStr + '</span>' : '<span class="badge badge-light">' + syncStr + '</span>'}</td>
-                                <td class="text-muted">${a.description || '-'}</td>
-                                <td style="white-space:nowrap">
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="testAction('${a.id}')" title="${typeof t === 'function' ? t('common.test') : '测试'}"><i class="ri-play-line"></i></button>
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="editAction('${a.id}')" title="${typeof t === 'function' ? t('common.edit') : '编辑'}"><i class="ri-edit-line"></i></button>
-                                    <button class="btn btn-sm btn-gray btn-icon-square" onclick="showExportActionModal('${a.id}')" title="${typeof t === 'function' ? (t('securityPage.exportConfigPack') || '导出配置包') : '导出配置包'}"><i class="ri-download-line"></i></button>
-                                    <button class="btn btn-sm btn-danger btn-icon-square" onclick="deleteAction('${a.id}')" title="${typeof t === 'function' ? t('common.delete') : '删除'}"><i class="ri-delete-bin-line"></i></button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
+                <div class="tr th" ${cols}>
+                    <div>ID</div><div>${t('automationPage.actionNameHeader')}</div><div>${t('automationPage.actionTypeHeader')}</div><div>${t('automationPage.actionModeHeader')}</div><div>${t('automationPage.descriptionHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
+                </div>
+                ${actions.map(a => `
+                    <div class="tr" ${cols}>
+                        <div><span class="mono">${a.id}</span></div>
+                        <div>${a.name || a.id}</div>
+                        <div>${getActionTypeLabel(a.type)}</div>
+                        <div>${a.async ? t('automation.asyncAction') : t('automationPage.syncMode')}</div>
+                        <div>${a.description || '-'}</div>
+                        <div class="act">${icoBtn('ri-play-line', t('common.test'), `testAction('${a.id}')`)}${icoBtn('ri-edit-line', t('common.edit'), `editAction('${a.id}')`)}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), `showExportActionModal('${a.id}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteAction('${a.id}')`, 'dg')}</div>
+                    </div>
+                `).join('')}
             `;
         }
     } catch (error) {
         if (!pageCurrent()) return;
-        container.innerHTML = '<p style="color:var(--danger)">' + (typeof t === 'function' ? t('filePage.loadFailed') : '加载失败') + ': ' + error.message + '</p>';
+        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + t('filePage.loadFailed') + ': ' + error.message + '</p></div>';
     }
 }
 
@@ -18322,112 +15163,27 @@ function showAddActionModal() {
     const modal = document.createElement('div');
     modal.className = 'modal active';
     modal.id = 'action-modal';
-    modal.innerHTML = `
-        <div class="modal-content cc-compact modal-lg" style="max-width:720px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('automation.newActionTemplate') : '新建动作模板'}</h2>
-                <button class="modal-close" onclick="closeModal('action-modal')"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <div class="action-section">
-                    <div class="section-title">1. ${typeof t === 'function' ? t('automation.selectActionType') : '选择动作类型'}</div>
-                    <div class="action-type-grid">
-                        <label class="action-type-card" data-type="cli">
-                            <input type="radio" name="action-type" value="cli" checked>
-                            <div class="card-icon"><i class="ri-terminal-box-line"></i></div>
-                            <div class="card-title">${typeof t === 'function' ? t('automation.actionTypeCli') : 'CLI 命令'}</div>
-                            <div class="card-desc">${typeof t === 'function' ? t('automation.actionTypeCliDesc') : '执行本地控制台命令'}</div>
-                        </label>
-                        <label class="action-type-card" data-type="ssh_cmd_ref">
-                            <input type="radio" name="action-type" value="ssh_cmd_ref">
-                            <div class="card-icon"><i class="ri-shield-keyhole-line"></i></div>
-                            <div class="card-title">${typeof t === 'function' ? t('automation.actionTypeSsh') : 'SSH 命令'}</div>
-                            <div class="card-desc">${typeof t === 'function' ? t('automation.actionTypeSshDesc') : '执行已配置的SSH命令'}</div>
-                        </label>
-                        <label class="action-type-card" data-type="led">
-                            <input type="radio" name="action-type" value="led">
-                            <div class="card-icon"><i class="ri-lightbulb-line"></i></div>
-                            <div class="card-title">${typeof t === 'function' ? t('automation.actionTypeLed') : 'LED 控制'}</div>
-                            <div class="card-desc">${typeof t === 'function' ? t('automation.actionTypeLedDesc') : '控制 LED 颜色和效果'}</div>
-                        </label>
-                        <label class="action-type-card" data-type="log">
-                            <input type="radio" name="action-type" value="log">
-                            <div class="card-icon"><i class="ri-file-text-line"></i></div>
-                            <div class="card-title">${typeof t === 'function' ? t('automation.actionTypeLog') : '日志记录'}</div>
-                            <div class="card-desc">${typeof t === 'function' ? t('automation.actionTypeLogDesc') : '输出日志消息'}</div>
-                        </label>
-                        <label class="action-type-card" data-type="set_var">
-                            <input type="radio" name="action-type" value="set_var">
-                            <div class="card-icon"><i class="ri-database-2-line"></i></div>
-                            <div class="card-title">${typeof t === 'function' ? t('automation.actionTypeSetVar') : '设置变量'}</div>
-                            <div class="card-desc">${typeof t === 'function' ? t('automation.actionTypeSetVarDesc') : '修改系统变量值'}</div>
-                        </label>
-                        <label class="action-type-card" data-type="webhook">
-                            <input type="radio" name="action-type" value="webhook">
-                            <div class="card-icon"><i class="ri-global-line"></i></div>
-                            <div class="card-title">${typeof t === 'function' ? t('automation.actionTypeWebhook') : 'Webhook'}</div>
-                            <div class="card-desc">${typeof t === 'function' ? t('automation.actionTypeWebhookDesc') : '发送 HTTP 请求'}</div>
-                        </label>
-                    </div>
-                </div>
-                <div class="action-section">
-                    <div class="section-title">2. ${typeof t === 'function' ? t('automation.configParams') : '配置参数'}</div>
-                    <div id="action-type-fields" class="action-params-container">
-                    </div>
-                </div>
-                <div class="action-section">
-                    <div class="section-title">3. ${typeof t === 'function' ? t('automation.basicInfo') : '基本信息'}</div>
-                    <div class="form-row">
-                        <div class="form-group" style="flex:1">
-                            <label>${typeof t === 'function' ? t('automation.actionId') : '动作 ID'} <span class="required">*</span></label>
-                            <input type="text" id="action-id" class="input" placeholder="${typeof t === 'function' ? t('automation.actionIdPlaceholder') : '唯一标识，如: restart_agx'}">
-                            <small class="form-hint">${typeof t === 'function' ? t('automation.actionIdHint') : '用于规则引用，只能包含字母、数字和下划线'}</small>
-                        </div>
-                        <div class="form-group" style="flex:1">
-                            <label>${typeof t === 'function' ? t('automation.sourceLabel') : '显示名称'}</label>
-                            <input type="text" id="action-name" class="input" placeholder="${typeof t === 'function' ? t('automation.displayNamePlaceholder') : '如: 重启 AGX'}">
-                            <small class="form-hint">${typeof t === 'function' ? t('automation.leaveEmptyUseId') : '留空则使用 ID'}</small>
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group" style="flex:2">
-                            <label>${typeof t === 'function' ? t('common.description') : '描述'}</label>
-                            <input type="text" id="action-description" class="input" placeholder="${typeof t === 'function' ? t('automation.actionDescPlaceholder') : '动作说明（可选）'}">
-                        </div>
-                        <div class="form-group" style="flex:1">
-                            <label>${typeof t === 'function' ? t('automation.executionDelay') : '执行延迟'}</label>
-                            <div class="input-with-unit">
-                                <input type="number" id="action-delay" class="input" value="0" min="0">
-                                <span class="unit">ms</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="execution-mode-option">
-                        <label class="mode-switch">
-                            <input type="checkbox" id="action-async">
-                            <span class="mode-slider"></span>
-                        </label>
-                        <div class="mode-info">
-                            <span class="mode-title">${typeof t === 'function' ? t('automation.asyncExecute') : '异步执行'}</span>
-                            <span class="mode-desc">${typeof t === 'function' ? t('automation.asyncExecuteDesc') : 'API 调用立即返回，动作在后台队列执行'}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer cc-compact-footer">
-                <button class="btn btn-gray" onclick="closeModal('action-modal')">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                <button class="btn btn-service-style" onclick="submitAction()"><i class="ri-save-line"></i> ${t('automationPage.saveAction')}</button>
-            </div>
-        </div>
-    `;
+    const types = [['cli', 'automation.actionTypeCli'], ['ssh_cmd_ref', 'automation.actionTypeSsh'], ['led', 'automation.actionTypeLed'], ['log', 'automation.actionTypeLog'], ['set_var', 'automation.actionTypeSetVar'], ['webhook', 'automation.actionTypeWebhook']];
+    const tiles = types.map(([v, k], i) => `<label class="tile${i === 0 ? ' on' : ''}" data-type="${v}" style="padding:10px 12px;cursor:pointer"><input type="radio" name="action-type" value="${v}"${i === 0 ? ' checked' : ''} style="position:absolute;opacity:0;pointer-events:none"><span class="t-body" style="font-weight:600">${t(k)}</span></label>`).join('');
+    modal.innerHTML = sheet(660, '<span id="action-modal-title"></span>', `
+        ${gt(t('automation.actionType'))}
+        <div class="action-type-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">${tiles}</div>
+        <div id="action-type-fields" class="gw"></div>
+        ${gt(t('automation.basicInfo'))}
+        ${grp(
+            row(t('automation.actionId'), inp('action-id', 180, t('automationPage.actionIdPh'), 'mono'), t('automationPage.actionIdHintShort')) +
+            row(t('automation.sourceLabel'), inp('action-name', 180, t('automation.displayNamePlaceholder')), t('automation.leaveEmptyUseId')) +
+            row(t('common.description'), inp('action-description', 180, t('common.optional'))) +
+            row(t('automation.executionDelay'), inp('action-delay', 80, '', 'num', 'type="number" value="0" min="0"')) +
+            row(t('automation.asyncExecute'), swc('action-async'), t('automationPage.asyncHintShort')))}`,
+        `<button class="btn lg" onclick="closeModal('action-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAction()">${t('automationPage.saveAction')}</button>`);
     document.body.appendChild(modal);
-    
+
     // 绑定类型卡片点击事件
-    modal.querySelectorAll('.action-type-card input').forEach(radio => {
+    modal.querySelectorAll('.action-type-grid input').forEach(radio => {
         radio.addEventListener('change', updateActionTypeFields);
     });
-    
+
     updateActionTypeFields();
 }
 
@@ -18438,191 +15194,66 @@ function updateActionTypeFields() {
     const checked = document.querySelector('input[name="action-type"]:checked');
     const type = checked ? checked.value : 'cli';
     const container = document.getElementById('action-type-fields');
-    
-    // 更新卡片选中状态
-    document.querySelectorAll('.action-type-card').forEach(card => {
-        card.classList.toggle('selected', card.dataset.type === type);
+
+    // 更新卡片选中状态与标题
+    document.querySelectorAll('#action-modal .action-type-grid .tile').forEach(card => {
+        card.classList.toggle('on', card.dataset.type === type);
     });
-    
+    const titleEl = document.getElementById('action-modal-title');
+    if (titleEl) {
+        const typeKeys = { cli: 'automation.actionTypeCli', ssh_cmd_ref: 'automation.actionTypeSsh', led: 'automation.actionTypeLed', log: 'automation.actionTypeLog', set_var: 'automation.actionTypeSetVar', webhook: 'automation.actionTypeWebhook' };
+        const isEdit = document.getElementById('action-modal')?.dataset.edit === '1';
+        titleEl.textContent = t(isEdit ? 'ui.editActionTemplate' : 'automation.newActionTemplate') + (typeKeys[type] ? ' · ' + t(typeKeys[type]) : '');
+    }
+
+    const quick = (cmd, label) => `<button type="button" class="btn sm" onclick="setCliPreset('${cmd}')">${label}</button>`;
     const fields = {
-        cli: `
-            <div class="params-card">
-                <div class="params-header">
-                    <span class="params-icon"><i class="ri-terminal-box-line"></i></span>
-                    <span>${typeof t === 'function' ? t('automation.cliConfig') : 'CLI 命令配置'}</span>
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.commandLine') : '命令行'} <span class="required">*</span></label>
-                    <input type="text" id="action-cli-command" class="input input-mono" placeholder="${typeof t === 'function' ? t('automation.cliPlaceholder') : '如: gpio --set 48 1'}">
-                    <small class="form-hint">${typeof t === 'function' ? t('automation.cliCmdHint') : '支持所有控制台命令: gpio, device, fan, led, net 等'}</small>
-                </div>
-                <div class="quick-commands">
-                    <span class="quick-label">${typeof t === 'function' ? t('automation.quickCommands') : '快捷命令:'}</span>
-                    <button type="button" class="quick-btn" onclick="setCliPreset('gpio --set 48 1')">GPIO</button>
-                    <button type="button" class="quick-btn" onclick="setCliPreset('device --power-on agx0')">${typeof t === 'function' ? t('automationPage.agxPowerOn') : 'AGX开机'}</button>
-                    <button type="button" class="quick-btn" onclick="setCliPreset('device --reset agx0')">${typeof t === 'function' ? t('automation.agxRestart') : 'AGX重启'}</button>
-                    <button type="button" class="quick-btn" onclick="setCliPreset('fan --set --id 0 --speed 80')">${typeof t === 'function' ? t('automation.fan') : '风扇'}</button>
-                    <button type="button" class="quick-btn" onclick="setCliPreset('led --effect --device board --name fire')">LED</button>
-                </div>
-                <details class="advanced-toggle">
-                    <summary>${typeof t === 'function' ? t('automation.advancedOptions') : '高级选项'}</summary>
-                    <div class="advanced-content">
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('automation.resultVariable') : '结果变量'}</label>
-                            <input type="text" id="action-cli-var" class="input" placeholder="${typeof t === 'function' ? t('automation.resultVarPlaceholder') : '如: cli.result'}">
-                            <small class="form-hint">${typeof t === 'function' ? t('automation.resultVariableHint') : '存储命令输出到变量'}</small>
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('automation.timeout') : '超时时间'}</label>
-                            <div class="input-with-unit">
-                                <input type="number" id="action-cli-timeout" class="input" value="5000">
-                                <span class="unit">ms</span>
-                            </div>
-                        </div>
-                    </div>
-                </details>
-            </div>
-        `,
-        ssh_cmd_ref: `
-            <div class="params-card">
-                <div class="params-header">
-                    <span class="params-icon"><i class="ri-shield-keyhole-line"></i></span>
-                    <span>${typeof t === 'function' ? t('automation.sshCmdConfig') : 'SSH 命令配置'}</span>
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.selectCommand') : '选择命令'} <span class="required">*</span></label>
-                    <select id="action-ssh-cmd-id" class="input" onchange="updateSshCmdRefPreview()">
-                        <option value="">-- ${typeof t === 'function' ? t('common.loading') : 'Loading...'} --</option>
-                    </select>
-                    <small class="form-hint">${typeof t === 'function' ? t('automation.sshCmdHint') : '选择已在 SSH 管理页面配置的命令'}</small>
-                </div>
-                <div id="ssh-cmd-preview" class="ssh-cmd-preview" style="display:none;">
-                    <div class="preview-title">${typeof t === 'function' ? t('automationPage.commandDetails') : '命令详情'}</div>
-                    <div class="preview-content">
-                        <div class="preview-row"><span class="preview-label">${typeof t === 'function' ? t('securityPage.hostLabel') : '主机:'}</span> <span id="preview-host">-</span></div>
-                        <div class="preview-row"><span class="preview-label">${typeof t === 'function' ? t('automation.commandLabel') : '命令:'}</span> <code id="preview-cmd">-</code></div>
-                        <div class="preview-row"><span class="preview-label">${typeof t === 'function' ? t('automation.variableLabel') : '变量:'}</span> <span id="preview-var">-</span></div>
-                    </div>
-                </div>
-            </div>
-        `,
-        led: `
-            <div class="params-card">
-                <div class="params-header">
-                    <span class="params-icon"><i class="ri-lightbulb-line"></i></span>
-                    <span>${typeof t === 'function' ? t('automation.ledConfig') : 'LED 控制配置'}</span>
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('common.device') : '设备'} <span class="required">*</span></label>
-                    <select id="action-led-device" class="input" onchange="updateActionLedOptions()">
-                        <option value="">-- ${typeof t === 'function' ? t('automationPage.selectDevice') : '选择设备'} --</option>
-                    </select>
-                    <small class="form-hint">${typeof t === 'function' ? t('automation.selectLedDeviceHint') : '选择要控制的 LED 设备'}</small>
-                </div>
-                
-                <!-- 控制类型选择 -->
-                <div class="form-group" id="action-led-type-group" style="display:none;">
-                    <label>${typeof t === 'function' ? t('automationPage.controlType') : '控制类型'} <span class="required">*</span></label>
-                    <select id="action-led-type" class="input" onchange="updateActionLedTypeFields()">
-                        <option value="fill">${typeof t === 'function' ? t('automation.solidFill') : '纯色填充'}</option>
-                        <option value="effect">${typeof t === 'function' ? t('automation.programEffect') : '程序动画'}</option>
-                        <option value="brightness">${typeof t === 'function' ? t('automationPage.brightnessOnly') : '仅调节亮度'}</option>
-                        <option value="off">${typeof t === 'function' ? t('automationPage.turnOff') : '关闭'}</option>
-                    </select>
-                </div>
-                
-                <!-- Matrix 专属控制类型 -->
-                <div class="form-group" id="action-led-matrix-type-group" style="display:none;">
-                    <label>${typeof t === 'function' ? t('automationPage.controlType') : '控制类型'} <span class="required">*</span></label>
-                    <select id="action-led-matrix-type" class="input" onchange="updateActionLedTypeFields()">
-                        <option value="fill">${typeof t === 'function' ? t('automation.solidFill') : '纯色填充'}</option>
-                        <option value="effect">${typeof t === 'function' ? t('automation.programEffect') : '程序动画'}</option>
-                        <option value="text">${typeof t === 'function' ? t('automationPage.textDisplay') : '文本显示'}</option>
-                        <option value="image">${typeof t === 'function' ? t('automation.displayImage') : '显示图像'}</option>
-                        <option value="qrcode">${typeof t === 'function' ? t('automation.displayQrCode') : '显示QR码'}</option>
-                        <option value="filter">${typeof t === 'function' ? t('automationPage.filterDisplay') : '后处理滤镜'}</option>
-                        <option value="filter_stop">${typeof t === 'function' ? t('automationPage.filterStop') : '停止滤镜'}</option>
-                        <option value="text_stop">${typeof t === 'function' ? t('automationPage.textStop') : '停止文本'}</option>
-                        <option value="brightness">${typeof t === 'function' ? t('automationPage.brightnessOnly') : '仅调节亮度'}</option>
-                        <option value="off">${typeof t === 'function' ? t('automationPage.turnOffDevice') : '关闭设备'}</option>
-                    </select>
-                </div>
-                
-                <!-- 动态参数区域 -->
-                <div id="action-led-params"></div>
-            </div>
-        `,
-        log: `
-            <div class="params-card">
-                <div class="params-header">
-                    <span class="params-icon"><i class="ri-file-text-line"></i></span>
-                    <span>${typeof t === 'function' ? t('automationPage.logConfig') : '日志配置'}</span>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('automationPage.logLevel') : '级别'}</label>
-                        <select id="action-log-level" class="input">
-                            <option value="3">INFO</option>
-                            <option value="2">WARN</option>
-                            <option value="1">ERROR</option>
-                            <option value="4">DEBUG</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.logMessage') : '消息'} <span class="required">*</span></label>
-                    <input type="text" id="action-log-message" class="input" placeholder="${typeof t === 'function' ? t('automationPage.actionLogMsgPlaceholder') : '如: 设备状态变更: ${device.status}'}">
-                    <small class="form-hint">${typeof t === 'function' ? t('automationPage.logMsgHint') : '支持变量: ${变量名}'}</small>
-                </div>
-            </div>
-        `,
-        set_var: `
-            <div class="params-card">
-                <div class="params-header">
-                    <span class="params-icon"><i class="ri-database-2-line"></i></span>
-                    <span>${typeof t === 'function' ? t('automationPage.varConfig') : '变量配置'}</span>
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.varNameLabel') : '变量名'} <span class="required">*</span></label>
-                    <input type="text" id="action-var-name" class="input" placeholder="${t('promptRepair.variableExample')}">
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.value') : '值'} <span class="required">*</span></label>
-                    <input type="text" id="action-var-value" class="input" placeholder="${typeof t === 'function' ? t('automationPage.varValuePlaceholder') : '支持表达式和变量引用'}">
-                    <small class="form-hint">${t('promptRepair.valueExample')}</small>
-                </div>
-            </div>
-        `,
-        webhook: `
-            <div class="params-card">
-                <div class="params-header">
-                    <span class="params-icon"><i class="ri-global-line"></i></span>
-                    <span>${t('promptRepair.webhookConfig')}</span>
-                </div>
-                <div class="form-group">
-                    <label>URL <span class="required">*</span></label>
-                    <input type="text" id="action-webhook-url" class="input" placeholder="https://api.example.com/webhook">
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('automationPage.method') : '方法'}</label>
-                        <select id="action-webhook-method" class="input">
-                            <option value="POST">POST</option>
-                            <option value="GET">GET</option>
-                            <option value="PUT">PUT</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.requestBody') : '请求体'}</label>
-                    <input type="text" id="action-webhook-body" class="input input-mono" placeholder='{"event": "\${trigger}"}'>
-                    <small class="form-hint">${t('automationPage.requestBodyHint')}</small>
-                </div>
-            </div>
-        `
+        cli: gt(t('automation.cliConfig')) + grp(
+                row(t('automationPage.commandLine'), inp('action-cli-command', 230, t('automation.cliPlaceholder'), 'mono'), t('automationPage.actionCliHintShort'))) +
+            `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0">${quick('gpio --set 48 1', 'GPIO')}${quick('device --power-on agx0', t('automationPage.quickAgxOn'))}${quick('device --reset agx0', t('automationPage.quickAgxRestart'))}${quick('fan --set --id 0 --speed 80', t('automation.fan'))}${quick('led --effect --device board --name fire', t('automationPage.quickLedEffect'))}</div>` +
+            gt(t('automation.advancedOptions')) + grp(
+                row(t('automation.resultVariable'), inp('action-cli-var', 180, t('automation.resultVarPlaceholder'), 'mono'), t('automation.resultVariableHint')) +
+                row(t('automation.timeout'), inp('action-cli-timeout', 80, '', 'num', 'type="number" value="5000"')) ),
+        ssh_cmd_ref: gt(t('automation.sshCmdConfig')) + grp(
+                row(t('common.command'), `<select id="action-ssh-cmd-id" class="field" onchange="updateSshCmdRefPreview()" style="width:200px"><option value="">${t('automation.selectCommand')}</option></select>`, t('automation.sshCmdHint'))) +
+            `<div id="ssh-cmd-preview" class="gw" style="display:none">${gt(t('automationPage.commandDetails'))}${grp(
+                row(t('securityPage.host'), '<span class="t-label" id="preview-host">-</span>') +
+                row(t('common.command'), '<span class="mono t-label" id="preview-cmd">-</span>') +
+                row(t('common.variable'), '<span class="mono t-label" id="preview-var">-</span>'))}</div>`,
+        led: gt(t('automation.ledConfig')) + grp(
+                row(t('common.device'), `<select id="action-led-device" class="field" onchange="updateActionLedOptions()" style="width:190px"><option value="">-- ${t('automationPage.selectDevice')} --</option></select>`, t('automation.selectLedDeviceHint')) +
+                `<div class="row" id="action-led-type-group" style="display:none"><div class="rl">${t('automationPage.controlType')}<small>${t('automationPage.ctrlTypeHint')}</small></div><div class="rc"><select id="action-led-type" class="field" onchange="updateActionLedTypeFields()" style="width:190px">
+                    <option value="fill">${t('automationPage.ctrlFill')}</option>
+                    <option value="effect">${t('automation.programEffect')}</option>
+                    <option value="brightness">${t('automationPage.brightnessOnly')}</option>
+                    <option value="off">${t('automationPage.turnOff')}</option>
+                </select></div></div>` +
+                `<div class="row" id="action-led-matrix-type-group" style="display:none"><div class="rl">${t('automationPage.controlType')}<small>${t('automationPage.ctrlTypeHint')}</small></div><div class="rc"><select id="action-led-matrix-type" class="field" onchange="updateActionLedTypeFields()" style="width:190px">
+                    <option value="fill">${t('automationPage.ctrlFill')}</option>
+                    <option value="effect">${t('automation.programEffect')}</option>
+                    <option value="text">${t('automationPage.textDisplay')}</option>
+                    <option value="image">${t('automation.displayImage')}</option>
+                    <option value="qrcode">${t('automation.displayQrCode')}</option>
+                    <option value="filter">${t('automationPage.filterDisplay')}</option>
+                    <option value="filter_stop">${t('automationPage.filterStop')}</option>
+                    <option value="text_stop">${t('automationPage.textStop')}</option>
+                    <option value="brightness">${t('automationPage.brightnessOnly')}</option>
+                    <option value="off">${t('automationPage.turnOffDevice')}</option>
+                </select></div></div>` +
+                '<div class="rows" id="action-led-params"></div>'),
+        log: gt(t('automationPage.logConfig')) + grp(
+                row(t('automationPage.logLevel'), `<select id="action-log-level" class="field" style="width:110px"><option value="3">INFO</option><option value="2">WARN</option><option value="1">ERROR</option><option value="4">DEBUG</option></select>`) +
+                row(t('automationPage.logMessage'), inp('action-log-message', 230, t('automationPage.actionLogMsgPlaceholder')), t('automationPage.logMsgHintShort'))),
+        set_var: gt(t('automationPage.varConfig')) + grp(
+                row(t('automationPage.varNameLabel'), inp('action-var-name', 200, t('promptRepair.variableExample'), 'mono')) +
+                row(t('automationPage.value'), inp('action-var-value', 200, t('promptRepair.valueExample'), 'mono'), t('automationPage.varValuePlaceholder'))),
+        webhook: gt(t('promptRepair.webhookConfig')) + grp(
+                row('URL', inp('action-webhook-url', 230, 'https://…', 'mono')) +
+                row(t('automationPage.method'), `<select id="action-webhook-method" class="field" style="width:110px"><option value="POST">POST</option><option value="GET">GET</option><option value="PUT">PUT</option></select>`)) +
+            gt(t('automationPage.requestBody')) + `<textarea class="field mono" id="action-webhook-body" style="height:72px;padding:8px 12px;width:100%" placeholder="${t('automationPage.requestBodyHint')}" aria-label="${t('automationPage.requestBody')}"></textarea>`
     };
     
-    container.innerHTML = fields[type] || '<div class="params-card"><p>' + (typeof t === 'function' ? t('automation.pleaseSelectActionType') : '请选择动作类型') + '</p></div>';
+    container.innerHTML = fields[type] || gt(t('automation.pleaseSelectActionType'));
     
     // SSH 命令类型时加载命令列表
     if (type === 'ssh_cmd_ref') {
@@ -18632,14 +15263,6 @@ function updateActionTypeFields() {
     // LED 类型时加载设备列表
     if (type === 'led') {
         loadLedDevicesForAction();
-        // 亮度滑块实时更新
-        const slider = document.getElementById('action-led-brightness');
-        if (slider) {
-            slider.addEventListener('input', () => {
-                const val = document.getElementById('action-led-brightness-val');
-                if (val) val.textContent = slider.value;
-            });
-        }
     }
 }
 
@@ -18885,7 +15508,7 @@ async function loadSshCommandsForAction() {
         if (!select) return;
         
         const result = await api.call('ssh.commands.list', {});
-        select.innerHTML = ("<option value=\"\">" + t('sshPage.selectCommand') + "</option>");
+        select.innerHTML = ("<option value=\"\">" + t('automation.selectCommand') + "</option>");
         
         if (result.code === 0 && result.data?.commands) {
             result.data.commands.forEach(cmd => {
@@ -18981,8 +15604,8 @@ function updateActionLedOptions() {
     const isMatrix = deviceName === 'matrix';
     
     // 显示对应的控制类型选择器
-    if (typeGroup) typeGroup.style.display = !deviceName ? 'none' : (isMatrix ? 'none' : 'block');
-    if (matrixTypeGroup) matrixTypeGroup.style.display = isMatrix ? 'block' : 'none';
+    if (typeGroup) typeGroup.style.display = !deviceName ? 'none' : (isMatrix ? 'none' : '');
+    if (matrixTypeGroup) matrixTypeGroup.style.display = isMatrix ? '' : 'none';
     
     // 存储设备特效列表
     if (opt && opt.dataset.effects) {
@@ -19019,241 +15642,76 @@ function updateActionLedTypeFields() {
     const effects = window._actionLedEffects || [];
     
     let html = '';
+    const setVal = (valId, suffix = '') => `document.getElementById('${valId}').textContent=this.value${suffix ? "+'" + suffix + "'" : ''}`;
+    const slider = (id, min, max, val) => ledSlider(id, min, max, val, setVal(id + '-val')) + ledVal(id + '-val', val);
+    const varBtn = target => `<button type="button" class="btn icon sm" onclick="showVariableSelectModal('${target}')" title="${t('automationPage.insertVariableTitle')}" aria-label="${t('automationPage.insertVariableTitle')}"><svg class="i"><use href="#ri-bar-chart-line"/></svg></button>`;
+    const sel = (id, opts, w = 130) => `<select id="${id}" class="field" style="width:${w}px">${opts}</select>`;
+    const hint = txt => row(t('common.params'), `<span class="t-note">${txt}</span>`);
     
     switch (ledType) {
-        case 'fill':
-            html = `
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('dataWidget.color') : '颜色'}</label>
-                    <div class="led-color-config">
-                        <input type="color" value="#FF0000" id="action-led-color" class="led-color-picker-sm">
-                        <div class="color-presets-inline">
-                            <button type="button" class="color-dot" style="background:#ff0000" onclick="setActionLedColor('#ff0000')"></button>
-                            <button type="button" class="color-dot" style="background:#ff6600" onclick="setActionLedColor('#ff6600')"></button>
-                            <button type="button" class="color-dot" style="background:#ffff00" onclick="setActionLedColor('#ffff00')"></button>
-                            <button type="button" class="color-dot" style="background:#00ff00" onclick="setActionLedColor('#00ff00')"></button>
-                            <button type="button" class="color-dot" style="background:#00ffff" onclick="setActionLedColor('#00ffff')"></button>
-                            <button type="button" class="color-dot" style="background:#0066ff" onclick="setActionLedColor('#0066ff')"></button>
-                            <button type="button" class="color-dot" style="background:#ffffff" onclick="setActionLedColor('#ffffff')"></button>
-                        </div>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('ledPage.ccBrightness') : '亮度'}</label>
-                        <div class="brightness-config">
-                            <input type="range" min="0" max="255" value="128" id="action-led-brightness" class="brightness-slider-sm" oninput="document.getElementById('action-led-brightness-val').textContent=this.value">
-                            <span class="brightness-val" id="action-led-brightness-val">128</span>
-                        </div>
-                    </div>
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('automationPage.indexPlaceholder') : '索引'}</label>
-                        <input type="number" id="action-led-index" class="input" value="255" placeholder="${typeof t === 'function' ? t('automationPage.ledIndexPlaceholder') : '255=全部'}">
-                    </div>
-                </div>
-            `;
+        case 'fill': {
+            const dots = ['#ff0000', '#ff6600', '#ffff00', '#00ff00', '#00ffff', '#0066ff', '#ffffff'].map(c => `<button type="button" class="dotc" style="background:${c}" onclick="setActionLedColor('${c}')" aria-label="${c}"></button>`).join('');
+            html = row(t('dataWidget.color'), `<span class="inl">${swatch('action-led-color', '#ff0000')}${dots}</span>`) +
+                row(t('ledPage.ccBrightness'), slider('action-led-brightness', 0, 255, 128)) +
+                row(t('automationPage.indexPlaceholder'), inp('action-led-index', 80, t('automationPage.ledIndexPlaceholder'), 'num', 'type="number" value="255"'));
             break;
-            
-        case 'effect':
+        }
+        case 'effect': {
             const effectOptions = effects.map(e => `<option value="${e}">${e}</option>`).join('');
-            html = `
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('ledPage.effects') : '动画'} <span class="required">*</span></label>
-                    <select id="action-led-effect" class="input">
-                        ${effectOptions || '<option value="">' + (typeof t === 'function' ? t('ledPage.noEffects') : '无可用动画') + '</option>'}
-                    </select>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('ledPage.speed') : '速度'}</label>
-                        <div class="brightness-config">
-                            <input type="range" min="1" max="100" value="50" id="action-led-speed" class="brightness-slider-sm" oninput="document.getElementById('action-led-speed-val').textContent=this.value">
-                            <span class="brightness-val" id="action-led-speed-val">50</span>
-                        </div>
-                    </div>
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('dataWidget.color') : '颜色'}</label>
-                        <input type="color" value="#FF0000" id="action-led-color" class="led-color-picker-sm">
-                    </div>
-                </div>
-            `;
+            html = row(t('ledPage.effects'), sel('action-led-effect', effectOptions || '<option value="">' + t('ledPage.noEffects') + '</option>', 190)) +
+                row(t('ledPage.speed'), slider('action-led-speed', 1, 100, 50)) +
+                row(t('dataWidget.color'), swatch('action-led-color', '#ff0000'));
             break;
-            
+        }
         case 'brightness':
-            html = `
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('ledPage.ccBrightness') : '亮度'}</label>
-                    <div class="brightness-config">
-                        <input type="range" min="0" max="255" value="128" id="action-led-brightness" class="brightness-slider-sm" oninput="document.getElementById('action-led-brightness-val').textContent=this.value">
-                        <span class="brightness-val" id="action-led-brightness-val">128</span>
-                    </div>
-                </div>
-            `;
+            html = row(t('ledPage.ccBrightness'), slider('action-led-brightness', 0, 255, 128));
             break;
-            
         case 'off':
-            html = `<div class="form-hint" style="padding:10px;color:var(--text-secondary);">${typeof t === 'function' ? t('automationPage.ledOffHint') : '关闭 LED 设备，无需额外参数'}</div>`;
+            html = hint(t('automationPage.ledOffHint'));
             break;
-            
         case 'filter_stop':
-            html = `<div class="form-hint" style="padding:10px;color:var(--text-secondary);">${typeof t === 'function' ? t('automationPage.filterStopHint') : '停止当前运行的滤镜效果，无需额外参数'}</div>`;
+            html = hint(t('automationPage.filterStopHint'));
             break;
-            
         case 'text_stop':
-            html = `<div class="form-hint" style="padding:10px;color:var(--text-secondary);">${typeof t === 'function' ? t('automationPage.textStopHint') : '停止当前运行的文本覆盖层，无需额外参数'}</div>`;
+            html = hint(t('automationPage.textStopHint'));
             break;
-            
         case 'text':
-            html = `
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.textContentLabel') : '文本内容'} <span class="required">*</span></label>
-                    <div class="input-with-btn">
-                        <input type="text" id="action-led-text" class="input" placeholder="${typeof t === 'function' ? t('automationPage.textPlaceholder') : '要显示的文本，支持 ${变量名}'}">
-                        <button type="button" class="btn btn-sm" onclick="showVariableSelectModal('action-led-text')" title="${typeof t === 'function' ? t('automationPage.insertVariableTitle') : '插入变量'}"><i class="ri-bar-chart-line"></i></button>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('ledPage.font') : '字体'}</label>
-                        <select id="action-led-font" class="input">
-                            <option value="">${typeof t === 'function' ? t('ledPage.defaultFont') : '默认'}</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1">
-                        <label>${t('led.color')}</label>
-                        <input type="color" value="#00FF00" id="action-led-color" class="led-color-picker-sm">
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('ledPage.alignment') : '对齐'}</label>
-                        <select id="action-led-align" class="input">
-                            <option value="left">${typeof t === 'function' ? t('ledPage.alignLeft') : '左对齐'}</option>
-                            <option value="center" selected>${typeof t === 'function' ? t('ledPage.alignCenter') : '居中'}</option>
-                            <option value="right">${typeof t === 'function' ? t('ledPage.alignRight') : '右对齐'}</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('automationPage.scroll') : '滚动'}</label>
-                        <select id="action-led-scroll" class="input">
-                            <option value="none">${typeof t === 'function' ? t('automationPage.scrollNone') : '无滚动'}</option>
-                            <option value="left" selected>← ${typeof t === 'function' ? t('automationPage.scrollLeft') : '向左'}</option>
-                            <option value="right">→ ${typeof t === 'function' ? t('automationPage.scrollRight') : '向右'}</option>
-                            <option value="up">↑ ${typeof t === 'function' ? t('automationPage.scrollUp') : '向上'}</option>
-                            <option value="down">↓ ${typeof t === 'function' ? t('automationPage.scrollDown') : '向下'}</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:0.5">
-                        <label>X</label>
-                        <input type="number" id="action-led-x" class="input" value="0" min="0" max="255">
-                    </div>
-                    <div class="form-group" style="flex:0.5">
-                        <label>Y</label>
-                        <input type="number" id="action-led-y" class="input" value="0" min="0" max="255">
-                    </div>
-                    <div class="form-group" style="flex:1">
-                        <label style="visibility:hidden;">${t('runtimeRepair.automatic')}</label>
-                        <label class="checkbox-label"><input type="checkbox" id="action-led-auto-pos" checked> ${typeof t === 'function' ? t('automationPage.autoPos') : '自动位置'}</label>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${typeof t === 'function' ? t('ledPage.speed') : '速度'}</label>
-                        <input type="number" id="action-led-speed" class="input" value="50" min="1" max="100">
-                    </div>
-                    <div class="form-group" style="flex:1">
-                        <label style="visibility:hidden;">${t('automationPage.loop')}</label>
-                        <label class="checkbox-label"><input type="checkbox" id="action-led-loop" checked> ${typeof t === 'function' ? t('automationPage.loopScroll') : '循环滚动'}</label>
-                    </div>
-                </div>
-            `;
+            html = row(t('automationPage.textContentLabel'), `<span class="inl">${inp('action-led-text', 200, t('automationPage.textPlaceholder'))}${varBtn('action-led-text')}</span>`) +
+                row(t('ledPage.font'), sel('action-led-font', `<option value="">${t('ledPage.defaultFont')}</option>`)) +
+                row(t('led.color'), swatch('action-led-color', '#00ff00')) +
+                row(t('ledPage.alignment'), sel('action-led-align', `<option value="left">${t('ledPage.alignLeft')}</option><option value="center" selected>${t('ledPage.alignCenter')}</option><option value="right">${t('ledPage.alignRight')}</option>`, 110)) +
+                row(t('automationPage.scroll'), sel('action-led-scroll', `<option value="none">${t('automationPage.scrollNone')}</option><option value="left" selected>← ${t('automationPage.scrollLeft')}</option><option value="right">→ ${t('automationPage.scrollRight')}</option><option value="up">↑ ${t('automationPage.scrollUp')}</option><option value="down">↓ ${t('automationPage.scrollDown')}</option>`, 110)) +
+                row('X', inp('action-led-x', 80, '', 'num', 'type="number" value="0" min="0" max="255"')) +
+                row('Y', inp('action-led-y', 80, '', 'num', 'type="number" value="0" min="0" max="255"')) +
+                row(t('automationPage.autoPos'), swc('action-led-auto-pos', true)) +
+                row(t('ledPage.speed'), inp('action-led-speed', 80, '', 'num', 'type="number" value="50" min="1" max="100"')) +
+                row(t('automationPage.loopScroll'), swc('action-led-loop', true));
             // 加载字体列表
             setTimeout(loadActionLedFonts, 100);
             break;
-            
         case 'image':
-            html = `
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('automationPage.imagePath') : '图像路径'} <span class="required">*</span></label>
-                    <div class="input-with-btn">
-                        <input type="text" id="action-led-image-path" class="input" placeholder="${typeof t === 'function' ? t('automationPage.imagePathPlaceholder') : '/sdcard/images/xxx.png 或 ${变量名}'}" value="/sdcard/images/">
-                        <button type="button" class="btn btn-sm" onclick="browseActionImages()" title="${typeof t === 'function' ? t('common.browse') : 'Browse'}"><i class="ri-folder-line"></i></button>
-                        <button type="button" class="btn btn-sm" onclick="showVariableSelectModal('action-led-image-path')" title="${typeof t === 'function' ? t('automationPage.insertVariableTitle') : '插入变量'}"><i class="ri-bar-chart-line"></i></button>
-                    </div>
-                    <small class="form-hint">${typeof t === 'function' ? t('automationPage.imagePathHint') : '支持 PNG、JPG、BMP、GIF 格式，路径支持变量'}</small>
-                </div>
-                <div class="form-group">
-                    <label class="checkbox-label"><input type="checkbox" id="action-led-center" checked> ${typeof t === 'function' ? t('automationPage.centerDisplay') : '居中显示'}</label>
-                </div>
-            `;
+            html = row(t('automationPage.imagePath'), `<span class="inl">${inp('action-led-image-path', 200, t('automationPage.imagePathPlaceholder'), 'mono', 'value="/sdcard/images/"')}<button type="button" class="btn icon sm" onclick="browseActionImages()" title="${t('common.browse')}" aria-label="${t('common.browse')}"><svg class="i"><use href="#ri-folder-line"/></svg></button>${varBtn('action-led-image-path')}</span>`, t('automationPage.imagePathHint')) +
+                row(t('automationPage.centerDisplay'), swc('action-led-center', true));
             break;
-            
         case 'qrcode':
-            html = `
-                <div class="form-group">
-                    <label>${t('automationPage.qrContentLabel')} <span class="required">*</span></label>
-                    <div class="input-with-btn">
-                        <input type="text" id="action-led-qr-text" class="input" placeholder="${t('promptRepair.qrVariableHint')}">
-                        <button type="button" class="btn btn-sm" onclick="showVariableSelectModal('action-led-qr-text')" title="${t('automationPage.insertVariableTitle')}"><i class="ri-bar-chart-line"></i></button>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1">
-                        <label>${t('led.errorLevel')}</label>
-                        <select id="action-led-qr-ecc" class="input">
-                            <option value="L">L - 7%</option>
-                            <option value="M" selected>M - 15%</option>
-                            <option value="Q">Q - 25%</option>
-                            <option value="H">H - 30%</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1">
-                        <label>${t('led.foregroundColor')}</label>
-                        <input type="color" value="#FFFFFF" id="action-led-qr-fg" class="led-color-picker-sm">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>${t('automationPage.qrBgImage')}</label>
-                    <div class="input-with-btn">
-                        <input type="text" id="action-led-qr-bg" class="input" placeholder="${t('common.none')}" readonly>
-                        <button type="button" class="btn btn-sm" onclick="browseActionQrBg()"><i class="ri-folder-line"></i> ${typeof t === 'function' ? t('common.browse') : 'Browse'}</button>
-                        <button type="button" class="btn btn-sm" onclick="document.getElementById('action-led-qr-bg').value=''" title="${t('common.clear')}">✕</button>
-                    </div>
-                </div>
-            `;
+            html = row(t('automationPage.qrContentLabel'), `<span class="inl">${inp('action-led-qr-text', 200, t('promptRepair.qrVariableHint'))}${varBtn('action-led-qr-text')}</span>`) +
+                row(t('led.errorLevel'), sel('action-led-qr-ecc', '<option value="L">L - 7%</option><option value="M" selected>M - 15%</option><option value="Q">Q - 25%</option><option value="H">H - 30%</option>', 110)) +
+                row(t('led.foregroundColor'), swatch('action-led-qr-fg', '#ffffff')) +
+                row(t('automationPage.qrBgImage'), `<span class="inl">${inp('action-led-qr-bg', 160, t('common.none'), '', 'readonly')}<button type="button" class="btn icon sm" onclick="browseActionQrBg()" title="${t('common.browse')}" aria-label="${t('common.browse')}"><svg class="i"><use href="#ri-folder-line"/></svg></button><button type="button" class="btn icon sm" onclick="document.getElementById('action-led-qr-bg').value=''" title="${t('common.clear')}" aria-label="${t('common.clear')}"><svg class="i"><use href="#ri-close-line"/></svg></button></span>`);
             break;
-            
-        case 'filter':
-            html = `
-                <div class="form-group">
-                    <label>${t('automationPage.filterLabel')} <span class="required">*</span></label>
-                    <select id="action-led-filter" class="input" onchange="updateActionFilterParams()">
-                        <option value="pulse">${t('automationPage.filterPulse')}</option>
-                        <option value="breathing">${t('automationPage.filterBreathing')}</option>
-                        <option value="blink">${t('automationPage.filterBlink')}</option>
-                        <option value="wave">${t('automationPage.filterWave')}</option>
-                        <option value="scanline">${t('automationPage.filterScanline')}</option>
-                        <option value="glitch">${t('automationPage.filterGlitch')}</option>
-                        <option value="rainbow">${t('automationPage.filterRainbow')}</option>
-                        <option value="sparkle">${t('automationPage.filterSparkle')}</option>
-                        <option value="plasma">${t('automationPage.filterPlasma')}</option>
-                        <option value="sepia">${t('automationPage.filterSepia')}</option>
-                        <option value="posterize">${t('automationPage.filterPosterize')}</option>
-                        <option value="contrast">${t('automationPage.filterContrast')}</option>
-                        <option value="invert">${t('automationPage.filterInvert')}</option>
-                        <option value="grayscale">${t('ledPage.filterGrayscale')}</option>
-                    </select>
-                </div>
-                <div id="action-filter-params"></div>
-            `;
+        case 'filter': {
+            const fk = ['pulse', 'breathing', 'blink', 'wave', 'scanline', 'glitch', 'rainbow', 'sparkle', 'plasma', 'sepia', 'posterize', 'contrast', 'invert'];
+            const opts = fk.map(k => `<option value="${k}">${t('automationPage.filter' + k.charAt(0).toUpperCase() + k.slice(1))}</option>`).join('') + `<option value="grayscale">${t('ledPage.filterGrayscale')}</option>`;
+            html = row(t('automationPage.filterLabel'), `<select id="action-led-filter" class="field" onchange="updateActionFilterParams()" style="width:190px">${opts}</select>`) +
+                '<div class="rows" id="action-filter-params"></div>';
             // 初始化滤镜参数
             setTimeout(updateActionFilterParams, 50);
             break;
+        }
     }
     
     paramsContainer.innerHTML = html;
+    syncSliders();
 }
 
 /**
@@ -19300,34 +15758,18 @@ function setActionLedColor(color) {
  * @param {function} onSelect - 选择回调，接收完整路径
  */
 async function showImageSelectModal(title, onSelect) {
-    // 创建模态框
     const modal = document.createElement('div');
     modal.id = 'image-select-modal';
     modal.className = 'modal show';
-    modal.onclick = (e) => { if (e.target === modal) closeModal('image-select-modal');
-                    };
-    
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:500px;">
-            <div class="modal-header">
-                <h3><i class="ri-folder-line"></i> ${title}</h3>
-                <button class="modal-close" onclick="closeModal('image-select-modal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="image-select-loading" style="text-align:center;padding:20px;">
-                    <div class="spinner"></div>
-                    <p>${t('common.loading')}</p>
-                </div>
-                <div id="image-select-list" style="display:none;max-height:400px;overflow-y:auto;"></div>
-                <div id="image-select-empty" style="display:none;text-align:center;padding:30px;color:var(--text-secondary);">
-                    <i class="ri-inbox-line" style="font-size:48px;margin-bottom:10px;display:block;"></i>
-                    <p>${t('automationPage.noImageFiles')}</p>
-                    <small>${typeof t === 'function' ? t('automationPage.supportedFormats') : '支持 PNG、JPG、BMP、GIF 格式'}</small>
-                </div>
-            </div>
-        </div>
-    `;
-    
+    modal.onclick = (e) => { if (e.target === modal) closeModal('image-select-modal'); };
+
+    modal.innerHTML = sheet(560, title, `
+        <div class="card" style="padding:0;background:var(--fill)">
+            <div class="tr" id="image-select-loading" style="--cols:1fr;border-top:0;color:var(--ink-3)">${t('common.loading')}</div>
+            <div id="image-select-list" style="display:none;max-height:400px;overflow-y:auto"></div>
+            <div class="tr" id="image-select-empty" style="display:none;--cols:1fr;border-top:0;color:var(--ink-3)">${t('automationPage.noImageFiles')} · ${t('automationPage.supportedFormats')}</div>
+        </div>`,
+        `<button class="btn lg" onclick="closeModal('image-select-modal')">${t('common.cancel')}</button>`);
     document.body.appendChild(modal);
     
     // 加载图像列表
@@ -19344,7 +15786,7 @@ async function showImageSelectModal(title, onSelect) {
         document.getElementById('image-select-loading').style.display = 'none';
         
         if (images.length === 0) {
-            document.getElementById('image-select-empty').style.display = 'block';
+            document.getElementById('image-select-empty').style.display = 'grid';
             return;
         }
         
@@ -19353,26 +15795,10 @@ async function showImageSelectModal(title, onSelect) {
         
         const listEl = document.getElementById('image-select-list');
         listEl.style.display = 'block';
-        listEl.innerHTML = images.map(img => {
+        listEl.innerHTML = images.map((img, i) => {
             const fullPath = `/sdcard/images/${img.name}`;
-            const icon = img.name.toLowerCase().endsWith('.gif') ? '<i class="ri-movie-line"></i>' : '<i class="ri-image-line"></i>';
-            const size = formatFileSize(img.size);
-            return `
-                <div class="image-select-item" data-path="${fullPath}" style="
-                    display:flex;align-items:center;padding:12px;
-                    border-bottom:1px solid var(--border);cursor:pointer;
-                    transition:background 0.2s;"
-                    onmouseover="this.style.background='var(--bg-hover)'"
-                    onmouseout="this.style.background='transparent'"
-                    onclick="selectImageItem(this, '${fullPath.replace(/'/g, "\\'")}')">
-                    <span style="font-size:24px;margin-right:12px;">${icon}</span>
-                    <div style="flex:1;min-width:0;">
-                        <div style="font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${img.name}</div>
-                        <small style="color:var(--text-secondary);">${size}</small>
-                    </div>
-                    <span class="image-select-check" style="display:none;color:var(--success);font-size:20px;"><i class="ri-check-line"></i></span>
-                </div>
-            `;
+            const icon = img.name.toLowerCase().endsWith('.gif') ? 'ri-movie-line' : 'ri-image-line';
+            return `<div class="tr image-select-item" data-path="${escapeHtml(fullPath)}" style="--cols:24px 1fr 90px;cursor:pointer${i === 0 ? ';border-top:0' : ''}" onclick="selectImageItem(this, this.dataset.path)"><div><svg class="i"><use href="#${icon}"/></svg></div><div>${escapeHtml(img.name)}</div><div>${formatFileSize(img.size)}</div></div>`;
         }).join('');
         
         // 存储回调
@@ -19380,12 +15806,8 @@ async function showImageSelectModal(title, onSelect) {
         
     } catch (e) {
         console.error('加载图像列表失败:', e);
-        document.getElementById('image-select-loading').innerHTML = `
-            <div style="color:var(--danger);">
-                <p>${t('common.loadFailed')}:  ${escapeHtml(e.message)}</p>
-                <button class="btn btn-sm" onclick="closeModal('image-select-modal')">${t('common.close')}</button>
-            </div>
-        `;
+        const ld = document.getElementById('image-select-loading');
+        if (ld) ld.innerHTML = `<span class="form-error">${t('common.loadFailed')}: ${escapeHtml(e.message)}</span>`;
     }
 }
 
@@ -19393,16 +15815,6 @@ async function showImageSelectModal(title, onSelect) {
  * 选择图像项目
  */
 function selectImageItem(el, path) {
-    // 移除其他选中状态
-    document.querySelectorAll('.image-select-item').forEach(item => {
-        item.style.background = 'transparent';
-        item.querySelector('.image-select-check').style.display = 'none';
-    });
-    
-    // 选中当前项
-    el.style.background = 'var(--bg-hover)';
-    el.querySelector('.image-select-check').style.display = 'block';
-    
     // 调用回调
     if (window._imageSelectCallback) {
         window._imageSelectCallback(path);
@@ -19430,131 +15842,93 @@ async function browseActionQrBg() {
     });
 }
 
-/**
- * 显示变量选择模态框
- * @param {string} targetInputId - 目标输入框 ID
- * @param {string} mode - 'insert' 插入 ${var} 或 'replace' 替换整个值
- */
-async function showVariableSelectModal(targetInputId, mode = 'insert') {
+// 变量选择器（三处共用）：搜索框 + 分组折叠表格 + 关闭；cb 决定 selectVariable 的回调模式
+function buildVarSelectModal(title, cb, emptyExtra = '') {
+    const old = document.getElementById('variable-select-modal');
+    if (old) old.remove();
     const modal = document.createElement('div');
     modal.id = 'variable-select-modal';
     modal.className = 'modal show';
-    modal.onclick = (e) => { if (e.target === modal) closeModal('variable-select-modal');
-                    };
-    
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:550px;">
-            <div class="modal-header">
-                <h3>${typeof t === 'function' ? t('automation.selectVariableTitle') : '选择变量'}</h3>
-                <button class="modal-close" onclick="closeModal('variable-select-modal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div style="margin-bottom:12px;">
-                    <input type="text" id="var-search" class="input" placeholder="${typeof t === 'function' ? t('automation.searchVariable') : '搜索变量...'}" 
-                           oninput="filterVariableList(this.value)" style="width:100%;">
-                </div>
-                <div id="variable-select-loading" style="text-align:center;padding:20px;">
-                    <div class="spinner"></div>
-                    <p>${typeof t === 'function' ? t('automation.loadingVariables') : '加载变量列表...'}</p>
-                </div>
-                <div id="variable-select-list" style="display:none;max-height:400px;overflow-y:auto;"></div>
-                <div id="variable-select-empty" style="display:none;text-align:center;padding:30px;color:var(--text-secondary);">
-                    <i class="ri-inbox-line" style="font-size:48px;margin-bottom:10px;display:block;"></i>
-                    <p>${t('automation.noVariablesAvailable')}</p>
-                    <small>${t('automationPage.configSourceFirst')}</small>
-                </div>
-            </div>
-        </div>
-    `;
-    
+    if (cb) modal.dataset.callback = cb;
+    modal.onclick = (e) => { if (e.target === modal) closeModal('variable-select-modal'); };
+    modal.innerHTML = sheet(660, title, `
+        <input class="field" id="var-search" placeholder="${t('automation.searchVariable')}" aria-label="${t('automation.searchVariable')}" oninput="filterVariableList(this.value)" style="width:100%">
+        <div class="card" style="padding:0;margin-top:12px;background:var(--fill)">
+            <div class="tr" id="variable-select-loading" style="--cols:1fr;border-top:0;color:var(--ink-3)">${t('automation.loadingVariables')}</div>
+            <div id="variable-select-list" style="display:none;max-height:400px;overflow-y:auto"></div>
+            <div class="tr" id="variable-select-empty" style="display:none;--cols:1fr;border-top:0;color:var(--ink-3)">${t('automation.noVariablesAvailable')}${emptyExtra ? ' · ' + emptyExtra : ''}</div>
+        </div>`,
+        `<button class="btn lg primary" onclick="closeModal('variable-select-modal')">${t('common.close')}</button>`,
+        "closeModal('variable-select-modal')");
     document.body.appendChild(modal);
-    
-    // 保存目标信息
-    window._varSelectTarget = { inputId: targetInputId, mode: mode };
-    
-    // 加载变量列表
+    return modal;
+}
+
+async function loadVarSelectList(asExpr = false) {
     try {
         const result = await api.call('automation.variables.list', {
             include_value: false,
             include_meta: false
         });
         const variables = result.data?.variables || [];
-        
         document.getElementById('variable-select-loading').style.display = 'none';
-        
         if (variables.length === 0) {
-            document.getElementById('variable-select-empty').style.display = 'block';
+            document.getElementById('variable-select-empty').style.display = 'grid';
             return;
         }
-        
-        // 按数据源分组
         const grouped = {};
         variables.forEach(v => {
             const sourceId = v.source_id || '_system';
             if (!grouped[sourceId]) grouped[sourceId] = [];
             grouped[sourceId].push(v);
         });
-        
         const listEl = document.getElementById('variable-select-list');
         listEl.style.display = 'block';
-        
+        const cols = '--cols:1.4fr 1fr .8fr';
         let html = '';
+        let first = true;
         for (const [sourceId, vars] of Object.entries(grouped)) {
             const groupId = `var-group-${sourceId.replace(/[^a-zA-Z0-9]/g, '_')}`;
             const safeSourceId = escapeHtml(sourceId);
-            const sourceLabel = sourceId === '_system'
-                ? (typeof t === 'function' ? t('automation.systemVariables') : 'System Variables')
-                : sourceId;
-            html += `<div class="var-group" data-source="${safeSourceId}">
-                <div class="var-group-header" style="padding:10px 12px;background:var(--bg-elevated);font-weight:600;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:space-between;"
-                     onclick="toggleVarGroup('${groupId}')">
-                    <span><i class="ri-archive-line"></i> ${escapeHtml(sourceLabel)} <span style="font-weight:normal;color:var(--text-secondary);">(${vars.length})</span></span>
-                    <span class="var-group-arrow" id="${groupId}-arrow" style="transition:transform 0.2s;">▶</span>
+            const sourceLabel = sourceId === '_system' ? t('automation.systemVariables') : sourceId;
+            html += `<div class="var-group" data-source="${safeSourceId}"${first ? '' : ' style="border-top:1px solid var(--hair)"'}>
+                <div class="dis var-group-header" style="font-size:13px;cursor:pointer" onclick="toggleVarGroup('${groupId}')">
+                    <span class="var-group-arrow" id="${groupId}-arrow" style="display:inline-block;color:var(--ink-3)">›</span>
+                    <span title="${vars.length}">${escapeHtml(sourceLabel)}</span>
                 </div>
-                <div class="var-group-items" id="${groupId}" style="display:none;">`;
-            
+                <div class="var-group-items" id="${groupId}" hidden>
+                    <div class="tr th" style="${cols}"><div>${t('common.variable')}</div><div>${t('sshPage.varTableValue')}</div><div>${t('common.type')}</div></div>`;
             vars.forEach(v => {
-                const typeIcon = { 'bool': '<i class="ri-record-circle-fill"></i>', 'int': '<i class="ri-numbers-line"></i>', 'float': '<i class="ri-bar-chart-line"></i>', 'string': '<i class="ri-file-text-line"></i>' }[v.type] || '<i class="ri-file-list-line"></i>';
-                const rawName = v.name || '';
-                const safeName = escapeHtml(rawName);
-                const displayMeta = v.value !== undefined ? String(v.value).substring(0, 30) : (v.type || '-');
-                const metaLabel = v.value !== undefined
-                    ? (typeof t === 'function' ? t('sshPage.varTableValue') : '当前值')
-                    : (typeof t === 'function' ? t('common.type') : '类型');
-                html += `
-                    <div class="var-select-item" data-name="${safeName}" data-source="${safeSourceId}" style="
-                        display:flex;align-items:center;padding:10px 12px;padding-left:24px;
-                        border-bottom:1px solid var(--border);cursor:pointer;
-                        transition:background 0.2s;"
-                        onmouseover="this.style.background='var(--bg-hover)'"
-                        onmouseout="this.style.background='transparent'"
-                        onclick="selectVariable(this.dataset.name)">
-                        <span style="font-size:18px;margin-right:10px;">${typeIcon}</span>
-                        <div style="flex:1;min-width:0;">
-                            <div style="font-weight:500;font-family:monospace;">\${${safeName}}</div>
-                            <small style="color:var(--text-secondary);">${escapeHtml(metaLabel)}: ${escapeHtml(displayMeta)}${displayMeta.length >= 30 ? '...' : ''}</small>
-                        </div>
-                        <span class="var-select-check" style="display:none;color:var(--success);font-size:20px;"><i class="ri-check-line"></i></span>
-                    </div>
-                `;
+                const safeName = escapeHtml(v.name || '');
+                const val = v.value !== undefined ? String(v.value).substring(0, 30) + (String(v.value).length > 30 ? '...' : '') : '-';
+                html += `<div class="tr var-select-item" data-name="${safeName}" data-source="${safeSourceId}" style="${cols};cursor:pointer" onclick="selectVariable(this.dataset.name)">
+                        <div><span class="mono">${asExpr ? '\${' + safeName + '}' : safeName}</span></div>
+                        <div>${escapeHtml(val)}</div>
+                        <div>${escapeHtml(v.type || '-')}</div>
+                    </div>`;
             });
             html += '</div></div>';
+            first = false;
         }
-        
         listEl.innerHTML = html;
-        
-        // 聚焦搜索框
         setTimeout(() => document.getElementById('var-search')?.focus(), 100);
-        
     } catch (e) {
         console.error('加载变量列表失败:', e);
-        document.getElementById('variable-select-loading').innerHTML = `
-            <div style="color:var(--danger);">
-                <p>${t('common.loadFailed')}:  ${escapeHtml(e.message)}</p>
-                <button class="btn btn-sm" onclick="closeModal('variable-select-modal')">${t('common.close')}</button>
-            </div>
-        `;
+        const ld = document.getElementById('variable-select-loading');
+        if (ld) ld.innerHTML = `<span class="form-error">${t('common.loadFailed')}: ${escapeHtml(e.message)}</span>`;
     }
+}
+
+/**
+ * 显示变量选择模态框
+ * @param {string} targetInputId - 目标输入框 ID
+ * @param {string} mode - 'insert' 插入 ${var} 或 'replace' 替换整个值
+ */
+async function showVariableSelectModal(targetInputId, mode = 'insert') {
+    buildVarSelectModal(t('automation.selectVariableTitle'), '', t('automationPage.configSourceFirst'));
+    // 保存目标信息
+    window._varSelectTarget = { inputId: targetInputId, mode: mode };
+    await loadVarSelectList(true);
 }
 
 /**
@@ -19564,56 +15938,27 @@ function toggleVarGroup(groupId) {
     const itemsEl = document.getElementById(groupId);
     const arrowEl = document.getElementById(groupId + '-arrow');
     if (!itemsEl) return;
-    
-    const isHidden = itemsEl.style.display === 'none';
-    itemsEl.style.display = isHidden ? 'block' : 'none';
-    if (arrowEl) {
-        arrowEl.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
-    }
+    itemsEl.hidden = !itemsEl.hidden;
+    if (arrowEl) arrowEl.style.transform = itemsEl.hidden ? '' : 'rotate(90deg)';
 }
 
 /**
  * 过滤变量列表
  */
 function filterVariableList(keyword) {
-    const items = document.querySelectorAll('.var-select-item');
     const kw = keyword.toLowerCase();
-    
-    // 如果有搜索关键词，展开所有分组并过滤
-    if (kw) {
-        items.forEach(item => {
-            const name = item.dataset.name.toLowerCase();
-            item.style.display = name.includes(kw) ? 'flex' : 'none';
-        });
-        
-        // 展开有匹配项的分组，隐藏没有匹配项的分组
-        document.querySelectorAll('.var-group').forEach(group => {
-            const itemsContainer = group.querySelector('.var-group-items');
-            const arrow = group.querySelector('.var-group-arrow');
-            const visibleItems = group.querySelectorAll('.var-select-item[style*="flex"]');
-            
-            if (visibleItems.length > 0) {
-                group.style.display = 'block';
-                if (itemsContainer) itemsContainer.style.display = 'block';
-                if (arrow) arrow.style.transform = 'rotate(90deg)';
-            } else {
-                group.style.display = 'none';
-            }
-        });
-    } else {
-        // 清空搜索时，显示所有项目但折叠分组
-        items.forEach(item => {
-            item.style.display = 'flex';
-        });
-        
-        document.querySelectorAll('.var-group').forEach(group => {
-            const itemsContainer = group.querySelector('.var-group-items');
-            const arrow = group.querySelector('.var-group-arrow');
-            group.style.display = 'block';
-            if (itemsContainer) itemsContainer.style.display = 'none';
-            if (arrow) arrow.style.transform = 'rotate(0deg)';
-        });
-    }
+    document.querySelectorAll('.var-select-item').forEach(item => {
+        item.hidden = !!kw && !item.dataset.name.toLowerCase().includes(kw);
+    });
+    document.querySelectorAll('.var-group').forEach(group => {
+        const itemsContainer = group.querySelector('.var-group-items');
+        const arrow = group.querySelector('.var-group-arrow');
+        const any = !!group.querySelector('.var-select-item:not([hidden])');
+        // 有关键词：展开有匹配的分组、隐藏无匹配的；无关键词：全部显示并折叠
+        group.hidden = !!kw && !any;
+        if (itemsContainer) itemsContainer.hidden = !kw;
+        if (arrow) arrow.style.transform = kw ? 'rotate(90deg)' : '';
+    });
 }
 
 /**
@@ -19714,7 +16059,7 @@ function updateActionFilterParams() {
     const config = filterConfig[filter];
     
     if (!config || !config.params || config.params.length === 0) {
-        paramsContainer.innerHTML = ("<div class=\"form-hint\" style=\"padding:10px;color:var(--text-secondary);\">" + t('automationPage.noExtraParams') + "</div>");
+        paramsContainer.innerHTML = row(t('common.params'), `<span class="t-note">${t('automationPage.noExtraParams')}</span>`);
         return;
     }
     
@@ -19724,20 +16069,14 @@ function updateActionFilterParams() {
         if (!paramInfo) return;
         
         const defaultValue = config.defaults[param] || 50;
-        html += `
-            <div class="form-group">
-                <label>${paramInfo.label}</label>
-                <div class="brightness-config">
-                    <input type="range" min="${paramInfo.min}" max="${paramInfo.max}" value="${defaultValue}" 
-                           id="action-filter-${param}" class="brightness-slider-sm" 
-                           oninput="document.getElementById('action-filter-${param}-val').textContent=this.value+'${paramInfo.unit || ''}'">
-                    <span class="brightness-val" id="action-filter-${param}-val">${defaultValue}${paramInfo.unit || ''}</span>
-                </div>
-            </div>
-        `;
+        const unitTxt = paramInfo.unit || '';
+        html += row(paramInfo.label,
+            ledSlider(`action-filter-${param}`, paramInfo.min, paramInfo.max, defaultValue, `document.getElementById('action-filter-${param}-val').textContent=this.value+'${unitTxt}'`) +
+            ledVal(`action-filter-${param}-val`, defaultValue + unitTxt));
     });
     
     paramsContainer.innerHTML = html;
+    syncSliders();
 }
 
 /**
@@ -19779,6 +16118,7 @@ async function editAction(id) {
         
         // 打开添加对话框并填充数据
         await showAddActionModal();
+        document.getElementById('action-modal').dataset.edit = '1';
         
         // 等待 DOM 更新
         await new Promise(r => setTimeout(r, 100));
@@ -19977,8 +16317,7 @@ async function editAction(id) {
         }
         
         // 更改模态框标题和按钮
-        const modalTitle = document.querySelector('#action-modal .modal-header h3');
-        if (modalTitle) modalTitle.textContent = typeof t === 'function' ? t('ui.editActionTemplate') : '编辑动作模板';
+        syncSliders();
         
         const submitBtn = document.querySelector('#action-modal button[onclick="submitAction()"]');
         if (submitBtn) {
@@ -20022,7 +16361,7 @@ async function updateAction(originalId) {
  * 删除动作
  */
 async function deleteAction(id) {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmDeleteAction', { id }) : `确定要删除动作模板 "${id}" 吗？`)) return;
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteAction', { id }) : `确定要删除动作模板 "${id}" 吗？`, { primary: t('common.delete'), tone: 'danger' })) return;
     
     try {
         const result = await api.call('automation.actions.delete', { id });
@@ -20055,7 +16394,7 @@ async function toggleSource(id, enable) {
  * 删除数据源
  */
 async function deleteSource(id) {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmDeleteSource', { id }) : `确定要删除数据源 "${id}" 吗？此操作不可撤销。`)) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteSource', { id }) : `确定要删除数据源 "${id}" 吗？此操作不可撤销。`, { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
     
@@ -20074,16 +16413,8 @@ async function deleteSource(id) {
  * 显示数据源的变量列表
  */
 async function showSourceVariables(sourceId) {
-    const modal = document.getElementById('source-variables-modal');
-    const body = document.getElementById('source-variables-body');
-    if (!modal || !body) return;
-    
-    // 更新标题
-    const header = modal.querySelector('.modal-header h2');
-    if (header) header.textContent = typeof t === 'function' ? t('ui.sourceVariables', { source: sourceId }) : `${sourceId} 变量`;
-    
-    body.innerHTML = '<div class="loading">' + t('common.loading') + '</div>';
-    modal.classList.remove('hidden');
+    const body = openSourceVarsSheet(t('ui.variablesTitle', { name: escapeHtml(sourceId) }));
+    if (!body) return;
     
     try {
         const result = await api.call('automation.variables.list', {
@@ -20091,41 +16422,18 @@ async function showSourceVariables(sourceId) {
             include_meta: true
         });
         if (result.code === 0 && result.data && result.data.variables) {
-            // 过滤出属于该数据源的变量
             const vars = result.data.variables.filter(v => v.source_id === sourceId);
             
             if (vars.length === 0) {
-                body.innerHTML = '<p style="text-align:center;color:var(--text-secondary);padding:20px">' + (typeof t === 'function' ? t('automationPage.sourceNoData') : '该数据源暂无变量数据') + '</p>';
+                setSourceVarsMessage(body, t('automationPage.sourceNoData'));
                 return;
             }
-            
-            body.innerHTML = `
-                <table class="data-table">
-                    <thead>
-                        <tr>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableName') : '变量名'}</th>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableType') : '类型'}</th>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableValue') : '当前值'}</th>
-                            <th>${typeof t === 'function' ? t('sshPage.varTableUpdated') : '更新时间'}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${vars.map(v => `
-                            <tr>
-                                <td><code class="variable-name">${v.name}</code></td>
-                                <td><span class="type-badge type-${v.type || 'unknown'}">${v.type || '-'}</span></td>
-                                <td class="variable-value">${formatVariableValue(v.value, v.type)}</td>
-                                <td class="variable-time">${formatVariableUpdateTime(v)}</td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            `;
+            renderSourceVarsTable(body, vars);
         } else {
-            body.innerHTML = `<p style="text-align:center;color:var(--rose-500)">${escapeHtml(result.message || (typeof t === 'function' ? t('sshPage.getVarFailed') : '获取变量失败'))}</p>`;
+            setSourceVarsMessage(body, escapeHtml(result.message || t('sshPage.getVarFailed')), true);
         }
     } catch (error) {
-        body.innerHTML = `<p style="text-align:center;color:var(--rose-500)">${escapeHtml(error.message)}</p>`;
+        setSourceVarsMessage(body, escapeHtml(error.message), true);
     }
 }
 
@@ -20148,9 +16456,16 @@ async function showShutdownSettingsModal() {
     const modal = document.getElementById('shutdown-settings-modal');
     if (!modal) return;
     
-    // 隐藏错误信息
-    const errorDiv = document.getElementById('shutdown-settings-error');
-    if (errorDiv) errorDiv.classList.add('hidden');
+    const num = (id, ph, extra) => inp(id, 90, ph, 'num', `type="number" ${extra}`);
+    modal.innerHTML = sheet(600, t('system.shutdownSettings'),
+        grp(
+            row(t('system.lowVoltageLabel'), num('ss-low-voltage', '12.6', 'step="0.1" min="10" max="24"') + unit('V'), t('system.lowVoltageNote')) +
+            row(t('system.recoveryVoltageLabel'), num('ss-recovery-voltage', '18.0', 'step="0.1" min="10" max="30"') + unit('V'), '', t('system.recoveryVoltageThresholdHint')) +
+            row(t('system.shutdownDelayLabel'), num('ss-shutdown-delay', '60', 'step="1" min="10" max="600"') + unit(t('common.seconds')), t('system.shutdownDelayNote')) +
+            row(t('system.recoveryHoldLabel'), num('ss-recovery-hold', '5', 'step="1" min="1" max="300"') + unit(t('common.seconds')), '', t('system.recoveryHoldHint')) +
+            row(t('system.fanStopDelayLabel'), num('ss-fan-stop-delay', '60', 'step="1" min="10" max="600"') + unit(t('common.seconds')), '', t('system.fanStopDelayHint'))) +
+        '<div id="shutdown-settings-error" class="form-error hidden"></div>',
+        `<button class="btn lg" onclick="resetShutdownSettings()">${t('system.restoreDefaults')}</button><button class="btn lg" onclick="closeShutdownSettingsModal()">${t('common.cancel')}</button><button class="btn lg primary" onclick="saveShutdownSettings()">${t('common.save')}</button>`);
     
     // 显示模态框
     modal.classList.remove('hidden');
@@ -20232,7 +16547,7 @@ async function saveShutdownSettings() {
  * 恢复默认关机设置
  */
 async function resetShutdownSettings() {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmRestoreDefaults') : '确认恢复默认设置？')) return;
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRestoreDefaults') : '确认恢复默认设置？', { primary: t('system.restoreDefaults'), tone: 'neutral' })) return;
     
     const config = {
         low_threshold: 12.6,
@@ -20265,7 +16580,7 @@ async function resetShutdownSettings() {
  * 删除规则
  */
 async function deleteRule(id) {
-    if (!confirmAction(typeof t === 'function' ? t('ui.confirmDeleteRule', { id }) : `确定要删除规则 "${id}" 吗？此操作不可撤销。`)) {
+    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteRule', { id }) : `确定要删除规则 "${id}" 吗？此操作不可撤销。`, { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
     
@@ -20306,203 +16621,75 @@ function showAddSourceModal() {
     // 移除可能存在的旧模态框
     const oldModal = document.getElementById('add-source-modal');
     if (oldModal) oldModal.remove();
-    
+
     const modal = document.createElement('div');
     modal.id = 'add-source-modal';
     modal.className = 'modal';
-    modal.innerHTML = `
-        <div class="modal-content cc-compact automation-modal" style="max-width:750px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('automation.addSourceTitle') : '添加外部数据源'}</h2>
-                <button class="modal-close" onclick="closeModal('add-source-modal')"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <div class="modal-tabs automation-modal-tabs">
-                    <button type="button" class="modal-tab active" data-type="rest" onclick="switchSourceType('rest')">${typeof t === 'function' ? t('automation.restTab') : 'REST API'}</button>
-                    <button type="button" class="modal-tab" data-type="websocket" onclick="switchSourceType('websocket')">${typeof t === 'function' ? t('automation.wsTab') : 'WebSocket'}</button>
-                    <button type="button" class="modal-tab" data-type="socketio" onclick="switchSourceType('socketio')">${typeof t === 'function' ? t('automation.sioTab') : 'Socket.IO'}</button>
-                    <button type="button" class="modal-tab" data-type="variable" onclick="switchSourceType('variable')">${typeof t === 'function' ? t('automation.variableTab') : '指令变量'}</button>
-                </div>
-                <input type="hidden" id="source-type" value="rest">
-                
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.sourceId') : '数据源 ID'} <span class="required">*</span></label>
-                        <input type="text" id="source-id" class="input" placeholder="${typeof t === 'function' ? t('automation.sourceIdPlaceholder') : '如: agx_temp'}">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.sourceLabel') : '显示名称'}</label>
-                        <input type="text" id="source-label" class="input" placeholder="${typeof t === 'function' ? t('automation.sourceLabelPlaceholder') : '如: AGX 温度'}">
-                    </div>
-                </div>
-                
-                <div id="source-rest-config" class="config-section">
-                    <div class="config-title">${typeof t === 'function' ? t('automation.restConfigTitle') : 'REST API 配置'}</div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.requestUrlReq') : '请求地址'} <span class="required">*</span></label>
-                        <div class="input-with-btn">
-                            <input type="text" id="source-rest-url" class="input" placeholder="http://192.168.1.100/api/status">
-                            <button class="btn btn-sm btn-warning" onclick="testRestConnection()" id="btn-test-rest">${typeof t === 'function' ? t('automation.testBtn') : '测试'}</button>
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group" style="flex:0 0 120px">
-                            <label>${typeof t === 'function' ? t('sshPage.method') : '方法'}</label>
-                            <select id="source-rest-method" class="input">
-                                <option value="GET">GET</option>
-                                <option value="POST">POST</option>
-                            </select>
-                        </div>
-                        <div class="form-group" style="flex:0 0 140px">
-                            <label>${typeof t === 'function' ? t('automation.pollIntervalMs') : '轮询间隔 (ms)'}</label>
-                            <input type="number" id="source-interval" class="input" value="5000" min="500">
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('automation.authHeaderOptional') : 'Authorization 头（可选）'}</label>
-                            <input type="text" id="source-rest-auth" class="input" placeholder="${typeof t === 'function' ? t('automation.authPlaceholder') : 'Bearer token'}">
-                        </div>
-                    </div>
-                    
-                    <div id="rest-test-result" class="test-result-panel" style="display:none">
-                        <div class="test-result-header">
-                            <span class="test-status"></span>
-                            <button class="btn btn-sm btn-gray" onclick="toggleJsonPreview()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('sshPage.rawData') : '原始数据'}</button>
-                        </div>
-                        <div id="rest-json-preview" class="json-preview" style="display:none"></div>
-                        <div id="rest-var-selector" class="var-selector">
-                            <div class="var-selector-title">${typeof t === 'function' ? t('automation.selectFieldsToExtract') : '选择要提取的字段：'}</div>
-                            <div class="var-list"></div>
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.jsonPathLabel') : 'JSON 数据路径'} <span style="color:var(--text-secondary);font-weight:normal">${typeof t === 'function' ? t('automation.jsonPathHint') : '(点击上方字段自动填入)'}</span></label>
-                        <input type="text" id="source-rest-path" class="input" placeholder="${typeof t === 'function' ? t('automation.jsonPathPlaceholderRest') : '如: data.temperature（留空取整个响应）'}">
-                    </div>
-                </div>
-                
-                <div id="source-websocket-config" class="config-section" style="display:none">
-                    <div class="config-title">${typeof t === 'function' ? t('automation.wsConfigTitle') : 'WebSocket 配置'}</div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.wsAddressReq') : 'WebSocket 地址'} <span class="required">*</span></label>
-                        <div class="input-with-btn">
-                            <input type="text" id="source-ws-uri" class="input" placeholder="${typeof t === 'function' ? t('automation.wsPlaceholder') : 'ws://192.168.1.100:8080/ws'}">
-                            <button class="btn btn-sm btn-warning" onclick="testWsConnection()" id="btn-test-ws">${typeof t === 'function' ? t('automation.testBtn') : '测试'}</button>
-                        </div>
-                    </div>
-                    <div id="ws-test-result" class="test-result-panel" style="display:none">
-                        <div class="test-result-header">
-                            <span class="test-status"></span>
-                            <button class="btn btn-sm btn-gray" onclick="toggleWsJsonPreview()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('sshPage.rawData') : '原始数据'}</button>
-                        </div>
-                        <div id="ws-json-preview" class="json-preview" style="display:none"></div>
-                        <div id="ws-var-selector" class="var-selector">
-                            <div class="var-selector-title">${typeof t === 'function' ? t('automation.selectFieldsToExtract') : '选择要提取的字段：'}</div>
-                            <div class="var-list"></div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.jsonPathLabel') : 'JSON 数据路径'}</label>
-                        <input type="text" id="source-ws-path" class="input" placeholder="${typeof t === 'function' ? t('automation.jsonPathPlaceholderWs') : '如: data.temperature（留空取整个消息）'}">
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.reconnectIntervalMs') : '断线重连间隔 (ms)'}</label>
-                        <input type="number" id="source-ws-reconnect" class="input" value="5000" min="1000">
-                    </div>
-                </div>
-                
-                <div id="source-socketio-config" class="config-section" style="display:none">
-                    <div class="config-title">${typeof t === 'function' ? t('automation.sioConfigTitle') : 'Socket.IO 配置'}</div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.sioServerReq') : '服务器地址'} <span class="required">*</span></label>
-                        <div class="input-with-btn">
-                            <input type="text" id="source-sio-url" class="input" placeholder="${typeof t === 'function' ? t('automation.sioPlaceholder') : 'http://10.10.99.99:59090'}">
-                            <button class="btn btn-sm btn-warning" onclick="testSioConnection()" id="btn-test-sio">${typeof t === 'function' ? t('automation.testBtn') : '测试'}</button>
-                        </div>
-                        <small style="color:var(--text-secondary)">${typeof t === 'function' ? t('automation.sioV4Hint') : 'Socket.IO v4 协议，使用 HTTP/HTTPS 地址'}</small>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('automation.eventNameLabel') : '事件名称'} <span style="color:var(--text-secondary);font-weight:normal">${typeof t === 'function' ? t('automation.eventNameHint') : '(留空自动发现)'}</span></label>
-                            <input type="text" id="source-sio-event" class="input" placeholder="${typeof t === 'function' ? t('automation.eventNamePlaceholder') : '测试时留空可自动发现事件'}">
-                        </div>
-                        <div class="form-group" style="flex:0 0 150px">
-                            <label>${typeof t === 'function' ? t('automation.timeoutMs') : '超时时间 (ms)'}</label>
-                            <input type="number" id="source-sio-timeout" class="input" value="15000" min="5000">
-                        </div>
-                    </div>
-                    <div id="sio-test-result" class="test-result-panel" style="display:none">
-                        <div class="test-result-header">
-                            <span class="test-status"></span>
-                            <button class="btn btn-sm btn-gray" onclick="toggleSioJsonPreview()"><i class="ri-file-text-line"></i> ${typeof t === 'function' ? t('sshPage.rawData') : '原始数据'}</button>
-                        </div>
-                        <div id="sio-json-preview" class="json-preview" style="display:none"></div>
-                        <div id="sio-var-selector" class="var-selector">
-                            <div class="var-selector-title">${typeof t === 'function' ? t('automation.selectFieldsToExtract') : '选择要提取的字段：'}</div>
-                            <div class="var-list"></div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.jsonPathLabel') : 'JSON 数据路径'}</label>
-                        <input type="text" id="source-sio-path" class="input" placeholder="${typeof t === 'function' ? t('automation.jsonPathPlaceholderSio') : '如: cpu.avg_usage（留空取整个事件数据）'}">
-                    </div>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="source-sio-auto-discover" checked>
-                        <span>${typeof t === 'function' ? t('automation.autoDiscoverFields') : '自动发现所有 JSON 字段为变量'}</span>
-                    </label>
-                    <small style="color:var(--text-secondary);display:block;margin-top:4px;margin-bottom:10px;padding-left:24px">${typeof t === 'function' ? t('automation.autoDiscoverHint') : '关闭后仅使用上方选中的字段作为变量'}</small>
-                </div>
-                
-                <div id="source-variable-config" class="config-section" style="display:none">
-                    <div class="config-title">${typeof t === 'function' ? t('automation.variableConfigTitle') : 'SSH 指令变量'}</div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.sshHostReq') : 'SSH 主机'} <span class="required">*</span></label>
-                        <select id="source-ssh-host" class="input" onchange="onSshHostChangeForSource()">
-                            <option value="">-- ${t('common.loading')} --</option>
-                        </select>
-                        <small style="color:var(--text-secondary)">${typeof t === 'function' ? t('automation.sshHostHint') : '选择已配置的 SSH 主机（在 SSH 页面添加）'}</small>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.selectCmdReq') : '选择指令'} <span class="required">*</span></label>
-                        <select id="source-ssh-cmd" class="input" onchange="onSshCmdChange()">
-                            <option value="">${typeof t === 'function' ? t('automation.selectHostFirst') : '-- 先选择主机 --'}</option>
-                        </select>
-                        <small style="color:var(--text-secondary)">${typeof t === 'function' ? t('automation.selectCmdHint') : '选择要监视的指令（在 SSH 页面创建）'}</small>
-                    </div>
-                    <div id="source-ssh-cmd-preview" class="ssh-cmd-preview" style="display:none">
-                        <div class="preview-title">${typeof t === 'function' ? t('automation.cmdPreviewTitle') : '指令详情'}</div>
-                        <div class="preview-content">
-                            <div class="preview-row"><span class="preview-label">${typeof t === 'function' ? t('automation.commandLabel') : '命令:'}</span> <code id="preview-command">-</code></div>
-                            <div class="preview-row"><span class="preview-label">${typeof t === 'function' ? t('automation.descLabel') : '描述:'}</span> <span id="preview-desc">-</span></div>
-                            <div class="preview-row"><span class="preview-label">${typeof t === 'function' ? t('automation.timeoutLabel') : '超时:'}</span> <span id="preview-timeout">30</span> ${typeof t === 'function' ? t('automation.seconds') : '秒'}</div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <div class="ssh-vars-preview">
-                            <div class="preview-title">${typeof t === 'function' ? t('automation.varsPreviewTitle') : '将监视以下变量（需先执行指令）：'}</div>
-                            <div id="ssh-vars-list" class="ssh-vars-list">
-                                <span class="text-muted">${typeof t === 'function' ? t('automation.selectHostCmdFirst') : '请先选择 SSH 主机和指令'}</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.pollIntervalSec') : '检测间隔 (秒)'}</label>
-                        <input type="number" id="source-var-interval" class="input" value="5" min="1" max="3600">
-                        <small style="color:var(--text-secondary)">${typeof t === 'function' ? t('automation.pollIntervalHint') : '定期读取变量值的间隔'}</small>
-                    </div>
-                </div>
-                
-                <label class="checkbox-label">
-                    <input type="checkbox" id="source-enabled" checked>
-                    <span>${typeof t === 'function' ? t('automation.enableAfterCreate') : '创建后立即启用'}</span>
-                </label>
-            </div>
-            <div class="modal-footer cc-compact-footer">
-                <button class="btn btn-gray" onclick="closeModal('add-source-modal')">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                <button class="btn btn-service-style" onclick="submitAddSource()"><i class="ri-database-2-line"></i> ${typeof t === 'function' ? t('automation.addSource') : '添加数据源'}</button>
-            </div>
+    const typeName = { rest: 'REST API', websocket: 'WebSocket', socketio: 'Socket.IO', variable: t('automation.variableTab') };
+    const testRow = (label, inputId, ph, btnId, fn, cls = 'mono') => `<div class="fl"><label>${label}</label><div style="display:flex;gap:8px"><input class="field ${cls}" style="flex:1" id="${inputId}" placeholder="${ph}" aria-label="${label}"><button class="btn" id="${btnId}" onclick="${fn}()">${t('automation.testBtn')}</button></div></div>`;
+    const testPanel = (pre, toggle) => `<div id="${pre}-test-result" style="display:none"><div style="margin:12px 0 4px"><span class="test-status"></span> <span class="t-note" role="button" style="cursor:pointer" onclick="${toggle}()">${t('sshPage.rawData')} ▸</span></div><pre id="${pre}-json-preview" class="term" style="display:none;height:160px;overflow:auto;font-size:12px;line-height:18px;margin:8px 0 0;white-space:pre-wrap"></pre><div id="${pre}-var-selector"><div class="var-list"></div></div></div>`;
+    const num = (id, w, val, attrs) => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
+    const cfgTitle = txt => `<div class="gt" style="margin-top:16px">${txt}</div>`;
+    modal.innerHTML = sheet(660, `<span id="add-source-title">${t('automation.addSourceTitle')} · REST API</span>`, `
+        <div class="seg full" id="source-type-tabs" style="display:flex">
+            <button type="button" class="on" data-type="rest" onclick="switchSourceType('rest')">${t('automation.restTab')}</button>
+            <button type="button" data-type="websocket" onclick="switchSourceType('websocket')">${t('automation.wsTab')}</button>
+            <button type="button" data-type="socketio" onclick="switchSourceType('socketio')">${t('automation.sioTab')}</button>
+            <button type="button" data-type="variable" onclick="switchSourceType('variable')">${t('automation.variableTab')}</button>
         </div>
-    `;
+        <input type="hidden" id="source-type" value="rest">
+        <div style="height:14px"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end">
+            <div class="fl"><label>${t('automation.sourceId')}</label><input class="field" id="source-id" placeholder="${t('automation.sourceIdPlaceholder')}" aria-label="${t('automation.sourceId')}"></div>
+            <div class="fl"><label>${t('automation.sourceLabel')}</label><input class="field" id="source-label" placeholder="${t('automation.sourceLabelPlaceholder')}" aria-label="${t('automation.sourceLabel')}"></div>
+        </div>
+        <div id="source-rest-config">
+            ${cfgTitle(t('automation.restConfigTitle'))}
+            ${testRow(t('automation.requestUrlReq'), 'source-rest-url', 'http://192.168.1.100/api/status', 'btn-test-rest', 'testRestConnection')}
+            ${testPanel('rest', 'toggleJsonPreview')}
+            ${gt(t('common.params'))}
+            ${grp(
+                row(t('sshPage.method'), `<select id="source-rest-method" class="field" style="width:100px"><option value="GET">GET</option><option value="POST">POST</option></select>`) +
+                row(t('automation.pollIntervalMs'), num('source-interval', 100, 5000, 'min="500"')) +
+                row(t('automation.authHeaderShort'), inp('source-rest-auth', 200, t('automation.authPlaceholder')), t('automation.optionalTag')) +
+                row(t('automation.jsonPathLabel'), inp('source-rest-path', 200, 'data.temperature', 'mono'), t('automation.jsonPathNoteRest')))}
+        </div>
+        <div id="source-websocket-config" style="display:none">
+            ${cfgTitle(t('automation.wsConfigTitle'))}
+            ${testRow(t('automation.wsAddressReq'), 'source-ws-uri', t('automation.wsPlaceholder'), 'btn-test-ws', 'testWsConnection')}
+            ${testPanel('ws', 'toggleWsJsonPreview')}
+            ${gt(t('common.params'))}
+            ${grp(
+                row(t('automation.jsonPathLabel'), inp('source-ws-path', 200, 'data.temperature', 'mono'), t('automation.jsonPathNoteWs')) +
+                row(t('automation.reconnectIntervalMs'), num('source-ws-reconnect', 100, 5000, 'min="1000"')))}
+        </div>
+        <div id="source-socketio-config" style="display:none">
+            ${cfgTitle(t('automation.sioConfigTitleFull'))}
+            ${testRow(t('automation.sioServerReq'), 'source-sio-url', t('automation.sioPlaceholder'), 'btn-test-sio', 'testSioConnection')}
+            ${testPanel('sio', 'toggleSioJsonPreview')}
+            ${gt(t('common.params'))}
+            ${grp(
+                row(t('automation.eventNameLabel'), inp('source-sio-event', 200, t('automation.eventNameShort')), t('automation.eventNamePlaceholder')) +
+                row(t('automation.timeoutMs'), num('source-sio-timeout', 100, 15000, 'min="5000"')) +
+                row(t('automation.jsonPathLabel'), inp('source-sio-path', 200, 'cpu.avg_usage', 'mono'), t('automation.jsonPathNoteSio')) +
+                row(t('automation.autoDiscoverShort'), swc('source-sio-auto-discover', true), t('automation.autoDiscoverHint')))}
+        </div>
+        <div id="source-variable-config" class="gw" style="display:none">
+            <div class="gt">${t('automation.variableConfigTitle')}</div>
+            ${grp(
+                row(t('automation.sshHostReq'), `<select id="source-ssh-host" class="field" style="width:190px" onchange="onSshHostChangeForSource()"><option value="">-- ${t('common.loading')} --</option></select>`, t('automation.sshHostNote')) +
+                row(t('automation.cmdRow'), `<select id="source-ssh-cmd" class="field" style="width:190px" onchange="onSshCmdChange()"><option value="">${t('automation.selectHostFirst')}</option></select>`, t('automation.cmdRowNote')) +
+                row(t('automation.pollIntervalSec'), num('source-var-interval', 80, 5, 'min="1" max="3600"'), t('automation.pollIntervalHint')))}
+            <div id="source-ssh-cmd-preview" class="gw" style="display:none">
+                ${gt(t('automation.cmdDetailTitle'))}
+                ${grp(
+                    row(t('common.command'), '<span class="mono t-label" id="preview-command">-</span>') +
+                    row(t('common.description'), '<span class="t-label" id="preview-desc">-</span>') +
+                    row(t('automation.timeoutLabel').replace(/[:：]\s*$/, ''), `<span class="t-label"><span id="preview-timeout">30</span> ${t('automation.seconds')}</span>`))}
+            </div>
+            <div class="t-note" style="margin-top:10px">${t('automation.varsPreviewTitle')} <span id="ssh-vars-list" class="ssh-vars-list"><span class="t-note">${t('automation.selectHostCmdFirst')}</span></span></div>
+        </div>`,
+        `<span class="inl" style="margin-right:auto;gap:8px"><input type="checkbox" class="switch" role="switch" id="source-enabled" checked><span class="t-body">${t('automation.enableAfterCreate')}</span></span><button class="btn lg" onclick="closeModal('add-source-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAddSource()">${t('automation.addSource')}</button>`);
     
     document.body.appendChild(modal);
     setTimeout(() => modal.classList.add('show'), 10);
@@ -20521,7 +16708,7 @@ async function testRestConnection() {
     const auth = document.getElementById('source-rest-auth').value.trim();
     
     if (!url) {
-        alert(typeof t === 'function' ? t('ui.alertEnterApiAddress') : '请输入 API 地址');
+        fieldError('source-rest-url', t('ui.alertEnterApiAddress'));
         return;
     }
     
@@ -20530,9 +16717,9 @@ async function testRestConnection() {
     const statusSpan = resultPanel.querySelector('.test-status');
     
     btn.disabled = true;
-    btn.innerHTML = ("<i class=\"ri-hourglass-line\"></i> " + t('ui.testing') + "");
+    btn.textContent = t('ui.testing');
     resultPanel.style.display = 'block';
-    statusSpan.innerHTML = ("<span style=\"color:var(--warning-color)\"><i class=\"ri-loader-4-line\"></i> " + t('automationPage.testRequesting') + "</span>");
+    statusSpan.innerHTML = '<span class="state warn">' + t('automationPage.testRequesting') + '</span>';
     
     try {
         // 通过 ESP32 代理请求（避免 CORS）
@@ -20544,7 +16731,7 @@ async function testRestConnection() {
         
         if (result.code === 0 && result.data) {
             lastTestData = result.data.body;
-            statusSpan.innerHTML = `<span style="color:var(--emerald-500)">${t('ssh.connectionSuccess')}</span> <span style="color:var(--text-secondary)">(${result.data.status || 200})</span>`;
+            statusSpan.innerHTML = `<span class="state ok">${t('ssh.connectionSuccess')} (${result.data.status || 200})</span>`;
             
             // 解析并显示可选变量
             try {
@@ -20554,20 +16741,20 @@ async function testRestConnection() {
             } catch (e) {
                 // 非 JSON 响应
                 document.querySelector('#rest-var-selector .var-list').innerHTML = 
-                    ("<div class=\"var-item disabled\">" + t('dataSource.responseNotJson') + "</div>");
+                    ("<span class=\"t-note\">" + t('dataSource.responseNotJson') + "</span>");
                 document.getElementById('rest-json-preview').textContent = lastTestData;
             }
         } else {
-            statusSpan.innerHTML = `<span style="color:var(--rose-500)">${t('automationPage.testFailed')}:  ${escapeHtml(result.message || t('errors.unknownError'))}</span>`;
+            statusSpan.innerHTML = `<span class="state bad">${t('automationPage.testFailed')}: ${escapeHtml(result.message || t('errors.unknownError'))}</span>`;
             document.querySelector('#rest-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
-        statusSpan.innerHTML = `<span style="color:var(--rose-500)">${t('common.error')}:  ${escapeHtml(error.message)}</span>`;
+        statusSpan.innerHTML = `<span class="state bad">${t('common.error')}: ${escapeHtml(error.message)}</span>`;
         document.querySelector('#rest-var-selector .var-list').innerHTML = '';
     }
     
     btn.disabled = false;
-    btn.innerHTML = ("<i class=\"ri-search-line\"></i> " + t('common.test') + "");
+    btn.textContent = t('common.test');
 }
 
 /**
@@ -20577,7 +16764,7 @@ async function testWsConnection() {
     const uri = document.getElementById('source-ws-uri').value.trim();
     
     if (!uri) {
-        alert(typeof t === 'function' ? t('ui.alertEnterWsAddress') : '请输入 WebSocket 地址');
+        fieldError('source-ws-uri', t('ui.alertEnterWsAddress'));
         return;
     }
     
@@ -20592,9 +16779,9 @@ async function testWsConnection() {
     }
     
     btn.disabled = true;
-    btn.innerHTML = ("<i class=\"ri-hourglass-line\"></i> " + t('network.connecting') + "");
+    btn.textContent = t('network.connecting');
     resultPanel.style.display = 'block';
-    statusSpan.innerHTML = ("<span style=\"color:var(--warning-color)\">" + t('toast.connecting') + "</span>");
+    statusSpan.innerHTML = '<span class="state warn">' + t('toast.connecting') + '</span>';
     
     try {
         // 通过 ESP32 测试 WebSocket（获取第一条消息）
@@ -20602,7 +16789,7 @@ async function testWsConnection() {
         
         if (result.code === 0 && result.data) {
             lastTestData = result.data.message;
-            statusSpan.innerHTML = `<span style="color:var(--emerald-500)">${t('automationPage.testConnected')}</span>`;
+            statusSpan.innerHTML = `<span class="state ok">${t('automationPage.testConnected')}</span>`;
             
             try {
                 const jsonData = typeof lastTestData === 'string' ? JSON.parse(lastTestData) : lastTestData;
@@ -20610,20 +16797,20 @@ async function testWsConnection() {
                 document.getElementById('ws-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
                 document.querySelector('#ws-var-selector .var-list').innerHTML = 
-                    ("<div class=\"var-item disabled\">" + t('dataSource.messageNotJson') + "</div>");
+                    ("<span class=\"t-note\">" + t('dataSource.messageNotJson') + "</span>");
                 document.getElementById('ws-json-preview').textContent = lastTestData;
             }
         } else {
-            statusSpan.innerHTML = `<span style="color:var(--rose-500)">${escapeHtml(result.message || t('ssh.connectionFailed'))}</span>`;
+            statusSpan.innerHTML = `<span class="state bad">${escapeHtml(result.message || t('ssh.connectionFailed'))}</span>`;
             document.querySelector('#ws-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
-        statusSpan.innerHTML = `<span style="color:var(--rose-500)">${t('common.error')}:  ${escapeHtml(error.message)}</span>`;
+        statusSpan.innerHTML = `<span class="state bad">${t('common.error')}: ${escapeHtml(error.message)}</span>`;
         document.querySelector('#ws-var-selector .var-list').innerHTML = '';
     }
     
     btn.disabled = false;
-    btn.innerHTML = ("<i class=\"ri-search-line\"></i> " + t('common.test') + "");
+    btn.textContent = t('common.test');
 }
 
 /**
@@ -20635,7 +16822,7 @@ async function testSioConnection() {
     const timeout = parseInt(document.getElementById('source-sio-timeout').value) || 15000;
     
     if (!url) {
-        alert(typeof t === 'function' ? t('ui.alertEnterSioAddress') : '请输入 Socket.IO 服务器地址');
+        fieldError('source-sio-url', t('ui.alertEnterSioAddress'));
         return;
     }
     
@@ -20645,12 +16832,12 @@ async function testSioConnection() {
     const eventInput = document.getElementById('source-sio-event');
     
     btn.disabled = true;
-    btn.innerHTML = ("<i class=\"ri-hourglass-line\"></i> " + t('network.connecting') + "");
+    btn.textContent = t('network.connecting');
     resultPanel.style.display = 'block';
 
     // 显示连接阶段状态
     const statusText = event ? t('promptRepair.waitEvent', {event}) : t('sshPage.connectingAutoDiscover');
-    statusSpan.innerHTML = `<span style="color:var(--warning-color)"><i class="ri-loader-4-line"></i> ${escapeHtml(statusText)}</span>`;
+    statusSpan.innerHTML = `<span class="state warn">${escapeHtml(statusText)}</span>`;
     
     try {
         // 通过 ESP32 测试 Socket.IO 连接
@@ -20666,20 +16853,19 @@ async function testSioConnection() {
             lastTestData = data.data;
             
             // 显示成功状态和发现的事件
-            let statusHtml = `<span style="color:var(--emerald-500)">${t('ssh.connectionSuccess')}</span>`;
+            let statusHtml = `<span class="state ok">${t('ssh.connectionSuccess')}</span>`;
             if (data.event) {
-                statusHtml += ` <span style="color:var(--text-secondary)">| ${t('promptRepair.event')}: <strong>${escapeHtml(eventName)}</strong></span>`;
+                statusHtml += ` <span class="t-note">${t('promptRepair.event')}: ${escapeHtml(eventName)}</span>`;
             }
             if (data.sid) {
-                statusHtml += ` <span style="color:var(--text-secondary);font-size:0.85em">| SID: ${escapeHtml(data.sid.substring(0, 8))}...</span>`;
+                statusHtml += ` <span class="t-note">SID: ${escapeHtml(data.sid.substring(0, 8))}...</span>`;
             }
             statusSpan.innerHTML = statusHtml;
             
             // 自动填充发现的事件名（如果用户没有手动输入）
             if (data.event && !eventInput.value) {
                 eventInput.value = data.event;
-                eventInput.style.borderColor = 'var(--emerald-500)';
-                setTimeout(() => eventInput.style.borderColor = '', 2000);
+
             }
             
             try {
@@ -20688,7 +16874,7 @@ async function testSioConnection() {
                 document.getElementById('sio-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
                 document.querySelector('#sio-var-selector .var-list').innerHTML = 
-                    ("<div class=\"var-item disabled\">" + t('automationPage.eventDataNotJson') + "</div>");
+                    ("<span class=\"t-note\">" + t('automationPage.eventDataNotJson') + "</span>");
                 document.getElementById('sio-json-preview').textContent = String(lastTestData);
             }
         } else {
@@ -20697,9 +16883,9 @@ async function testSioConnection() {
             if (result.data && result.data.sid) {
                 errorMsg += ' ' + t('promptRepair.noEvent');
             }
-            statusSpan.innerHTML = `<span style="color:var(--rose-500)">${escapeHtml(errorMsg)}</span>`;
+            statusSpan.innerHTML = `<span class="state bad">${escapeHtml(errorMsg)}</span>`;
             document.querySelector('#sio-var-selector .var-list').innerHTML = 
-                ("<div class=\"var-item disabled\">" + t('automationPage.hintAutoDiscoverEvent') + "</div>");
+                ("<span class=\"t-note\">" + t('automationPage.hintAutoDiscoverEvent') + "</span>");
             
             // 显示详细错误
             if (result.data && result.data.error) {
@@ -20708,12 +16894,12 @@ async function testSioConnection() {
             }
         }
     } catch (error) {
-        statusSpan.innerHTML = `<span style="color:var(--rose-500)">${t('common.error')}:  ${escapeHtml(error.message)}</span>`;
+        statusSpan.innerHTML = `<span class="state bad">${t('common.error')}: ${escapeHtml(error.message)}</span>`;
         document.querySelector('#sio-var-selector .var-list').innerHTML = '';
     }
     
     btn.disabled = false;
-    btn.innerHTML = ("<i class=\"ri-search-line\"></i> " + t('common.test') + "");
+    btn.textContent = t('common.test');
 }
 
 /**
@@ -20735,17 +16921,11 @@ function renderVarSelector(containerId, data, targetInputId, prefix = '') {
     flattenJson(data, prefix, items);
     
     if (items.length === 0) {
-        container.innerHTML = ("<div class=\"var-item disabled\">" + t('ui.noSelectableFields') + "</div>");
+        container.innerHTML = ("<span class=\"t-note\">" + t('ui.noSelectableFields') + "</span>");
         return;
     }
     
-    container.innerHTML = items.map(item => `
-        <div class="var-item" onclick="selectVarPath('${targetInputId}', '${item.path}')">
-            <span class="var-path">${item.path}</span>
-            <span class="var-type">${item.type}</span>
-            <span class="var-value">${item.preview}</span>
-        </div>
-    `).join('');
+    container.innerHTML = items.map(item => `<button type="button" class="btn sm var-item" title="${escapeHtml(item.type)}: ${escapeHtml(item.preview)}" onclick="selectVarPath('${targetInputId}', '${item.path}')">${escapeHtml(item.path)}</button>`).join('');
 }
 
 /**
@@ -20817,8 +16997,7 @@ function selectVarPath(inputId, path) {
         input.value = path;
         input.focus();
         // 高亮效果
-        input.style.borderColor = 'var(--emerald-500)';
-        setTimeout(() => input.style.borderColor = '', 1000);
+
     }
 }
 
@@ -20842,10 +17021,10 @@ function switchSourceType(type) {
     // 更新隐藏字段
     document.getElementById('source-type').value = type;
     
-    // 更新标签页状态
-    document.querySelectorAll('.modal-tab').forEach(tab => {
-        tab.classList.toggle('active', tab.dataset.type === type);
-    });
+    // 更新分段控件与标题后缀
+    document.querySelectorAll('#source-type-tabs button').forEach(tab => tab.classList.toggle('on', tab.dataset.type === type));
+    const titleEl = document.getElementById('add-source-title');
+    if (titleEl) titleEl.textContent = t('automation.addSourceTitle') + ' · ' + ({ rest: 'REST API', websocket: 'WebSocket', socketio: 'Socket.IO', variable: t('automation.variableTab') }[type]);
     
     // 切换配置区块
     document.getElementById('source-rest-config').style.display = type === 'rest' ? 'block' : 'none';
@@ -20867,12 +17046,10 @@ function switchSourceType(type) {
         if (type === 'variable') {
             // 指令变量类型：ID 由选择的命令决定，设为只读
             sourceIdInput.readOnly = true;
-            sourceIdInput.style.backgroundColor = 'var(--bg-muted)';
             sourceIdInput.placeholder = typeof t === 'function' ? t('automationPage.autoFilledByCmd') : '由选择的指令自动填入';
         } else {
             // 其他类型：允许手动输入
             sourceIdInput.readOnly = false;
-            sourceIdInput.style.backgroundColor = '';
             sourceIdInput.placeholder = typeof t === 'function' ? t('automation.sourceIdPlaceholder') : '如: agx_temp';
             sourceIdInput.value = '';  // 清空之前可能由指令填入的值
         }
@@ -21032,7 +17209,6 @@ function onSshCmdChange() {
     if (sourceIdInput) {
         sourceIdInput.value = varName;
         sourceIdInput.readOnly = true;  // 设为只读，因为必须与 varName 一致
-        sourceIdInput.style.backgroundColor = 'var(--bg-muted)';
     }
     if (sourceLabelInput && !sourceLabelInput.value) {
         sourceLabelInput.value = cmd.name || varName;
@@ -21050,7 +17226,7 @@ async function submitAddSource() {
     const enabled = document.getElementById('source-enabled').checked;
     
     if (!id) {
-        alert(typeof t === 'function' ? t('ui.alertEnterSourceId') : '请输入数据源 ID');
+        fieldError('source-id', t('ui.alertEnterSourceId'));
         return;
     }
     
@@ -21063,7 +17239,7 @@ async function submitAddSource() {
         params.reconnect_ms = parseInt(document.getElementById('source-ws-reconnect').value) || 5000;
         
         if (!params.uri) {
-            alert(typeof t === 'function' ? t('ui.alertEnterWsUri') : '请输入 WebSocket URI');
+            fieldError('source-ws-uri', t('ui.alertEnterWsUri'));
             return;
         }
     } else if (type === 'rest') {
@@ -21073,7 +17249,7 @@ async function submitAddSource() {
         params.auth_header = document.getElementById('source-rest-auth').value.trim();
         
         if (!params.url) {
-            alert(typeof t === 'function' ? t('ui.alertEnterRestUrl') : '请输入 REST URL');
+            fieldError('source-rest-url', t('ui.alertEnterRestUrl'));
             return;
         }
     } else if (type === 'socketio') {
@@ -21088,11 +17264,11 @@ async function submitAddSource() {
         params.auto_discover = autoDiscoverEl ? autoDiscoverEl.checked : true;
         
         if (!params.url) {
-            alert(typeof t === 'function' ? t('ui.alertEnterSioAddress') : '请输入 Socket.IO 服务器地址');
+            fieldError('source-sio-url', t('ui.alertEnterSioAddress'));
             return;
         }
         if (!params.event) {
-            alert(typeof t === 'function' ? t('ui.alertEnterSioEvent') : '请输入要监听的事件名称（可先通过测试按钮自动发现）');
+            fieldError('source-sio-event', t('ui.alertEnterSioEvent'));
             return;
         }
     } else if (type === 'variable') {
@@ -21101,18 +17277,18 @@ async function submitAddSource() {
         const cmdIdx = document.getElementById('source-ssh-cmd').value;
         
         if (!hostId) {
-            alert(typeof t === 'function' ? t('ui.alertSelectSshHost') : '请选择 SSH 主机');
+            fieldError('source-ssh-host', t('ui.alertSelectSshHost'));
             return;
         }
         if (cmdIdx === '') {
-            alert(typeof t === 'function' ? t('ui.alertSelectSshCmd') : '请选择 SSH 指令');
+            fieldError('source-ssh-cmd', t('ui.alertSelectSshCmd'));
             return;
         }
         
         // 获取选中的命令配置
         const cmd = sshCommands[hostId]?.[parseInt(cmdIdx)];
         if (!cmd) {
-            alert(typeof t === 'function' ? t('ui.alertCmdNotExist') : '指令不存在，请重新选择');
+            fieldError('source-ssh-cmd', t('ui.alertCmdNotExist'));
             return;
         }
         
@@ -21196,118 +17372,52 @@ function showAddRuleModal(ruleData = null) {
     modal.id = 'add-rule-modal';
     modal.className = 'modal';
     const iconPickerHtml = RULE_ICON_LIST.map((ri, i) =>
-        `<button type="button" class="icon-btn${i === 0 ? ' selected' : ''}" data-icon="${ri}" onclick="selectRuleIcon('${ri}')"><i class="${ri}"></i></button>`
+        `<button type="button" class="btn icon sm icon-btn${i === 0 ? ' selected' : ''}" data-icon="${ri}" onclick="selectRuleIcon('${ri}')"><svg class="i"><use href="#${ri}"/></svg></button>`
     ).join('');
-    modal.innerHTML = `
-        <div class="modal-content cc-compact automation-modal wide" style="max-width:750px">
-            <div class="modal-header">
-                <h2>${isEdit ? (typeof t === 'function' ? t('automation.editRule') : '编辑规则') : (typeof t === 'function' ? t('automation.addRule') : '添加规则')}</h2>
-                <button class="modal-close" onclick="closeModal('add-rule-modal')"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <!-- 基本信息 -->
-                <div class="form-row three-col">
-                    <div class="form-group">
-                        <label>${typeof t === 'function' ? t('automation.ruleId') : '规则 ID'} <span class="required">*</span></label>
-                        <input type="text" id="rule-id" class="input" placeholder="${typeof t === 'function' ? t('automation.ruleIdPlaceholder') : '唯一标识符'}" ${isEdit ? 'readonly style="background:var(--bg-muted)"' : ''}>
-                    </div>
-                    <div class="form-group" style="flex:2">
-                        <label>${typeof t === 'function' ? t('automation.ruleName') : '规则名称'} <span class="required">*</span></label>
-                        <input type="text" id="rule-name" class="input" placeholder="${typeof t === 'function' ? t('automation.ruleNamePlaceholder') : '规则显示名称'}">
-                    </div>
+    const sw = (id, on, label, extra = '') => swc(id, on, `aria-label="${label}" ${extra}`);
+    const remove = '<button type="button" class="btn icon sm quiet" onclick="this.closest(\'.row\').remove()" aria-label="' + t('securityPage.remove') + '" title="' + t('securityPage.remove') + '"><svg class="i"><use href="#ri-close-line"/></svg></button>';
+    modal.innerHTML = sheet(760, isEdit ? t('automation.editRule') : t('automation.addRule'), `
+        ${grp(
+            row(t('automation.ruleId'), `<input type="text" id="rule-id" class="field mono" style="width:220px" aria-label="${t('automation.ruleId')}">`, t('automation.ruleIdPlaceholder')) +
+            row(t('automation.ruleName'), inp('rule-name', 220, ''), t('automation.ruleNamePlaceholder')) +
+            row(t('automation.iconLabel'), `<div class="seg"><button type="button" class="on icon-tab" onclick="switchRuleIconType('emoji')">${t('automation.iconTab')}</button><button type="button" class="icon-tab" onclick="switchRuleIconType('image')">${t('automation.imageTab')}</button></div><button type="button" class="btn icon" id="rule-icon-toggle" style="width:34px" onclick="toggleRuleIconPanel()" aria-label="${t('automation.iconLabel')}" title="${t('automation.iconLabel')}"><svg class="i"><use href="#ri-thunderstorms-line"/></svg></button>`) +
+            `<div class="row" id="rule-icon-panel" hidden style="display:block;padding:12px 0">
+                <div id="rule-icon-emoji-picker" class="icon-picker" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                    <input type="text" id="rule-emoji-input" class="field sm" placeholder="ri-xxx" maxlength="40" onchange="selectRuleIconFromInput()" style="width:140px;text-align:center">
+                    ${iconPickerHtml}
                 </div>
-                
-                <div class="config-section">
-                    <span class="config-title">${typeof t === 'function' ? t('automation.iconLabel') : '图标'}</span>
-                    <div class="icon-type-tabs">
-                        <button type="button" class="icon-tab active" onclick="switchRuleIconType('emoji')">${typeof t === 'function' ? t('automation.iconTab') : '图标'}</button>
-                        <button type="button" class="icon-tab" onclick="switchRuleIconType('image')">${typeof t === 'function' ? t('automation.imageTab') : '图片'}</button>
-                    </div>
-                    <div id="rule-icon-emoji-picker" class="icon-picker">
-                        <div class="emoji-custom-input">
-                            <input type="text" id="rule-emoji-input" class="input" placeholder="ri-xxx" maxlength="40" onchange="selectRuleIconFromInput()" style="width:140px;text-align:center;font-size:0.85em">
-                        </div>
-                        ${iconPickerHtml}
-                    </div>
-                    <div id="rule-icon-image-picker" class="icon-image-picker hidden">
-                        <div class="icon-preview-row">
-                            <div id="rule-icon-preview" class="icon-image-preview">
-                                <span class="preview-placeholder">${typeof t === 'function' ? t('automation.previewNone') : '无'}</span>
-                            </div>
-                            <div class="icon-path-input">
-                                <input type="text" id="rule-icon-path" readonly placeholder="${typeof t === 'function' ? t('automation.selectImagePlaceholder') : '选择图片...'}">
-                                <button type="button" class="btn btn-sm btn-gray" onclick="browseRuleIconImage()"><i class="ri-folder-open-line"></i> ${typeof t === 'function' ? t('common.browse') : '浏览'}</button>
-                                <button type="button" class="btn btn-sm btn-gray" onclick="clearRuleIconImage()"><i class="ri-close-line"></i></button>
-                            </div>
-                        </div>
-                    </div>
-                    <input type="hidden" id="rule-icon" value="ri-thunderstorms-line">
-                    <input type="hidden" id="rule-icon-type" value="emoji">
+                <div id="rule-icon-image-picker" class="icon-image-picker hidden" style="display:flex;gap:8px;align-items:center">
+                    <div id="rule-icon-preview" class="icon-image-preview t-note" style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:8px;background:var(--fill)"><span class="preview-placeholder">${t('automation.previewNone')}</span></div>
+                    <input type="text" id="rule-icon-path" class="field" style="flex:1" readonly placeholder="${t('automation.selectImagePlaceholder')}" aria-label="${t('automation.selectImagePlaceholder')}">
+                    <button type="button" class="btn sm" onclick="browseRuleIconImage()"><svg class="i"><use href="#ri-folder-open-line"/></svg>${t('common.browse')}</button>
+                    <button type="button" class="btn icon sm" onclick="clearRuleIconImage()" aria-label="${t('common.clear')}" title="${t('common.clear')}"><svg class="i"><use href="#ri-close-line"/></svg></button>
                 </div>
-                
-                <div class="config-section">
-                    <span class="config-title">${typeof t === 'function' ? (t('automation.ruleOptions') || '规则选项') : '规则选项'}</span>
-                    <div class="form-row three-col" style="margin-bottom:0">
-                        <div class="form-group form-group-logic">
-                            <label>${typeof t === 'function' ? t('automation.conditionLogic') : '条件逻辑'}</label>
-                            <select id="rule-logic" class="input">
-                                <option value="and">AND</option>
-                                <option value="or">OR</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>${typeof t === 'function' ? t('automation.cooldownMs') : '冷却时间 (ms)'}</label>
-                            <input type="number" id="rule-cooldown" class="input" value="0" min="0">
-                        </div>
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="rule-enabled" checked>
-                            <span>${typeof t === 'function' ? t('automation.enableImmediately') : '立即启用'}</span>
-                        </label>
-                    </div>
-                </div>
-                
-                <div class="form-row">
-                    <label class="checkbox-label"><input type="checkbox" id="rule-show-dashboard" onchange="this.dataset.dirty='true'" checked><span>${runtimeText('showDashboard')}</span></label>
-                    <label class="checkbox-label"><input type="checkbox" id="rule-allow-manual" onchange="this.dataset.dirty='true'" checked><span>${runtimeText('allowManual')}</span></label>
-                    <input type="hidden" id="rule-revision" value="${isEdit ? ruleData.revision : 0}">
-                </div>
-                <div class="config-section">
-                    <div class="config-header">
-                        <span class="config-title">${typeof t === 'function' ? t('automation.triggerConditions') : '触发条件'}</span>
-                        <div style="display:flex;gap:8px;align-items:center">
-                            <label class="checkbox-label" style="margin:0;padding:0">
-                                <input type="checkbox" id="rule-manual-only" onchange="toggleManualOnly()">
-                                <span>${typeof t === 'function' ? t('automation.manualOnly') : '仅手动触发'}</span>
-                            </label>
-                            <button class="btn btn-sm btn-success" id="add-condition-btn" onclick="addConditionRow()"><i class="ri-add-line"></i> ${typeof t === 'function' ? t('common.add') : '添加'}</button>
-                        </div>
-                    </div>
-                    <div id="conditions-container">
-                        <p class="empty-hint">${typeof t === 'function' ? t('automation.addConditionHint') : '点击"添加"创建触发条件，或勾选"仅手动触发"作为快捷动作'}</p>
-                    </div>
-                </div>
-                
-                <div class="config-section">
-                    <div class="config-header">
-                        <span class="config-title">${typeof t === 'function' ? t('automation.executionActions') : '执行动作'}</span>
-                        <button class="btn btn-sm btn-success" onclick="addActionTemplateRow()"><i class="ri-add-line"></i> ${typeof t === 'function' ? t('common.add') : '添加'}</button>
-                    </div>
-                    <div class="actions-hint-block">
-                        <div id="actions-container">
-                            <p class="empty-hint">${typeof t === 'function' ? t('automation.selectFromTemplatesHint') : '从已创建的动作模板中选择要执行的动作'}</p>
-                        </div>
-                        <small class="form-hint" style="display:block;margin-top:8px;">
-                            <i class="ri-information-line"></i> ${typeof t === 'function' ? t('automation.createActionFirstHint') : '请先在"动作模板"区域创建动作，然后在这里选择使用'}
-                        </small>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer cc-compact-footer">
-                <button class="btn btn-gray" onclick="closeModal('add-rule-modal')">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                <button class="btn btn-service-style" onclick="submitAddRule(${isEdit ? "'" + ruleData.id + "'" : ''})">${isEdit ? '<i class="ri-save-line"></i> ' + (typeof t === 'function' ? (t('automationPage.saveRuleChanges') || '保存修改') : '保存修改') : '<i class="ri-add-line"></i> ' + (typeof t === 'function' ? t('automation.addRule') : '添加规则')}</button>
-            </div>
+            </div>`)}
+        <input type="hidden" id="rule-icon" value="ri-thunderstorms-line">
+        <input type="hidden" id="rule-icon-type" value="emoji">
+        <input type="hidden" id="rule-revision" value="${isEdit ? ruleData.revision : 0}">
+        ${gt(t('automation.ruleOptions'))}
+        ${grp(
+            row(t('automation.conditionLogic'), `<select id="rule-logic" class="field" style="width:110px"><option value="and">AND</option><option value="or">OR</option></select>`) +
+            row(t('automation.cooldownShort'), inp('rule-cooldown', 100, '', 'num', 'type="number" value="0" min="0"') + unit('ms')) +
+            row(t('automation.enableImmediately'), sw('rule-enabled', true, t('automation.enableImmediately'))) +
+            row(t('automation.ruleShowPanel'), sw('rule-show-dashboard', true, t('automation.ruleShowPanel'), `onchange="this.dataset.dirty='true'"`)) +
+            row(t('automation.ruleAllowManualTrigger'), sw('rule-allow-manual', true, t('automation.ruleAllowManualTrigger'), `onchange="this.dataset.dirty='true'"`)))}
+        <div class="sec-h" style="margin:18px 4px 6px">
+            <span class="t-label">${t('automation.triggerConditions')}</span>
+            <span style="display:flex;align-items:center;gap:12px">
+                <span style="display:flex;gap:8px;align-items:center">${sw('rule-manual-only', false, t('automation.manualOnly'), 'onchange="toggleManualOnly()"')}<span class="t-body">${t('automation.manualOnly')}</span></span>
+                <button class="btn sm" id="add-condition-btn" onclick="addConditionRow()"><svg class="i"><use href="#ri-add-line"/></svg>${t('common.add')}</button>
+            </span>
         </div>
-    `;
+        <div class="grp" id="conditions-container"><div class="row empty-hint"><span class="t-note">${t('automation.addConditionHint')}</span></div></div>
+        <div class="sec-h" style="margin:18px 4px 6px">
+            <span class="t-label">${t('automation.executionActions')}</span>
+            <button class="btn sm" onclick="addActionTemplateRow()"><svg class="i"><use href="#ri-add-line"/></svg>${t('common.add')}</button>
+        </div>
+        <div class="grp" id="actions-container"><div class="row empty-hint"><span class="t-note">${t('automation.selectFromTemplatesHint')}</span></div></div>
+        <div class="t-note" style="margin:6px 4px 0">${t('automation.createActionFirstHint')}</div>`,
+        `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAddRule(${isEdit ? "'" + ruleData.id + "'" : ''})">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
     
     document.body.appendChild(modal);
     setTimeout(() => modal.classList.add('show'), 10);
@@ -21381,7 +17491,7 @@ function toggleManualOnly() {
     const container = document.getElementById('conditions-container');
     container.querySelectorAll('input, select, button').forEach(el => { el.disabled = checked; });
     let note = document.getElementById('rule-preserved-conditions');
-    if (!note) { note = document.createElement('p'); note.id = 'rule-preserved-conditions'; container.before(note); }
+    if (!note) { note = document.createElement('p'); note.id = 'rule-preserved-conditions'; note.className = 't-note'; note.style.margin = '6px 4px'; container.before(note); }
     note.textContent = checked ? runtimeText('conditionsPreserved') : '';
 }
 
@@ -21391,21 +17501,35 @@ function toggleManualOnly() {
 function switchRuleIconType(type) {
     const emojiPicker = document.getElementById('rule-icon-emoji-picker');
     const imagePicker = document.getElementById('rule-icon-image-picker');
-    const tabs = document.querySelectorAll('#add-rule-modal .icon-type-tabs .icon-tab');
+    const tabs = document.querySelectorAll('#add-rule-modal .icon-tab');
     
-    tabs.forEach(tab => tab.classList.remove('active'));
+    tabs.forEach(tab => tab.classList.remove('on'));
     
     if (type === 'image') {
         emojiPicker.classList.add('hidden');
         imagePicker.classList.remove('hidden');
-        tabs[1]?.classList.add('active');
+        tabs[1]?.classList.add('on');
         document.getElementById('rule-icon-type').value = 'image';
+        document.getElementById('rule-icon-panel').hidden = false;
     } else {
         emojiPicker.classList.remove('hidden');
         imagePicker.classList.add('hidden');
-        tabs[0]?.classList.add('active');
+        tabs[0]?.classList.add('on');
         document.getElementById('rule-icon-type').value = 'emoji';
     }
+    refreshRuleIconToggle();
+}
+
+// 规则图标行右侧的按钮显示当前图标，点击展开/收起选择面板
+function toggleRuleIconPanel() {
+    const panel = document.getElementById('rule-icon-panel');
+    if (panel) panel.hidden = !panel.hidden;
+}
+
+function refreshRuleIconToggle() {
+    const btn = document.getElementById('rule-icon-toggle');
+    const icon = document.getElementById('rule-icon')?.value || 'ri-thunderstorms-line';
+    if (btn) btn.innerHTML = icon.startsWith('/sdcard/') ? '<svg class="i"><use href="#ri-image-line"/></svg>' : `<svg class="i"><use href="#${escapeHtml(icon)}"/></svg>`;
 }
 
 function selectRuleIcon(icon) {
@@ -21419,6 +17543,7 @@ function selectRuleIcon(icon) {
     document.querySelectorAll('#add-rule-modal .icon-btn').forEach(btn => {
         btn.classList.toggle('selected', btn.getAttribute('data-icon') === riIcon);
     });
+    refreshRuleIconToggle();
 }
 
 function selectRuleIconFromInput() {
@@ -21433,6 +17558,7 @@ function selectRuleIconFromInput() {
         document.querySelectorAll('#add-rule-modal .icon-btn').forEach(btn => {
             btn.classList.toggle('selected', btn.getAttribute('data-icon') === riIcon);
         });
+        refreshRuleIconToggle();
     }
 }
 
@@ -21443,6 +17569,7 @@ async function browseRuleIconImage() {
         document.getElementById('rule-icon').value = path;
         document.getElementById('rule-icon-path').value = path;
         updateRuleIconPreview(path);
+        refreshRuleIconToggle();
     };
     document.getElementById('file-picker-modal').classList.remove('hidden');
     await loadFilePickerDirectory(filePickerCurrentPath);
@@ -21499,29 +17626,19 @@ function addConditionRow(variable = '', operator = 'eq', value = '', original = 
     
     const rowId = conditionRowCount;
     const row = document.createElement('div');
-    row.className = 'condition-row';
+    row.className = 'row condition-row';
+    row.style.gap = '8px';
     row._originalCondition = original ? structuredClone(original) : null;
     row.id = `condition-row-${rowId}`;
+    const opt = (v, label) => `<option value="${v}" ${operator === v ? 'selected' : ''}>${label}</option>`;
     row.innerHTML = `
-        <button class="btn btn-sm btn-secondary cond-variable-btn" 
-                onclick="openConditionVarSelector(${rowId})" 
-                title="${typeof t === 'function' ? t('automation.selectVariable') : '选择变量'}"
-                style="min-width:140px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-            ${variable || (typeof t === 'function' ? t('automation.selectVariable') : '选择变量')}
-        </button>
-        <input type="hidden" class="cond-variable" value="${variable}">
-        <select class="input cond-operator">
-            <option value="eq" ${operator === 'eq' ? 'selected' : ''}>${t('automation.operatorEq')}</option>
-            <option value="ne" ${operator === 'ne' ? 'selected' : ''}>${t('automation.operatorNe')}</option>
-            <option value="gt" ${operator === 'gt' ? 'selected' : ''}>> ${t('automation.operatorGt')}</option>
-            <option value="ge" ${operator === 'ge' ? 'selected' : ''}>${t('automation.operatorGe')}</option>
-            <option value="lt" ${operator === 'lt' ? 'selected' : ''}>${t('automation.operatorLt')}</option>
-            <option value="le" ${operator === 'le' ? 'selected' : ''}>${t('automation.operatorLe')}</option>
-            <option value="changed" ${operator === 'changed' ? 'selected' : ''}>${t('automation.operatorChanged')}</option>
-            <option value="contains" ${operator === 'contains' ? 'selected' : ''}>${t('automation.operatorContains')}</option>
+        <button type="button" class="field sel cond-variable-btn" onclick="openConditionVarSelector(${rowId})" title="${t('automation.selectVariable')}" style="width:190px">${escapeHtml(variable || t('automation.selectVariable'))}</button>
+        <input type="hidden" class="cond-variable" value="${escapeHtml(variable)}">
+        <select class="field cond-operator" style="width:90px" aria-label="${t('automation.conditionLogic')}">
+            ${opt('eq', '==')}${opt('ne', '!=')}${opt('gt', '&gt;')}${opt('ge', '&gt;=')}${opt('lt', '&lt;')}${opt('le', '&lt;=')}${opt('changed', t('automation.operatorChanged'))}${opt('contains', t('automation.operatorContains'))}
         </select>
-        <input type="text" class="input cond-value" placeholder="${t('automation.conditionValue')}" value="${displayValue}">
-        <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">✕</button>
+        <input type="text" class="field cond-value" style="width:120px" placeholder="${t('automation.conditionValue')}" aria-label="${t('automation.conditionValue')}" value="${escapeHtml(String(displayValue))}">
+        <button type="button" class="btn icon sm quiet" onclick="this.closest('.row').remove()" aria-label="${t('securityPage.remove')}" title="${t('securityPage.remove')}"><svg class="i"><use href="#ri-close-line"/></svg></button>
     `;
     
     container.appendChild(row);
@@ -21536,129 +17653,8 @@ let currentConditionVarRowId = null;
  */
 async function openConditionVarSelector(rowId) {
     currentConditionVarRowId = rowId;
-    
-    // 移除旧的模态框
-    const oldModal = document.getElementById('variable-select-modal');
-    if (oldModal) oldModal.remove();
-    
-    const modal = document.createElement('div');
-    modal.id = 'variable-select-modal';
-    modal.className = 'modal show';
-    modal.dataset.callback = 'ruleCondition';
-    modal.onclick = (e) => { if (e.target === modal) closeModal('variable-select-modal');
-                    };
-    
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:550px;">
-            <div class="modal-header">
-                <h3><i class="ri-bar-chart-line"></i> ${typeof t === 'function' ? t('automation.selectTriggerVarTitle') : 'Select Trigger Variable'}</h3>
-                <button class="modal-close" onclick="closeModal('variable-select-modal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div style="margin-bottom:12px;">
-                    <input type="text" id="var-search" class="input" placeholder="${typeof t === 'function' ? t('automation.searchVarPlaceholder') : '搜索变量...'}" 
-                           oninput="filterVariableList(this.value)" style="width:100%;">
-                </div>
-                <div id="variable-select-loading" style="text-align:center;padding:20px;">
-                    <div class="spinner"></div>
-                    <p>${typeof t === 'function' ? t('automation.loadingVarList') : '加载变量列表...'}</p>
-                </div>
-                <div id="variable-select-list" style="display:none;max-height:400px;overflow-y:auto;"></div>
-                <div id="variable-select-empty" style="display:none;text-align:center;padding:30px;color:var(--text-secondary);">
-                    <i class="ri-inbox-line" style="font-size:48px;margin-bottom:10px;display:block;"></i>
-                    <p>${typeof t === 'function' ? t('automation.noVariablesAvailable') : '没有可用的变量'}</p>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-sm" onclick="closeModal('variable-select-modal')">${typeof t === 'function' ? t('common.close') : '关闭'}</button>
-            </div>
-        </div>
-    `;
-    
-    document.body.appendChild(modal);
-    
-    // 加载变量列表
-    try {
-        const result = await api.call('automation.variables.list', {
-            include_value: false,
-            include_meta: false
-        });
-        const variables = result.data?.variables || [];
-        
-        document.getElementById('variable-select-loading').style.display = 'none';
-        
-        if (variables.length === 0) {
-            document.getElementById('variable-select-empty').style.display = 'block';
-            return;
-        }
-        
-        // 按数据源分组
-        const grouped = {};
-        variables.forEach(v => {
-            const sourceId = v.source_id || '_system';
-            if (!grouped[sourceId]) grouped[sourceId] = [];
-            grouped[sourceId].push(v);
-        });
-        
-        const listEl = document.getElementById('variable-select-list');
-        listEl.style.display = 'block';
-        
-        let html = '';
-        for (const [sourceId, vars] of Object.entries(grouped)) {
-            const groupId = `var-group-${sourceId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-            const safeSourceId = escapeHtml(sourceId);
-            const sourceLabel = sourceId === '_system'
-                ? (typeof t === 'function' ? t('automation.systemVariables') : 'System Variables')
-                : sourceId;
-            html += `<div class="var-group" data-source="${safeSourceId}">
-                <div class="var-group-header" style="padding:10px 12px;background:var(--bg-elevated);font-weight:600;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:space-between;"
-                     onclick="toggleVarGroup('${groupId}')">
-                    <span><i class="ri-archive-line"></i> ${escapeHtml(sourceLabel)} <span style="font-weight:normal;color:var(--text-secondary);">(${vars.length})</span></span>
-                    <span class="var-group-arrow" id="${groupId}-arrow" style="transition:transform 0.2s;">▶</span>
-                </div>
-                <div class="var-group-items" id="${groupId}" style="display:none;">`;
-            
-            vars.forEach(v => {
-                const typeIcon = { 'bool': '<i class="ri-record-circle-fill"></i>', 'int': '<i class="ri-numbers-line"></i>', 'float': '<i class="ri-bar-chart-line"></i>', 'string': '<i class="ri-file-text-line"></i>' }[v.type] || '<i class="ri-file-list-line"></i>';
-                const rawName = v.name || '';
-                const safeName = escapeHtml(rawName);
-                const displayMeta = v.value !== undefined ? String(v.value).substring(0, 30) : (v.type || '-');
-                const metaLabel = v.value !== undefined
-                    ? (typeof t === 'function' ? t('sshPage.varTableValue') : '当前值')
-                    : (typeof t === 'function' ? t('common.type') : '类型');
-                html += `
-                    <div class="var-select-item" data-name="${safeName}" data-source="${safeSourceId}" style="
-                        display:flex;align-items:center;padding:10px 12px;padding-left:24px;
-                        border-bottom:1px solid var(--border);cursor:pointer;
-                        transition:background 0.2s;"
-                        onmouseover="this.style.background='var(--bg-hover)'"
-                        onmouseout="this.style.background='transparent'"
-                        onclick="selectVariable(this.dataset.name)">
-                        <span style="font-size:18px;margin-right:10px;">${typeIcon}</span>
-                        <div style="flex:1;min-width:0;">
-                            <div style="font-weight:500;font-family:monospace;">${safeName}</div>
-                            <small style="color:var(--text-secondary);">${escapeHtml(metaLabel)}: ${escapeHtml(displayMeta)}${displayMeta.length >= 30 ? '...' : ''}</small>
-                        </div>
-                    </div>
-                `;
-            });
-            html += '</div></div>';
-        }
-        
-        listEl.innerHTML = html;
-        
-        // 聚焦搜索框
-        setTimeout(() => document.getElementById('var-search')?.focus(), 100);
-        
-    } catch (e) {
-        console.error('加载变量列表失败:', e);
-        document.getElementById('variable-select-loading').innerHTML = `
-            <div style="color:var(--danger);">
-                <p>${t('common.loadFailed')}:  ${escapeHtml(e.message)}</p>
-                <button class="btn btn-sm" onclick="closeModal('variable-select-modal')">${t('common.close')}</button>
-            </div>
-        `;
-    }
+    buildVarSelectModal(t('automation.selectTriggerVarTitle'), 'ruleCondition');
+    await loadVarSelectList();
 }
 
 /**
@@ -21716,9 +17712,9 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
     const container = document.getElementById('actions-container');
     
     if (original && !templateId) {
-        const row = document.createElement('div'); row.className = 'action-row';
+        const row = document.createElement('div'); row.className = 'row action-row';
         row._originalAction = structuredClone(original); row.dataset.inline = 'true';
-        const label = document.createElement('pre'); label.textContent = JSON.stringify(original, null, 2);
+        const label = document.createElement('pre'); label.className = 'mono'; label.style.cssText = 'margin:0;white-space:pre-wrap;font-size:12px'; label.textContent = JSON.stringify(original, null, 2);
         row.appendChild(label); container.querySelector('.empty-hint')?.remove(); container.appendChild(row);
         return;
     }
@@ -21735,7 +17731,8 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
     if (emptyP) emptyP.remove();
     
     const row = document.createElement('div');
-    row.className = 'action-row template-select-row';
+    row.className = 'row action-row template-select-row';
+    row.style.cssText = 'gap:8px;flex-wrap:wrap;padding:8px 0';
     row._originalAction = original ? structuredClone(original) : null;
     row.id = `action-row-${actionRowCount}`;
     
@@ -21753,67 +17750,46 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
     const showRepeatOptions = repeatMode !== 'once';
     const hasCondition = condition && condition.variable;
     
+    const lab = 'display:flex;align-items:center;gap:6px';
+    const opOpt = (v, label) => `<option value="${v}" ${hasCondition && condition.operator === v ? 'selected' : ''}>${label}</option>`;
     row.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
-            <div style="display:flex;gap:8px;align-items:center;">
-                <select class="input action-template-id" onchange="updateActionTemplatePreview(this)" style="flex:2">
-                    ${optionsHtml}
+        <select class="field action-template-id" onchange="updateActionTemplatePreview(this)" style="width:300px" aria-label="${t('promptRepair.chooseAction')}">
+            ${optionsHtml}
+        </select>
+        <button type="button" class="btn icon sm quiet" onclick="this.closest('.action-row').remove()" aria-label="${t('securityPage.remove')}" title="${t('securityPage.remove')}"><svg class="i"><use href="#ri-close-line"/></svg></button>
+        <div class="t-note" style="flex-basis:100%;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <label style="${lab}">${t('automation.delay')}
+                <input type="number" class="field sm num action-delay" placeholder="0" value="${delayMs}" min="0" style="width:70px">ms
+            </label>
+            <label style="${lab}">${t('automationPage.execute')}
+                <select class="field sm action-repeat-mode" onchange="toggleRepeatOptions(${rowId})">
+                    <option value="once" ${repeatMode === 'once' ? 'selected' : ''}>${t('automationPage.repeatOnce')}</option>
+                    <option value="while_true" ${repeatMode === 'while_true' ? 'selected' : ''}>${t('automationPage.repeatWhileTrue')}</option>
+                    <option value="count" ${repeatMode === 'count' ? 'selected' : ''}>${t('automationPage.repeatCount')}</option>
                 </select>
-                <button class="btn btn-sm btn-danger" onclick="this.closest('.action-row').remove()">✕</button>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);">
-                    ${typeof t === 'function' ? t('automationPage.delay') : '延迟'}
-                    <input type="number" class="input action-delay" placeholder="0" value="${delayMs}" min="0" style="width:70px;padding:4px 6px;">
-                    <span>ms</span>
+            </label>
+            <span class="repeat-options" id="repeat-options-${rowId}" style="display:${showRepeatOptions ? 'flex' : 'none'};gap:12px;align-items:center">
+                <label class="repeat-count-label" style="display:${repeatMode === 'count' ? 'flex' : 'none'};align-items:center;gap:6px">${t('automationPage.repeatTimes')}
+                    <input type="number" class="field sm num action-repeat-count" value="${repeatCount}" min="1" max="100" style="width:60px">
                 </label>
-                <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);">
-                    ${typeof t === 'function' ? t('automationPage.execute') : '执行'}
-                    <select class="input action-repeat-mode" onchange="toggleRepeatOptions(${rowId})" style="padding:4px 6px;">
-                        <option value="once" ${repeatMode === 'once' ? 'selected' : ''}>${typeof t === 'function' ? t('automationPage.repeatOnce') : '单次'}</option>
-                        <option value="while_true" ${repeatMode === 'while_true' ? 'selected' : ''}>${typeof t === 'function' ? t('automationPage.repeatWhileTrue') : '条件持续时重复'}</option>
-                        <option value="count" ${repeatMode === 'count' ? 'selected' : ''}>${typeof t === 'function' ? t('automationPage.repeatCount') : '指定次数'}</option>
-                    </select>
+                <label style="${lab}">${t('automationPage.interval')}
+                    <input type="number" class="field sm num action-repeat-interval" value="${repeatIntervalMs}" min="100" style="width:80px">ms
                 </label>
-                <span class="repeat-options" id="repeat-options-${rowId}" style="display:${showRepeatOptions ? 'flex' : 'none'};gap:8px;align-items:center;">
-                    <label class="repeat-count-label" style="display:${repeatMode === 'count' ? 'flex' : 'none'};align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);">
-                        ${typeof t === 'function' ? t('automationPage.repeatTimes') : '次数'}
-                        <input type="number" class="input action-repeat-count" value="${repeatCount}" min="1" max="100" style="width:50px;padding:4px 6px;">
-                    </label>
-                    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);">
-                        ${typeof t === 'function' ? t('automationPage.interval') : '间隔'}
-                        <input type="number" class="input action-repeat-interval" value="${repeatIntervalMs}" min="100" style="width:70px;padding:4px 6px;">
-                        <span>ms</span>
-                    </label>
-                </span>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);">
-                    <input type="checkbox" class="action-has-condition" onchange="toggleActionCondition(${rowId})" ${hasCondition ? 'checked' : ''}>
-                    ${typeof t === 'function' ? t('automationPage.execCondition') : '执行条件'}
-                </label>
-                <span class="action-condition-fields" id="action-condition-${rowId}" style="display:${hasCondition ? 'flex' : 'none'};gap:6px;align-items:center;">
-                    <button class="btn btn-xs btn-secondary action-condition-var-btn" 
-                            onclick="openActionConditionVarSelector(${rowId})" 
-                            title="${typeof t === 'function' ? t('automation.selectVariable') : '选择变量'}"
-                            style="padding:2px 6px;font-size:11px;">
-                        ${hasCondition && condition.variable ? condition.variable : (typeof t === 'function' ? t('automation.selectVariable') : '选择变量')}
-                    </button>
-                    <input type="hidden" class="action-condition-variable" value="${hasCondition ? condition.variable : ''}">
-                    <select class="input action-condition-operator" style="padding:4px 6px;width:80px;">
-                        <option value="eq" ${hasCondition && condition.operator === 'eq' ? 'selected' : ''}>=</option>
-                        <option value="ne" ${hasCondition && condition.operator === 'ne' ? 'selected' : ''}>≠</option>
-                        <option value="gt" ${hasCondition && condition.operator === 'gt' ? 'selected' : ''}>&gt;</option>
-                        <option value="ge" ${hasCondition && condition.operator === 'ge' ? 'selected' : ''}>≥</option>
-                        <option value="contains" ${hasCondition && condition.operator === 'contains' ? 'selected' : ''}>${t('automation.operatorContains')}</option>
-                        <option value="lt" ${hasCondition && condition.operator === 'lt' ? 'selected' : ''}>&lt;</option>
-                        <option value="le" ${hasCondition && condition.operator === 'le' ? 'selected' : ''}>≤</option>
-                    </select>
-                    <input type="text" class="input action-condition-value" 
-                           placeholder="${typeof t === 'function' ? t('automationPage.value') : '值'}" value="${hasCondition ? escapeHtml(JSON.stringify(condition.value)) : ''}"
-                           style="width:80px;padding:4px 6px;">
-                </span>
-            </div>
+            </span>
+        </div>
+        <div class="t-note" style="flex-basis:100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <label style="${lab}">
+                <input type="checkbox" class="switch action-has-condition" role="switch" onchange="toggleActionCondition(${rowId})" ${hasCondition ? 'checked' : ''}>
+                ${t('automationPage.execCondition')}
+            </label>
+            <span class="action-condition-fields" id="action-condition-${rowId}" style="display:${hasCondition ? 'flex' : 'none'};gap:6px;align-items:center">
+                <button type="button" class="field sm sel action-condition-var-btn" onclick="openActionConditionVarSelector(${rowId})" title="${t('automation.selectVariable')}" style="width:150px">${escapeHtml(hasCondition && condition.variable ? condition.variable : t('automation.selectVariable'))}</button>
+                <input type="hidden" class="action-condition-variable" value="${hasCondition ? escapeHtml(condition.variable) : ''}">
+                <select class="field sm action-condition-operator" style="width:90px">
+                    ${opOpt('eq', '==')}${opOpt('ne', '!=')}${opOpt('gt', '&gt;')}${opOpt('ge', '&gt;=')}${opOpt('contains', t('automation.operatorContains'))}${opOpt('lt', '&lt;')}${opOpt('le', '&lt;=')}
+                </select>
+                <input type="text" class="field sm action-condition-value" placeholder="${t('automationPage.value')}" aria-label="${t('automationPage.value')}" value="${hasCondition ? escapeHtml(JSON.stringify(condition.value)) : ''}" style="width:90px">
+            </span>
         </div>
     `;
     
@@ -21912,128 +17888,8 @@ async function openActionConditionVarSelector(rowId) {
  * 为动作条件显示变量选择模态框
  */
 async function showVariableSelectModalForCondition() {
-    // 移除旧的模态框
-    const oldModal = document.getElementById('variable-select-modal');
-    if (oldModal) oldModal.remove();
-    
-    const modal = document.createElement('div');
-    modal.id = 'variable-select-modal';
-    modal.className = 'modal show';
-    modal.dataset.callback = 'actionCondition';
-    modal.onclick = (e) => { if (e.target === modal) closeModal('variable-select-modal');
-                    };
-    
-    modal.innerHTML = `
-        <div class="modal-content" style="max-width:550px;">
-            <div class="modal-header">
-                <h3><i class="ri-bar-chart-line"></i> ${typeof t === 'function' ? t('automation.selectConditionVar') : 'Select Condition Variable'}</h3>
-                <button class="modal-close" onclick="closeModal('variable-select-modal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div style="margin-bottom:12px;">
-                    <input type="text" id="var-search" class="input" placeholder="${t('automation.searchVariable')}"
-                           oninput="filterVariableList(this.value)" style="width:100%;">
-                </div>
-                <div id="variable-select-loading" style="text-align:center;padding:20px;">
-                    <div class="spinner"></div>
-                    <p>${t('automation.loadingVariables')}</p>
-                </div>
-                <div id="variable-select-list" style="display:none;max-height:400px;overflow-y:auto;"></div>
-                <div id="variable-select-empty" style="display:none;text-align:center;padding:30px;color:var(--text-secondary);">
-                    <i class="ri-inbox-line" style="font-size:48px;margin-bottom:10px;display:block;"></i>
-                    <p>${t('automation.noVariablesAvailable')}</p>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-sm" onclick="closeModal('variable-select-modal')">${t('common.close')}</button>
-            </div>
-        </div>
-    `;
-    
-    document.body.appendChild(modal);
-    
-    // 加载变量列表
-    try {
-        const result = await api.call('automation.variables.list', {
-            include_value: false,
-            include_meta: false
-        });
-        const variables = result.data?.variables || [];
-        
-        document.getElementById('variable-select-loading').style.display = 'none';
-        
-        if (variables.length === 0) {
-            document.getElementById('variable-select-empty').style.display = 'block';
-            return;
-        }
-        
-        // 按数据源分组
-        const grouped = {};
-        variables.forEach(v => {
-            const sourceId = v.source_id || '_system';
-            if (!grouped[sourceId]) grouped[sourceId] = [];
-            grouped[sourceId].push(v);
-        });
-        
-        const listEl = document.getElementById('variable-select-list');
-        listEl.style.display = 'block';
-        
-        let html = '';
-        for (const [sourceId, vars] of Object.entries(grouped)) {
-            const groupId = `var-group-${sourceId.replace(/[^a-zA-Z0-9]/g, '_')}`;
-            const safeSourceId = escapeHtml(sourceId);
-            const sourceLabel = sourceId === '_system'
-                ? (typeof t === 'function' ? t('automation.systemVariables') : 'System Variables')
-                : sourceId;
-            html += `<div class="var-group" data-source="${safeSourceId}">
-                <div class="var-group-header" style="padding:10px 12px;background:var(--bg-elevated);font-weight:600;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:space-between;"
-                     onclick="toggleVarGroup('${groupId}')">
-                    <span><i class="ri-archive-line"></i> ${escapeHtml(sourceLabel)} <span style="font-weight:normal;color:var(--text-secondary);">(${vars.length})</span></span>
-                    <span class="var-group-arrow" id="${groupId}-arrow" style="transition:transform 0.2s;">▶</span>
-                </div>
-                <div class="var-group-items" id="${groupId}" style="display:none;">`;
-            
-            vars.forEach(v => {
-                const typeIcon = { 'bool': '<i class="ri-record-circle-fill"></i>', 'int': '<i class="ri-numbers-line"></i>', 'float': '<i class="ri-bar-chart-line"></i>', 'string': '<i class="ri-file-text-line"></i>' }[v.type] || '<i class="ri-file-list-line"></i>';
-                const rawName = v.name || '';
-                const safeName = escapeHtml(rawName);
-                const displayMeta = v.value !== undefined ? String(v.value).substring(0, 30) : (v.type || '-');
-                const metaLabel = v.value !== undefined
-                    ? (typeof t === 'function' ? t('sshPage.varTableValue') : '当前值')
-                    : (typeof t === 'function' ? t('common.type') : '类型');
-                html += `
-                    <div class="var-select-item" data-name="${safeName}" data-source="${safeSourceId}" style="
-                        display:flex;align-items:center;padding:10px 12px;padding-left:24px;
-                        border-bottom:1px solid var(--border);cursor:pointer;
-                        transition:background 0.2s;"
-                        onmouseover="this.style.background='var(--bg-hover)'"
-                        onmouseout="this.style.background='transparent'"
-                        onclick="selectVariable(this.dataset.name)">
-                        <span style="font-size:18px;margin-right:10px;">${typeIcon}</span>
-                        <div style="flex:1;min-width:0;">
-                            <div style="font-weight:500;font-family:monospace;">${safeName}</div>
-                            <small style="color:var(--text-secondary);">${escapeHtml(metaLabel)}: ${escapeHtml(displayMeta)}${displayMeta.length >= 30 ? '...' : ''}</small>
-                        </div>
-                    </div>
-                `;
-            });
-            html += '</div></div>';
-        }
-        
-        listEl.innerHTML = html;
-        
-        // 聚焦搜索框
-        setTimeout(() => document.getElementById('var-search')?.focus(), 100);
-        
-    } catch (e) {
-        console.error('加载变量列表失败:', e);
-        document.getElementById('variable-select-loading').innerHTML = `
-            <div style="color:var(--danger);">
-                <p>${t('common.loadFailed')}:  ${escapeHtml(e.message)}</p>
-                <button class="btn btn-sm" onclick="closeModal('variable-select-modal')">${t('common.close')}</button>
-            </div>
-        `;
-    }
+    buildVarSelectModal(t('automation.selectConditionVar'), 'actionCondition');
+    await loadVarSelectList();
 }
 
 /**
@@ -22159,11 +18015,11 @@ async function submitAddRule(originalId = null) {
     const manualTrigger = document.getElementById('rule-manual-only')?.checked || false;
     
     if (!id) {
-        alert(typeof t === 'function' ? t('automation.pleaseEnterRuleId') : '请输入规则 ID');
+        fieldError('rule-id', t('automation.pleaseEnterRuleId'));
         return;
     }
     if (!name) {
-        alert(typeof t === 'function' ? t('automation.pleaseEnterRuleName') : '请输入规则名称');
+        fieldError('rule-name', t('automation.pleaseEnterRuleName'));
         return;
     }
     
@@ -22250,7 +18106,7 @@ async function submitAddRule(originalId = null) {
     });
     
     if (actions.length === 0) {
-        alert(typeof t === 'function' ? t('ui.alertSelectAction') : '请至少选择一个动作模板');
+        fieldError('actions-container', t('ui.alertSelectAction'));
         return;
     }
     
@@ -22381,27 +18237,7 @@ function showExportSourceModal(sourceId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:600px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('automation.exportSourceTitle') : '导出数据源配置'}</h2>
-                <button class="modal-close" onclick="hideExportSourceModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p style="color:#6b7280;font-size:0.9rem;margin-top:0">${typeof t === 'function' ? t('automation.exportSourceDesc', {id: escapeHtml(sourceId)}) : `导出数据源 <strong>${escapeHtml(sourceId)}</strong> 的配置为加密配置包`}</p>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('securityPage.targetDeviceCert') : '目标设备证书 (PEM)'}</label>
-                    <textarea id="export-source-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;height:120px;font-family:monospace;font-size:11px"></textarea>
-                    <div style="font-size:0.85em;color:#6b7280;margin-top:4px"><i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.targetCertHint') : '粘贴目标设备的证书。留空则使用本机证书（自加密）'}</div>
-                </div>
-                <div id="export-source-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideExportSourceModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                    <button class="btn btn-service-style" id="export-source-btn" onclick="doExportSource('${escapeHtml(sourceId)}')"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('common.export') : '导出'}</button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = exportSheet('source', t('automation.exportSourceTitle'), t('automation.exportSourceDesc', {id: escapeHtml(sourceId)}), t('securityPage.targetCertHint'), 'hideExportSourceModal', `doExportSource('${escapeHtml(sourceId)}')`);
     
     modal.classList.remove('hidden');
 }
@@ -22465,43 +18301,7 @@ function showImportSourceModal() {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:600px">
-            <div class="modal-header">
-                <h2 data-i18n="automation.importSourceTitle">${typeof t === 'function' ? t('automation.importSourceTitle') : '导入数据源配置'}</h2>
-                <button class="modal-close" onclick="hideImportSourceModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p data-i18n="automation.importSourceDesc" style="color:#6b7280;font-size:0.9rem;margin-top:0">${typeof t === 'function' ? t('automation.importSourceDesc') : '选择 .tscfg 配置包文件以导入数据源'}</p>
-                <div id="import-source-step1">
-                    <div class="form-group" style="margin-top:15px">
-                        <label data-i18n="common.selectFile">${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</label>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <input type="file" id="import-source-file" accept=".tscfg" onchange="previewSourceImport()" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
-                            <button type="button" class="btn btn-sm btn-gray" onclick="document.getElementById('import-source-file').click()"><i class="ri-folder-open-line"></i> <span data-i18n="common.selectFile">${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</span></button>
-                            <span id="import-source-file-status" style="color:#6b7280;font-size:0.9em" data-i18n="common.noFileSelected">${typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件'}</span>
-                        </div>
-                    </div>
-                </div>
-                <div id="import-source-step2" style="display:none">
-                    <div class="info-card" style="background:#fff;padding:15px;border-radius:8px;margin-top:15px;border:1px solid #eee">
-                        <h4 style="margin:0 0 10px 0;font-size:0.95rem">${typeof t === 'function' ? t('ssh.configPackContent') : '配置包内容'}</h4>
-                        <div id="import-source-preview"></div>
-                    </div>
-                    <div class="form-group" style="margin-top:15px">
-                        <label>
-                            <input type="checkbox" id="import-source-overwrite"> ${typeof t === 'function' ? t('ssh.overwriteExisting') : '覆盖已存在的配置'}
-                        </label>
-                    </div>
-                </div>
-                <div id="import-source-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideImportSourceModal()" data-i18n="common.cancel">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                    <button class="btn btn-service-style" id="import-source-btn" onclick="confirmSourceImport()" disabled><i class="ri-upload-line"></i> <span data-i18n="ssh.confirmImport">${typeof t === 'function' ? t('ssh.confirmImport') : '确认导入'}</span></button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = importSheet('source', t('automation.importSourceTitle'), t('automation.importSourceDesc'), 'previewSourceImport', 'confirmSourceImport', 'hideImportSourceModal');
     
     window._importSourceTscfg = null;
     const statusEl = document.getElementById('import-source-file-status');
@@ -22534,7 +18334,7 @@ async function previewSourceImport() {
     resultBox.classList.remove('hidden', 'success', 'error');
     resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
     importBtn.disabled = true;
-    step2.style.display = 'none';
+    previewDiv.innerHTML = importPlaceholder('source');
     
     try {
         const content = await file.text();
@@ -22549,26 +18349,7 @@ async function previewSourceImport() {
         
         if (result.code === 0 && result.data?.valid) {
             const data = result.data;
-            const configIdLbl = typeof t === 'function' ? t('securityPage.configId') : 'Config ID';
-            const typeLbl = typeof t === 'function' ? t('common.type') : 'Type';
-            const typeVal = typeof t === 'function' ? t('automation.packTypeSource') : 'Data source';
-            const signerLbl = typeof t === 'function' ? t('ssh.signer') : 'Signer';
-            const officialVal = data.official ? (typeof t === 'function' ? ' (' + t('ssh.official') + ')' : '（官方）') : '';
-            const noteLbl = typeof t === 'function' ? t('securityPage.noteLabel') : 'Note';
-            const defaultNote = typeof t === 'function' ? t('ssh.restartToLoad') : 'Load after restart';
-            let html = `
-                <table style="width:100%;font-size:0.9em">
-                    <tr><td style="width:80px;color:#6b7280">${configIdLbl}:</td><td><code>${escapeHtml(data.id)}</code></td></tr>
-                    <tr><td style="color:#6b7280">${typeLbl}:</td><td>${typeVal}</td></tr>
-                    <tr><td style="color:#6b7280">${signerLbl}:</td><td>${escapeHtml(data.signer)}${officialVal}</td></tr>
-                    <tr><td style="color:#6b7280">${noteLbl}:</td><td style="color:#9ca3af;font-size:0.85em">${escapeHtml(data.note || defaultNote)}</td></tr>
-                </table>
-            `;
-            if (data.exists) {
-                html += `<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#d97706">${typeof t === 'function' ? t('securityPage.configExistsWarning') : '该配置已存在，导入将覆盖现有文件'}</div>`;
-            }
-            previewDiv.innerHTML = html;
-            step2.style.display = 'block';
+            renderImportPreview('source', data, t('automation.packTypeSource'));
             resultBox.className = 'result-box success';
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
@@ -22641,27 +18422,7 @@ function showExportRuleModal(ruleId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:600px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('ruleConfig.exportTitle') : '导出规则配置'}</h2>
-                <button class="modal-close" onclick="hideExportRuleModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p style="color:#6b7280;font-size:0.9rem;margin-top:0">${typeof t === 'function' ? t('ruleConfig.exportDesc', { id: escapeHtml(ruleId) }) : `导出规则 <strong>${escapeHtml(ruleId)}</strong> 的配置为加密配置包`}</p>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('ruleConfig.targetCert') : '目标设备证书 (PEM)'}</label>
-                    <textarea id="export-rule-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;height:120px;font-family:monospace;font-size:11px"></textarea>
-                    <div style="font-size:0.85em;color:#6b7280;margin-top:4px"><i class="ri-information-line"></i> ${typeof t === 'function' ? t('ruleConfig.certHint') : '粘贴目标设备的证书。留空则使用本机证书（自加密）'}</div>
-                </div>
-                <div id="export-rule-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideExportRuleModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                    <button class="btn btn-service-style" id="export-rule-btn" onclick="doExportRule('${escapeHtml(ruleId)}')"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('ruleConfig.exportBtn') : '导出'}</button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = exportSheet('rule', t('ruleConfig.exportTitle'), t('ruleConfig.exportDesc', {id: escapeHtml(ruleId)}), t('ruleConfig.certHint'), 'hideExportRuleModal', `doExportRule('${escapeHtml(ruleId)}')`);
     
     modal.classList.remove('hidden');
 }
@@ -22725,43 +18486,7 @@ function showImportRuleModal() {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:600px">
-            <div class="modal-header">
-                <h2 data-i18n="automation.importRuleTitle">${typeof t === 'function' ? t('automation.importRuleTitle') : '导入规则配置'}</h2>
-                <button class="modal-close" onclick="hideImportRuleModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p data-i18n="automation.importRuleDesc" style="color:#6b7280;font-size:0.9rem;margin-top:0">${typeof t === 'function' ? t('automation.importRuleDesc') : '选择 .tscfg 配置包文件以导入规则'}</p>
-                <div id="import-rule-step1">
-                    <div class="form-group" style="margin-top:15px">
-                        <label data-i18n="common.selectFile">${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</label>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <input type="file" id="import-rule-file" accept=".tscfg" onchange="previewRuleImport()" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
-                            <button type="button" class="btn btn-sm btn-gray" onclick="document.getElementById('import-rule-file').click()"><i class="ri-folder-open-line"></i> <span data-i18n="common.selectFile">${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</span></button>
-                            <span id="import-rule-file-status" style="color:#6b7280;font-size:0.9em" data-i18n="common.noFileSelected">${typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件'}</span>
-                        </div>
-                    </div>
-                </div>
-                <div id="import-rule-step2" style="display:none">
-                    <div class="info-card" style="background:#fff;padding:15px;border-radius:8px;margin-top:15px;border:1px solid #eee">
-                        <h4 style="margin:0 0 10px 0;font-size:0.95rem">${typeof t === 'function' ? t('ssh.configPackContent') : '配置包内容'}</h4>
-                        <div id="import-rule-preview"></div>
-                    </div>
-                    <div class="form-group" style="margin-top:15px">
-                        <label>
-                            <input type="checkbox" id="import-rule-overwrite"> ${typeof t === 'function' ? t('ssh.overwriteExisting') : '覆盖已存在的配置'}
-                        </label>
-                    </div>
-                </div>
-                <div id="import-rule-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideImportRuleModal()" data-i18n="common.cancel">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                    <button class="btn btn-service-style" id="import-rule-btn" onclick="confirmRuleImport()" disabled><i class="ri-upload-line"></i> <span data-i18n="ssh.confirmImport">${typeof t === 'function' ? t('ssh.confirmImport') : '确认导入'}</span></button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = importSheet('rule', t('automation.importRuleTitle'), t('automation.importRuleDesc'), 'previewRuleImport', 'confirmRuleImport', 'hideImportRuleModal');
     
     window._importRuleTscfg = null;
     const ruleStatusEl = document.getElementById('import-rule-file-status');
@@ -22794,7 +18519,7 @@ async function previewRuleImport() {
     resultBox.classList.remove('hidden', 'success', 'error');
     resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
     importBtn.disabled = true;
-    step2.style.display = 'none';
+    previewDiv.innerHTML = importPlaceholder('rule');
     
     try {
         const content = await file.text();
@@ -22809,26 +18534,7 @@ async function previewRuleImport() {
         
         if (result.code === 0 && result.data?.valid) {
             const data = result.data;
-            const configIdLbl = typeof t === 'function' ? t('securityPage.configId') : '配置 ID';
-            const typeLbl = typeof t === 'function' ? t('common.type') : '类型';
-            const typeVal = typeof t === 'function' ? t('automation.packTypeRule') : '自动化规则';
-            const signerLbl = typeof t === 'function' ? t('ssh.signer') : '签名者';
-            const officialVal = data.official ? (typeof t === 'function' ? ' (' + t('ssh.official') + ')' : '（官方）') : '';
-            const noteLbl = typeof t === 'function' ? t('securityPage.noteLabel') : '备注';
-            const defaultNote = typeof t === 'function' ? t('ssh.restartToLoad') : '重启后自动加载';
-            let html = `
-                <table style="width:100%;font-size:0.9em">
-                    <tr><td style="width:80px;color:#6b7280">${configIdLbl}:</td><td><code>${escapeHtml(data.id)}</code></td></tr>
-                    <tr><td style="color:#6b7280">${typeLbl}:</td><td>${typeVal}</td></tr>
-                    <tr><td style="color:#6b7280">${signerLbl}:</td><td>${escapeHtml(data.signer)}${officialVal}</td></tr>
-                    <tr><td style="color:#6b7280">${noteLbl}:</td><td style="color:#9ca3af;font-size:0.85em">${escapeHtml(data.note || defaultNote)}</td></tr>
-                </table>
-            `;
-            if (data.exists) {
-                html += `<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#d97706">${typeof t === 'function' ? t('securityPage.configExistsWarning') : '该配置已存在，导入将覆盖现有文件'}</div>`;
-            }
-            previewDiv.innerHTML = html;
-            step2.style.display = 'block';
+            renderImportPreview('rule', data, t('automation.packTypeRule'));
             resultBox.className = 'result-box success';
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
@@ -22901,27 +18607,7 @@ function showExportActionModal(actionId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:600px">
-            <div class="modal-header">
-                <h2>${typeof t === 'function' ? t('automation.exportActionTitle') : '导出动作模板'}</h2>
-                <button class="modal-close" onclick="hideExportActionModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p style="color:#6b7280;font-size:0.9rem;margin-top:0">${typeof t === 'function' ? t('automation.exportActionDesc', {actionId: escapeHtml(actionId)}) : `导出动作模板 <strong>${escapeHtml(actionId)}</strong> 的配置为加密配置包`}</p>
-                <div class="form-group">
-                    <label>${typeof t === 'function' ? t('securityPage.targetDeviceCert') : '目标设备证书 (PEM)'}</label>
-                    <textarea id="export-action-cert" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="width:100%;height:120px;font-family:monospace;font-size:11px"></textarea>
-                    <div style="font-size:0.85em;color:#6b7280;margin-top:4px"><i class="ri-information-line"></i> ${typeof t === 'function' ? t('securityPage.targetCertHint') : '粘贴目标设备的证书。留空则使用本机证书（自加密）'}</div>
-                </div>
-                <div id="export-action-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideExportActionModal()">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                    <button class="btn btn-service-style" id="export-action-btn" onclick="doExportAction('${escapeHtml(actionId)}')"><i class="ri-download-line"></i> ${typeof t === 'function' ? t('common.export') : '导出'}</button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = exportSheet('action', t('automation.exportActionTitle'), t('automation.exportActionDesc', {actionId: escapeHtml(actionId)}), t('securityPage.targetCertHint'), 'hideExportActionModal', `doExportAction('${escapeHtml(actionId)}')`);
     
     modal.classList.remove('hidden');
 }
@@ -22985,43 +18671,7 @@ function showImportActionModal() {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = `
-        <div class="modal-content cc-compact" style="max-width:600px">
-            <div class="modal-header">
-                <h2 data-i18n="automation.importActionTitle">${typeof t === 'function' ? t('automation.importActionTitle') : '导入动作模板'}</h2>
-                <button class="modal-close" onclick="hideImportActionModal()"><i class="ri-close-line"></i></button>
-            </div>
-            <div class="modal-body">
-                <p data-i18n="automation.importActionDesc" style="color:#6b7280;font-size:0.9rem;margin-top:0">${typeof t === 'function' ? t('automation.importActionDesc') : '选择 .tscfg 配置包文件以导入动作模板'}</p>
-                <div id="import-action-step1">
-                    <div class="form-group" style="margin-top:15px">
-                        <label data-i18n="common.selectFile">${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</label>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <input type="file" id="import-action-file" accept=".tscfg" onchange="previewActionImport()" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
-                            <button type="button" class="btn btn-sm btn-gray" onclick="document.getElementById('import-action-file').click()"><i class="ri-folder-open-line"></i> <span data-i18n="common.selectFile">${typeof t === 'function' ? t('common.selectFile') : '选择文件'}</span></button>
-                            <span id="import-action-file-status" style="color:#6b7280;font-size:0.9em" data-i18n="common.noFileSelected">${typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件'}</span>
-                        </div>
-                    </div>
-                </div>
-                <div id="import-action-step2" style="display:none">
-                    <div class="info-card" style="background:#fff;padding:15px;border-radius:8px;margin-top:15px;border:1px solid #eee">
-                        <h4 style="margin:0 0 10px 0;font-size:0.95rem">${typeof t === 'function' ? t('ssh.configPackContent') : '配置包内容'}</h4>
-                        <div id="import-action-preview"></div>
-                    </div>
-                    <div class="form-group" style="margin-top:15px">
-                        <label>
-                            <input type="checkbox" id="import-action-overwrite"> ${typeof t === 'function' ? t('ssh.overwriteExisting') : '覆盖已存在的配置'}
-                        </label>
-                    </div>
-                </div>
-                <div id="import-action-result" class="result-box hidden" style="margin-top:10px"></div>
-                <div class="modal-footer cc-compact-footer" style="margin-top:15px;padding-top:15px;border-top:1px solid #eee">
-                    <button class="btn btn-gray" onclick="hideImportActionModal()" data-i18n="common.cancel">${typeof t === 'function' ? t('common.cancel') : '取消'}</button>
-                    <button class="btn btn-service-style" id="import-action-btn" onclick="confirmActionImport()" disabled><i class="ri-upload-line"></i> <span data-i18n="ssh.confirmImport">${typeof t === 'function' ? t('ssh.confirmImport') : '确认导入'}</span></button>
-                </div>
-            </div>
-        </div>
-    `;
+    modal.innerHTML = importSheet('action', t('automation.importActionTitle'), t('automation.importActionDesc'), 'previewActionImport', 'confirmActionImport', 'hideImportActionModal');
     
     window._importActionTscfg = null;
     const actionStatusEl = document.getElementById('import-action-file-status');
@@ -23054,7 +18704,7 @@ async function previewActionImport() {
     resultBox.classList.remove('hidden', 'success', 'error');
     resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
     importBtn.disabled = true;
-    step2.style.display = 'none';
+    previewDiv.innerHTML = importPlaceholder('action');
     
     try {
         const content = await file.text();
@@ -23069,26 +18719,7 @@ async function previewActionImport() {
         
         if (result.code === 0 && result.data?.valid) {
             const data = result.data;
-            const configIdLbl = typeof t === 'function' ? t('securityPage.configId') : 'Config ID';
-            const typeLbl = typeof t === 'function' ? t('common.type') : 'Type';
-            const typeVal = typeof t === 'function' ? t('automation.packTypeAction') : 'Action template';
-            const signerLbl = typeof t === 'function' ? t('ssh.signer') : 'Signer';
-            const officialVal = data.official ? (typeof t === 'function' ? ' (' + t('ssh.official') + ')' : '（官方）') : '';
-            const noteLbl = typeof t === 'function' ? t('securityPage.noteLabel') : 'Note';
-            const defaultNote = typeof t === 'function' ? t('ssh.restartToLoad') : 'Load after restart';
-            let html = `
-                <table style="width:100%;font-size:0.9em">
-                    <tr><td style="width:80px;color:#6b7280">${configIdLbl}:</td><td><code>${escapeHtml(data.id)}</code></td></tr>
-                    <tr><td style="color:#6b7280">${typeLbl}:</td><td>${typeVal}</td></tr>
-                    <tr><td style="color:#6b7280">${signerLbl}:</td><td>${escapeHtml(data.signer)}${officialVal}</td></tr>
-                    <tr><td style="color:#6b7280">${noteLbl}:</td><td style="color:#9ca3af;font-size:0.85em">${escapeHtml(data.note || defaultNote)}</td></tr>
-                </table>
-            `;
-            if (data.exists) {
-                html += `<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#d97706">${typeof t === 'function' ? t('securityPage.configExistsWarning') : '该配置已存在，导入将覆盖现有文件'}</div>`;
-            }
-            previewDiv.innerHTML = html;
-            step2.style.display = 'block';
+            renderImportPreview('action', data, t('automation.packTypeAction'));
             resultBox.className = 'result-box success';
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
