@@ -52,12 +52,12 @@ jobs:
   runtime-tests:
     name: Runtime and fan regression tests
     runs-on: ubuntu-latest
-    env:
-      IDF_PATH: ${{ runner.temp }}/runtime-idf
     steps:
       - uses: actions/checkout@v4
       - name: Fetch matching ESP-IDF cJSON sources for host tests
         run: |
+          export IDF_PATH="$RUNNER_TEMP/runtime-idf"
+          echo "IDF_PATH=$IDF_PATH" >> "$GITHUB_ENV"
           git clone --depth 1 --branch "$IDF_VERSION" --filter=blob:none --sparse https://github.com/espressif/esp-idf.git "$IDF_PATH"
           git -C "$IDF_PATH" sparse-checkout set components/json
           git -C "$IDF_PATH" submodule update --init --depth 1 components/json/cJSON
