@@ -1,3 +1,4 @@
+import sys
 """Compile production completion lifetime and synchronous admission; mock only queue/RTOS I/O."""
 from pathlib import Path
 import re, subprocess, os
@@ -51,5 +52,5 @@ int main(void){
 '''
 (build/'completion.c').write_text(code)
 env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
-subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined','-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk','-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include',str(build/'completion.c'),'-o',str(build/'completion')],check=True,env=env)
+subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined',*(['-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'] if sys.platform == 'darwin' else []),'-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include',str(build/'completion.c'),'-o',str(build/'completion')],check=True,env=env)
 subprocess.run([str(build/'completion')],check=True,env=env)

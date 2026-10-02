@@ -1,3 +1,4 @@
+import sys
 """Production mutation wrappers + service protocol, mocked storage and transport."""
 from pathlib import Path
 import re, subprocess, os
@@ -50,5 +51,5 @@ int main(void) {
 '''
 (build/'configuration_protocol.c').write_text(s)
 env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
-subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined','-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk',*[f'-I{x}' for x in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include']],str(build/'configuration_protocol.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c','-lpthread','-o',str(build/'configuration_protocol')],check=True,env=env)
+subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined',*(['-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'] if sys.platform == 'darwin' else []),*[f'-I{x}' for x in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include']],str(build/'configuration_protocol.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c','-lpthread','-o',str(build/'configuration_protocol')],check=True,env=env)
 subprocess.run([str(build/'configuration_protocol')],check=True,env=env)

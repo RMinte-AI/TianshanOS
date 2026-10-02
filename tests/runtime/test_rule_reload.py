@@ -1,3 +1,4 @@
+import sys
 """Round trip production store/codec and extracted current directory loader."""
 from pathlib import Path
 import re,subprocess,os
@@ -32,5 +33,5 @@ int main(void){
 (build/'rule_reload.c').write_text(s)
 idf=os.environ.get('IDF_PATH','/Users/massif/esp/v5.5.2/esp-idf')
 env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
-subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined','-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk','-Wno-deprecated-declarations','-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include','-I'+idf+'/components/json/cJSON',str(build/'rule_reload.c'),'components/ts_automation/src/ts_rule_codec.c',idf+'/components/json/cJSON/cJSON.c','-lpthread','-lm','-o',str(build/'rule_reload')],check=True,env=env)
+subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined',*(['-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'] if sys.platform == 'darwin' else []),'-Wno-deprecated-declarations','-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include','-I'+idf+'/components/json/cJSON',str(build/'rule_reload.c'),'components/ts_automation/src/ts_rule_codec.c',idf+'/components/json/cJSON/cJSON.c','-lpthread','-lm','-o',str(build/'rule_reload')],check=True,env=env)
 subprocess.run([str(build/'rule_reload')],check=True,env=env)
