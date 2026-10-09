@@ -1,0 +1,33 @@
+{
+  "version": "0.6.1",
+  "build_version": "0.6.1+73069d24d.10090811",
+  "idf_version": "5.5.2",
+  "source_base_commit": "73069d24da043a124d89028d25a5e4659d736652",
+  "source_inputs_sha256": "62e8ba896b9dff39133cecebf677da7c662b850d18981bd1323c0b053e7b1f2d",
+  "files": {
+    "TianShanOS.bin": {
+      "bytes": 2202336,
+      "sha256": "15f99d11092b91255d8fa24b632316b217d6efeb3acc3e20ed290e0e9fd54378"
+    },
+    "www.bin": {
+      "bytes": 3145728,
+      "sha256": "feb4bc6f737aff611e534ca439990c99233b7a8879485d65a6e47e82bf075111"
+    },
+    "ota_data_initial.bin": {
+      "bytes": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    },
+    "flasher_args.json": {
+      "bytes": 1169,
+      "sha256": "5288d74c7e3ee9e0369f93f9418802ad2b455159cae42f6261c29be818034cc9"
+    },
+    "bootloader/bootloader.bin": {
+      "bytes": 22496,
+      "sha256": "ac6d47f0b046fe2cb91b0bc86f9924885c8ac96d20da87b4d9841ec8c14ee3d8"
+    },
+    "partition_table/partition-table.bin": {
+      "bytes": 3072,
+      "sha256": "973dfb7f44bdd42d525e53fcc1eb06ac5745687dddc1c73223715df841d785e5"
+    }
+  }
+}

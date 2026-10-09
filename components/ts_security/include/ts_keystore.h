@@ -117,6 +117,19 @@ typedef struct {
     bool hidden;                    /**< Hide key ID from unauthenticated users (default: false) */
 } ts_keystore_gen_opts_t;
 
+/** Per-call generation outcome. Storage success is independent of HTTP delivery. */
+typedef struct {
+    const char *failed_stage;       /**< Static stage name, NULL after storage success */
+    esp_err_t cleanup_error;
+    bool cleanup_complete;         /**< Only this new ID's cleanup */
+    bool stored;
+} ts_keystore_generate_result_t;
+
+esp_err_t ts_keystore_generate_key_with_result(const char *id,
+                                                ts_keystore_key_type_t type,
+                                                const ts_keystore_gen_opts_t *opts,
+                                                ts_keystore_generate_result_t *result);
+
 /**
  * @brief Default generation options (not exportable, not hidden)
  */

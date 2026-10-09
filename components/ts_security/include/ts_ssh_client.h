@@ -174,6 +174,17 @@ esp_err_t ts_ssh_exec_stream(ts_ssh_session_t session, const char *command,
                               int *exit_code);
 
 /**
+ * @brief Execute a command with stdin bytes and streaming output
+ *
+ * Sends input without including it in command text, then closes stdin.
+ * The caller owns the input buffer and must clear sensitive bytes after use.
+ */
+esp_err_t ts_ssh_exec_stream_input(ts_ssh_session_t session, const char *command,
+                                 const char *input, size_t input_len,
+                                 ts_ssh_output_cb_t callback, void *user_data,
+                                 int *exit_code);
+
+/**
  * @brief Abort ongoing SSH operation
  * 
  * Signals the SSH stream to stop. The ts_ssh_exec_stream function

@@ -54,18 +54,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch matching ESP-IDF cJSON sources for host tests
+      - name: Fetch matching ESP-IDF cJSON and MbedTLS sources for host tests
         run: |
           export IDF_PATH="$RUNNER_TEMP/runtime-idf"
           echo "IDF_PATH=$IDF_PATH" >> "$GITHUB_ENV"
           git clone --depth 1 --branch "$IDF_VERSION" --filter=blob:none --sparse https://github.com/espressif/esp-idf.git "$IDF_PATH"
-          git -C "$IDF_PATH" sparse-checkout set components/json
-          git -C "$IDF_PATH" submodule update --init --depth 1 components/json/cJSON
+          git -C "$IDF_PATH" sparse-checkout set components/json components/mbedtls
+          git -C "$IDF_PATH" submodule update --init --recursive --depth 1 components/json/cJSON components/mbedtls/mbedtls
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: bash tests/runtime/run_all.sh
+      - run: bash tests/ws_subscriptions/run_operation_adapter.sh
       - run: bash tests/fan_monitor/run_host.sh
+      - name: Fan output and decay regressions
+        run: |
+          python3 tests/fan_review/run_host.py --check --cjson-dir "$IDF_PATH/components/json/cJSON" --output "$RUNNER_TEMP/fan-review.jsonl"
+          node tests/fan_review/test_ui.cjs "$RUNNER_TEMP/fan-review.jsonl"
+          python3 tests/fan_decay/run_host.py --csv "$RUNNER_TEMP/fan-decay.csv"
+          node tests/fan_decay/test_ui.cjs
+      - name: CSR subject signing and parsing regression
+        run: |
+          cmake -S "$IDF_PATH/components/mbedtls/mbedtls" -B "$RUNNER_TEMP/mbedtls" -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF
+          cmake --build "$RUNNER_TEMP/mbedtls" --parallel 2
+          cc -std=c11 -g -fsanitize=address,undefined -Itests/certificate/stubs -Icomponents/ts_cert/include \
+            -I"$IDF_PATH/components/mbedtls/mbedtls/include" \
+            tests/certificate/test_subject.c components/ts_cert/src/ts_cert_subject.c \
+            "$RUNNER_TEMP/mbedtls/library/libmbedx509.a" "$RUNNER_TEMP/mbedtls/library/libmbedcrypto.a" \
+            -lm -o "$RUNNER_TEMP/csr-subject"
+          "$RUNNER_TEMP/csr-subject"
 
   build:
     name: Build ESP32-S3 Firmware

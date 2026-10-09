@@ -1,4 +1,5 @@
 #include "ts_rule_codec.h"
+#include "ts_action_filter.h"
 #include "esp_heap_caps.h"
 #include "ts_action_manager.h"
 #include <limits.h>
@@ -401,6 +402,10 @@ esp_err_t ts_rule_decode(const cJSON *j, ts_auto_rule_t *r) {
         if (rep < 0)
             goto invalid;
         out->repeat_mode = rep;
+        if (out->type == TS_AUTO_ACT_LED && !out->template_id[0] &&
+            ts_action_filter_decode(cJSON_GetObjectItemCaseSensitive(a, "filter_params"),
+                                    &out->led.filter_params) != ESP_OK)
+            goto invalid;
         if (cJSON_HasObjectItem(a, "condition")) {
             const cJSON *ac = cJSON_GetObjectItemCaseSensitive(a, "condition");
             out->condition.has_condition = !cJSON_IsNull(ac);
@@ -472,6 +477,8 @@ cJSON *ts_rule_encode(const ts_auto_rule_t *r) {
             (a->type != TS_AUTO_ACT_TEMPLATE_REF &&
              !fields_write(aj, a, by_type[a->type].fields, by_type[a->type].count)) ||
             !cJSON_AddStringToObject(aj, "repeat_mode", repeats[a->repeat_mode]))
+            goto fail;
+        if (a->type == TS_AUTO_ACT_LED && !ts_action_filter_encode(&a->led.filter_params, aj))
             goto fail;
         if (a->condition.has_condition) {
             cJSON *cj =

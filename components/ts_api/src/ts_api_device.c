@@ -224,10 +224,13 @@ static esp_err_t api_device_fan_status(const cJSON *params, ts_api_result_t *res
             cJSON *fan = cJSON_CreateObject();
             cJSON_AddNumberToObject(fan, "id", i);
             cJSON_AddStringToObject(fan, "mode", fan_mode_to_str(status.mode));
-            cJSON_AddNumberToObject(fan, "duty", status.duty_percent);
+            cJSON_AddBoolToObject(fan, "duty_valid", status.duty_valid);
+            if (status.duty_valid) cJSON_AddNumberToObject(fan, "duty", status.duty_percent);
+            else cJSON_AddNullToObject(fan, "duty");
             cJSON_AddNumberToObject(fan, "rpm", status.rpm);
             cJSON_AddNumberToObject(fan, "temp", status.temp / 10.0);
-            cJSON_AddBoolToObject(fan, "running", status.is_running);
+            if (status.duty_valid) cJSON_AddBoolToObject(fan, "running", status.is_running);
+            else cJSON_AddNullToObject(fan, "running");
             cJSON_AddNumberToObject(fan, "control_temperature", status.control_temp / 10.0);
             cJSON_AddNumberToObject(fan, "guard_temperature", status.guard_temp / 10.0);
             cJSON_AddNumberToObject(fan, "predicted_temperature", status.predicted_temp / 10.0);

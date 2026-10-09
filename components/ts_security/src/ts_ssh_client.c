@@ -371,8 +371,9 @@ ts_ssh_state_t ts_ssh_get_state(ts_ssh_session_t session) {
 }
 
 static esp_err_t exec_command(ts_ssh_session_t s, const char *command, ts_ssh_output_cb_t callback,
-                              void *context, ts_ssh_exec_result_t *result, int *exit_code) {
-    if (!s || !command || (!callback && !result))
+                              void *context, ts_ssh_exec_result_t *result, int *exit_code,
+                              const char *input, size_t input_len) {
+    if (!s || !command || (!callback && !result) || (!input && input_len))
         return ESP_ERR_INVALID_ARG;
     if (!ts_ssh_is_connected(s))
         return ESP_ERR_INVALID_STATE;
@@ -402,6 +403,30 @@ static esp_err_t exec_command(ts_ssh_session_t s, const char *command, ts_ssh_ou
             goto timeout;
     if (rc)
         goto failed;
+    if (input) {
+        size_t sent = 0;
+        while (sent < input_len) {
+            if (operation_expired(s))
+                goto timeout;
+            ssize_t written = libssh2_channel_write(channel, input + sent, input_len - sent);
+            if (written == LIBSSH2_ERROR_EAGAIN || written == 0) {
+                if (wait_socket(s) < 0)
+                    goto timeout;
+            } else if (written < 0) {
+                set_error(s, "Failed to send command input");
+                goto failed;
+            } else {
+                sent += (size_t)written;
+            }
+        }
+        while ((rc = libssh2_channel_send_eof(channel)) == LIBSSH2_ERROR_EAGAIN)
+            if (wait_socket(s) < 0)
+                goto timeout;
+        if (rc) {
+            set_error(s, "Failed to close command input");
+            goto failed;
+        }
+    }
     size_t capacity[2] = {0, 0};
     size_t limit = s->config.max_output_bytes ? s->config.max_output_bytes : 65536;
     for (;;) {
@@ -474,12 +499,18 @@ failed:
 }
 
 esp_err_t ts_ssh_exec(ts_ssh_session_t s, const char *command, ts_ssh_exec_result_t *result) {
-    return exec_command(s, command, NULL, NULL, result, NULL);
+    return exec_command(s, command, NULL, NULL, result, NULL, NULL, 0);
 }
 
 esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s, const char *command, ts_ssh_output_cb_t callback,
                              void *context, int *exit_code) {
-    return exec_command(s, command, callback, context, NULL, exit_code);
+    return exec_command(s, command, callback, context, NULL, exit_code, NULL, 0);
+}
+
+esp_err_t ts_ssh_exec_stream_input(ts_ssh_session_t s, const char *command,
+                                 const char *input, size_t input_len,
+                                 ts_ssh_output_cb_t callback, void *context, int *exit_code) {
+    return exec_command(s, command, callback, context, NULL, exit_code, input, input_len);
 }
 
 void ts_ssh_abort(ts_ssh_session_t session) {

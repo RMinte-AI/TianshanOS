@@ -10833,7 +10833,7 @@
         "file": "js/app.js",
         "owner": "loadSecurityPage",
         "line": 12256,
-        "markup": "<input type=\"text\" id=\"csr-org\" placeholder=\"HiddenPeak Labs\">",
+        "markup": "<input type=\"text\" id=\"csr-org\" placeholder=\"组织\">",
         "status": "NOT_RUN",
         "after_evidence": null
       },
@@ -10842,7 +10842,7 @@
         "file": "js/app.js",
         "owner": "loadSecurityPage",
         "line": 12258,
-        "markup": "<input type=\"text\" id=\"csr-org\" placeholder=\"HiddenPeak Labs\">",
+        "markup": "<input type=\"text\" id=\"csr-org\" placeholder=\"组织\">",
         "status": "NOT_RUN",
         "after_evidence": null
       },

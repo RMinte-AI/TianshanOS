@@ -59,7 +59,8 @@ typedef struct {
     ts_pwm_handle_t pwm;
     ts_gpio_handle_t tach_gpio;
     ts_fan_mode_t mode;
-    uint8_t current_duty;
+    uint8_t current_duty;       /* Last successful logical PWM output. */
+    bool duty_valid;
     uint8_t target_duty;
     uint16_t rpm;
     int16_t temperature;
@@ -78,6 +79,10 @@ typedef struct {
     bool guard_active;
     bool temp_stale;
     int64_t guard_release_since_ms;
+    int64_t guard_last_observation_ms;
+    int64_t guard_last_report_ms;
+    ts_temp_source_type_t guard_last_source;
+    uint32_t guard_last_identity;
     bool response_observing;
     int64_t response_until_ms;
     float response_slope_before;
@@ -254,6 +259,8 @@ static void reset_adaptive_auto_state(fan_instance_t *fan)
     fan->guard_active = false;
     fan->temp_stale = false;
     fan->guard_release_since_ms = 0;
+    fan->guard_last_observation_ms = 0;
+    fan->guard_last_report_ms = 0;
     fan->response_observing = false;
     fan->response_until_ms = 0;
     fan->response_slope_before = 0.0f;
@@ -358,15 +365,22 @@ static uint8_t apply_auto_rate_limit(fan_instance_t *fan, uint8_t target,
             fan->auto_fall_credit = 0.0f;
             target = current;
         } else {
-            fan->auto_fall_credit += FAN_AUTO_FALL_RATE_PER_SEC * dt_sec;
-            uint8_t max_step = (uint8_t)fan->auto_fall_credit;
+            /* 已不需要的额外风量按温度趋势窗口平滑退出，避免峰值留下数分钟尾巴。
+             * 接近当前需求时仍使用原来的慢速退档；升档和退档许可保持不变。 */
+            float excess_rate = (current - target) / (FAN_AUTO_SLOPE_WINDOW_MS / 1000.0f);
+            float fall_rate = excess_rate > FAN_AUTO_FALL_RATE_PER_SEC
+                            ? excess_rate : FAN_AUTO_FALL_RATE_PER_SEC;
+            fan->auto_fall_credit += fall_rate * dt_sec;
+            uint8_t desired_step = current - target;
+            uint8_t max_step = fan->auto_fall_credit >= desired_step
+                             ? desired_step : (uint8_t)fan->auto_fall_credit;
             if (max_step == 0) {
                 target = current;
             } else {
-                uint8_t desired_step = current - target;
-                uint8_t actual_step = desired_step < max_step ? desired_step : max_step;
-                target = current - actual_step;
-                fan->auto_fall_credit -= actual_step;
+                target = current - max_step;
+                /* Permission belongs to this outstanding demand, not a later one. */
+                fan->auto_fall_credit = max_step == desired_step
+                                      ? 0.0f : fan->auto_fall_credit - max_step;
             }
         }
     } else {
@@ -400,6 +414,28 @@ static void update_response_learning(fan_instance_t *fan, bool slope_valid,
                                        FAN_AUTO_GAIN_MAX);
 }
 
+static void update_guard_observation(fan_instance_t *fan, const ts_temp_data_t *data,
+                                     int64_t now_ms)
+{
+    /* Valid cached readings count; a missed evaluation or changed source does not.
+     * Two timer periods allow normal scheduling jitter, capped by input validity. */
+    int64_t max_gap_ms = 2LL * CONFIG_TS_DRIVERS_FAN_TEMP_UPDATE_MS;
+    if (max_gap_ms > TS_TEMP_DATA_TIMEOUT_MS) max_gap_ms = TS_TEMP_DATA_TIMEOUT_MS;
+    bool broken = fan->guard_last_observation_ms == 0 ||
+                  now_ms <= fan->guard_last_observation_ms ||
+                  now_ms - fan->guard_last_observation_ms > max_gap_ms ||
+                  data->source != fan->guard_last_source ||
+                  data->identity_revision != fan->guard_last_identity ||
+                  data->timestamp_ms < fan->guard_last_report_ms ||
+                  data->timestamp_ms - fan->guard_last_report_ms > TS_TEMP_DATA_TIMEOUT_MS ||
+                  data->timestamp_ms <= 0 || data->timestamp_ms > now_ms;
+    if (broken) fan->guard_release_since_ms = 0;
+    fan->guard_last_observation_ms = now_ms;
+    fan->guard_last_report_ms = data->timestamp_ms;
+    fan->guard_last_source = data->source;
+    fan->guard_last_identity = data->identity_revision;
+}
+
 static esp_err_t apply_adaptive_auto(fan_instance_t *fan, const ts_temp_data_t *temp_data)
 {
     int64_t now_ms = esp_timer_get_time() / 1000;
@@ -415,6 +451,7 @@ static esp_err_t apply_adaptive_auto(fan_instance_t *fan, const ts_temp_data_t *
         fan->auto_fall_credit = 0.0f;
         fan->guard_active = false;
         fan->guard_release_since_ms = 0;
+        fan->guard_last_observation_ms = 0;
         fan->target_duty = FAN_AUTO_STALE_DUTY;
         fan->predicted_temperature = fan->control_temperature;
         fan->last_auto_update_ms = now_ms;
@@ -427,6 +464,7 @@ static esp_err_t apply_adaptive_auto(fan_instance_t *fan, const ts_temp_data_t *
     fan->guard_temperature = guard_temp;
     record_auto_temp_sample(fan, control_temp, now_ms);
 
+    update_guard_observation(fan, temp_data, now_ms);
     if (guard_temp >= FAN_AUTO_GUARD_TEMP) {
         fan->guard_active = true;
         fan->guard_release_since_ms = 0;
@@ -602,6 +640,8 @@ static esp_err_t update_pwm(fan_instance_t *fan, uint8_t duty)
     esp_err_t ret = ts_pwm_set_duty(fan->pwm, (float)actual);
     if (ret == ESP_OK) {
         fan->current_duty = duty;
+        fan->duty_valid = true;
+        fan->fault = false;
     } else {
         fan->fault = true;
     }
@@ -667,7 +707,7 @@ static void fan_update_callback(void *arg)
         switch (fan->mode) {
         case TS_FAN_MODE_MANUAL:
             // 手动模式：保持当前设定
-            update_pwm(fan, fan->current_duty);
+            update_pwm(fan, fan->target_duty);
             break;
             
         case TS_FAN_MODE_AUTO:
@@ -828,6 +868,7 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
     
     fan_instance_t *f = &s_fans[fan];
     f->config = *config;
+    f->duty_valid = false;
     
     // 创建 PWM 句柄
     f->pwm = ts_pwm_create_raw(config->gpio_pwm, "fan");
@@ -874,14 +915,16 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
     f->initialized = true;
     f->enabled = true;
     f->mode = TS_FAN_MODE_MANUAL;
-    f->current_duty = config->min_duty;
+    f->current_duty = 0;
     f->fault = false;
     reset_adaptive_auto_state(f);
+    f->target_duty = config->min_duty;
+    ret = update_pwm(f, f->target_duty);
     
     TS_LOGI(TAG, "Fan %d configured: PWM=GPIO%d, TACH=%d, curve=%d points", 
             fan, config->gpio_pwm, config->gpio_tach, config->curve_points);
     
-    return ESP_OK;
+    return ret;
 }
 
 /*===========================================================================*/
@@ -897,7 +940,11 @@ esp_err_t ts_fan_set_mode(ts_fan_id_t fan, ts_fan_mode_t mode)
     s_fans[fan].mode = mode;
     esp_err_t ret = ESP_OK;
     
+    if (mode == TS_FAN_MODE_MANUAL && old_mode != mode) {
+        s_fans[fan].target_duty = s_fans[fan].current_duty;
+    }
     if (mode == TS_FAN_MODE_OFF) {
+        s_fans[fan].target_duty = 0;
         ret = update_pwm(&s_fans[fan], 0);
     }
     
@@ -943,8 +990,8 @@ esp_err_t ts_fan_set_duty(ts_fan_id_t fan, uint8_t duty_percent)
     if (duty_percent > 100) duty_percent = 100;
     
     s_fans[fan].mode = TS_FAN_MODE_MANUAL;
-    s_fans[fan].current_duty = duty_percent;
     reset_adaptive_auto_state(&s_fans[fan]);
+    s_fans[fan].target_duty = duty_percent;
     
     return update_pwm(&s_fans[fan], duty_percent);
 }
@@ -957,7 +1004,7 @@ esp_err_t ts_fan_enable(ts_fan_id_t fan, bool enable)
     s_fans[fan].enabled = enable;
     
     if (!enable) {
-        update_pwm(&s_fans[fan], 0);
+        return update_pwm(&s_fans[fan], 0);
     }
     
     TS_LOGI(TAG, "Fan %d %s", fan, enable ? "enabled" : "disabled");
@@ -1062,24 +1109,16 @@ esp_err_t ts_fan_get_status(ts_fan_id_t fan, ts_fan_status_t *status)
     if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
     
     fan_instance_t *f = &s_fans[fan];
-    
-    /* 控制状态只由 fan_update_callback() 推进，状态查询不触发温度重算或调速 */
-    if (f->mode == TS_FAN_MODE_CURVE) {
-        /* CURVE 的 target_duty 由定时器回调维护 */
-    } else if (f->mode == TS_FAN_MODE_AUTO) {
-        /* 自适应状态只能在 fan_update_callback() 推进，这里不触发学习或调速 */
-    } else {
-        /* MANUAL/OFF 模式：目标转速等于当前转速 */
-        f->target_duty = f->current_duty;
-    }
-    
+
+    /* Status reads never mutate the requested setting or the last output. */
     status->mode = f->mode;
     status->duty_percent = f->current_duty;
+    status->duty_valid = f->duty_valid;
     status->target_duty = f->target_duty;
     status->rpm = f->rpm;
     status->temp = f->temperature;
     status->last_stable_temp = f->last_stable_temp;
-    status->is_running = f->current_duty > 0 && f->enabled;
+    status->is_running = f->duty_valid && f->current_duty > 0;
     status->enabled = f->enabled;
     status->fault = f->fault;
     status->control_temp = f->control_temperature;
@@ -1116,16 +1155,19 @@ esp_err_t ts_fan_emergency_full(void)
 {
     TS_LOGW(TAG, "Emergency: All fans to 100%%");
     
+    esp_err_t result = ESP_OK;
     for (int i = 0; i < TS_FAN_MAX; i++) {
         if (s_fans[i].initialized) {
             s_fans[i].mode = TS_FAN_MODE_MANUAL;
             s_fans[i].enabled = true;
-            s_fans[i].current_duty = 100;
-            update_pwm(&s_fans[i], 100);
+            reset_adaptive_auto_state(&s_fans[i]);
+            s_fans[i].target_duty = 100;
+            esp_err_t ret = update_pwm(&s_fans[i], 100);
+            if (ret != ESP_OK && result == ESP_OK) result = ret;
         }
     }
     
-    return ESP_OK;
+    return result;
 }
 
 /*===========================================================================*/
@@ -1167,7 +1209,8 @@ esp_err_t ts_fan_save_config(void)
         fan_nvs_config_t cfg = {
             .version = FAN_CONFIG_VERSION,
             .mode = s_fans[i].mode,
-            .duty = s_fans[i].current_duty,
+            .duty = s_fans[i].mode == TS_FAN_MODE_MANUAL
+                    ? s_fans[i].target_duty : s_fans[i].current_duty,
             .enabled = s_fans[i].enabled,
             .curve_points = s_fans[i].config.curve_points,
             .hysteresis = s_fans[i].config.hysteresis,
@@ -1211,7 +1254,8 @@ esp_err_t ts_fan_save_full_config(ts_fan_id_t fan)
     fan_nvs_config_t cfg = {
         .version = FAN_CONFIG_VERSION,
         .mode = s_fans[fan].mode,
-        .duty = s_fans[fan].current_duty,
+        .duty = s_fans[fan].mode == TS_FAN_MODE_MANUAL
+                    ? s_fans[fan].target_duty : s_fans[fan].current_duty,
         .enabled = s_fans[fan].enabled,
         .curve_points = s_fans[fan].config.curve_points,
         .hysteresis = s_fans[fan].config.hysteresis,
@@ -1241,6 +1285,7 @@ esp_err_t ts_fan_load_config(void)
         return ESP_ERR_NOT_FOUND;
     }
     
+    esp_err_t result = ESP_OK;
     for (int i = 0; i < TS_FAN_MAX; i++) {
         if (!s_fans[i].initialized) continue;
         
@@ -1262,7 +1307,8 @@ esp_err_t ts_fan_load_config(void)
         
         // 恢复配置
         s_fans[i].mode = cfg.mode;
-        s_fans[i].current_duty = cfg.duty;
+        reset_adaptive_auto_state(&s_fans[i]);
+        s_fans[i].target_duty = cfg.mode == TS_FAN_MODE_OFF ? 0 : cfg.duty;
         s_fans[i].enabled = cfg.enabled;
         s_fans[i].config.curve_points = cfg.curve_points;
         s_fans[i].config.hysteresis = cfg.hysteresis;
@@ -1274,17 +1320,22 @@ esp_err_t ts_fan_load_config(void)
                cfg.curve_points * sizeof(ts_fan_curve_point_t));
         
         if (s_fans[i].mode == TS_FAN_MODE_AUTO && s_fans[i].pwm) {
-            apply_auto_immediate(&s_fans[i]);
+            ret = apply_auto_immediate(&s_fans[i]);
         } else if (s_fans[i].mode == TS_FAN_MODE_MANUAL && s_fans[i].pwm) {
-            update_pwm(&s_fans[i], cfg.duty);
+            ret = update_pwm(&s_fans[i], cfg.duty);
+        } else if (s_fans[i].mode == TS_FAN_MODE_OFF && s_fans[i].pwm) {
+            ret = update_pwm(&s_fans[i], 0);
+        } else {
+            ret = ESP_OK;
         }
+        if (ret != ESP_OK && result == ESP_OK) result = ret;
         
         TS_LOGI(TAG, "Restored fan %d: mode=%d, duty=%d%%, curve=%d pts", 
                 i, cfg.mode, cfg.duty, cfg.curve_points);
     }
     
     nvs_close(nvs);
-    return ESP_OK;
+    return result;
 }
 /*===========================================================================*/
 /*                          Temperature Source Integration                    */

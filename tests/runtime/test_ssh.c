@@ -18,6 +18,9 @@ struct _LIBSSH2_SESSION {int dummy;};
 struct _LIBSSH2_CHANNEL {int dummy;};
 static int phase, trust, auth_calls, exec_calls, sessions, channels, sockets, waits;
 static int read_index, cancel_after;
+static int write_calls, eof_calls, command_status;
+static char sent_input[256], executed_command[256];
+static size_t sent_len;
 static int64_t now;
 int64_t esp_timer_get_time(void){now+=100;return now;}
 static bool cancelled(void *unused){return cancel_after && waits>=cancel_after;}
@@ -39,12 +42,19 @@ int libssh2_userauth_password_ex(LIBSSH2_SESSION*s,const char*u,unsigned int ul,
 int libssh2_userauth_publickey_fromfile_ex(LIBSSH2_SESSION*s,const char*u,unsigned int ul,const char*pub,const char*priv,const char*pass){return libssh2_userauth_password_ex(s,u,ul,pass,0,NULL);}
 int libssh2_userauth_publickey_frommemory(LIBSSH2_SESSION*s,const char*u,size_t ul,const char*pub,size_t publ,const char*priv,size_t privl,const char*pass){return libssh2_userauth_password_ex(s,u,ul,pass,0,NULL);}
 LIBSSH2_CHANNEL *libssh2_channel_open_ex(LIBSSH2_SESSION*s,const char*t,unsigned int tl,unsigned int win,unsigned int pkt,const char*m,unsigned int ml){if(phase==3)return NULL;++channels;return calloc(1,sizeof(LIBSSH2_CHANNEL));}
-int libssh2_channel_process_startup(LIBSSH2_CHANNEL*c,const char*r,unsigned int rl,const char*m,unsigned int ml){++exec_calls;return phase==4?LIBSSH2_ERROR_EAGAIN:0;}
+int libssh2_channel_process_startup(LIBSSH2_CHANNEL*c,const char*r,unsigned int rl,const char*m,unsigned int ml){++exec_calls;snprintf(executed_command,sizeof(executed_command),"%.*s",ml,m);return phase==4?LIBSSH2_ERROR_EAGAIN:0;}
+ssize_t libssh2_channel_write_ex(LIBSSH2_CHANNEL*c,int stream,const char*b,size_t n){
+ ++write_calls;assert(stream==0);
+ if(phase==7 || write_calls==1)return LIBSSH2_ERROR_EAGAIN;
+ if(phase==9)return LIBSSH2_ERROR_CHANNEL_CLOSED;
+ size_t part=n>2?2:n;assert(sent_len+part<sizeof(sent_input));memcpy(sent_input+sent_len,b,part);sent_len+=part;return part;
+}
+int libssh2_channel_send_eof(LIBSSH2_CHANNEL*c){++eof_calls;if(phase==8 || eof_calls==1)return LIBSSH2_ERROR_EAGAIN;return phase==10?LIBSSH2_ERROR_CHANNEL_CLOSED:0;}
 ssize_t libssh2_channel_read_ex(LIBSSH2_CHANNEL*c,int stream,char*b,size_t size){if(phase==5)return LIBSSH2_ERROR_EAGAIN;if(stream&&!read_index++){memcpy(b,"err",3);return 3;}return 0;}
 int libssh2_channel_eof(LIBSSH2_CHANNEL*c){return phase!=5;}
 int libssh2_channel_close(LIBSSH2_CHANNEL*c){return phase==6?LIBSSH2_ERROR_EAGAIN:0;}
 int libssh2_channel_free(LIBSSH2_CHANNEL*c){--channels;free(c);return 0;}
-int libssh2_channel_get_exit_status(LIBSSH2_CHANNEL*c){return 0;}
+int libssh2_channel_get_exit_status(LIBSSH2_CHANNEL*c){return command_status;}
 esp_err_t ts_known_hosts_verify(ts_ssh_session_t s,ts_host_verify_result_t *out,ts_known_host_t *host){*out=trust==1?TS_HOST_VERIFY_NOT_FOUND:trust==2?TS_HOST_VERIFY_MISMATCH:TS_HOST_VERIFY_OK;return ESP_OK;}
 /* Model libssh2 session ownership of all channels during teardown. */
 static LIBSSH2_CHANNEL *owned_channel;
@@ -74,8 +84,9 @@ static void capture_log(const char *tag,const char *fmt,...){size_t n=strlen(cap
 #define ESP_LOGV capture_log
 #include "../../components/ts_security/src/ts_ssh_client.c"
 static esp_err_t approved(ts_ssh_session_t s,void*x){trust=3;return ESP_OK;}
-static void reset(void){assert(!sockets&&!sessions&&!channels);phase=trust=auth_calls=exec_calls=waits=read_index=cancel_after=0;now=0;}
+static void reset(void){assert(!sockets&&!sessions&&!channels);phase=trust=auth_calls=exec_calls=waits=read_index=cancel_after=write_calls=eof_calls=command_status=0;sent_len=0;memset(sent_input,0,sizeof(sent_input));memset(executed_command,0,sizeof(executed_command));now=0;}
 static ts_ssh_session_t create(void){ts_ssh_config_t cfg=TS_SSH_DEFAULT_CONFIG();cfg.host="192.0.2.1";cfg.username="synthetic";cfg.auth.password="synthetic-secret";cfg.timeout_ms=250;cfg.cancelled=cancelled;ts_ssh_session_t s;assert(ts_ssh_session_create(&cfg,&s)==ESP_OK);return s;}
+static void output(const char *data,size_t len,bool stderr_stream,void *ctx){assert(stderr_stream && len==3 && !memcmp(data,"err",3));}
 int main(void){
  for(int t=1;t<=2;t++){reset();trust=t;ts_ssh_session_t s=create();assert(ts_ssh_connect(s)==(t==1?TS_SSH_ERR_HOST_UNKNOWN:TS_SSH_ERR_HOST_CHANGED));assert(!auth_calls&&!exec_calls);ts_ssh_session_destroy(s);}
  reset();trust=1;ts_ssh_session_t s=create();assert(ts_ssh_connect_with_verifier(s,approved,NULL)==ESP_OK);ts_ssh_session_destroy(s);
@@ -85,5 +96,22 @@ int main(void){
   assert(ret==ESP_ERR_TIMEOUT);assert(waits<=3);if(p==1)assert(!auth_calls);ts_ssh_exec_result_free(&r);ts_ssh_session_destroy(s);
  }
  reset();s=create();assert(ts_ssh_connect(s)==ESP_OK);ts_ssh_exec_result_t r;assert(ts_ssh_exec(s,"true",&r)==ESP_OK);assert(!r.stdout_data&&r.stderr_len==3&&!strcmp(r.stderr_data,"err"));ts_ssh_exec_result_free(&r);ts_ssh_session_destroy(s);reset();
- assert(!strstr(captured_logs,"synthetic-secret"));puts("PASS actual SSH client: pre-auth trust gate, six EAGAIN phase deadlines/cancellation, stderr-only cleanup, bounded wait");
+ const char *secret=" '$(synthetic);\\密码 \n";
+ for(int status=0;status<=1;status++){
+  reset();s=create();assert(ts_ssh_connect(s)==ESP_OK);command_status=status;int code=-1;
+  assert(ts_ssh_exec_stream_input(s,"sudo -S -k -p '' -- ./fixture.sh",secret,strlen(secret),output,NULL,&code)==ESP_OK);
+  assert(code==status && sent_len==strlen(secret) && !memcmp(sent_input,secret,sent_len));
+  assert(write_calls>2 && eof_calls==2 && !strstr(executed_command,secret));
+  ts_ssh_session_destroy(s);
+ }
+ for(int p=7;p<=10;p++){
+  reset();s=create();assert(ts_ssh_connect(s)==ESP_OK);phase=p;int code=42;
+  assert(ts_ssh_exec_stream_input(s,"sudo fixture",secret,strlen(secret),output,NULL,&code)==(p<=8?ESP_ERR_TIMEOUT:ESP_FAIL));
+  assert(code==-1 && waits<=3);ts_ssh_session_destroy(s);
+ }
+ reset();s=create();assert(ts_ssh_connect(s)==ESP_OK);cancel_after=1;int code=42;
+ assert(ts_ssh_exec_stream_input(s,"sudo fixture",secret,strlen(secret),output,NULL,&code)==ESP_ERR_TIMEOUT);
+ assert(code==-1 && !sent_len);ts_ssh_session_destroy(s);reset();
+ assert(!strstr(captured_logs,"synthetic-secret") && !strstr(captured_logs,"$(synthetic)"));
+ puts("PASS actual SSH client: trust gate, command deadlines, partial stdin/EAGAIN/EOF, input cancellation/errors, exact secret bytes without command/log exposure");
 }

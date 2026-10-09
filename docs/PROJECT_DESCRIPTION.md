@@ -10,7 +10,7 @@
 
 ### 原始项目
 **项目名称：** robOS  
-**GitHub仓库：** https://github.com/thomas-hiddenpeak/robOS  
+**GitHub仓库：** https://github.com/RMinte-AI/TianshanOS<br>
 **项目定位：** RM-01 板上机架操作系统  
 **开发平台：** ESP32S3  
 **开发框架：** ESP-IDF v5.5.1  
@@ -580,26 +580,26 @@ main
 ## 📚 技术文档
 
 ### 核心文档
-- [项目进度记录](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/PROJECT_PROGRESS.md)
-- [技术架构文档](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/TECHNICAL_ARCHITECTURE.md)
-- [API参考文档](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/API_REFERENCE.md)
-- [代码规范](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/CODING_STANDARDS.md)
+- [项目进度记录](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/PROJECT_PROGRESS.md)
+- [技术架构文档](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/TECHNICAL_ARCHITECTURE.md)
+- [API参考文档](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/API_REFERENCE.md)
+- [代码规范](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/CODING_STANDARDS.md)
 
 ### 功能使用指南
-- [温度集成指南](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/TEMPERATURE_INTEGRATION_GUIDE.md)
-- [智能安全温度策略](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/SMART_SAFETY_TEMPERATURE_STRATEGY.md)
-- [色彩校正系统完整指南](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/COLOR_CORRECTION_GUIDE.md)
+- [温度集成指南](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/TEMPERATURE_INTEGRATION_GUIDE.md)
+- [智能安全温度策略](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/SMART_SAFETY_TEMPERATURE_STRATEGY.md)
+- [色彩校正系统完整指南](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/COLOR_CORRECTION_GUIDE.md)
 
 ### LED系统文档
-- [Touch LED组件](https://github.com/thomas-hiddenpeak/robOS/blob/main/components/touch_led/README.md)
-- [Matrix LED组件](https://github.com/thomas-hiddenpeak/robOS/blob/main/components/matrix_led/README.md)
-- [Board LED组件](https://github.com/thomas-hiddenpeak/robOS/blob/main/components/board_led)
-- [色彩校正组件](https://github.com/thomas-hiddenpeak/robOS/blob/main/components/color_correction)
+- [Touch LED组件](https://github.com/RMinte-AI/TianshanOS/blob/main/components/touch_led/README.md)
+- [Matrix LED组件](https://github.com/RMinte-AI/TianshanOS/blob/main/components/matrix_led/README.md)
+- [Board LED组件](https://github.com/RMinte-AI/TianshanOS/blob/main/components/board_led)
+- [色彩校正组件](https://github.com/RMinte-AI/TianshanOS/blob/main/components/color_correction)
 
 ### 特性开发记录
-- [AGX监控更新](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/AGX_MONITOR_UPDATES.md)
-- [AGX启动延迟功能](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/AGX_STARTUP_DELAY_FEATURE.md)
-- [绝对静默模式](https://github.com/thomas-hiddenpeak/robOS/blob/main/docs/ABSOLUTE_SILENCE_FINAL.md)
+- [AGX监控更新](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/AGX_MONITOR_UPDATES.md)
+- [AGX启动延迟功能](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/AGX_STARTUP_DELAY_FEATURE.md)
+- [绝对静默模式](https://github.com/RMinte-AI/TianshanOS/blob/main/docs/ABSOLUTE_SILENCE_FINAL.md)
 
 ---
 
@@ -709,7 +709,7 @@ main
 ## 📞 联系信息
 
 **项目团队：** robOS Team  
-**GitHub仓库：** https://github.com/thomas-hiddenpeak/robOS  
+**GitHub仓库：** https://github.com/RMinte-AI/TianshanOS<br>
 **最新版本：** v1.1.0  
 **更新日期：** 2025年10月5日
 

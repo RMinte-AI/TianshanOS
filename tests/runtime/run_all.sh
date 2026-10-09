@@ -6,9 +6,22 @@ for suite in log codec store engine ssh service_watch; do
     bash "tests/runtime/run_${suite}.sh"
 done
 python3 tests/runtime/test_completion.py
+python3 tests/runtime/test_action_submission.py
+python3 tests/runtime/test_service_control.py
+python3 tests/runtime/test_delete_api.py
+python3 tests/runtime/test_condition_roundtrip.py
+python3 tests/runtime/test_expansion.py
 python3 tests/runtime/test_configuration_protocol.py
 python3 tests/runtime/test_ssh_hosts.py
 python3 tests/runtime/test_ssh_copyid.py
+python3 tests/runtime/test_copyid_quote.py
+python3 tests/runtime/test_lpmu_access.py
+python3 tests/runtime/test_input_repair.py
+python3 tests/runtime/test_action_store.py
+python3 tests/runtime/test_action_pack.py
+python3 tests/runtime/test_action_serialization.py
+python3 tests/runtime/test_csr_input.py
+python3 tests/runtime/test_keystore.py
 python3 tests/runtime/test_rule_reload.py
 python3 tests/runtime/test_stop_protocol.py
 python3 tests/runtime/test_probe.py

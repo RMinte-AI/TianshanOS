@@ -13,6 +13,7 @@
  */
 
 #include "ts_cert.h"
+#include "ts_cert_subject.h"
 #include "ts_cert_time.h"
 #include "ts_event.h"
 #include "freertos/semphr.h"
@@ -503,17 +504,10 @@ static esp_err_t ts_cert_generate_csr_locked(const ts_cert_csr_opts_t *opts,
     mbedtls_x509write_csr_set_md_alg(&csr, MBEDTLS_MD_SHA256);
     
     /* Build subject DN */
-    char subject[256];
-    int subject_len = snprintf(subject, sizeof(subject), "CN=%s", opts->device_id);
-    
-    if (opts->organization && strlen(opts->organization) > 0) {
-        subject_len += snprintf(subject + subject_len, sizeof(subject) - subject_len,
-                                ",O=%s", opts->organization);
-    }
-    if (opts->org_unit && strlen(opts->org_unit) > 0) {
-        subject_len += snprintf(subject + subject_len, sizeof(subject) - subject_len,
-                                ",OU=%s", opts->org_unit);
-    }
+    char subject[TS_CERT_SUBJECT_CAPACITY];
+    err = ts_cert_build_subject(opts->device_id, opts->organization, opts->org_unit,
+                                subject, sizeof(subject));
+    if (err != ESP_OK) goto cleanup;
     
     ret = mbedtls_x509write_csr_set_subject_name(&csr, subject);
     if (ret != 0) {
@@ -592,7 +586,7 @@ static esp_err_t ts_cert_generate_csr_default_locked(char *csr_pem, size_t *csr_
     }
     
     /* TODO: Get device ID from configuration */
-    const char *device_id = "TIANSHAN-DEVICE-001";
+    const char *device_id = TS_CERT_DEFAULT_DEVICE_ID;
     
     ts_cert_csr_opts_t opts = {
         .device_id = device_id,

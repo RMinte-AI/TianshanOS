@@ -81,12 +81,13 @@ typedef struct {
 /** Fan status */
 typedef struct {
     ts_fan_mode_t mode;         /**< 当前模式 */
+    bool duty_valid;            /**< 已确认成功下发过 PWM */
     uint8_t duty_percent;       /**< 当前占空比 */
     uint8_t target_duty;        /**< 目标占空比（曲线计算） */
     uint16_t rpm;               /**< 当前转速 */
     int16_t temp;               /**< 当前温度源 0.1°C */
     int16_t last_stable_temp;   /**< 上次稳定温度 0.1°C */
-    bool is_running;            /**< 是否运行中 */
+    bool is_running;            /**< 已确认 PWM 输出非零；不表示机械转速测量 */
     bool enabled;               /**< 是否启用 */
     bool fault;                 /**< 故障标志 */
     int16_t control_temp;        /**< AUTO 控制温度 0.1°C */

@@ -1344,10 +1344,7 @@ esp_err_t ts_action_execute(const ts_auto_action_t *action)
     ts_action_result_t result = {0};
 
     if (action->runtime_snapshot) {
-        ts_auto_action_t queued = *action;
-        queued.delay_ms = 0; /* Rule sequencer already applied this delay. */
-        return action->async ? ts_action_queue(&queued, NULL, NULL, 5)
-                             : ts_action_manager_execute(&queued, &result);
+        return ts_action_submit_prepared(action);
     }
     /* 如果有 template_id，使用模板执行（模板包含完整的动作数据） */
     if (action->template_id[0] != '\0') {

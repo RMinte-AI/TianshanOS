@@ -34,7 +34,7 @@ void ts_action_snapshot_retain(const ts_auto_action_t*a){}
 void ts_action_snapshot_release(ts_auto_action_t*a){}
 static struct {int running,accepting;unsigned pending;void*executor_task;void*action_queue;void*stats_mutex;} context={.running=1,.accepting=1,.executor_task=(void*)1,.action_queue=(void*)1,.stats_mutex=(void*)2},*s_ctx=&context;
 typedef struct {atomic_uint refs;SemaphoreHandle_t semaphore;ts_action_result_t result;} action_completion_t;
-'''+'\n'.join(function(n) for n in ['completion_release','action_admit','action_finished','ts_action_manager_quiesce','ts_action_manager_resume','ts_action_manager_execute'])+r'''
+'''+'\n'.join(function(n) for n in ['completion_release','action_admit','action_finished','ts_action_manager_quiesce','ts_action_manager_resume','prepare_action_entry','action_manager_execute','ts_action_manager_execute'])+r'''
 int main(void){
  ts_auto_action_t a={.type=TS_AUTO_ACT_LOG};ts_action_result_t result;
  assert(ts_action_manager_execute(&a,&result)==ESP_ERR_TIMEOUT&&result.status==TS_ACTION_STATUS_TIMEOUT&&sem_live==1);
@@ -52,5 +52,5 @@ int main(void){
 '''
 (build/'completion.c').write_text(code)
 env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
-subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined',*(['-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'] if sys.platform == 'darwin' else []),'-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include',str(build/'completion.c'),'-o',str(build/'completion')],check=True,env=env)
+subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined',*(['-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'] if sys.platform == 'darwin' else []),'-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include','-Icomponents/ts_security/include',str(build/'completion.c'),'-o',str(build/'completion')],check=True,env=env)
 subprocess.run([str(build/'completion')],check=True,env=env)

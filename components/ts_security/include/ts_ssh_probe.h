@@ -7,6 +7,8 @@ extern "C" {
 #endif
 /* Shell words are always single-quoted; inputs must be NUL terminated. */
 bool ts_ssh_shell_quote(const char *input, char *out, size_t capacity);
+/* Construct public-key deployment using one literal shell word. */
+bool ts_ssh_copyid_command(const char *public_key, char *out, size_t capacity);
 bool ts_ssh_log_probe_command(const char *path, const char *ready, const char *fail,
                               char *out, size_t capacity);
 /* Exact protocol token, one optional LF/CRLF; no substring matching. */

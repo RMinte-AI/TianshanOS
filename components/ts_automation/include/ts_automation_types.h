@@ -309,6 +309,12 @@ typedef enum {
 /**
  * @brief LED action parameters
  */
+#define TS_AUTO_FILTER_PARAM_COUNT 13
+typedef struct {
+    uint16_t present;                   /**< Explicit parameters; zero is a value. */
+    int16_t values[TS_AUTO_FILTER_PARAM_COUNT]; /**< Values in WebUI units. */
+} ts_auto_filter_params_t;
+
 typedef struct {
     char device[TS_AUTO_NAME_MAX_LEN];  /**< LED device (board/touch/matrix) */
     ts_led_ctrl_type_t ctrl_type;       /**< Control type */
@@ -326,6 +332,7 @@ typedef struct {
     char qr_text[256];                   /**< QR code content (for QRCODE type) */
     char qr_ecc;                         /**< QR ECC level: L/M/Q/H */
     char filter[32];                     /**< Filter name (for FILTER type) */
+    ts_auto_filter_params_t filter_params;
     bool center;                         /**< Center image/text */
     bool loop;                           /**< Loop text scroll */
     char scroll[16];                     /**< Scroll direction: none/left/right/up/down */

@@ -266,7 +266,7 @@ idf_component_register(
 ## 参考项目
 
 robOS 是 TianShanOS 的前身项目，包含已验证的硬件驱动和控制逻辑：
-- **仓库地址**：https://github.com/thomas-hiddenpeak/robOS
+- **仓库地址**：https://github.com/RMinte-AI/TianshanOS
 - **主要分支**：`ThorPlusBattery`（电池/电压保护功能）
 - **本地路径**：`/Users/thomas/rm01/robOS`
 

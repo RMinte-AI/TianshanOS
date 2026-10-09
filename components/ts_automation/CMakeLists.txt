@@ -7,6 +7,8 @@ idf_component_register(
         "src/ts_rule_codec.c"
         "src/ts_rule_store.c"
         "src/ts_action_manager.c"
+        "src/ts_action_filter.c"
+        "src/ts_action_store.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

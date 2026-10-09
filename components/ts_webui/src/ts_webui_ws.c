@@ -1222,7 +1222,7 @@ typedef struct {
     int64_t timer_retry_at; /* maintenance worker owns pacing */
     char *password_owned;
     ts_ssh_config_t config;
-    char command[512];
+    char *command;           /* Task-owned full command, including caller wrapping. */
     uint32_t session_id;
     char keyid[64];           /* 存储 keyid 以便获取私钥 */
     char var_name[64];        /* 变量名（用于存储结果） */
@@ -1590,6 +1590,7 @@ static void exec_destroy(void *data)
     ssh_exec_task_params_t *params=data;if(!params)return;
     assert(!params->session && (!params->timer_phase || params->timer_phase==5));
     free((void*)params->config.host);free((void*)params->config.username);
+    free(params->command);
     if(params->password_owned){memset(params->password_owned,0,strlen(params->password_owned));free(params->password_owned);}
     free(params->expect_pattern);free(params->fail_pattern);free(params->extract_pattern);
     free(params->output_buffer);free(params->extracted_value);
@@ -2016,8 +2017,13 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
     params->config.timeout_ms = (options && options->timeout_ms > 0) ? options->timeout_ms : 30000;
 
     
-    /* 存储命令 */
-    strncpy(params->command, command, sizeof(params->command) - 1);
+    /* The request body is released before the async task runs. Own the full
+     * command; truncation can remove shell quoting or change its meaning. */
+    size_t command_size = strlen(command) + 1;
+    params->command = heap_caps_malloc(command_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!params->command) params->command = malloc(command_size);
+    if (!params->command) return ESP_ERR_NO_MEM;
+    memcpy(params->command, command, command_size);
     
     /* 配置认证方式 */
     if (keyid && keyid[0]) {

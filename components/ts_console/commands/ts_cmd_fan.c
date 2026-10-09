@@ -118,10 +118,13 @@ static int do_fan_status(int fan_id, bool json)
         
         ts_console_printf("Fan %d:\n", fan_id);
         ts_console_printf("  Enabled:      %s\n", status.enabled ? "Yes" : "No");
-        ts_console_printf("  Running:      %s\n", status.is_running ? "Yes" : "No");
+        ts_console_printf("  Running:      %s\n", status.duty_valid ? (status.is_running ? "Yes" : "No") : "Unknown");
         ts_console_printf("  Mode:         %s\n", mode_to_str(status.mode));
-        ts_console_printf("  Duty:         %d%% (target: %d%%)\n", 
-                          status.duty_percent, status.target_duty);
+        if (status.duty_valid) {
+            ts_console_printf("  Duty:         %d%% (target: %d%%)\n", status.duty_percent, status.target_duty);
+        } else {
+            ts_console_printf("  Duty:         Unknown (target: %d%%)\n", status.target_duty);
+        }
         ts_console_printf("  RPM:          %d\n", status.rpm);
         ts_console_printf("  Temperature:  %.1f°C (stable: %.1f°C)\n", 
                           status.temp / 10.0f, status.last_stable_temp / 10.0f);
@@ -137,11 +140,13 @@ static int do_fan_status(int fan_id, bool json)
         
         for (int i = 0; i < TS_FAN_MAX; i++) {
             if (ts_fan_get_status(i, &status) == ESP_OK) {
-                ts_console_printf("%-4d  %-7s  %-7s  %5d%%  %6d  %5.1f°  %s\n",
+                char duty[8] = "--";
+                if (status.duty_valid) snprintf(duty, sizeof(duty), "%u%%", status.duty_percent);
+                ts_console_printf("%-4d  %-7s  %-7s  %6s  %6d  %5.1f°  %s\n",
                     i,
                     status.enabled ? "Yes" : "No",
-                    status.is_running ? "Yes" : "No",
-                    status.duty_percent,
+                    status.duty_valid ? (status.is_running ? "Yes" : "No") : "Unknown",
+                    duty,
                     status.rpm,
                     status.temp / 10.0f,
                     mode_to_str(status.mode));

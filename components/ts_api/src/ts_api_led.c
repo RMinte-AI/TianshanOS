@@ -679,6 +679,7 @@ static esp_err_t api_led_filter_start(const cJSON *params, ts_api_result_t *resu
     cJSON *width_param = cJSON_GetObjectItem(params, "width");
     cJSON *wavelength_param = cJSON_GetObjectItem(params, "wavelength");
     cJSON *amplitude_param = cJSON_GetObjectItem(params, "amplitude");
+    cJSON *frequency_param = cJSON_GetObjectItem(params, "frequency");
     
     // 提取 angle 和 width 参数
     float angle = angle_param && cJSON_IsNumber(angle_param) ? (float)cJSON_GetNumberValue(angle_param) : 0.0f;
@@ -756,30 +757,36 @@ static esp_err_t api_led_filter_start(const cJSON *params, ts_api_result_t *resu
         case TS_LED_EFFECT_COLOR_SHIFT:
             config.params.color_shift.speed = speed * 3.6f;
             break;
+        case TS_LED_EFFECT_FADE_IN:
+        case TS_LED_EFFECT_FADE_OUT:
+            config.params.fade.duration_ms = (uint16_t)(1000.0f / freq);
+            config.params.fade.auto_remove = false;
+            break;
         case TS_LED_EFFECT_SCANLINE:
             config.params.scanline.speed = speed;
             config.params.scanline.width = width > 0 ? width : 3;
             config.params.scanline.angle = angle; // 0-360度
-            config.params.scanline.intensity = intensity > 0 ? intensity : 150;
+            config.params.scanline.intensity = intensity >= 0 ? intensity : 150;
             break;
         case TS_LED_EFFECT_WAVE:
             config.params.wave.speed = speed;
             config.params.wave.wavelength = wavelength > 0 ? wavelength : 8.0f;
-            config.params.wave.amplitude = amplitude > 0 ? amplitude : 128;
+            config.params.wave.amplitude = amplitude >= 0 ? amplitude : 128;
             config.params.wave.angle = angle; // 0-360°
             break;
         case TS_LED_EFFECT_GLITCH:
-            config.params.glitch.intensity = intensity > 0 ? intensity : speed;
-            config.params.glitch.frequency = 10;
+            config.params.glitch.intensity = intensity >= 0 ? intensity : speed;
+            config.params.glitch.frequency = cJSON_IsNumber(frequency_param)
+                ? frequency_param->valueint : 10;
             break;
         case TS_LED_EFFECT_RAINBOW:
             config.params.rainbow.speed = speed;
-            config.params.rainbow.saturation = saturation > 0 ? saturation : 255;
+            config.params.rainbow.saturation = saturation >= 0 ? saturation : 255;
             break;
         case TS_LED_EFFECT_SPARKLE:
             config.params.sparkle.speed = speed > 0 ? speed : 10.0f;  // 降低默认速度
-            config.params.sparkle.density = density > 0 ? density : 50;
-            config.params.sparkle.decay = decay > 0 ? decay : 150;    // 提高decay让余晖更明显
+            config.params.sparkle.density = density >= 0 ? density : 50;
+            config.params.sparkle.decay = decay >= 0 ? decay : 150;    // 提高decay让余晖更明显
             break;
         case TS_LED_EFFECT_PLASMA:
             config.params.plasma.speed = speed / 10.0f;
@@ -792,7 +799,8 @@ static esp_err_t api_led_filter_start(const cJSON *params, ts_api_result_t *resu
             config.params.posterize.levels = levels > 0 ? levels : (2 + speed * 14 / 100);
             break;
         case TS_LED_EFFECT_CONTRAST:
-            config.params.contrast.amount = amount >= -100 && amount <= 100 ? amount : (speed - 50) * 2;
+            config.params.contrast.amount = cJSON_IsNumber(amount_param) && amount >= -100 && amount <= 100
+                ? amount : (speed - 50) * 2;
             break;
         default:
             break;

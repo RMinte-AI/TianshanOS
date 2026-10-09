@@ -20,6 +20,8 @@
  */
 
 #include "ts_api.h"
+#include "ts_action_filter.h"
+#include "ts_api_service.h"
 #include "ts_automation.h"
 #include "ts_variable.h"
 #include "ts_rule_engine.h"
@@ -640,11 +642,10 @@ static esp_err_t service_request(const cJSON *params, ts_api_result_t *result, b
         ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "command_id required");
         return ESP_ERR_INVALID_ARG;
     }
+    if (stop || cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "verify")))
+        return ts_api_service_control(params, result, stop ? TS_SERVICE_STOP : TS_SERVICE_VERIFY);
     ts_ssh_service_status_t state = {0};
-    esp_err_t ret = stop ? ts_ssh_service_stop(id->valuestring, &state)
-                         : (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "verify"))
-                                ? ts_ssh_service_query(id->valuestring, &state)
-                                : ts_ssh_service_cached(id->valuestring, &state));
+    esp_err_t ret = ts_ssh_service_cached(id->valuestring, &state);
     cJSON *data = cJSON_CreateObject();
     if (!data)
         return ESP_ERR_NO_MEM;
@@ -654,6 +655,10 @@ static esp_err_t service_request(const cJSON *params, ts_api_result_t *result, b
     cJSON_AddNumberToObject(data, "confirmed_ms", state.confirmed_ms);
     cJSON_AddNumberToObject(data, "generation", state.generation);
     cJSON_AddBoolToObject(data, "busy", state.busy);
+    cJSON_AddNumberToObject(data, "operation_id", state.operation_id);
+    cJSON_AddStringToObject(data, "operation_phase", state.operation_phase);
+    cJSON_AddStringToObject(data, "operation_kind", state.operation_kind);
+    cJSON_AddNumberToObject(data, "operation_error", state.operation_error);
     if (ret == ESP_OK)
         ts_api_result_ok(result, data);
     else {
@@ -1821,7 +1826,8 @@ static esp_err_t api_automation_actions_list(const cJSON *params, ts_api_result_
 /**
  * @brief automation.actions.add - Add a new action template
  */
-static esp_err_t api_automation_actions_add(const cJSON *params, ts_api_result_t *result)
+static esp_err_t api_automation_actions_write(const cJSON *params, ts_api_result_t *result,
+                                              bool update)
 {
     cJSON *id = cJSON_GetObjectItem(params, "id");
     cJSON *name = cJSON_GetObjectItem(params, "name");
@@ -1949,6 +1955,11 @@ static esp_err_t api_automation_actions_add(const cJSON *params, ts_api_result_t
                     tpl.action.led.qr_ecc = qr_ecc->valuestring[0]; /* L/M/Q/H */
                 }
                 cJSON *filter = cJSON_GetObjectItem(led, "filter");
+                if (ts_action_filter_decode(cJSON_GetObjectItemCaseSensitive(led, "filter_params"),
+                                            &tpl.action.led.filter_params) != ESP_OK) {
+                    ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid LED filter parameters");
+                    return ESP_ERR_INVALID_ARG;
+                }
                 if (filter && cJSON_IsString(filter)) {
                     strncpy(tpl.action.led.filter, filter->valuestring, 
                             sizeof(tpl.action.led.filter) - 1);
@@ -2137,23 +2148,36 @@ static esp_err_t api_automation_actions_add(const cJSON *params, ts_api_result_t
             break;
     }
     
-    esp_err_t ret = ts_action_template_add(&tpl);
+    esp_err_t ret = update ? ts_action_template_update(tpl.id, &tpl) : ts_action_template_add(&tpl);
     
     if (ret == ESP_OK) {
         result->code = TS_API_OK;
-        result->message = strdup("Action template created");
+        result->message = strdup(update ? "Action template updated" : "Action template created");
     } else if (ret == ESP_ERR_NO_MEM) {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Max templates reached");
     } else if (ret == ESP_ERR_INVALID_STATE) {
-        result->code = TS_API_ERR_INVALID_ARG;
-        result->message = strdup("Template ID already exists");
+        result->code = update ? TS_API_ERR_BUSY : TS_API_ERR_INVALID_ARG;
+        result->message = strdup(update ? "service_delete_protected" : "Template ID already exists");
+    } else if (ret == ESP_ERR_NOT_FOUND) {
+        result->code = TS_API_ERR_NOT_FOUND;
+        result->message = strdup("Template not found");
     } else {
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to create template");
+        result->message = strdup(update ? "Failed to update template" : "Failed to create template");
     }
     
     return ESP_OK;
+}
+
+static esp_err_t api_automation_actions_add(const cJSON *params, ts_api_result_t *result)
+{
+    return api_automation_actions_write(params, result, false);
+}
+
+static esp_err_t api_automation_actions_update(const cJSON *params, ts_api_result_t *result)
+{
+    return api_automation_actions_write(params, result, true);
 }
 
 /**
@@ -2184,6 +2208,7 @@ static esp_err_t api_automation_actions_get(const cJSON *params, ts_api_result_t
     cJSON_AddStringToObject(result->data, "description", tpl.description);
     cJSON_AddStringToObject(result->data, "type", action_type_to_string(tpl.action.type));
     cJSON_AddBoolToObject(result->data, "enabled", tpl.enabled);
+    cJSON_AddBoolToObject(result->data, "async", tpl.async);
     cJSON_AddNumberToObject(result->data, "delay_ms", tpl.action.delay_ms);
     
     /* Add type-specific data */
@@ -2248,6 +2273,12 @@ static esp_err_t api_automation_actions_get(const cJSON *params, ts_api_result_t
             }
             if (tpl.action.led.filter[0]) {
                 cJSON_AddStringToObject(led, "filter", tpl.action.led.filter);
+            }
+            if (!ts_action_filter_encode(&tpl.action.led.filter_params, led)) {
+                cJSON_Delete(result->data);
+                result->data = NULL;
+                ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize LED filter parameters");
+                return ESP_ERR_NO_MEM;
             }
             cJSON_AddBoolToObject(led, "center", tpl.action.led.center);
             cJSON_AddBoolToObject(led, "loop", tpl.action.led.loop);
@@ -2323,6 +2354,9 @@ static esp_err_t api_automation_actions_delete(const cJSON *params, ts_api_resul
     } else if (ret == ESP_ERR_NOT_FOUND) {
         result->code = TS_API_ERR_NOT_FOUND;
         result->message = strdup("Template not found");
+    } else if (ret == ESP_ERR_INVALID_STATE) {
+        result->code = TS_API_ERR_BUSY;
+        result->message = strdup("service_delete_protected");
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to delete template");
@@ -4087,6 +4121,21 @@ static cJSON *action_template_to_export_json(const ts_action_template_t *tpl)
         case TS_AUTO_ACT_LED: {
             cJSON *led = cJSON_AddObjectToObject(obj, "led");
             cJSON_AddStringToObject(led, "device", tpl->action.led.device);
+            const char *ctrl_type = "fill";
+            switch (tpl->action.led.ctrl_type) {
+                case TS_LED_CTRL_EFFECT: ctrl_type = "effect"; break;
+                case TS_LED_CTRL_BRIGHTNESS: ctrl_type = "brightness"; break;
+                case TS_LED_CTRL_OFF: ctrl_type = "off"; break;
+                case TS_LED_CTRL_TEXT: ctrl_type = "text"; break;
+                case TS_LED_CTRL_IMAGE: ctrl_type = "image"; break;
+                case TS_LED_CTRL_QRCODE: ctrl_type = "qrcode"; break;
+                case TS_LED_CTRL_FILTER: ctrl_type = "filter"; break;
+                case TS_LED_CTRL_FILTER_STOP: ctrl_type = "filter_stop"; break;
+                case TS_LED_CTRL_TEXT_STOP: ctrl_type = "text_stop"; break;
+                default: break;
+            }
+            cJSON_AddStringToObject(led, "ctrl_type", ctrl_type);
+            cJSON_AddNumberToObject(led, "index", tpl->action.led.index);
             char color_str[8];
             snprintf(color_str, sizeof(color_str), "#%02X%02X%02X",
                      tpl->action.led.r, tpl->action.led.g, tpl->action.led.b);
@@ -4096,6 +4145,24 @@ static cJSON *action_template_to_export_json(const ts_action_template_t *tpl)
                 cJSON_AddStringToObject(led, "effect", tpl->action.led.effect);
             }
             cJSON_AddNumberToObject(led, "duration_ms", tpl->action.led.duration_ms);
+            cJSON_AddNumberToObject(led, "speed", tpl->action.led.speed);
+            cJSON_AddStringToObject(led, "text", tpl->action.led.text);
+            cJSON_AddStringToObject(led, "font", tpl->action.led.font);
+            cJSON_AddStringToObject(led, "image_path", tpl->action.led.image_path);
+            cJSON_AddStringToObject(led, "qr_text", tpl->action.led.qr_text);
+            char ecc[2] = {tpl->action.led.qr_ecc, '\0'};
+            cJSON_AddStringToObject(led, "qr_ecc", ecc);
+            cJSON_AddStringToObject(led, "filter", tpl->action.led.filter);
+            if (!ts_action_filter_encode(&tpl->action.led.filter_params, led)) {
+                cJSON_Delete(obj);
+                return NULL;
+            }
+            cJSON_AddBoolToObject(led, "center", tpl->action.led.center);
+            cJSON_AddBoolToObject(led, "loop", tpl->action.led.loop);
+            cJSON_AddStringToObject(led, "scroll", tpl->action.led.scroll);
+            cJSON_AddStringToObject(led, "align", tpl->action.led.align);
+            cJSON_AddNumberToObject(led, "x", tpl->action.led.x);
+            cJSON_AddNumberToObject(led, "y", tpl->action.led.y);
             break;
         }
         case TS_AUTO_ACT_LOG: {
@@ -4148,9 +4215,14 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
     }
     
     // Build export JSON
+    cJSON *template_json = action_template_to_export_json(&tpl);
+    if (!template_json) {
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize action template");
+        return ESP_ERR_NO_MEM;
+    }
     cJSON *export_json = cJSON_CreateObject();
     cJSON_AddStringToObject(export_json, "type", "action_template");
-    cJSON_AddItemToObject(export_json, "template", action_template_to_export_json(&tpl));
+    cJSON_AddItemToObject(export_json, "template", template_json);
     
     char *json_str = cJSON_PrintUnformatted(export_json);
     cJSON_Delete(export_json);
@@ -4647,6 +4719,14 @@ esp_err_t ts_api_automation_register(void)
         .requires_auth = true,
     };
     ts_api_register(&ep_actions_add);
+    ts_api_endpoint_t ep_actions_update = {
+        .name = "automation.actions.update",
+        .description = "Update an existing action template",
+        .category = TS_API_CAT_SYSTEM,
+        .handler = api_automation_actions_update,
+        .requires_auth = true,
+    };
+    ts_api_register(&ep_actions_update);
 
     ts_api_endpoint_t ep_actions_delete = {
         .name = "automation.actions.delete",

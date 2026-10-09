@@ -18,7 +18,7 @@ typedef struct {
     char id[32], host[64], host_id[32], name[32], variable[32];
     char owner_rule[32];
     char instance[96]; /* boot ID + PID + /proc start ticks */
-    uint32_t registration, operation;
+    uint32_t registration, operation, pending_control;
     unsigned recovery_left;
     bool deleting, ready_evidence, recovery_worker;
     uint16_t port;
@@ -31,7 +31,7 @@ static SemaphoreHandle_t mutex, binding_gate;
 static uint32_t serial;
 static uint32_t ticket(void) { return serial == UINT32_MAX ? 0 : ++serial; }
 static bool occupied(const service_t *s) {
-    return s->deleting || s->pins || s->status.busy || strcmp(s->status.state, "stopped");
+    return s->deleting || s->pins || s->pending_control || s->status.busy || strcmp(s->status.state, "stopped");
 }
 static bool complete(service_t *s, uint32_t registration, uint32_t operation) {
     if (!s || s->registration != registration || s->operation != operation || !operation)
@@ -148,7 +148,7 @@ bool ts_ssh_service_start_admissible(const char *id) {
     xSemaphoreTake(mutex, portMAX_DELAY);
     service_t *s = find(id);
     bool allowed =
-        !s || (!s->deleting && !s->pins && !s->status.busy &&
+        !s || (!s->deleting && !s->pins && !s->pending_control && !s->status.busy &&
                (!strcmp(s->status.state, "stopped") ||
                 (s->status.generation != UINT32_MAX && !strcmp(s->status.source, "none"))));
     xSemaphoreGive(mutex);
@@ -234,15 +234,63 @@ static esp_err_t probe(ts_ssh_session_t session, const char *name, bool stop, bo
     ts_ssh_exec_result_free(&result);
     return ret;
 }
+esp_err_t ts_ssh_service_reserve_operation(const char *id, uint32_t registration, ts_service_operation_t kind, uint32_t *operation_id) {
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    service_t *s = find(id);
+    uint32_t token = 0;
+    if (s && s->registration == registration && !s->deleting && !s->status.busy && !s->pending_control &&
+        (kind != TS_SERVICE_START || (!s->instance[0] &&
+            (!strcmp(s->status.state, "stopped") || !strcmp(s->status.source, "none")))))
+        token = ticket();
+    if (token) {
+        s->pending_control = token;
+        s->status.operation_id = token;
+        strcpy(s->status.operation_phase, "queued");
+        strcpy(s->status.operation_kind, kind == TS_SERVICE_START ? "start" : kind == TS_SERVICE_STOP ? "stop" : "verify");
+        s->status.operation_error = ESP_OK;
+        *operation_id = token;
+    }
+    xSemaphoreGive(mutex);
+    return token ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+esp_err_t ts_ssh_service_operation_begin(const char *id, uint32_t operation_id) {
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    service_t *s = find(id);
+    bool current = s && operation_id && s->pending_control == operation_id;
+    if (current) strcpy(s->status.operation_phase, "executing");
+    xSemaphoreGive(mutex);
+    return current ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+bool ts_ssh_service_complete_operation(const char *id, uint32_t operation_id, esp_err_t error) {
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    service_t *s = find(id);
+    bool executed = false;
+    if (s && operation_id && s->status.operation_id == operation_id) {
+        executed = !strcmp(s->status.operation_phase, "executing");
+        if (s->pending_control == operation_id) s->pending_control = 0;
+        const char *phase = error == ESP_OK ? "succeeded" : "failed";
+        if (error == ESP_ERR_TIMEOUT)
+            phase = !strcmp(s->status.operation_phase, "queued") ? "expired" : "unconfirmed";
+        strcpy(s->status.operation_phase, phase);
+        s->status.operation_error = error;
+    }
+    xSemaphoreGive(mutex);
+    return executed;
+}
 esp_err_t ts_ssh_service_begin(const ts_ssh_command_config_t *cmd, ts_ssh_session_t session,
                                uint32_t *generation) {
+    return ts_ssh_service_begin_reserved(cmd, session, 0, generation);
+}
+esp_err_t ts_ssh_service_begin_reserved(const ts_ssh_command_config_t *cmd, ts_ssh_session_t session,
+                                       uint32_t operation_id, uint32_t *generation) {
     if (!services || !mutex || !cmd || !session || !generation)
         return ESP_ERR_INVALID_STATE;
     *generation = 0;
     ts_ssh_binding_lock();
     xSemaphoreTake(mutex, portMAX_DELAY);
     service_t *s = register_service(cmd, ts_ssh_get_host(session), ts_ssh_get_port(session));
-    if (!s || s->status.busy || s->status.generation == UINT32_MAX ||
+    if (!s || (s->pending_control && s->pending_control != operation_id) ||
+        (operation_id && s->pending_control != operation_id) || s->status.busy || s->instance[0] || s->status.generation == UINT32_MAX ||
         !strcmp(s->status.state, "checking") || !strcmp(s->status.state, "starting") ||
         !strcmp(s->status.state, "stopping")) {
         xSemaphoreGive(mutex);
@@ -253,6 +301,7 @@ esp_err_t ts_ssh_service_begin(const ts_ssh_command_config_t *cmd, ts_ssh_sessio
     if (!operation) { xSemaphoreGive(mutex); ts_ssh_binding_unlock(); return ESP_ERR_INVALID_STATE; }
     s->operation = operation;
     s->status.busy = true;
+    if (operation_id) strcpy(s->status.operation_phase, "executing");
     s->status.generation = operation;
     s->ready_evidence = false;
     s->instance[0] = 0;
@@ -298,7 +347,8 @@ bool ts_ssh_service_finish(const char *id, uint32_t generation, const char *rece
     bool current = complete(s, registration, generation) && s->status.generation == generation;
     if (current) {
         if (launched) strcpy(s->instance, identity);
-        state_set(s, launched ? "starting" : "unknown", "launch");
+        s->pending_control = 0;
+        state_set(s, launched ? "running" : "unknown", "launch");
     }
     xSemaphoreGive(mutex);
     return current && launched;
@@ -363,7 +413,7 @@ static esp_err_t connect_host(const ts_ssh_host_config_t *snapshot, ts_ssh_sessi
     ret = ts_ssh_session_create(&cfg, session);
     return ret == ESP_OK ? ts_ssh_connect(*session) : ret;
 }
-static esp_err_t inspect(const char *id, bool stop, uint32_t recovery, ts_ssh_service_status_t *out) {
+static esp_err_t inspect(const char *id, bool stop, uint32_t recovery, uint32_t control, ts_ssh_service_status_t *out) {
     if (!mutex || !services || !id || !out)
         return ESP_ERR_INVALID_ARG;
     ts_ssh_command_config_t *cmd =
@@ -390,7 +440,7 @@ static esp_err_t inspect(const char *id, bool stop, uint32_t recovery, ts_ssh_se
         free(cmd);
         return ESP_ERR_INVALID_STATE;
     }
-    if (s->deleting || s->status.busy || serial == UINT32_MAX ||
+    if (s->deleting || s->status.busy || s->pending_control != control || serial == UINT32_MAX ||
         (recovery && (s->status.generation != recovery || !s->ready_evidence ||
                       !s->recovery_left || strcmp(s->status.state, "unknown")))) {
         *out = s->status;
@@ -450,13 +500,18 @@ static esp_err_t inspect(const char *id, bool stop, uint32_t recovery, ts_ssh_se
     xSemaphoreGive(mutex);
     return ret;
 }
+esp_err_t ts_ssh_service_execute_control(const char *id, uint32_t operation_id,
+                                          ts_service_operation_t kind, ts_ssh_service_status_t *out) {
+    if (!operation_id || (kind != TS_SERVICE_VERIFY && kind != TS_SERVICE_STOP)) return ESP_ERR_INVALID_ARG;
+    return inspect(id, kind == TS_SERVICE_STOP, 0, operation_id, out);
+}
 esp_err_t ts_ssh_service_query(const char *id, ts_ssh_service_status_t *out) {
-    esp_err_t ret = inspect(id, false, 0, out);
+    esp_err_t ret = inspect(id, false, 0, 0, out);
     ts_ssh_service_recovery_kick(id);
     return ret;
 }
 esp_err_t ts_ssh_service_stop(const char *id, ts_ssh_service_status_t *out) {
-    return inspect(id, true, 0, out);
+    return inspect(id, true, 0, 0, out);
 }
 bool ts_ssh_service_binding_busy(const char *id) {
     if (!mutex || !services)
@@ -553,7 +608,7 @@ bool ts_ssh_service_any_in_use(void) {
     xSemaphoreTake(mutex, portMAX_DELAY);
     for (unsigned i = 0; i < TS_SSH_COMMANDS_MAX; i++) {
         service_t *s = &services[i];
-        if (s->id[0] && (s->pins || s->status.busy ||
+        if (s->id[0] && (s->pins || s->pending_control || s->status.busy ||
                          (strcmp(s->status.source, "none") && strcmp(s->status.state, "stopped"))))
             busy = true;
     }
@@ -623,7 +678,7 @@ void ts_ssh_service_recovery_kick(const char *id) {
 }
 bool ts_ssh_service_recover(const char *id, uint32_t generation) {
     ts_ssh_service_status_t status;
-    inspect(id, false, generation, &status);
+    inspect(id, false, generation, 0, &status);
     xSemaphoreTake(mutex, portMAX_DELAY);
     service_t *s = find(id);
     bool again = s && s->status.generation == generation && s->ready_evidence &&

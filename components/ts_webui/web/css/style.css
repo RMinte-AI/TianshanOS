@@ -240,7 +240,7 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .sys-mid>.card{display:flex;flex-direction:column}
 .card.in{background:rgba(255,255,255,.62);border-radius:var(--r-inner)}
 .empty{padding:20px 0;text-align:center;color:var(--ink-3)}
-.qa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.qa-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,max(270px,calc((100% - 24px)/3))),1fr));gap:12px}
 .quick-action-card{display:flex;flex-direction:column;justify-content:space-between;gap:6px;background:rgba(255,255,255,.62);border-radius:var(--r-inner);padding:12px 14px;min-width:0;cursor:default}
 .quick-action-card[data-allowed=true]:hover{background:rgba(255,255,255,.8)}
 .quick-action-head,.quick-action-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
@@ -249,34 +249,47 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .quick-action-service-status{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
 .quick-action-service-status::before{content:"";flex:none;width:8px;height:8px;border-radius:50%;background:var(--ink-3);opacity:.55}
 .quick-action-service-status .service-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit}
-.quick-action-card[data-state=running] .quick-action-service-status::before{background:var(--ok-dot);opacity:1}
+.quick-action-card[data-state=ready] .quick-action-service-status::before{background:var(--ok-dot);opacity:1}
 .quick-action-card[data-state=starting] .quick-action-service-status::before,.quick-action-card[data-state=stopping] .quick-action-service-status::before{background:var(--warn-dot);opacity:1}
 .quick-action-card[data-state=error] .quick-action-service-status::before,.quick-action-card[data-state=failed] .quick-action-service-status::before{background:var(--bad-dot);opacity:1}
-.quick-action-card[data-state=running] .quick-action-service-status{color:var(--ok)}
+.quick-action-card[data-state=ready] .quick-action-service-status{color:var(--ok)}
 .quick-action-card[data-state=error] .quick-action-service-status,.quick-action-card[data-state=failed] .quick-action-service-status{color:var(--bad)}
 .quick-action-nohup-bar{display:flex;flex:none;gap:8px}
-.dw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.dw-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.dw-card{container-type:inline-size;min-width:0;overflow-wrap:anywhere}
 .dw-card>.t-label{display:flex;align-items:center;gap:6px}
+.dw-card>.t-label>.i{flex:none}
 .dw-card[data-type=log][data-layout=auto]{grid-column:span 2}
 .dw-layout-medium{grid-column:span 2}
 .dw-layout-large{grid-column:span 3}
 .dw-layout-full{grid-column:1/-1}
-.dw-ring{display:flex;justify-content:center;padding:8px 0 2px}
+.dw-ring{display:grid;place-items:center;width:100%;min-height:64px;margin:8px 0 2px}
+.dw-ring>svg,.dw-ring-value{grid-area:1/1}
+.dw-ring>svg{max-width:100%}
+.dw-ring-value{z-index:1;width:100%;min-width:0;text-align:center;font-size:14px;line-height:20px;font-weight:500;overflow-wrap:anywhere}
+.dw-gauge{min-height:44px;align-items:end}
 .bigrow.w32{margin:10px 0 0}
-.w32 .t-big{font-size:32px;line-height:36px}
+.dw-card .bigrow{flex-wrap:wrap;max-width:100%}
+.dw-card .bigrow>span,.dw-card .kv>span,.dw-ic>.t-body,.dw-st>.state{min-width:0;max-width:100%;overflow-wrap:anywhere;white-space:normal}
+.dw-card .w32 .t-big{font-size:clamp(16px,10cqi,32px);line-height:1.125;letter-spacing:0}
 .dw-st{margin-top:14px}
-.dw-ic{display:flex;align-items:center;gap:8px;margin-top:10px}
+.dw-ic{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.dw-icon-display{flex:none}
 .dw-tx{margin-top:10px;font-weight:500;word-break:break-word}
 .dw-log-h{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
-.dw-log-tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.dw-log-tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0;max-width:100%}
+.dw-log-tools>.btn,.dw-log-tools>.state{flex-shrink:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .dw-log-container{margin-top:10px;max-height:220px;overflow:auto;background:#1e1f2b;border-radius:var(--r-inner);padding:10px 12px;color:#e6e6ef;font:12px/18px var(--mono)}
 .dw-log-collapsed{display:none}
 .dw-log-empty{color:#9a9ca8}
-.dw-log-line{white-space:pre-wrap;word-break:break-all}
+.dw-log-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dw-log-error-line{color:#ff8a8a}
 .dw-log-warn-line{color:#ffcf7a}
 .dw-log-info-line{color:#8ec5ff}
 .dw-log-debug-line{color:#9a9ca8}
+@container (max-width:240px){.dw-card[data-type=dual] .bigrow{flex-direction:column;align-items:center}}
+@media (max-width:1200px){.dw-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:900px){.dw-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dw-grid>.dw-layout-large{grid-column:span 2}}
 .fan-panel{min-width:0}
 .fan-body{flex:1;display:flex;flex-direction:column;gap:10px}
 .fan-body>.fan-test{margin-top:auto}
@@ -477,6 +490,13 @@ textarea.field{height:auto;padding:8px 12px;width:100%;resize:vertical}textarea.
 .mtable td{padding:10px 12px 10px 0;border-top:1px solid var(--hair);font-variant-numeric:tabular-nums}
 .mtable th.sortable{cursor:pointer}
 .logv{height:200px;font-size:12px;line-height:18px;overflow-y:auto}
+.lpmu-log{margin-top:16px}
+.lpmu-log[open]{padding-bottom:16px}
+.lpmu-log-toggle{list-style:none;color:var(--ink);cursor:default}
+.lpmu-log-toggle::-webkit-details-marker{display:none}
+.lpmu-log-toggle .i{color:var(--ink-3)}
+.lpmu-log[open]>.lpmu-log-toggle .i{transform:rotate(180deg)}
+.lpmu-log-output pre{margin:0;font:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
 #modal-log-container{height:320px}
 .log-entry{display:grid;grid-template-columns:70px 50px 100px 1fr;gap:8px;color:#8ee59a}
 .log-tag{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -558,5 +578,26 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 .seg button{padding:0 8px}
 .sys-top,.sys-mid,.fans-grid,.led-grid,.ota-partitions,.kv-grid.k2,.match-grid{grid-template-columns:1fr}
 .qa-grid,.kv-grid.k4{grid-template-columns:repeat(2,1fr)}
-.dw-grid{grid-template-columns:repeat(2,1fr)}
+.dw-grid{grid-template-columns:minmax(0,1fr)}
+.dw-grid>.dw-layout-medium,.dw-grid>.dw-layout-large,.dw-grid>.dw-card[data-type=log][data-layout=auto]{grid-column:span 1}
 }
+
+/* Both service views render the same backend state, including transitions away
+   from ready. A green indicator means confirmed readiness, not submission. */
+.quick-action-service-status::before {
+    content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor; flex-shrink: 0;
+}
+.quick-action-service-status.status-unknown,
+.quick-action-service-status.status-stopped,
+.service-status.status-unknown,
+.service-status.status-stopped { color: var(--ink-3); }
+.quick-action-service-status.status-starting,
+.quick-action-service-status.status-running,
+.quick-action-service-status.status-stopping,
+.service-status.status-starting,
+.service-status.status-running,
+.service-status.status-stopping { color: var(--accent-text); }
+.service-status.status-ready { color: var(--ok); }
+.service-status.status-failed,
+.service-status.status-timeout { color: var(--bad); }

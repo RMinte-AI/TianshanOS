@@ -78,6 +78,7 @@ typedef struct {
     int16_t value;                  /**< 温度值（0.1°C 单位）*/
     ts_temp_source_type_t source;   /**< 数据来源 */
     int64_t timestamp_ms;           /**< 更新时间戳 */
+    uint32_t identity_revision;     /**< 源/绑定配置身份；普通温度更新不改变 */
     bool valid;                     /**< 数据有效性 */
     int16_t guard_value;            /**< 保护温度（0.1°C 单位），绑定变量最高 fresh 温度 */
     bool guard_valid;               /**< 保护温度是否有效 */

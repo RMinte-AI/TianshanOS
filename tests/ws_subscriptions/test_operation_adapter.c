@@ -35,7 +35,9 @@ static int httpd_register_uri_handler(httpd_handle_t h,const httpd_uri_t *u){(vo
 static int httpd_ws_send_frame(httpd_req_t *r,httpd_ws_frame_t *f){return httpd_ws_send_frame_async(r->handle,r->fd,f);}
 static const char *incoming;
 static int httpd_ws_recv_frame(httpd_req_t *r,httpd_ws_frame_t *f,size_t n){(void)r;if(!incoming)return ESP_FAIL;f->type=1;f->len=strlen(incoming);if(n)memcpy(f->payload,incoming,f->len);return 0;}
-static void *host_heap_malloc(size_t n,unsigned caps){(void)caps;return tracked_malloc(n);}
+static size_t rejected_allocation_size;
+static void *adapter_malloc(size_t n){return rejected_allocation_size==n?NULL:tracked_malloc(n);}
+static void *host_heap_malloc(size_t n,unsigned caps){(void)caps;return adapter_malloc(n);}
 static void *host_calloc(size_t n,size_t z){void *p=tracked_malloc(n*z);if(p)memset(p,0,n*z);return p;}
 static void *host_heap_calloc(size_t n,size_t z,unsigned caps){(void)caps;return host_calloc(n,z);}
 static char *host_strdup(const char *s){size_t n=strlen(s)+1;char *p=tracked_malloc(n);if(p)memcpy(p,s,n);return p;}
@@ -51,7 +53,7 @@ static int adapter_create(void(*fn)(void*),const char *name,unsigned stack,void 
  return pdPASS;
 }
 static int adapter_create_caps(void(*fn)(void*),const char *n,unsigned stack,void *arg,unsigned p,TaskHandle_t *out,unsigned caps);
-#define malloc tracked_malloc
+#define malloc adapter_malloc
 #define calloc host_calloc
 #define free tracked_free
 #define strdup host_strdup
@@ -77,6 +79,7 @@ _Static_assert(SSH_POLL_STACK_SIZE == 8192, "SSH poll stack budget is bytes");
 struct ts_ssh_session_s {bool aborted;ts_ssh_config_t config;};
 #endif
 static unsigned control_writes,control_signals,control_resizes,commands_submitted;
+static const char *expected_command;
 static void (*stage_hook)(const char *);
 static void stage(const char *name){if(stage_hook)stage_hook(name);}
 #ifndef PROJECT_REAL_DRIVER
@@ -117,7 +120,7 @@ esp_err_t ts_ssh_shell_write(ts_ssh_shell_t s,const char *b,size_t n,size_t *out
 esp_err_t ts_ssh_shell_resize(ts_ssh_shell_t s,uint16_t w,uint16_t h){(void)s;(void)w;(void)h;control_resizes++;return 0;}
 esp_err_t ts_ssh_shell_send_signal(ts_ssh_shell_t s,const char *signal){(void)s;(void)signal;control_signals++;return 0;}
 esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s,const char *command,ts_ssh_output_cb_t cb,void *arg,int *code){
- (void)command;stage("submit");if(s->config.cancelled && s->config.cancelled(s->config.cancel_context))return ESP_ERR_TIMEOUT;commands_submitted++;if(remote_hook)remote_hook();if(remote_timeout && host_timer)host_timer->fn(host_timer);
+ if(expected_command)assert(!strcmp(command,expected_command));stage("submit");if(s->config.cancelled && s->config.cancelled(s->config.cancel_context))return ESP_ERR_TIMEOUT;commands_submitted++;if(remote_hook)remote_hook();if(remote_timeout && host_timer)host_timer->fn(host_timer);
  cb("value=42\n",9,false,arg);*code=0;return s->aborted || (s->config.cancelled && s->config.cancelled(s->config.cancel_context))?ESP_ERR_TIMEOUT:ESP_OK;
 }
 #else
@@ -295,6 +298,25 @@ static void operation_cross_tests(void){
     (void)ledger;
 }
 #ifndef OP_ADAPTER_NO_MAIN
+static void full_command_tests(void){
+ const size_t lengths[]={511,512,757,1500};
+ for(unsigned i=0;i<sizeof(lengths)/sizeof(lengths[0]);i++){
+  size_t length=lengths[i];char *command=malloc(length+1),*expected=malloc(length+1);
+  memset(command,'x',length);memcpy(command,"bash -c '\n#",11);command[length-2]='\n';command[length-1]='\'';command[length]=0;
+  memcpy(expected,command,length+1);expected_command=expected;
+  setup();uint32_t id;unsigned submitted=commands_submitted;
+  assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p",command,&id)==ESP_OK);
+  /* The HTTP request can be freed before the task is scheduled. */
+  memset(command,'!',length);free(command);
+  exec_task.fn(exec_task.arg);assert(commands_submitted==submitted+1);finish_all();
+  expected_command=NULL;free(expected);
+ }
+ setup();char command[1501];memset(command,'x',1500);command[1500]=0;
+ uint32_t id=0;unsigned submitted=commands_submitted;rejected_allocation_size=sizeof(command);
+ assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p",command,&id)==ESP_ERR_NO_MEM);
+ rejected_allocation_size=0;assert(!id && commands_submitted==submitted);finish_all();
+ puts("PASS full async commands: 511/512/757/1500 bytes preserved after request release; allocation failure submits nothing and reclaims ownership");
+}
 int main(void){
  cJSON_Hooks h={tracked_malloc,tracked_free};cJSON_InitHooks(&h);sent_hook=observe;
  setup();connect_shell();assert(shell_task.fn && connected_frames==1);
@@ -315,6 +337,7 @@ int main(void){
   assert(ledger.phase==OP_FREE && !ledger.refs && !ledger.executors);
  }
  operation_cross_tests();
+ full_command_tests();
  printf("PASS complete production WS unit: Shell output failure/close/startup failure, Exec task/callback/match/variables/timer cleanup and task-before-create-return; destroyed=%u\n",session_destroys);
  return 0;
 }

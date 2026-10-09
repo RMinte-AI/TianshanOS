@@ -587,7 +587,7 @@ const swc = (id, on = false, extra = '') => `<input type="checkbox" class="switc
 //   export-<key>-cert|result|btn；import-<key>-file|file-status|step2|preview|overwrite|result|btn
 const exportSheet = (key, title, desc, hint, hide, run, extra = '') => sheet(560, title,
     `${desc ? `<div class="t-note" style="margin-bottom:10px">${desc}</div>` : ''}${extra}<div class="fl"><label>${t('securityPage.targetDeviceCert')}</label><textarea class="field mono" id="export-${key}-cert" style="height:96px" placeholder="${escapeHtml(hint)}"></textarea></div><div id="export-${key}-result" class="result-box hidden" style="margin-top:12px"></div>`,
-    `<button class="btn lg" onclick="${hide}()">${t('common.cancel')}</button><button class="btn lg primary" id="export-${key}-btn" onclick="${run}"><svg class="i"><use href="#ri-download-line"/></svg>${t('common.export')}</button>`);
+    `<button class="btn lg" onclick="${hide}()">${t('common.cancel')}</button><button class="btn lg primary" id="export-${key}-btn" onclick="${run}(this.closest('.modal').dataset.exportId)"><svg class="i"><use href="#ri-download-line"/></svg>${t('common.export')}</button>`);
 const importPlaceholder = key => row(t('securityPage.previewRowLabel'), `<span class="t-note">${t('securityPage.previewAfterSelect')}</span>`) + row(t('ssh.overwriteExisting'), swc(`import-${key}-overwrite`));
 const importSheet = (key, title, desc, preview, confirm, hide, extra = '', w = 560, ok = t('ssh.confirmImport')) => sheet(w, title,
     `<div class="t-label" style="margin-bottom:10px">${desc}</div><div class="acts" style="align-items:center;gap:12px"><input type="file" id="import-${key}-file" accept=".tscfg" onchange="${preview}()" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none"><button type="button" class="btn" onclick="document.getElementById('import-${key}-file').click()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('common.selectFile')}</button><span id="import-${key}-file-status" class="t-note">${t('common.noFileSelected')}</span></div>
@@ -737,7 +737,7 @@ async function loadSystemPage() {
                     <div class="fan-body">
                         <div class="fan-status" id="fan-temp-status-bar">
                             <span class="t-label">${t('fan.effectiveTemp')} <b class="t-value" id="fan-global-temp">--</b></span>
-                            <span class="t-label">${t('fan.targetSpeed')} <b class="t-value" id="fan-global-duty">--</b></span>
+                            <span class="t-label">${t('fan.currentOutput')} <b class="t-value" id="fan-global-duty">--</b></span>
                         </div>
                         <div class="fans-grid" id="fans-grid">
                             <div class="loading">${t('common.loading')}</div>
@@ -1418,6 +1418,11 @@ function updatePowerInfo(data) {
 }
 
 // 更新风扇信息
+const fanSpeedDrafts = new Map();
+function fanOutputKnown(fan) {
+    return fan.duty_valid !== false && Number.isFinite(fan.duty) && fan.duty >= 0 && fan.duty <= 100;
+}
+
 function updateFanInfo(data) {
     const container = document.getElementById('fans-grid');
 
@@ -1428,24 +1433,36 @@ function updateFanInfo(data) {
         globalTempEl.textContent = `${typeof data.temperature === 'number' ? data.temperature.toFixed(1) : '--'} °C`;
         globalTempEl.classList.toggle('warn', !data.temp_valid);
     }
-    if (globalDutyEl && data?.fans?.length > 0) {
-        // 显示第一个曲线模式风扇的目标转速，或平均值
-        const curveFan = data.fans.find(f => f.mode === 'curve' || f.mode === 'auto');
-        if (curveFan) {
-            globalDutyEl.textContent = `${curveFan.target_duty ?? curveFan.duty ?? 0}%`;
-        } else {
-            const avgDuty = Math.round(data.fans.reduce((s, f) => s + (f.duty ?? 0), 0) / data.fans.length);
-            globalDutyEl.textContent = `${avgDuty}%`;
-        }
+    if (globalDutyEl) {
+        const fans = data?.fans || [];
+        const curveFan = fans.find(f => f.mode === 'curve' || f.mode === 'auto');
+        const shown = curveFan ? [curveFan] : fans;
+        const known = shown.length > 0 && shown.every(fanOutputKnown);
+        globalDutyEl.textContent = known ? `${Math.round(shown.reduce((sum, f) => sum + f.duty, 0) / shown.length)}%` : '--%';
+    }
+
+    // Polling must not replace a range input under the user's pointer.
+    const activeSlider = document.activeElement;
+    const activeFan = data?.fans?.find(f => activeSlider?.id === `fan-slider-${f.id}`);
+    if (activeFan?.mode === 'manual' && fanOutputKnown(activeFan) && fanSpeedDrafts.has(activeFan.id)) {
+        const card = activeSlider.closest('.fan-card');
+        card.querySelector('.fan-speed-num').textContent = activeFan.duty;
+        const state = card.querySelector('.state');
+        state.textContent = activeFan.fault ? t('fan.adjustmentFailed') : t('fanPage.modeManual');
+        state.className = activeFan.fault ? 'state bad' : 'state ok';
+        return;
     }
 
     if (data?.fans && data.fans.length > 0) {
         container.innerHTML = data.fans.map(fan => {
             const mode = fan.mode || 'auto';
-            // 曲线/自动模式显示目标转速 (target_duty)，手动模式显示当前转速 (duty)
-            const isCurveOrAuto = (mode === 'curve' || mode === 'auto');
-            const displayDuty = isCurveOrAuto ? (fan.target_duty ?? fan.duty ?? 0) : (fan.duty ?? 0);
-            const duty = fan.duty ?? 0;  // 当前实际转速（用于滑块）
+            // 所有模式的大读数都与已成功下发的 PWM 一致。
+            const known = fanOutputKnown(fan);
+            const displayDuty = known ? fan.duty : '--';
+            if (mode !== 'manual' || !known) fanSpeedDrafts.delete(fan.id);
+            const draft = fanSpeedDrafts.get(fan.id);
+            const duty = draft?.value ?? (known ? fan.duty : 0);
+            const sliderText = `${draft?.value ?? displayDuty}%`;
             const rpm = fan.rpm || 0;
             const isManual = mode === 'manual';
             const isOff = mode === 'off';
@@ -1464,8 +1481,8 @@ function updateFanInfo(data) {
                 guard: t('fanPage.autoStateGuard'), stale: t('fanPage.autoStateStale'), unknown: t('fanPage.autoStateUnknown')
             };
             const autoState = fan.auto_state || 'unknown';
-            const stateText = mode === 'auto' ? (autoStateLabels[autoState] || autoState) : ({ off: _off, manual: _manual, curve: _curve }[mode] || mode);
-            const stateCls = isOff ? '' : fan.guard_active ? ' warn' : fan.temp_stale ? ' bad' : ' ok';
+            const stateText = !known ? t('fan.outputUnknown') : fan.fault ? t('fan.adjustmentFailed') : mode === 'auto' ? (autoStateLabels[autoState] || autoState) : ({ off: _off, manual: _manual, curve: _curve }[mode] || mode);
+            const stateCls = !known || fan.fault ? ' bad' : isOff ? '' : fan.guard_active ? ' warn' : fan.temp_stale ? ' bad' : ' ok';
             const stat = (label, value) => `<span class="fan-stat"><i>${label}</i><b>${value}</b></span>`;
             const meta = '<div class="t-note fan-meta">' + (hasAutoTelemetry ? (
                 (typeof fan.guard_temperature === 'number' ? stat(t('fanPage.guardTempBrief'), `${fan.guard_temperature.toFixed(1)} °C`) : '') +
@@ -1483,9 +1500,11 @@ function updateFanInfo(data) {
                 <div class="seg full">${tab('off', _off)}${tab('manual', _manual)}${tab('curve', _curve)}${tab('auto', _smart)}</div>
                 <div class="slrow ${isManual ? '' : 'disabled'}">
                     <span class="t-label">${t('fanPage.speedAdjust')}</span>
-                    <div class="sl" style="--p:${duty}%"><i></i><b></b><input type="range" class="fan-slider" min="0" max="100" value="${duty}" id="fan-slider-${fan.id}" onchange="setFanSpeed(${fan.id}, this.value)" oninput="updateFanSliderUI(${fan.id}, this.value)" ${!isManual ? 'disabled title="' + t('fanPage.manualModeHint') + '"' : ''}></div>
-                    <span class="t-value fan-slider-value">${duty}%</span>
+                    <div class="sl" style="--p:${duty}%"><i></i><b></b><input type="range" class="fan-slider" min="0" max="100" value="${duty}" id="fan-slider-${fan.id}" onchange="setFanSpeed(${fan.id}, this.value)" oninput="updateFanSliderUI(${fan.id}, this.value)" ${!isManual || !known ? 'disabled title="' + t('fanPage.manualModeHint') + '"' : ''}></div>
+                    <span class="t-value fan-slider-value">${sliderText}</span>
                 </div>
+                <div class="t-note fan-draft">${draft ? t('fan.draftSetting', {speed: draft.value}) : ''}</div>
+                ${known && Number.isFinite(fan.target_duty) && fan.target_duty !== fan.duty ? `<div class="t-note fan-request">${t('fan.requestedSetting', {speed: fan.target_duty})}</div>` : ''}
                 ${meta}
             </div>
         `;
@@ -1520,14 +1539,14 @@ function updateFanSliderUI(fanId, value) {
     const slider = document.getElementById(`fan-slider-${fanId}`);
     if (!slider) return;
 
+    fanSpeedDrafts.set(fanId, {value: Number(value)});
     const card = slider.closest('.fan-card');
     if (card) {
-        // 更新大数字
-        const numSpan = card.querySelector('.fan-speed-num');
-        if (numSpan) numSpan.textContent = value;
         // 更新滑块旁边的值
         const valSpan = card.querySelector('.fan-slider-value');
         if (valSpan) valSpan.textContent = value + '%';
+        const draftSpan = card.querySelector('.fan-draft');
+        if (draftSpan) draftSpan.textContent = t('fan.draftSetting', {speed: value});
         slider.parentElement.style.setProperty('--p', value + '%');
     }
 }
@@ -1619,10 +1638,31 @@ function hideServicesModal() {
 }
 
 async function setFanSpeed(id, speed) {
+    const draft = fanSpeedDrafts.get(id);
+    const requested = Number(speed);
     try {
-        requireApiSuccess(await api.fanSet(id, parseInt(speed)), 'fanSet');
-        showToast(typeof t === 'function' ? t('fan.speedSet', { id, speed }) : `风扇 ${id} 速度已设置为 ${speed}%`, 'success');
-    } catch (e) { showToast((typeof t === 'function' ? t('fan.setFanFailed', { msg: e.message }) : '设置风扇失败: ' + e.message), 'error'); }
+        const result = await api.fanSet(id, requested);
+        if (!result || result.code !== 0 || (result.httpStatus && result.httpStatus >= 400)) {
+            console.error('fan.set rejected', result);
+            showToast(t('fan.settingFailed', {id, speed: requested}), 'error');
+        } else {
+            showToast(t(result.data?.enabled === false ? 'fan.settingDisabled' : 'fan.speedSet', {id, speed: requested}), 'success');
+        }
+        if (fanSpeedDrafts.get(id) === draft) fanSpeedDrafts.delete(id);
+        await refreshFans();
+    } catch (e) {
+        console.error('fan.set result unavailable', e);
+        if (fanSpeedDrafts.get(id) === draft) fanSpeedDrafts.delete(id);
+        if (e instanceof ApiOperationError && e.code !== undefined && !e.uncertain) {
+            showToast(t('fan.settingFailed', {id, speed: requested}), 'error');
+            await refreshFans();
+            return;
+        }
+        showToast(t('fan.settingUnknown'), 'warning');
+        // Do not repeat a command whose outcome is unknown. A later status poll
+        // supplies a current snapshot; it cannot prove the outcome of this command.
+        markFanOutputsUnknown(id);
+    }
 }
 
 async function setFanMode(id, mode) {
@@ -1633,13 +1673,32 @@ async function setFanMode(id, mode) {
     } catch (e) { showToast((typeof t === 'function' ? t('fan.setFanModeFailed', { msg: e.message }) : '设置风扇模式失败: ' + e.message), 'error'); }
 }
 
+function markFanOutputsUnknown(id = null) {
+    if (id === null) fanSpeedDrafts.clear();
+    else fanSpeedDrafts.delete(id);
+    for (const slider of document.querySelectorAll('.fan-slider')) {
+        if (id !== null && slider.id !== `fan-slider-${id}`) continue;
+        const card = slider.closest('.fan-card');
+        card.querySelector('.fan-speed-num').textContent = '--';
+        card.querySelector('.fan-slider-value').textContent = '--%';
+        card.querySelector('.fan-draft').textContent = '';
+        card.querySelector('.state').textContent = t('fan.outputUnknown');
+        card.querySelector('.state').className = 'state bad';
+        slider.disabled = true;
+    }
+    const global = document.getElementById('fan-global-duty');
+    if (global) global.textContent = '--%';
+}
+
 async function refreshFans() {
     try {
-        const result = await api.call('fan.status');
-        if (result.data) {
-            updateFanInfo(result.data);
-        }
-    } catch (e) { console.error('刷新风扇状态失败:', e); }
+        const result = requireApiSuccess(await api.call('fan.status'), 'fan.status');
+        if (result.data) updateFanInfo(result.data);
+        else markFanOutputsUnknown();
+    } catch (e) {
+        console.error('fan.status unavailable:', e);
+        markFanOutputsUnknown();
+    }
 }
 
 /*===========================================================================*/
@@ -2791,7 +2850,7 @@ function loadDataWidgetsFromLocalStorage() {
                 return oldWidgets.map(w => ({
                     ...w,
                     expression: w.variable ? `\${${w.variable}}` : null,
-                    decimals: w.decimals || 1
+                    decimals: w.decimals ?? 1
                 }));
             }
         }
@@ -2978,10 +3037,10 @@ function renderWidgetHtml(widget) {
     
     switch (type) {
         case 'ring':
-            contentHtml = `<div class="dw-ring"><svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(0,0,0,.07)" stroke-width="6"/><circle id="dw-${id}-ring" cx="32" cy="32" r="26" fill="none" stroke="#007aff" stroke-width="6" stroke-linecap="round" stroke-dasharray="0 163.4" transform="rotate(-90 32 32)"/><text id="${vid}" x="32" y="37" text-anchor="middle" font-size="14" font-weight="500" fill="#1d1d1f">-</text></svg></div>`;
+            contentHtml = `<div class="dw-ring"><svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(0,0,0,.07)" stroke-width="6"/><circle id="dw-${id}-ring" cx="32" cy="32" r="26" fill="none" stroke="#007aff" stroke-width="6" stroke-linecap="round" stroke-dasharray="0 163.4" transform="rotate(-90 32 32)"/></svg><span class="dw-ring-value" id="${vid}">-</span></div>`;
             break;
         case 'gauge':
-            contentHtml = `<div class="dw-ring"><svg width="72" height="44" viewBox="0 0 72 44"><path d="M8 38A28 28 0 0 1 64 38" fill="none" stroke="rgba(0,0,0,.07)" stroke-width="6" stroke-linecap="round"/><path id="dw-${id}-gauge" d="M8 38A28 28 0 0 1 64 38" fill="none" stroke="#007aff" stroke-width="6" stroke-linecap="round" stroke-dasharray="0 87.96"/><text id="${vid}" x="36" y="38" text-anchor="middle" font-size="14" font-weight="500" fill="#1d1d1f">-</text></svg></div>`;
+            contentHtml = `<div class="dw-ring dw-gauge"><svg width="72" height="44" viewBox="0 0 72 44"><path d="M8 38A28 28 0 0 1 64 38" fill="none" stroke="rgba(0,0,0,.07)" stroke-width="6" stroke-linecap="round"/><path id="dw-${id}-gauge" d="M8 38A28 28 0 0 1 64 38" fill="none" stroke="#007aff" stroke-width="6" stroke-linecap="round" stroke-dasharray="0 87.96"/></svg><span class="dw-ring-value" id="${vid}">-</span></div>`;
             break;
         case 'temp':
             contentHtml = big(`<span class="t-big" id="${vid}">-</span><span class="t-unit">°C</span>`);
@@ -3543,7 +3602,7 @@ function addWidgetFromPreset(presetId) {
         unit: preset.unit,
         min: 0,
         max: 100,
-        decimals: WIDGET_TYPES[preset.type]?.defaultConfig?.decimals || 1,
+        decimals: WIDGET_TYPES[preset.type]?.defaultConfig?.decimals ?? 1,
         expression: null
     };
     
@@ -3573,9 +3632,9 @@ function createNewWidget(type) {
         icon: typeConfig.icon,
         color: defaults.color || '#4dabf7',
         unit: defaults.unit || '',
-        min: defaults.min || 0,
-        max: defaults.max || 100,
-        decimals: defaults.decimals || 1,
+        min: defaults.min ?? 0,
+        max: defaults.max ?? 100,
+        decimals: defaults.decimals ?? 1,
         expression: null
     };
     
@@ -3615,7 +3674,7 @@ function showWidgetEditPanel(widgetId) {
     // 额外配置（根据组件类型）
     let extraRows = '';
     if (widget.type === 'status') {
-        extraRows = row(t('dataWidget.thresholdSettings'), num('edit-threshold-1', 64, widget.thresholds?.[0] || 0) + num('edit-threshold-2', 64, widget.thresholds?.[1] || 50) + num('edit-threshold-3', 64, widget.thresholds?.[2] || 80));
+        extraRows = row(t('dataWidget.thresholdSettings'), num('edit-threshold-1', 64, widget.thresholds?.[0] ?? 0) + num('edit-threshold-2', 64, widget.thresholds?.[1] ?? 50) + num('edit-threshold-3', 64, widget.thresholds?.[2] ?? 80));
     }
     if (widget.type === 'dual') {
         extraRows = row(t('dataWidget.secondaryExpression'), inp('edit-expression2', 220, t('dataWidget.secondaryExpressionPlaceholder'), 'mono', `value="${escapeHtml(widget.expression2 || '')}"`), '', t('dataWidget.secondaryExpressionHint'));
@@ -3645,9 +3704,9 @@ function showWidgetEditPanel(widgetId) {
         ${grp(layoutRows)}
         ${widget.type !== 'log' ? gt(t('dataWidget.unit')) + grp(
             row(t('dataWidget.unit'), inp('edit-unit', 90, '%、°C、W', '', `value="${escapeHtml(widget.unit || '')}"`)) +
-            row(t('dataWidget.decimals'), num('edit-decimals', 70, widget.decimals || 1, 'min="0" max="4"')) +
+            row(t('dataWidget.decimals'), num('edit-decimals', 70, widget.decimals ?? 1, 'min="0" max="4"')) +
             (widget.type !== 'text' && widget.type !== 'icon' && widget.type !== 'status' ?
-                row(t('dataWidget.minValue'), num('edit-min', 90, widget.min || 0)) + row(t('dataWidget.maxValue'), num('edit-max', 90, widget.max || 100)) : '')) : ''}
+                row(t('dataWidget.minValue'), num('edit-min', 90, widget.min ?? 0)) + row(t('dataWidget.maxValue'), num('edit-max', 90, widget.max ?? 100)) : '')) : ''}
         ${extraRows ? grp(extraRows, 'margin-top:8px') : ''}
         <div class="fl" style="margin-top:18px">
             <label>${exprLabel} <span class="tag">${t('common.core')}</span></label>
@@ -3675,49 +3734,42 @@ async function selectVariableForWidget() {
  * 保存组件编辑
  */
 function saveWidgetEdit(widgetId) {
+    clearFieldErrors();
     const widget = dataWidgets.find(w => w.id === widgetId);
     if (!widget) return;
     
-    widget.label = document.getElementById('edit-label')?.value?.trim() || widget.label;
-    widget.icon = document.getElementById('edit-icon')?.value?.trim() || '';
-    widget.color = document.getElementById('edit-color')?.value || '#4dabf7';
-    
-    // 布局
-    const layoutRadio = document.querySelector('input[name="edit-layout"]:checked');
-    widget.layout = layoutRadio?.value || 'auto';
-    
-    // 非日志组件的通用属性
-    if (widget.type !== 'log') {
-        widget.unit = document.getElementById('edit-unit')?.value?.trim() || '';
-        widget.decimals = parseInt(document.getElementById('edit-decimals')?.value) || 1;
-        widget.min = parseFloat(document.getElementById('edit-min')?.value) || 0;
-        widget.max = parseFloat(document.getElementById('edit-max')?.value) || 100;
-        widget.expression = document.getElementById('edit-expression')?.value?.trim() || null;
-    }
-    
-    // 额外配置
-    if (widget.type === 'status') {
-        widget.thresholds = [
-            parseFloat(document.getElementById('edit-threshold-1')?.value) || 0,
-            parseFloat(document.getElementById('edit-threshold-2')?.value) || 50,
-            parseFloat(document.getElementById('edit-threshold-3')?.value) || 80
-        ];
-    }
-    if (widget.type === 'dual') {
-        widget.expression2 = document.getElementById('edit-expression2')?.value?.trim() || null;
-    }
-    if (widget.type === 'log') {
-        widget.maxLines = parseInt(document.getElementById('edit-max-lines')?.value) || 15;
-        widget.refreshInterval = parseInt(document.getElementById('edit-refresh-interval')?.value) || 2000;
-        widget.expression = document.getElementById('edit-expression')?.value?.trim() || null;
-        
-        // 如果日志正在读取，重启定时器以应用新配置
-        if (widget._isReading) {
-            stopLogReading(widgetId);
-            startLogReading(widgetId);
+    const next = { ...widget };
+    next.label = document.getElementById('edit-label')?.value?.trim() || widget.label;
+    next.icon = document.getElementById('edit-icon')?.value?.trim() || '';
+    next.color = document.getElementById('edit-color')?.value || '#4dabf7';
+    next.layout = document.querySelector('input[name="edit-layout"]:checked')?.value || 'auto';
+    try {
+        if (widget.type !== 'log') {
+            next.unit = document.getElementById('edit-unit')?.value?.trim() || '';
+            next.decimals = readNumericInput('edit-decimals', true);
+            if (document.getElementById('edit-min')) next.min = readNumericInput('edit-min');
+            if (document.getElementById('edit-max')) next.max = readNumericInput('edit-max');
+            if (['ring', 'gauge', 'bar'].includes(widget.type) && next.min >= next.max) {
+                fieldError('edit-max', t('inputRepair.minMax'));
+                return;
+            }
         }
+        if (widget.type === 'status') {
+            next.thresholds = [1, 2, 3].map(n => readNumericInput('edit-threshold-' + n));
+        }
+        if (widget.type === 'log') {
+            next.maxLines = readNumericInput('edit-max-lines', true);
+            next.refreshInterval = readNumericInput('edit-refresh-interval', true);
+        }
+    } catch (_) { return; }
+    next.expression = document.getElementById('edit-expression')?.value?.trim() || null;
+    if (widget.type === 'dual') next.expression2 = document.getElementById('edit-expression2')?.value?.trim() || null;
+    Object.assign(widget, next);
+    if (widget.type === 'log' && widget._isReading) {
+        stopLogReading(widgetId);
+        startLogReading(widgetId);
     }
-    
+
     saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
@@ -3819,6 +3871,7 @@ async function refreshQuickActions() {
                         statusHtml = `<span class="quick-action-service-status" data-command="${escapeHtml(nohupInfo.commandId)}"><span class="service-value">${runtimeText('unknown')}</span></span>`;
                         nohupBtns = `
                             <div class="quick-action-nohup-bar" onclick="event.stopPropagation()">
+                                <button type="button" class="btn icon sm" onclick="verifyServiceState('${escapeHtml(nohupInfo.commandId)}')" title="${runtimeText('verifyState')}" aria-label="${runtimeText('verifyState')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                                 <button type="button" class="btn sm" onclick="quickActionViewLog('${escapeHtml(nohupInfo.logFile)}', '${escapeHtml(nohupInfo.hostId)}')"><svg class="i"><use href="#ri-file-list-line"/></svg>${t('automationPage.logTitle')}</button>
                                 <button type="button" class="btn sm dg" onclick="quickActionStopProcess('${escapeHtml(nohupInfo.commandId)}', ${!rule.manual_trigger})"><svg class="i"><use href="#ri-stop-fill"/></svg>${t('automationPage.stopProcess')}</button>
                             </div>`;
@@ -3875,7 +3928,7 @@ function startServiceStatusRefresh() {
     
     // 每 3 秒刷新一次服务状态
     serviceStatusRefreshInterval = setInterval(() => {
-        const statusContainers = document.querySelectorAll('.quick-action-service-status');
+        const statusContainers = document.querySelectorAll('.quick-action-service-status, .service-mode-status .service-status');
         if (statusContainers.length === 0) {
             stopServiceStatusRefresh();
             return;
@@ -3892,32 +3945,106 @@ function stopServiceStatusRefresh() {
 }
 
 let serviceStatusInFlight = false;
-async function updateQuickActionServiceStatus() {
+const serviceStateVersions = new Map();
+function advanceServiceState(commandId) {
+    const version = (serviceStateVersions.get(commandId) || 0) + 1;
+    serviceStateVersions.set(commandId, version);
+    return version;
+}
+const serviceVerifyInFlight = new Set();
+const serviceStates = ['unknown', 'starting', 'checking', 'running', 'ready', 'stopping', 'stopped', 'timeout', 'failed'];
+function renderServiceState(element, data = {}) {
+    const launching = data.operation_phase === 'queued' || data.operation_phase === 'executing';
+    const state = launching ? (data.operation_kind === 'stop' ? 'stopping' : data.operation_kind === 'verify' ? 'checking' : 'starting') : serviceStates.includes(data.state) ? data.state : 'unknown';
+    for (const value of serviceStates) element.classList.remove('status-' + value);
+    element.classList.add('status-' + state);
+    const label = element.querySelector('.service-value') || element;
+    label.textContent = runtimeText(launching ? (data.operation_phase === 'queued' ? 'controlQueued' : data.operation_kind === 'verify' ? 'controlVerifying' : state) : state);
+    element.title = runtimeText('stateEvidence') + ': ' + (data.source || 'none') +
+        (data.confirmed_ms ? ' · ' + runtimeText('confirmedAt') + ' ' + Math.floor(data.confirmed_ms / 1000) + 's' : '');
+    const card = element.closest('.quick-action-card');
+    if (card) card.dataset.state = state;
+}
+function renderServiceCommand(commandId, data) {
+    for (const element of document.querySelectorAll('.quick-action-service-status, .service-mode-status .service-status'))
+        if (element.dataset.command === commandId) renderServiceState(element, data);
+}
+function renderServiceOperation(commandId, data) {
+    const output = document.getElementById('exec-result');
+    if (!output || output.dataset.serviceCommand !== commandId || !output.dataset.operationId || !data.operation_id) return;
+    const matches = Number(output.dataset.operationId) === data.operation_id;
+    const phase = matches ? data.operation_phase : 'operationReplaced';
+    if (!phase || phase === output.dataset.operationPhase) return;
+    output.dataset.operationPhase = phase;
+    output.textContent += '\n' + runtimeText(phase === 'expired' ? 'controlExpired' : 'launch_' + phase) +
+        (matches && data.operation_error ? ' (' + data.operation_error + ')' : '');
+}
+async function refreshServiceStates() {
     if (document.hidden || serviceStatusInFlight) return;
     serviceStatusInFlight = true;
     try {
-        for (const container of document.querySelectorAll('.quick-action-service-status')) {
-            if (!container.isConnected || document.hidden) break;
-            const card = container.closest('.quick-action-card');
-            const commandId = container.dataset.command;
+        for (const element of document.querySelectorAll('.quick-action-service-status, .service-mode-status .service-status')) {
+            const commandId = element.dataset.command;
+            const revision = serviceStateVersions.get(commandId);
+            if (!element.isConnected || document.hidden) break;
+            if (serviceVerifyInFlight.has(commandId)) continue;
+            let data = {};
             try {
                 const response = await api.call('automation.services.status', { command_id: commandId });
-                if (!container.isConnected || container.dataset.command !== commandId) continue;
-                const data = response.data || {};
-                const state = response.code === 0 ? data.state : 'unknown';
-                card.dataset.state = state;
-                container.querySelector('.service-value').textContent = runtimeText(state) +
-                    (data.last_known && state === 'unknown' ? ' · ' + runtimeText('lastKnown') + ': ' + runtimeText(data.last_known) : '') +
-                    (data.confirmed_ms ? ' · ' + runtimeText('confirmedAt') + ' ' + Math.floor(data.confirmed_ms / 1000) + 's' : '');
-                container.title = runtimeText('stateEvidence') + ': ' + (data.source || 'none');
-            } catch (_) {
-                if (container.isConnected) {
-                    card.dataset.state = 'unknown';
-                    container.querySelector('.service-value').textContent = runtimeText('unknown');
-                }
+                if (response.code === 0) data = response.data || {};
+            } catch (_) {}
+            if (element.isConnected && revision === serviceStateVersions.get(commandId) && !serviceVerifyInFlight.has(commandId)) {
+                renderServiceState(element, data);
+                renderServiceOperation(commandId, data);
             }
         }
     } finally { serviceStatusInFlight = false; }
+}
+async function updateQuickActionServiceStatus() {
+    await refreshServiceStates();
+}
+// Explicit controls poll only the local operation record. No automatic resubmission.
+async function waitServiceOperation(commandId, operationId, isCurrent) {
+    const deadline = Date.now() + 60000;
+    while (isCurrent() && Date.now() < deadline) {
+        const response = requireApiSuccess(await api.call('automation.services.status', {command_id: commandId}), 'automation.services.status');
+        if (!isCurrent()) return null;
+        const data = response.data || {};
+        if (data.operation_id !== operationId) throw new Error(runtimeText('launch_operationReplaced'));
+        if (data.operation_phase === 'succeeded') return data;
+        if (data.operation_phase === 'expired') throw new Error(runtimeText('controlExpired'));
+        if (data.operation_phase === 'failed' || data.operation_phase === 'unconfirmed')
+            throw new Error(runtimeText('outcomeUnknown'));
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    if (isCurrent()) throw new Error(runtimeText('outcomeUnknown'));
+    return null;
+}
+async function requestServiceControl(commandId, stop, isCurrent) {
+    const endpoint = stop ? 'automation.services.stop' : 'automation.services.status';
+    const params = stop ? {command_id: commandId} : {command_id: commandId, verify: true};
+    const response = requireApiSuccess(await api.call(endpoint, params, 'POST'), endpoint);
+    if (!Number.isInteger(response.data?.operation_id) || response.data.operation_id <= 0)
+        throw new ApiOperationError({}, endpoint, {kind: 'format', uncertain: true});
+    return waitServiceOperation(commandId, response.data.operation_id, isCurrent);
+}
+async function verifyServiceState(commandId) {
+    if (serviceVerifyInFlight.has(commandId)) return;
+    serviceVerifyInFlight.add(commandId);
+    const revision = advanceServiceState(commandId);
+    const pageCurrent = capturePageValidity();
+    const isCurrent = () => pageCurrent() && revision === serviceStateVersions.get(commandId);
+    try {
+        const data = await requestServiceControl(commandId, false, isCurrent);
+        if (!data || !isCurrent()) return;
+        renderServiceCommand(commandId, data);
+        showToast(runtimeText(data.state || 'unknown'), 'info');
+        return data;
+    } catch (e) {
+        if (!isCurrent()) return;
+        renderServiceCommand(commandId, {});
+        showToast(e.code === 4 ? runtimeText('controlBusy') : e.message || runtimeText('outcomeUnknown'), 'warning');
+    } finally { advanceServiceState(commandId); serviceVerifyInFlight.delete(commandId); }
 }
 
 // 触发快捷操作后的冷却时间（毫秒），避免连续触发导致后端只执行最后一个
@@ -3927,6 +4054,7 @@ let quickActionsTimeoutId = null;  // 用于导航时取消，避免 quick-actio
 
 /** 供 router 在页面切换时取消快捷操作定时器，并销毁拖拽排序（防止 ghost 残留） */
 window.stopSystemPageTimers = function() {
+    releaseExecDisplay();
     clearInterval(refreshInterval);
     refreshInterval = null;
     clearInterval(localTimeInterval);
@@ -3962,16 +4090,6 @@ async function triggerQuickAction(ruleId) {
         return;
     }
     
-    // A user start request may verify unknown state. Periodic refresh remains local.
-    if (card.dataset.allowed === 'true' && card.dataset.service && card.dataset.state === 'unknown') {
-        try {
-            const checked = await api.call('automation.services.status', { command_id: card.dataset.service, verify: true });
-            card.dataset.state = checked.code === 0 ? checked.data?.state || 'unknown' : 'unknown';
-        } catch (_) { card.dataset.state = 'unknown'; }
-    }
-    if (card.dataset.allowed !== 'true' || (card.dataset.service && card.dataset.state !== 'stopped')) {
-        showToast(runtimeText('startBlocked'), 'warning'); return;
-    }
     if (card.classList.contains('triggering')) {
         showToast(typeof t === 'function' ? t('toast.processing') : 'Operation in progress...', 'warning');
         return;
@@ -3984,11 +4102,26 @@ async function triggerQuickAction(ruleId) {
     }
     
     try {
-        // 添加按下效果并禁用点击
+        // Keep verification and triggering within the same in-flight operation.
+        if (card.dataset.service) advanceServiceState(card.dataset.service);
         card.classList.add('triggering');
+        card.style.pointerEvents = 'none';
+
+        // A user start request may verify unknown state. Periodic refresh remains local.
+        if (card.dataset.allowed === 'true' && card.dataset.service && card.dataset.state === 'unknown') {
+            try {
+                const checked = await requestServiceControl(card.dataset.service, false,
+                    () => card.isConnected && document.getElementById(`quick-action-${ruleId}`) === card);
+                if (!checked) return;
+                card.dataset.state = checked.state || 'unknown';
+            } catch (_) { card.dataset.state = 'unknown'; }
+        }
+        if (card.dataset.allowed !== 'true' || (card.dataset.service && card.dataset.state !== 'stopped')) {
+            showToast(runtimeText('startBlocked'), 'warning'); return;
+        }
+
         if (card.dataset.service) card.dataset.state = 'starting';
-        card.style.pointerEvents = 'none';  // 禁用点击防止重复
-        
+
         // 更新图标显示加载状态
         const iconEl = card.querySelector('.quick-action-icon');
         const originalIcon = iconEl?.innerHTML;
@@ -4003,26 +4136,23 @@ async function triggerQuickAction(ruleId) {
             _quickActionLastTriggeredId = ruleId;
             _quickActionTriggerCooldownUntil = Date.now() + 5000;  // 5 秒内勿触发其他规则，避免后端串行导致第二个未执行
             card.classList.add('is-running');
-            card.style.pointerEvents = '';
             setTimeout(() => refreshQuickActions(), 2500);
         } else {
             showToast((result.message || (typeof t === 'function' ? t('toast.execFailed') : '执行失败')), 'error');
-            card.style.pointerEvents = '';  // 失败时恢复点击
             // 恢复原始图标
             if (iconEl && originalIcon) {
                 iconEl.innerHTML = originalIcon;
             }
         }
         
-        card.classList.remove('triggering');
     } catch (e) {
         console.error('triggerQuickAction error:', e);
         showToast(runtimeText('outcomeUnknown'), 'error');
         if (card?.dataset.service) card.dataset.state = 'unknown';
-        if (card) {
-            card.classList.remove('triggering');
-            card.style.pointerEvents = '';
-        }
+    } finally {
+        if (card.dataset.service) advanceServiceState(card.dataset.service);
+        card.classList.remove('triggering');
+        card.style.pointerEvents = '';
     }
 }
 
@@ -4325,21 +4455,26 @@ function closeQuickLogModal() {
 
 /**
  * 快捷操作 - 终止进程（基于 PID 文件精确停止）
- * 支持杀进程组（vLLM 等多进程服务），SIGTERM → 等待 → SIGKILL 回退
+ * 后端验证实例身份并停止进程组，页面仅显示核验结果。
  */
 const serviceStopInFlight = new Set();
 async function quickActionStopProcess(commandId, automatic) {
     if (serviceStopInFlight.has(commandId)) return;
     if (!await confirmAction(runtimeText(automatic ? 'confirmStopAutomatic' : 'confirmStop'), { primary: t('common.stop'), tone: 'neutral' })) return;
     serviceStopInFlight.add(commandId);
-    for (const card of document.querySelectorAll('.quick-action-card'))
-        if (card.dataset.service === commandId) card.dataset.state = 'stopping';
+    const revision = advanceServiceState(commandId);
+    const pageCurrent = capturePageValidity();
+    const isCurrent = () => pageCurrent() && revision === serviceStateVersions.get(commandId);
+    renderServiceCommand(commandId, {state: 'stopping'});
     try {
-        const result = await api.call('automation.services.stop', { command_id: commandId });
-        const stopped = result.code === 0 && result.data?.state === 'stopped';
+        const data = await requestServiceControl(commandId, true, isCurrent);
+        if (!data || !isCurrent()) return;
+        renderServiceCommand(commandId, data);
+        const stopped = data.state === 'stopped';
         showToast(runtimeText(stopped ? 'stopped' : 'outcomeUnknown'), stopped ? 'success' : 'warning');
-    } catch (_) { showToast(runtimeText('outcomeUnknown'), 'warning'); }
-    finally { serviceStopInFlight.delete(commandId); await updateQuickActionServiceStatus(); }
+    } catch (e) {
+        if (isCurrent()) { renderServiceCommand(commandId, {}); showToast(e.code === 4 ? runtimeText('controlBusy') : e.message || runtimeText('outcomeUnknown'), 'warning'); }
+    } finally { advanceServiceState(commandId); serviceStopInFlight.delete(commandId); await updateQuickActionServiceStatus(); }
 }
 
 // 时间同步功能
@@ -5209,7 +5344,7 @@ function selectFilterInModal(filter, btn) {
         if (config && config.params && config.params.length > 0) {
             paramsDiv.innerHTML = config.params.map(param => {
                 const paramInfo = paramLabels[param];
-                const defaultValue = config.defaults[param] || 50;
+                const defaultValue = config.defaults[param] ?? 50;
                 return row(getParamLabel(param), ledSlider(`modal-filter-${param}`, paramInfo.min, paramInfo.max, defaultValue, `document.getElementById('modal-filter-${param}-val').textContent=this.value+'${paramInfo.unit}'`) + ledVal(`modal-filter-${param}-val`, defaultValue + paramInfo.unit));
             }).join('');
         } else {
@@ -5238,10 +5373,9 @@ async function applyFilterFromModal() {
             if (input) {
                 let value = parseInt(input.value);
                 // \u6839\u636e\u53c2\u6570\u7c7b\u578b\u8f6c\u6362\u503c
-                if (param === 'saturation') {
+                if (param === 'saturation' || param === 'frequency') {
                     value = Math.round(value * 2.55); // 0-100 \u8f6c 0-255
-                } else if (param === 'decay') {
-                    value = Math.round(value * 2.55); // 0-100 \u8f6c 0-255
+
                 } else if (param === 'amount') {
                     value = value - 50; // 0-100 \u8f6c -50 to +50
                 }
@@ -5776,7 +5910,7 @@ async function loadFilePickerDirectory(path) {
         const upto = '/' + parts.slice(0, i + 1).join('/');
         return `<span class="t-note">/</span>` + (i === parts.length - 1
             ? `<span class="t-body" style="font-weight:600">${escapeHtml(seg)}</span>`
-            : `<span class="t-body" role="link" style="cursor:pointer" onclick="loadFilePickerDirectory('${escapeHtml(upto)}')">${escapeHtml(seg)}</span>`);
+            : `<span class="t-body" role="link" style="cursor:pointer" data-path="${escapeHtml(upto)}" onclick="loadFilePickerDirectory(this.dataset.path)">${escapeHtml(seg)}</span>`);
     }).join('');
     const listContainer = document.getElementById('file-picker-list');
     listContainer.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('common.loading') + '</div>';
@@ -5788,7 +5922,7 @@ async function loadFilePickerDirectory(path) {
         if (result.error) {
             // 目录不存在，尝试创建
             if (result.error.includes('not found') || result.error.includes('Directory')) {
-                listContainer.innerHTML = `<div class="tr" style="--cols:1fr auto;color:var(--ink-3)"><span>${t('filePage.dirNotExist')}</span><button class="btn sm" onclick="createAndOpenDir('${path}')">${t('filePage.createDir')}</button></div>`;
+                listContainer.innerHTML = `<div class="tr" style="--cols:1fr auto;color:var(--ink-3)"><span>${t('filePage.dirNotExist')}</span><button class="btn sm" data-path="${escapeHtml(path)}" onclick="createAndOpenDir(this.dataset.path)">${t('filePage.createDir')}</button></div>`;
                 return;
             }
             throw new Error(result.error);
@@ -5821,7 +5955,7 @@ async function loadFilePickerDirectory(path) {
         listContainer.innerHTML = filtered.map(f => {
             const isDir = f.type === 'dir' || f.type === 'directory';
             const fullPath = path + (path.endsWith('/') ? '' : '/') + f.name;
-            return `<div class="tr" style="--cols:24px 1fr 90px;cursor:pointer" onclick="filePickerItemClick(this, '${fullPath}', ${isDir})"><div><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg></div><div>${escapeHtml(f.name)}</div><div>${isDir ? '-' : formatFileSize(f.size)}</div></div>`;
+            return `<div class="tr" style="--cols:24px 1fr 90px;cursor:pointer" data-path="${escapeHtml(fullPath)}" data-directory="${isDir}" onclick="filePickerItemClick(this, this.dataset.path, this.dataset.directory === 'true')"><div><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg></div><div>${escapeHtml(f.name)}</div><div>${isDir ? '-' : formatFileSize(f.size)}</div></div>`;
         }).join('');
     } catch (e) {
         listContainer.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('common.loadFailed')}: ${escapeHtml(e.message)}</span></div>`;
@@ -6114,7 +6248,7 @@ function selectFilter(filterName, btnElement) {
         
         config.params.forEach(param => {
             const paramInfo = paramLabels[param];
-            const defaultValue = config.defaults[param] || 50;
+            const defaultValue = config.defaults[param] ?? 50;
             
             const row = document.createElement('div');
             row.className = 'config-row';
@@ -6170,10 +6304,9 @@ async function applySelectedFilter() {
             if (input) {
                 let value = parseInt(input.value);
                 // 根据参数类型转换值
-                if (param === 'saturation') {
+                if (param === 'saturation' || param === 'frequency') {
                     value = Math.round(value * 2.55); // 0-100 转 0-255
-                } else if (param === 'decay') {
-                    value = Math.round(value * 2.55); // 0-100 转 0-255
+
                 } else if (param === 'amount') {
                     value = value - 50; // 0-100 转 -50 to +50
                 }
@@ -6227,7 +6360,9 @@ async function stopFilter() {
 
 const NETWORK_LPMU_ACCESS_POLL_MS = 1500;
 let networkLpmuAccessPollTimer = null;
-let networkLpmuAccessRequesting = false;
+let networkLpmuAccessRequesting = null;
+let networkLpmuAccessSubmitting = null;
+let networkLpmuAccessUncertain = false;
 let networkLpmuAccessLastInfo = { stage: 'idle', running: false };
 
 async function loadNetworkPage() {
@@ -6406,9 +6541,9 @@ async function loadNetworkPage() {
     
     await refreshNetworkPage();
     if (!pageCurrent()) return;
-    await refreshNetworkLpmuAccessStatus();
+    await refreshNetworkLpmuAccessStatus(false);
     if (!pageCurrent()) return;
-    if (networkLpmuAccessLastInfo?.running) {
+    if (!networkLpmuAccessUncertain && (networkLpmuAccessLastInfo?.running || networkLpmuAccessSubmitting)) {
         startNetworkLpmuAccessPolling();
     }
 }
@@ -6575,15 +6710,137 @@ async function refreshNetworkPage() {
 }
 
 async function startNetworkLpmuAccess() {
-    if (networkLpmuAccessLastInfo?.running) return;
+    if (networkLpmuAccessSubmitting) return;
+    if (networkLpmuAccessUncertain) {
+        const pageCurrent = capturePageValidity();
+        await refreshNetworkLpmuAccessStatus();
+        if (!pageCurrent()) return;
+        if (!networkLpmuAccessUncertain && networkLpmuAccessLastInfo.running) startNetworkLpmuAccessPolling();
+        return;
+    }
+    if (networkLpmuAccessLastInfo?.running || document.getElementById('network-lpmu-password-modal')) return;
+    const modal = document.createElement('div');
+    modal.id = 'network-lpmu-password-modal';
+    modal.className = 'modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', t('networkPage.lpmuAccessTitle'));
+    const showLabel = t('securityPage.showPassword');
+    modal.innerHTML = sheet(480, t('networkPage.lpmuAccessTitle'),
+        `<div class="t-note" style="margin-bottom:12px">${t('networkPage.lpmuAccessPasswordHint')}</div>` +
+        grp(row(t('networkPage.lpmuAccessSudoPassword'),
+            `<div class="pwf"><input class="field" type="password" id="network-lpmu-sudo-password" autocomplete="off" required aria-label="${t('networkPage.lpmuAccessSudoPassword')}" style="width:200px"><button type="button" class="pwt" onclick="toggleAccountPasswordVisibility('network-lpmu-sudo-password', this)" title="${showLabel}" aria-label="${showLabel}"><svg class="i"><use href="#ri-eye-line"/></svg></button></div>`)),
+        `<button type="button" class="btn lg" onclick="closeNetworkLpmuPasswordModal()">${t('common.cancel')}</button><button type="button" class="btn lg primary" onclick="submitNetworkLpmuAccess()">${t('networkPage.lpmuAccessBtn')}</button>`);
+    modal.onclick = e => { if (e.target === modal) closeNetworkLpmuPasswordModal(); };
+    modal.onkeydown = e => {
+        if (e.key === 'Escape') { e.preventDefault(); closeNetworkLpmuPasswordModal(); }
+        else if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); submitNetworkLpmuAccess(); }
+        else if (e.key === 'Tab') {
+            const controls = [...modal.querySelectorAll('input, button')];
+            const first = controls[0], last = controls.at(-1);
+            if (e.shiftKey && e.target === first) { e.preventDefault(); last.focus(); }
+            else if (!e.shiftKey && e.target === last) { e.preventDefault(); first.focus(); }
+        }
+    };
+    document.body.appendChild(modal);
+    const input = document.getElementById('network-lpmu-sudo-password');
+    router.navigation?.onDispose(() => { input.value = ''; modal.remove(); });
+    input.focus();
+}
 
+function closeNetworkLpmuPasswordModal() {
+    const input = document.getElementById('network-lpmu-sudo-password');
+    if (input) input.value = '';
+    document.getElementById('network-lpmu-password-modal')?.remove();
+    document.getElementById('network-lpmu-access-btn')?.focus();
+}
+
+function showNetworkLpmuAccessResult(info) {
+    document.getElementById('network-lpmu-result-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'network-lpmu-result-modal';
+    modal.className = 'modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', t('networkPage.lpmuAccessTitle'));
+    const close = () => { modal.remove(); document.getElementById('network-lpmu-access-btn')?.focus(); };
+    modal.innerHTML = sheet(480, t('networkPage.lpmuAccessTitle'),
+        `<div class="state ${info.success ? 'ok' : 'bad'}">${t(info.success ? 'networkPage.lpmuAccessSuccess' : 'networkPage.lpmuAccessFailed')}</div>` +
+        `<div class="t-body" style="margin:8px 0 16px">${escapeHtml(info.summary).replace(/\n/g, '<br>')}</div>` +
+        (info.success ? grp(row(t('networkPage.lpmuAccessInternet'), `<span class="state ok">${t('networkPage.lpmuAccessInternetConfirmed')}</span>`) +
+            row(t('networkPage.lpmuAccessConfiguration'), `<span>${t('networkPage.lpmuAccessConfigurationDone')}</span>`)) : '') +
+        `<details class="grp lpmu-log"><summary class="row lpmu-log-toggle"><span class="rl">${t('networkPage.lpmuAccessLog')}</span><svg class="i"><use href="#ri-arrow-down-line"/></svg></summary><div class="term logv lpmu-log-output" role="region" aria-label="${t('networkPage.lpmuAccessLog')}"><pre></pre></div></details>`,
+        `<button type="button" class="btn lg primary">${t('networkPage.lpmuAccessResultDone')}</button>`);
+    const details = modal.querySelector('details');
+    let finished = false, loading = false, offset = 0, text = '';
+    const technicalDetail = info.technicalError ? t('networkPage.lpmuAccessTechnicalDetail', {error: info.technicalError}) + '\n\n' : '';
+    details.ontoggle = async () => {
+        if (!modal.isConnected) return;
+        modal.querySelector('.sheet').style.width = details.open ? '720px' : '480px';
+        if (!details.open || finished || loading) return;
+        loading = true;
+        const output = modal.querySelector('pre');
+        output.textContent = t('common.loading');
+        try {
+            for (;;) {
+                const result = requireApiSuccess(await api.lpmuAccessLog(info.runId, offset), 'network.lpmu_access.log');
+                if (!modal.isConnected) return;
+                const data = result.data;
+                if (!data || data.run_id !== info.runId || typeof data.output !== 'string' ||
+                    typeof data.done !== 'boolean' || !Number.isSafeInteger(data.next_offset) ||
+                    data.next_offset < offset || (!data.done && data.next_offset === offset)) {
+                    throw new Error(t('networkPage.lpmuAccessLogInvalidPage'));
+                }
+                text += data.output;
+                offset = data.next_offset;
+                finished = data.done;
+                if (finished || !details.open) {
+                    output.textContent = technicalDetail + (text || t('networkPage.lpmuAccessLogEmpty'));
+                    return;
+                }
+            }
+        } catch (error) {
+            finished = true; // Reopening must not automatically retry an invalid transcript.
+            if (modal.isConnected) output.textContent = technicalDetail + t('networkPage.lpmuAccessLogFailed') + ': ' + error.message;
+        } finally { loading = false; }
+    };
+    modal.querySelector('button').onclick = close;
+    modal.onclick = e => { if (e.target === modal) close(); };
+    modal.onkeydown = e => {
+        if (e.key === 'Escape') { e.preventDefault(); close(); }
+        else if (e.key === 'Tab') {
+            const first = modal.querySelector('summary'), last = modal.querySelector('button');
+            if (e.shiftKey && e.target === first) { e.preventDefault(); last.focus(); }
+            else if (!e.shiftKey && e.target === last) { e.preventDefault(); first.focus(); }
+        }
+    };
+    document.body.appendChild(modal);
+    router.navigation?.onDispose(() => modal.remove());
+    modal.querySelector('button').focus();
+}
+
+async function submitNetworkLpmuAccess() {
+    if (networkLpmuAccessLastInfo?.running || networkLpmuAccessSubmitting || networkLpmuAccessUncertain) return;
+    const pageCurrent = capturePageValidity();
+    const input = document.getElementById('network-lpmu-sudo-password');
+    if (!input) return;
+    let password = input.value;
+    if (!password || /[\r\n]/.test(password)) {
+        fieldError(input, t('networkPage.lpmuAccessPasswordRequired'));
+        return;
+    }
+    closeNetworkLpmuPasswordModal();
+    stopNetworkLpmuAccessPolling();
+    const submission = {};
+    networkLpmuAccessSubmitting = submission;
     renderNetworkLpmuAccessStatus({ stage: 'check', status: 'running', running: true });
 
     try {
-        const result = await api.lpmuAccessStart();
-        if (!result || result.code !== 0) {
-            throw new Error(result?.message || (typeof t === 'function' ? t('networkPage.lpmuAccessStartFailed') : '启动接入失败'));
-        }
+        const request = api.lpmuAccessStart(password);
+        password = '';
+        const result = requireApiSuccess(await request, 'network.lpmu_access.start');
+        if (!pageCurrent()) return;
+        networkLpmuAccessSubmitting = null;
 
         let data = result.data || {};
         if (data === null || typeof data !== 'object') {
@@ -6597,10 +6854,23 @@ async function startNetworkLpmuAccess() {
         startNetworkLpmuAccessPolling();
         await refreshNetworkLpmuAccessStatus();
     } catch (e) {
+        if (!pageCurrent()) return;
+        networkLpmuAccessSubmitting = null;
         stopNetworkLpmuAccessPolling();
         const msg = e.message || (typeof t === 'function' ? t('common.unknown') : '未知错误');
-        renderNetworkLpmuAccessStatus({ stage: 'failed', status: 'failed', error: msg, running: false });
-        showToast((typeof t === 'function' ? t('networkPage.lpmuAccessFailed') : '接入失败') + ': ' + escapeHtml(msg), 'error', 5000);
+        if (typeof e.code === 'number' && e.code !== 0 && !e.uncertain) {
+            showToast(t('networkPage.lpmuAccessStartFailed') + ': ' + msg, 'error', 5000);
+            // A rejected start can mean another task is already active. Read
+            // its state rather than inventing a failed remote execution.
+            await refreshNetworkLpmuAccessStatus(false);
+            if (!pageCurrent()) return;
+            if (!networkLpmuAccessUncertain && networkLpmuAccessLastInfo.running) startNetworkLpmuAccessPolling();
+        } else {
+            showNetworkLpmuAccessStatusUnknown(msg);
+        }
+    } finally {
+        password = '';
+        if (networkLpmuAccessSubmitting === submission) networkLpmuAccessSubmitting = null;
     }
 }
 
@@ -6610,14 +6880,14 @@ function startNetworkLpmuAccessPolling() {
 }
 
 function stopNetworkLpmuAccessPolling() {
-    networkLpmuAccessRequesting = false;
+    networkLpmuAccessRequesting = null;
     if (networkLpmuAccessPollTimer) {
         clearInterval(networkLpmuAccessPollTimer);
         networkLpmuAccessPollTimer = null;
     }
 }
 
-async function refreshNetworkLpmuAccessStatus() {
+async function refreshNetworkLpmuAccessStatus(notifyResult = true) {
     const pageCurrent = capturePageValidity();
     if (networkLpmuAccessRequesting) return;
     if (!document.getElementById('network-lpmu-access-btn')) {
@@ -6626,45 +6896,56 @@ async function refreshNetworkLpmuAccessStatus() {
     }
 
     const wasRunning = !!networkLpmuAccessLastInfo?.running;
-    networkLpmuAccessRequesting = true;
+    const request = { runId: networkLpmuAccessLastInfo.runId };
+    networkLpmuAccessRequesting = request;
+    const requestCurrent = () => pageCurrent() && networkLpmuAccessRequesting === request &&
+        networkLpmuAccessLastInfo.runId === request.runId;
 
     try {
         const result = await api.lpmuAccessStatus();
-        if (!pageCurrent()) return;
+        if (!requestCurrent()) return;
         if (!result || result.code !== 0) {
             throw new Error(result?.message || (typeof t === 'function' ? t('networkPage.lpmuAccessStatusFailed') : '状态获取失败'));
         }
 
         const info = renderNetworkLpmuAccessStatus(result.data || {});
-        if (!info.running) {
+        if (!info.running && !networkLpmuAccessSubmitting) {
             stopNetworkLpmuAccessPolling();
-            if (wasRunning && info.success) {
-                showToast(typeof t === 'function' ? t('networkPage.lpmuAccessSuccess') : '接入成功', 'success');
-            } else if (wasRunning && info.failed) {
-                const msg = info.summary ? ': ' + escapeHtml(info.summary) : '';
-                showToast((typeof t === 'function' ? t('networkPage.lpmuAccessFailed') : '接入失败') + msg, 'error', 5000);
+            if (notifyResult && wasRunning && request.runId === info.runId && (info.success || info.failed)) {
+                showNetworkLpmuAccessResult(info);
             }
         }
     } catch (e) {
-        if (!pageCurrent()) return;
+        if (!requestCurrent()) return;
         stopNetworkLpmuAccessPolling();
         const msg = e.message || (typeof t === 'function' ? t('common.unknown') : '未知错误');
-        renderNetworkLpmuAccessStatus({ stage: 'failed', status: 'failed', error: msg, running: false });
-        if (wasRunning) {
-            showToast((typeof t === 'function' ? t('networkPage.lpmuAccessStatusFailed') : '状态获取失败') + ': ' + escapeHtml(msg), 'error', 5000);
-        }
+        showNetworkLpmuAccessStatusUnknown(msg);
     } finally {
-        if (pageCurrent()) networkLpmuAccessRequesting = false;
+        if (networkLpmuAccessRequesting === request) networkLpmuAccessRequesting = null;
     }
+}
+
+function showNetworkLpmuAccessStatusUnknown(message) {
+    networkLpmuAccessUncertain = true;
+    const btn = document.getElementById('network-lpmu-access-btn');
+    if (btn) {
+        btn.disabled = !!networkLpmuAccessSubmitting;
+        btn.textContent = t('networkPage.lpmuAccessRefreshStatus');
+    }
+    const current = document.getElementById('network-lpmu-access-current');
+    if (current) current.innerHTML = '<span class="state">' + escapeHtml(t('networkPage.lpmuAccessStatusUnknown')) + '</span>';
+    const summary = document.getElementById('network-lpmu-access-summary');
+    if (summary) summary.textContent = message;
 }
 
 function renderNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '') {
     const info = normalizeNetworkLpmuAccessStatus(statusData, fallbackMessage);
     networkLpmuAccessLastInfo = info;
+    networkLpmuAccessUncertain = false;
 
     const btn = document.getElementById('network-lpmu-access-btn');
     if (btn) {
-        btn.disabled = !!info.running;
+        btn.disabled = !!info.running || !!networkLpmuAccessSubmitting;
         btn.innerHTML = info.running
             ? (typeof t === 'function' ? t('networkPage.lpmuAccessRunning') : '处理中')
             : (typeof t === 'function' ? t('networkPage.lpmuAccessBtn') : '通过LPMU接入');
@@ -6701,23 +6982,46 @@ function normalizeNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '')
 
     const raw = String(data.stage || data.step || data.status || data.state || '').toLowerCase();
     let stage = normalizeNetworkLpmuAccessStage(raw, data);
-    const failed = stage === 'failed' || !!data.error || !!data.last_error;
-    const success = stage === 'success';
     let running = data.running === true || data.busy === true;
 
     if (!running && ['check', 'upload', 'unpack', 'execute'].includes(stage)) {
         running = data.running !== false && data.done !== true;
     }
-    if (success || failed || stage === 'idle') {
-        running = false;
-    }
+    const failed = !running && (stage === 'failed' || !!data.error || !!data.last_error);
+    const success = !running && stage === 'success' && !failed;
+    if (running && (stage === 'success' || stage === 'failed')) stage = 'execute';
 
     const errorText = data.error || data.last_error || data.stderr;
     const safeFallback = fallbackMessage && fallbackMessage !== 'OK' ? fallbackMessage : '';
     const outputText = data.summary || data.output_tail || data.output || data.stdout || data.message || safeFallback;
-    const summary = compactNetworkLpmuAccessText(failed ? (errorText || outputText) : (outputText || errorText));
+    const unconfirmed = failed && data.exit_code === 0 &&
+        (data.internet_confirmed === false || data.configuration_complete === false);
+    const primaryError = compactNetworkLpmuAccessText(errorText ||
+        (Number.isInteger(data.exit_code) && data.exit_code >= 0 ? t('networkPage.lpmuAccessExitCode', {code: data.exit_code}) : ''));
+    const diagnosis = compactNetworkLpmuAccessOutput(outputText || data.stderr);
+    const scriptFailed = /^setup-smart-route failed \(exit=\d+\): remote script failed$/.test(primaryError);
+    const scriptError = scriptFailed ? extractNetworkLpmuAccessScriptError(outputText) : '';
+    const summary = success ? t('networkPage.lpmuAccessResultDescription') :
+        unconfirmed ? t('networkPage.lpmuAccessUnconfirmed') : failed ?
+        scriptFailed ? (scriptError || diagnosis || t('networkPage.lpmuAccessFailed')) :
+        [primaryError, diagnosis && diagnosis !== primaryError ? t('networkPage.lpmuAccessLastOutput', {output: diagnosis}) : ''].filter(Boolean).join('\n') : '';
 
-    return { stage, running, success, failed, summary };
+    return { stage, running, success, failed, summary, technicalError: failed ? primaryError : '', runId: data.run_id };
+}
+
+function extractNetworkLpmuAccessScriptError(value) {
+    const lines = String(value || '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/);
+    // The script explicitly labels its error; route tables printed afterward
+    // are diagnostic context, not the reason for failure.
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const match = lines[i].trim().match(/^✗\s*错误[：:]\s*(.+)$/);
+        if (match) return match[1] === '没有找到可用的互联网连接' ?
+            t('networkPage.lpmuAccessNoInternet') : compactNetworkLpmuAccessText(match[1]);
+    }
+    if (lines.some(line => /^sudo: \d+ incorrect password attempts?$/.test(line.trim()))) {
+        return t('networkPage.lpmuAccessPasswordIncorrect');
+    }
+    return '';
 }
 
 function normalizeNetworkLpmuAccessStage(raw, data = {}) {
@@ -6753,6 +7057,15 @@ function compactNetworkLpmuAccessText(value) {
     const text = String(value).replace(/\s+/g, ' ').trim();
     if (text.length <= 160) return text;
     return text.slice(0, 157) + '...';
+}
+
+function compactNetworkLpmuAccessOutput(value) {
+    if (value === null || value === undefined) return '';
+    const text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+        .split(/\r?\n/).map(line => line.trim())
+        .filter(line => line && !/^={3,}/.test(line) && !/^\$ /.test(line))
+        .slice(-2).join(' ').replace(/\s+/g, ' ');
+    return text.length <= 160 ? text : '…' + text.slice(-159);
 }
 
 // 更新接口状态样式
@@ -6859,6 +7172,19 @@ function escapeHtml(str) {
 function clearFieldErrors() {
     document.querySelectorAll('.fe-msg').forEach(e => e.remove());
     document.querySelectorAll('.err[aria-invalid]').forEach(e => { e.classList.remove('err'); e.removeAttribute('aria-invalid'); });
+}
+
+function readNumericInput(id, integer = false) {
+    const el = document.getElementById(id);
+    const raw = el?.value?.trim() ?? '';
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value) || (integer && !Number.isInteger(value)) ||
+        (el.min !== '' && el.min !== undefined && value < Number(el.min)) ||
+        (el.max !== '' && el.max !== undefined && value > Number(el.max))) {
+        fieldError(id, t('inputRepair.invalidNumber'));
+        throw new RangeError('Invalid numeric input: ' + id);
+    }
+    return value;
 }
 
 function fieldError(id, message) {
@@ -7367,13 +7693,13 @@ async function loadDirectory(path) {
                 const fullPath = path + '/' + entry.name;
                 const isDir = entry.type === 'dir';
                 const size = isDir ? '-' : formatFileSize(entry.size);
-                const escapedPath = fullPath.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-                const escapedName = entry.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                const escapedPath = escapeHtml(fullPath);
+                const escapedName = escapeHtml(entry.name);
                 const isSelected = selectedFiles.has(fullPath);
                 return `
                     <div class="tr file-row" ${cols} data-path="${escapedPath}" data-type="${entry.type}" data-name="${escapedName}">
-                        <div><input type="checkbox" class="file-checkbox" data-path="${escapedPath}" ${isSelected ? 'checked' : ''} onchange="toggleFileSelection('${escapedPath}', this)" aria-label="${escapedName}"></div>
-                        <div class="file-name ${isDir ? 'clickable' : ''}"><span class="fn"><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg>${entry.name}</span></div>
+                        <div><input type="checkbox" class="file-checkbox" data-path="${escapedPath}" ${isSelected ? 'checked' : ''} onchange="toggleFileSelection(this.dataset.path, this)" aria-label="${escapedName}"></div>
+                        <div class="file-name ${isDir ? 'clickable' : ''}"><span class="fn"><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg>${escapeHtml(entry.name)}</span></div>
                         <div>${size}</div>
                         <div class="act">${isDir ? '' : `<button class="btn icon sm btn-download" title="${t('common.download')}" aria-label="${t('common.download')}"><svg class="i"><use href="#ri-download-line"/></svg></button>`}<button class="btn icon sm btn-rename" title="${t('files.renameFile')}" aria-label="${t('files.renameFile')}"><svg class="i"><use href="#ri-edit-line"/></svg></button><button class="btn icon sm dg btn-delete" title="${t('common.delete')}" aria-label="${t('common.delete')}"><svg class="i"><use href="#ri-delete-bin-line"/></svg></button></div>
                     </div>
@@ -7480,7 +7806,7 @@ function updateBreadcrumb(path) {
     
     parts.forEach((part, i) => {
         currentPath += '/' + part;
-        html += `<span class="t-note">/</span><button class="field sel breadcrumb-item${i === parts.length - 1 ? ' current' : ''}" style="min-width:120px;text-align:left" onclick="navigateToPath('${currentPath}')">${part}</button>`;
+        html += `<span class="t-note">/</span><button class="field sel breadcrumb-item${i === parts.length - 1 ? ' current' : ''}" style="min-width:120px;text-align:left" data-path="${escapeHtml(currentPath)}" onclick="navigateToPath(this.dataset.path)">${escapeHtml(part)}</button>`;
     });
     
     container.innerHTML = html;
@@ -7929,6 +8255,34 @@ async function saveSshCommandToBackend(hostId, cmdData, cmdId) {
  * 从后端删除 SSH 指令
  * @param {string} cmdId - 指令 ID（如 "AGX_Power_On" 或 "cmd_xxxxxxxx"）
  */
+// Deletion needs fresh remote evidence: a missing registry entry is unknown,
+// including after a controller reboot. Reuse queued verification, never stop here.
+const configurationDeletesInFlight = new Set();
+async function verifyStoppedServiceForDelete(commandId, pageCurrent) {
+    const revision = advanceServiceState(commandId);
+    const isCurrent = () => pageCurrent() && revision === serviceStateVersions.get(commandId);
+    try {
+        const response = await api.call('ssh.commands.get', { id: commandId });
+        if (!isCurrent()) return false;
+        // A stale template can still be removed after its command has disappeared.
+        if (response.code === 2) return true;
+        const command = requireApiSuccess(response, 'ssh.commands.get').data || {};
+        if (!command.nohup || !command.serviceMode) return true;
+        const data = await requestServiceControl(commandId, false, isCurrent);
+        if (!data || !isCurrent()) return false;
+        renderServiceCommand(commandId, data);
+        if (data.state !== 'stopped' || data.busy)
+            throw new ApiOperationError({code: 4, error: 'service_delete_protected'});
+        return true;
+    } catch (error) {
+        if (!isCurrent()) return false;
+        throw error;
+    } finally {
+        // Retire this result and its in-flight reads without invalidating a newer control.
+        if (isCurrent()) advanceServiceState(commandId);
+    }
+}
+
 async function deleteSshCommandFromBackend(cmdId) {
     requireApiSuccess(await api.call('ssh.commands.remove', { id: cmdId }), 'call');
 }
@@ -7960,8 +8314,8 @@ async function loadCommandsPage() {
     stopServiceStatusRefresh();
     
     
-    // 重置执行状态（防止页面切换后状态残留）
-    currentExecSessionId = null;
+    // Leave remote execution untouched when replacing the page.
+    releaseExecDisplay();
     
     // 加载已保存的指令（从后端）
     await loadSshCommands();
@@ -8194,7 +8548,7 @@ function refreshCommandsList() {
     }
     
     // 操作列宽按最多的按钮数定，保证各行对齐（默认 执行 / 编辑 / 删除 三个 = 96px）
-    const extraCount = c => (c.varName ? 1 : 0) + (c.nohup && c.serviceMode ? 2 : 0) + 1;
+    const extraCount = c => (c.varName ? 1 : 0) + (c.nohup && c.serviceMode ? 3 : 0) + 1;
     const nBtn = 3 + Math.max(...hostCommands.map(extraCount));
     const cols = `style="--cols:32px 1fr 1.6fr ${nBtn * 28 + (nBtn - 1) * 6}px"`;
 
@@ -8211,7 +8565,7 @@ function refreshCommandsList() {
         if (cmd.nohup && cmd.serviceMode) {
             // 服务模式：显示服务状态（用 cmd.id 作唯一标识，避免多个服务时 ID 冲突）
             const statusId = `service-status-${cmd.id || idx}`;
-            tagsHtml += `<span class="service-mode-status" title="${escapeHtml(t('promptRepair.servicePattern', {pattern: cmd.readyPattern}))}" data-var="${escapeHtml(cmd.varName)}" data-status-id="${statusId}"><span id="${statusId}" class="state">...</span></span>`;
+            tagsHtml += `<span class="service-mode-status" title="${escapeHtml(t('promptRepair.servicePattern', {pattern: cmd.readyPattern}))}" data-var="${escapeHtml(cmd.varName)}" data-status-id="${statusId}"><span id="${statusId}" data-command="${escapeHtml(cmd.id)}" class="state service-status">...</span></span>`;
         }
         
         // 图标：RemixIcon 类名、图片路径或旧版 Emoji
@@ -8228,9 +8582,9 @@ function refreshCommandsList() {
         // 服务模式按钮（日志、停止）
         const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
         const serviceActions = (cmd.nohup && cmd.serviceMode)
-            ? icoBtn('ri-file-text-line', t('sshPage.viewLog'), `viewServiceLog(${idx}, '${escapeHtml(safeName)}')`) + icoBtn('ri-stop-line', t('sshPage.stopService'), `stopServiceProcess(${idx}, '${escapeHtml(safeName)}')`, 'dg')
+            ? icoBtn('ri-refresh-line', runtimeText('verifyState'), `verifyServiceState('${escapeHtml(cmd.id)}')`) + icoBtn('ri-file-text-line', t('sshPage.viewLog'), `viewServiceLog(${idx}, '${escapeHtml(safeName)}')`) + icoBtn('ri-stop-line', t('sshPage.stopService'), `stopServiceProcess(${idx})`, 'dg')
             : '';
-        const varBtn = cmd.varName ? icoBtn('ri-bar-chart-line', escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName})), `showCommandVariables('${escapeHtml(cmd.varName)}')`) : '';
+        const varBtn = cmd.varName ? `<button class="btn icon sm cmd-variables" data-variable="${escapeHtml(cmd.varName)}" title="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}" aria-label="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}"><svg class="i"><use href="#ri-bar-chart-line"/></svg></button>` : '';
         const runTitle = isOrphan ? t('ssh.hostNotExistCannotExec') : t('common.run');
         const runBtn = `<button class="btn icon sm btn-exec" onclick="executeCommand(${idx})" title="${runTitle}" aria-label="${runTitle}" ${isOrphan ? 'disabled' : ''}><svg class="i"><use href="#ri-play-line"/></svg></button>`;
         
@@ -8248,6 +8602,9 @@ function refreshCommandsList() {
         </div>
     `}).join('');
     
+    container.querySelectorAll('.cmd-variables').forEach(button => {
+        button.addEventListener('click', () => showCommandVariables(button.dataset.variable));
+    });
     // 更新服务模式状态
     updateServiceStatusInList();
 }
@@ -8257,35 +8614,8 @@ function refreshCommandsList() {
  * 查询每个服务模式指令的变量状态并更新显示
  */
 async function updateServiceStatusInList() {
-    const serviceModeTags = document.querySelectorAll('.service-mode-status');
-    if (serviceModeTags.length === 0) return;
-    
-    for (const tag of serviceModeTags) {
-        const varName = tag.dataset.var;
-        const statusId = tag.dataset.statusId;
-        const statusEl = document.getElementById(statusId);
-        
-        if (!varName || !statusEl) {
-            continue;
-        }
-        
-        try {
-            const result = await api.call('automation.variables.get', { name: `${escapeHtml(varName)}.status` });
-            
-            if (result && result.data && result.data.value !== undefined) {
-                const status = result.data.value;
-                statusEl.textContent = getServiceStatusLabel(status);
-                statusEl.className = 'state' + (status === 'ready' ? ' ok' : status === 'failed' || status === 'timeout' ? ' bad' : '');
-            } else {
-                statusEl.textContent = (typeof t === 'function' ? t('sshPage.statusIdle') : '未启动');
-                statusEl.className = 'state';
-            }
-        } catch (e) {
-            console.error(`[ServiceStatus] Error getting ${escapeHtml(varName)}.status:`, e);
-            statusEl.textContent = (typeof t === 'function' ? t('sshPage.statusUnknown') : '未知');
-            statusEl.className = 'state';
-        }
-    }
+    await refreshServiceStates();
+    if (document.querySelector('.service-mode-status')) startServiceStatusRefresh();
 }
 
 /**
@@ -8400,7 +8730,7 @@ async function showCommandVariables(varName) {
     
     try {
         const result = await api.call('automation.variables.list', {
-            prefix: `${escapeHtml(varName)}.`,
+            prefix: `${varName}.`,
             include_meta: true
         });
         if (result.code === 0 && result.data && result.data.variables) {
@@ -8872,9 +9202,10 @@ function showExportSshCommandModal(cmdId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = exportSheet('ssh-cmd', t('sshPage.exportSshCmdTitle'), t('sshPage.exportSshCmdDesc', {cmdId: escapeHtml(cmdId)}), t('securityPage.targetCertHint'), 'hideExportSshCommandModal', `doExportSshCommandFromModal('${escapeHtml(cmdId)}')`,
+    modal.innerHTML = exportSheet('ssh-cmd', t('sshPage.exportSshCmdTitle'), t('sshPage.exportSshCmdDesc', {cmdId: escapeHtml(cmdId)}), t('securityPage.targetCertHint'), 'hideExportSshCommandModal', 'doExportSshCommandFromModal',
         grp(row(t('ssh.includeHostConfig'), swc('export-ssh-cmd-include-host', true), '', t('ssh.includeHostConfigHint'))) + '<div style="height:12px"></div>');
     
+    modal.dataset.exportId = cmdId;
     modal.classList.remove('hidden');
 }
 
@@ -9090,29 +9421,73 @@ async function confirmSshCommandImport() {
 }
 
 async function deleteCommand(idx) {
-    const cmd = sshCommands[selectedHostId]?.[idx];
+    const hostId = selectedHostId;
+    const cmd = sshCommands[hostId]?.[idx];
     if (!cmd) return;
-    
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteCmd', { name: cmd.name }) : `确定要删除指令「${cmd.name}」吗？`, { primary: t('common.delete'), tone: 'danger' })) return;
-    
+    const key = 'command:' + cmd.id;
+    if (configurationDeletesInFlight.has(key)) return;
+    configurationDeletesInFlight.add(key);
+    const pageCurrent = capturePageValidity();
     try {
-        // 从后端删除（需要指令 ID）
+        if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteCmd', { name: cmd.name }) : `确定要删除指令「${cmd.name}」吗？`, { primary: t('common.delete'), tone: 'danger' }) || !pageCurrent()) return;
         if (cmd.id) {
+            showToast(t('toast.processing'), 'info');
+            if (!await verifyStoppedServiceForDelete(cmd.id, pageCurrent) || !pageCurrent()) return;
             await deleteSshCommandFromBackend(cmd.id);
         }
-        
-        // 从本地缓存删除
-        sshCommands[selectedHostId].splice(idx, 1);
-        refreshCommandsList();
+        if (!pageCurrent()) return;
+        const commands = sshCommands[hostId];
+        const currentIndex = commands?.findIndex(item => item === cmd || (cmd.id && item.id === cmd.id));
+        if (currentIndex >= 0) commands.splice(currentIndex, 1);
+        if (selectedHostId === hostId) refreshCommandsList();
         showToast((typeof t === 'function' ? t('toast.commandDeleted') : '指令已删除'), 'success');
     } catch (e) {
-        console.error('Failed to delete command:', e);
-        showToast((typeof t === 'function' ? t('toast.deleteCommandFailedMsg', { msg: e.message }) : '删除指令失败: ' + e.message), 'error');
+        if (pageCurrent()) showToast((typeof t === 'function' ? t('toast.deleteCommandFailedMsg', { msg: e.message }) : '删除指令失败: ' + e.message), 'error');
+    } finally {
+        configurationDeletesInFlight.delete(key);
     }
 }
 
 /* 当前执行中的会话 ID */
 let currentExecSessionId = null;
+
+// A display belongs to one local invocation, then one acknowledged server operation.
+let execDisplayOwner = null;
+function releaseExecDisplay() {
+    if (execDisplayOwner) execDisplayOwner.messages = [];
+    execDisplayOwner = null;
+    currentExecSessionId = null;
+    if (tailIntervalId) clearInterval(tailIntervalId);
+    tailIntervalId = null;
+    const tail = document.getElementById('nohup-tail-log');
+    const stop = document.getElementById('nohup-stop-tail');
+    if (tail) tail.style.display = 'inline-block';
+    if (stop) stop.style.display = 'none';
+}
+function claimExecDisplay(kind, element) {
+    releaseExecDisplay();
+    const owner = {kind, element, sessionId: null, finished: false, messages: [], bytes: 0};
+    execDisplayOwner = owner;
+    delete element.dataset.serviceCommand;
+    delete element.dataset.operationId;
+    delete element.dataset.operationPhase;
+    const matchPanel = document.getElementById('match-result-panel');
+    if (matchPanel) matchPanel.style.display = 'none';
+    return owner;
+}
+function ownsExecDisplay(owner) {
+    return owner && execDisplayOwner === owner && document.getElementById('exec-result') === owner.element;
+}
+function acknowledgeExecSession(owner, sessionId) {
+    if (!ownsExecDisplay(owner)) return;
+    owner.sessionId = sessionId;
+    currentExecSessionId = sessionId;
+    const buffered = owner.messages;
+    owner.messages = [];
+    owner.bytes = 0;
+    if (owner.overflow) owner.element.textContent += '\n' + runtimeText('outcomeUnknown') + '\n';
+    for (const message of buffered) handleSshExecMessage(message);
+}
 
 /* nohup 相关状态（用于快捷按钮） */
 let currentNohupInfo = {
@@ -9150,18 +9525,23 @@ async function nohupTailLog() {
     const tailBtn = document.getElementById('nohup-tail-log');
     const stopBtn = document.getElementById('nohup-stop-tail');
     const resultPre = document.getElementById('exec-result');
+    const owner = claimExecDisplay('tail', resultPre);
+    const info = {...currentNohupInfo};
+    let fetching = false;
     
     // 切换按钮状态
     tailBtn.style.display = 'none';
     stopBtn.style.display = '';
     
-    resultPre.textContent += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n${typeof t === 'function' ? t('sshPage.startRealTimeTail', { logFile: currentNohupInfo.logFile }) : `开始实时跟踪: ${currentNohupInfo.logFile}\n（点击"停止跟踪"按钮退出）`}\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+    resultPre.textContent += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n${typeof t === 'function' ? t('sshPage.startRealTimeTail', { logFile: currentNohupInfo.logFile }) : `开始实时跟踪: ${info.logFile}\n（点击"停止跟踪"按钮退出）`}\n━━━━━━━━━━━━━━━━━━━━━━\n`;
     lastTailContent = '';
     
     // 定时获取日志
     const fetchLog = async () => {
+        if (!ownsExecDisplay(owner) || fetching || document.hidden) return;
+        fetching = true;
         try {
-            const host = window._cmdHostsList?.find(h => h.id === currentNohupInfo.hostId);
+            const host = window._cmdHostsList?.find(h => h.id === info.hostId);
             if (!host) return;
             
             const result = await api.call('ssh.exec', {
@@ -9169,10 +9549,11 @@ async function nohupTailLog() {
                 port: host.port,
                 user: host.username,
                 keyid: host.keyid,
-                command: `tail -100 "${currentNohupInfo.logFile}" 2>/dev/null`,
+                command: `tail -100 "${info.logFile}" 2>/dev/null`,
                 timeout_ms: 5000
             });
             
+            if (!ownsExecDisplay(owner)) return;
             const content = result.data?.stdout || '';
             // 只显示新增内容
             if (content && content !== lastTailContent) {
@@ -9188,14 +9569,14 @@ async function nohupTailLog() {
                 resultPre.scrollTop = resultPre.scrollHeight;
             }
         } catch (e) {
-            console.error('Tail log error:', e);
-        }
+            if (ownsExecDisplay(owner)) console.error('Tail log error:', e);
+        } finally { fetching = false; }
     };
     
     // 立即获取一次
     await fetchLog();
     // 每2秒获取一次
-    tailIntervalId = setInterval(fetchLog, 2000);
+    if (ownsExecDisplay(owner)) tailIntervalId = setInterval(fetchLog, 2000);
 }
 
 /* nohup 快捷操作：停止实时跟踪 */
@@ -9212,12 +9593,20 @@ function nohupStopTail() {
     if (tailBtn) tailBtn.style.display = '';
     if (stopBtn) stopBtn.style.display = 'none';
     
+    if (!resultPre || execDisplayOwner?.kind !== 'tail') return;
+    releaseExecDisplay();
     resultPre.textContent += t('promptRepair.tailStopped');
     resultPre.scrollTop = resultPre.scrollHeight;
 }
 
 /* nohup 快捷操作：检查进程（使用 PID 文件） */
 async function nohupCheckProcess() {
+    if (currentNohupInfo.commandId) {
+        const owner = execDisplayOwner;
+        const state = await verifyServiceState(currentNohupInfo.commandId);
+        if (state && ownsExecDisplay(owner)) owner.element.textContent += '\n' + runtimeText(state.state || 'unknown');
+        return;
+    }
     if (!currentNohupInfo.pidFile || !currentNohupInfo.hostId) {
         showToast((typeof t === 'function' ? t('toast.noProcessInfo') : '没有可用的进程信息'), 'warning');
         return;
@@ -9228,6 +9617,10 @@ async function nohupCheckProcess() {
 
 /* nohup 快捷操作：停止进程（使用 PID 文件） */
 async function nohupStopProcess() {
+    if (currentNohupInfo.commandId) {
+        await quickActionStopProcess(currentNohupInfo.commandId, false);
+        return;
+    }
     if (!currentNohupInfo.pidFile || !currentNohupInfo.hostId) {
         showToast((typeof t === 'function' ? t('toast.noProcessInfo') : '没有可用的进程信息'), 'warning');
         return;
@@ -9238,25 +9631,28 @@ async function nohupStopProcess() {
         return;
     }
     
+    const info = {...currentNohupInfo};
     // 停止实时跟踪（如果正在进行）
     nohupStopTail();
     
     // 使用 PID 文件精确停止
-    await executeNohupHelperCommand(`if [ -f ${currentNohupInfo.pidFile} ]; then kill $(cat ${currentNohupInfo.pidFile}) 2>/dev/null && rm -f ${currentNohupInfo.pidFile} && echo "进程已停止"; else echo "PID 文件不存在"; fi`);
+    const owner = await executeNohupHelperCommand(`if [ -f ${info.pidFile} ]; then kill $(cat ${info.pidFile}) 2>/dev/null && rm -f ${info.pidFile} && echo "进程已停止"; else echo "PID 文件不存在"; fi`, info);
+    if (!ownsExecDisplay(owner)) return;
     
     // 再次检查进程状态
-    await executeNohupHelperCommand(`[ -f ${currentNohupInfo.pidFile} ] && kill -0 $(cat ${currentNohupInfo.pidFile}) 2>/dev/null && echo "进程仍在运行" || echo "确认：进程已停止"`);
+    await executeNohupHelperCommand(`[ -f ${info.pidFile} ] && kill -0 $(cat ${info.pidFile}) 2>/dev/null && echo "进程仍在运行" || echo "确认：进程已停止"`, info);
 }
 
 /* 执行 nohup 辅助命令 */
-async function executeNohupHelperCommand(command) {
-    const host = window._cmdHostsList?.find(h => h.id === currentNohupInfo.hostId);
+async function executeNohupHelperCommand(command, info = currentNohupInfo) {
+    const host = window._cmdHostsList?.find(h => h.id === info.hostId);
     if (!host) {
         showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
         return;
     }
     
     const resultPre = document.getElementById('exec-result');
+    const owner = claimExecDisplay('log', resultPre);
     resultPre.textContent += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n$ ${command}\n`;
     
     try {
@@ -9270,6 +9666,7 @@ async function executeNohupHelperCommand(command) {
         });
         
         // ssh.exec 返回 stdout 和 stderr，不是 output
+        if (!ownsExecDisplay(owner)) return;
         const stdout = result.data?.stdout || '';
         const stderr = result.data?.stderr || '';
         if (stdout || stderr) {
@@ -9279,11 +9676,13 @@ async function executeNohupHelperCommand(command) {
             resultPre.textContent += t('promptRepair.noOutput');
         }
     } catch (e) {
+        if (!ownsExecDisplay(owner)) return;
         resultPre.textContent += t('promptRepair.executionFailed', {message: e.message});
     }
     
     // 滚动到底部
     resultPre.scrollTop = resultPre.scrollHeight;
+    return owner;
 }
 
 /**
@@ -9309,6 +9708,7 @@ async function viewServiceLog(idx, safeName) {
     // 显示结果区域
     const resultSection = document.getElementById('exec-result-section');
     const resultPre = document.getElementById('exec-result');
+    const owner = claimExecDisplay('log', resultPre);
     resultSection.style.display = '';
     document.getElementById('cancel-exec-btn').style.display = 'none';
     document.getElementById('nohup-actions').style.display = 'none';
@@ -9326,6 +9726,7 @@ async function viewServiceLog(idx, safeName) {
             timeout_ms: 10000
         });
         
+        if (!ownsExecDisplay(owner)) return;
         const stdout = result.data?.stdout || '';
         const stderr = result.data?.stderr || '';
         
@@ -9337,6 +9738,7 @@ async function viewServiceLog(idx, safeName) {
             resultPre.textContent += (typeof t === 'function' ? t('ui.logEmpty') : '（日志为空）');
         }
     } catch (e) {
+        if (!ownsExecDisplay(owner)) return;
         resultPre.textContent += typeof t === 'function' ? t('sshPage.getLogFailedMsg', { msg: e.message }) : `获取日志失败: ${e.message}`;
     }
     
@@ -9348,111 +9750,38 @@ async function viewServiceLog(idx, safeName) {
  * @param {number} idx - 命令索引
  * @param {string} safeName - 安全名称（用于 PID 文件）
  */
-async function stopServiceProcess(idx, safeName) {
+async function stopServiceProcess(idx) {
     const cmd = sshCommands[selectedHostId]?.[idx];
-    if (!cmd) {
-        showToast((typeof t === 'function' ? t('sshPage.cmdNotFound') : '命令不存在'), 'error');
-        return;
-    }
-    
-    const host = window._cmdHostsList?.find(h => h.id === selectedHostId);
-    if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
-        return;
-    }
-    
-    // 确认对话框
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmStopService', { name: cmd.name }) : `确定要停止服务 "${cmd.name}" 吗？`, { primary: t('common.stop'), tone: 'neutral' })) {
-        return;
-    }
-    
-    const pidFile = `/tmp/ts_nohup_${safeName}.pid`;
-    
-    // 显示结果区域
-    const resultSection = document.getElementById('exec-result-section');
-    const resultPre = document.getElementById('exec-result');
-    resultSection.style.display = '';
-    document.getElementById('cancel-exec-btn').style.display = 'none';
-    document.getElementById('nohup-actions').style.display = 'none';
-    
-    resultPre.textContent = (typeof t === 'function' ? t('sshPage.stopServiceName', { name: cmd.name }) : `停止服务: ${cmd.name}`) + '\n\n';
-    resultSection.scrollIntoView({ behavior: 'smooth' });
-    
+    if (cmd) await quickActionStopProcess(cmd.id, false);
+}
+
+const serviceStartInFlight = new Set();
+async function executeManagedService(cmd, resultPre) {
+    if (serviceStartInFlight.has(cmd.id)) return;
+    serviceStartInFlight.add(cmd.id);
+    const owner = claimExecDisplay('service', resultPre);
+    advanceServiceState(cmd.id);
+    const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
+    currentNohupInfo = {commandId: cmd.id, hostId: selectedHostId, logFile: `/tmp/ts_nohup_${safeName}.log`};
+    resultPre.dataset.serviceCommand = cmd.id;
+    delete resultPre.dataset.operationId;
+    delete resultPre.dataset.operationPhase;
+    resultPre.textContent = cmd.name + '\n' + runtimeText('starting') + '\n';
     try {
-        // 先检查进程状态
-        const checkResult = await api.call('ssh.exec', {
-            host: host.host,
-            port: host.port,
-            user: host.username,
-            keyid: host.keyid,
-            command: `if [ -f ${pidFile} ]; then PID=$(cat ${pidFile}); if kill -0 $PID 2>/dev/null; then echo "RUNNING:$PID"; else echo "STOPPED"; fi; else echo "NO_PID"; fi`,
-            timeout_ms: 5000
-        });
-        
-        requireApiSuccess(checkResult, 'ssh.exec');
-        const status = (checkResult.data?.stdout || '').trim();
-        
-        if (status.startsWith('RUNNING:')) {
-            const pid = status.split(':')[1];
-            resultPre.textContent += (typeof t === 'function' ? t('sshPage.processRunningPid', { pid }) : `进程运行中 (PID: ${pid})，正在停止...`) + '\n';
-            
-            // 发送 SIGTERM
-            const killResult = await api.call('ssh.exec', {
-                host: host.host,
-                port: host.port,
-                user: host.username,
-                keyid: host.keyid,
-                command: `kill ${pid} 2>/dev/null && sleep 0.5 && (kill -0 ${pid} 2>/dev/null && echo "STILL_RUNNING" || echo "STOPPED")`,
-                timeout_ms: 10000
-            });
-            
-            requireApiSuccess(killResult, 'ssh.exec');
-            const killStatus = (killResult.data?.stdout || '').trim();
-            if (killStatus === 'STOPPED') {
-                resultPre.textContent += t('promptRepair.serviceStoppedOutput');
-                showToast((typeof t === 'function' ? t('toast.serviceStopped') : '服务已停止'), 'success');
-                
-                // 更新状态变量
-                if (cmd.varName) {
-                    try {
-                        requireApiSuccess(await api.call('automation.variables.set', { name: `${cmd.varName}.status`, value: 'stopped' }), 'call');
-                    } catch (e) {}
-                }
-                
-                // 刷新命令列表状态
-                updateServiceStatusInList();
-            } else if (killStatus === 'STILL_RUNNING') {
-                resultPre.textContent += t('promptRepair.sshStopping') + '\n';
-                // 发送 SIGKILL
-                const forced = await api.call('ssh.exec', {
-                    host: host.host,
-                    port: host.port,
-                    user: host.username,
-                    keyid: host.keyid,
-                    command: `kill -9 ${pid} 2>/dev/null; rm -f ${pidFile}`,
-                    timeout_ms: 5000
-                });
-                requireApiSuccess(forced, 'ssh.exec');
-                resultPre.textContent += t('promptRepair.stopUnconfirmed') + '\n';
-                showToast(t('promptRepair.stopUnconfirmed'), 'warning');
-                updateServiceStatusInList();
-            } else {
-                resultPre.textContent += t('promptRepair.sshUnknown');
-                showToast(t('promptRepair.sshUnknown'), 'warning');
-            }
-        } else if (status === 'STOPPED') {
-            resultPre.textContent += t('promptRepair.processStoppedOutput');
-            showToast((typeof t === 'function' ? t('toast.processAlreadyStopped') : '进程已经停止'), 'info');
-        } else {
-            resultPre.textContent += t('promptRepair.sshUnknown');
-            showToast(t('promptRepair.sshUnknown'), 'warning');
-        }
+        const result = requireApiSuccess(await api.call('ssh.services.start', {command_id: cmd.id}, 'POST'), 'ssh.services.start');
+        if (!Number.isInteger(result.data?.operation_id) || result.data.operation_id <= 0)
+            throw new ApiOperationError({}, 'ssh.services.start', {kind: 'format', uncertain: true});
+        if (!ownsExecDisplay(owner)) return;
+        resultPre.dataset.operationId = String(result.data.operation_id);
+        resultPre.textContent += runtimeText('launch_accepted');
     } catch (e) {
-        resultPre.textContent += t('promptRepair.stopFailed', {message: e.message});
-        showToast((typeof t === 'function' ? t('toast.stopServiceFailedMsg', { msg: e.message }) : '停止服务失败: ' + e.message), 'error');
+        if (ownsExecDisplay(owner))
+            resultPre.textContent += e.uncertain || e.kind === 'timeout' || e.code === 5 ? runtimeText('outcomeUnknown') : e.message;
+    } finally {
+        advanceServiceState(cmd.id);
+        serviceStartInFlight.delete(cmd.id);
+        await updateServiceStatusInList();
     }
-    
-    resultPre.scrollTop = resultPre.scrollHeight;
 }
 
 async function executeCommand(idx) {
@@ -9488,6 +9817,13 @@ async function executeCommand(idx) {
         nohupActions.style.display = 'none';
     }
     
+    if (cmd.nohup && cmd.serviceMode) {
+        await executeManagedService(cmd, resultPre);
+        return;
+    }
+
+    const owner = claimExecDisplay('ssh', resultPre);
+
     // 对于 nohup 命令，包装命令以实现后台执行，并记录日志和 PID
     let actualCommand = cmd.command;
     let nohupLogFile = null;
@@ -9557,7 +9893,7 @@ async function executeCommand(idx) {
         const result = requireApiSuccess(await api.call('ssh.exec_stream', params), 'ssh.exec_stream');
         if (!Number.isInteger(result.data?.session_id)) throw new ApiOperationError({}, 'ssh.exec_stream', {kind: 'format', uncertain: true});
         
-        currentExecSessionId = result.data?.session_id;
+        if (!ownsExecDisplay(owner)) return;
         
         if (cmd.nohup) {
             resultPre.textContent += t('promptRepair.sshAccepted');
@@ -9565,14 +9901,19 @@ async function executeCommand(idx) {
             resultPre.textContent += t('promptRepair.logFileSpaced', {path: nohupLogFile});
             resultPre.textContent += t('promptRepair.processKeyword', {keyword: cmd.command.split(' ')[0]});
             // nohup 命令不跟踪会话
-            currentExecSessionId = null;
+            // The display still follows this session; it is not a cancellable foreground command;
         } else {
-            resultPre.textContent += t('promptRepair.sessionWaiting', {id: currentExecSessionId});
+            resultPre.textContent += t('promptRepair.sessionWaiting', {id: result.data.session_id});
         }
         
+        acknowledgeExecSession(owner, result.data.session_id);
+        if (cmd.nohup) currentExecSessionId = null;
         // 输出将通过 WebSocket 实时推送
         
     } catch (e) {
+        if (!ownsExecDisplay(owner)) return;
+        owner.finished = true;
+        owner.messages = [];
         if (e.uncertain || e.kind === 'timeout' || e.code === 5 || e.code === 'TIMEOUT') {
             resultPre.textContent += '\n' + t('promptRepair.sshSubmissionUnknown');
             showToast(t('promptRepair.sshSubmissionUnknown'), 'warning', 10000);
@@ -9592,14 +9933,18 @@ async function cancelExecution() {
         return;
     }
     
+    const owner = execDisplayOwner;
+    const sessionId = currentExecSessionId;
     const cancelBtn = document.getElementById('cancel-exec-btn');
     cancelBtn.disabled = true;
     cancelBtn.textContent = typeof t === 'function' ? t('ui.cancelling') : '取消中...';
     
     try {
-        requireApiSuccess(await api.call('ssh.cancel', { session_id: currentExecSessionId }), 'call');
+        requireApiSuccess(await api.call('ssh.cancel', { session_id: sessionId }), 'call');
+        if (!ownsExecDisplay(owner)) return;
         showToast((typeof t === 'function' ? t('toast.cancelSent') : '取消请求已发送'), 'info');
     } catch (e) {
+        if (!ownsExecDisplay(owner)) return;
         showToast((typeof t === 'function' ? t('toast.cancelFailedMsg', { msg: e.message }) : '取消失败: ' + e.message), 'error');
         cancelBtn.disabled = false;
         cancelBtn.innerHTML = '<svg class="i"><use href="#ri-stop-line"/></svg> ' + (typeof t === 'function' ? t('sshPage.cancelEsc') : '取消 (Esc)');
@@ -9630,7 +9975,18 @@ function handleSshExecMessage(msg) {
     const cancelBtn = document.getElementById('cancel-exec-btn');
     const matchPanel = document.getElementById('match-result-panel');
     
-    if (!resultPre) return;
+    const owner = execDisplayOwner;
+    if (!ownsExecDisplay(owner) || owner.kind !== 'ssh' || owner.finished) return;
+    if (owner.sessionId === null) {
+        const bytes = JSON.stringify(msg).length;
+        if (owner.messages.length < 64 && owner.bytes + bytes <= 65536) {
+            owner.messages.push(msg);
+            owner.bytes += bytes;
+        } else owner.overflow = true;
+        return;
+    }
+    if (msg.session_id !== owner.sessionId) return;
+    if (['ssh_exec_done', 'ssh_exec_error', 'ssh_exec_cancelled'].includes(msg.type)) owner.finished = true;
     
     switch (msg.type) {
         case 'ssh_exec_start':
@@ -9647,8 +10003,7 @@ function handleSshExecMessage(msg) {
             
         case 'ssh_exec_output':
             // 接受消息如果：session_id 匹配，或者我们还没有 session_id（等待 API 返回）
-            if (msg.session_id === currentExecSessionId || 
-                (currentExecSessionId === null && msg.session_id)) {
+            if (msg.session_id === owner.sessionId) {
                 // 如果还没有 session_id，从消息中获取
                 if (currentExecSessionId === null) {
                     currentExecSessionId = msg.session_id;
@@ -9667,7 +10022,7 @@ function handleSshExecMessage(msg) {
             
         case 'ssh_exec_match':
             /* 实时匹配结果 */
-            if (msg.session_id === currentExecSessionId) {
+            if (msg.session_id === owner.sessionId) {
                 const isFinal = msg.is_final === true;  /* 是否为终止匹配（expect/fail 匹配）*/
                 const isExtractOnly = !msg.expect_matched && !msg.fail_matched && msg.extracted;
                 
@@ -9695,7 +10050,7 @@ function handleSshExecMessage(msg) {
             break;
             
         case 'ssh_exec_done':
-            if (msg.session_id === currentExecSessionId) {
+            if (msg.session_id === owner.sessionId) {
                 resultPre.textContent += t('promptRepair.sshEnd');
                 resultPre.textContent += t('promptRepair.exitCode', {code: msg.exit_code ?? '?'});
                 
@@ -9735,7 +10090,7 @@ function handleSshExecMessage(msg) {
             break;
             
         case 'ssh_exec_error':
-            if (msg.session_id === currentExecSessionId) {
+            if (msg.session_id === owner.sessionId) {
                 resultPre.textContent += t('promptRepair.sshError', {message: apiErrorMessage({error: msg.error})});
                 if (cancelBtn) {
                     cancelBtn.style.display = 'none';
@@ -9746,7 +10101,7 @@ function handleSshExecMessage(msg) {
             break;
             
         case 'ssh_exec_cancelled':
-            if (msg.session_id === currentExecSessionId) {
+            if (msg.session_id === owner.sessionId) {
                 resultPre.textContent += t('promptRepair.sshCancelOutput');
                 if (cancelBtn) {
                     cancelBtn.style.display = 'none';
@@ -9830,6 +10185,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
 }
 
 function clearExecResult() {
+    releaseExecDisplay();
     document.getElementById('exec-result-section').style.display = 'none';
     document.getElementById('exec-result').textContent = '';
     document.getElementById('cancel-exec-btn').style.display = 'none';
@@ -10183,8 +10539,9 @@ async function loadSecurityPage() {
                     row(t('securityPage.keysTableComment'), inp('keygen-comment', 200, t('securityPage.commentPlaceholder'))) +
                     row(t('sshPage.keyAlias'), inp('keygen-alias', 200, t('securityPage.aliasPlaceholder')), '', t('securityPage.aliasHint')) +
                     row(t('securityPage.keysTableExportable'), swc('keygen-exportable'), '', t('securityPage.allowExportPrivateKey')) +
-                    row(t('securityPage.hideShort'), swc('keygen-hidden'), '', t('securityPage.hideKeyIdHint'))),
-                `<button class="btn lg" onclick="hideGenerateKeyModal()">${t('common.cancel')}</button><button class="btn lg primary" onclick="generateKey()">${t('common.generate')}</button>`)}</div>
+                    row(t('securityPage.hideShort'), swc('keygen-hidden'), '', t('securityPage.hideKeyIdHint'))) +
+                `<div id="keygen-status" class="t-note" role="status" aria-live="polite" style="white-space:pre-wrap;margin-top:12px"></div>`,
+                `<button class="btn lg" id="keygen-close" onclick="hideGenerateKeyModal()">${t('common.cancel')}</button><button class="btn lg primary" id="keygen-submit" onclick="generateKey()">${t('common.generate')}</button>`)}</div>
             
             <!-- 部署密钥弹窗 -->
             <div class="modal hidden" id="deploy-key-modal">${sheet(560, t('securityPage.deployKeyBrief'), `
@@ -10231,7 +10588,7 @@ async function loadSecurityPage() {
             <div class="modal hidden" id="cert-csr-modal">${sheet(660, t('securityPage.csrGenerateTitle'), `
                 ${grp(
                     row(t('securityPage.deviceIdCn'), inp('csr-device-id', 210, 'TIANSHAN-RM01-0001', 'mono'), '', t('securityPage.leaveEmptyForDefault')) +
-                    row(t('securityPage.orgBrief'), inp('csr-org', 210, 'HiddenPeak Labs')) +
+                    row(t('securityPage.orgBrief'), inp('csr-org', 210, t('securityPage.orgBrief'))) +
                     row(t('securityPage.deptBrief'), inp('csr-ou', 210, 'Device')))}
                 ${gt(t('securityPage.csrPemLabel'))}<div id="csr-result-box"><textarea class="field mono" id="csr-pem-output" readonly style="height:90px" placeholder="${t('securityPage.csrPlaceholder')}" title="${escapeHtml(t('securityPage.csrContentLabel'))}"></textarea></div>
                 <div id="csr-gen-result" class="result-box hidden" style="margin-top:12px"></div>`,
@@ -10261,8 +10618,11 @@ async function loadSecurityPage() {
     if (!pageCurrent()) return;
 }
 
-async function refreshSecurityPage() {
+let securityKeysLoadVersion = 0;
+async function refreshSecurityPage({keysOnly = false} = {}) {
     const pageCurrent = capturePageValidity();
+    const keysVersion = ++securityKeysLoadVersion;
+    let keysLoaded = false;
     // 密钥列表
     const tbody = document.getElementById('keys-table-body');
     let allKeysHtml = '';
@@ -10270,12 +10630,14 @@ async function refreshSecurityPage() {
     
     // 1. 加载 SSH 密钥
     try {
-        const keys = await api.keyList();
+        const keys = requireApiSuccess(await api.keyList(), 'key.list');
+        if (!Array.isArray(keys.data?.keys)) throw new Error(t('promptRepair.invalidResponse'));
+        keysLoaded = true;
         if (!pageCurrent()) return;
         const sshKeySelect = document.getElementById('ssh-keyid');
         
         // 更新 SSH 测试的密钥下拉列表
-        if (sshKeySelect) {
+        if (sshKeySelect && keysVersion === securityKeysLoadVersion) {
             sshKeySelect.innerHTML = '<option value="">' + (typeof t === 'function' ? t('sshPage.selectKey') : '-- 选择密钥 --') + '</option>';
             if (keys.data?.keys && keys.data.keys.length > 0) {
                 keys.data.keys.forEach(key => {
@@ -10373,13 +10735,14 @@ async function refreshSecurityPage() {
         console.error('加载 HTTPS 密钥状态失败:', e);
     }
     
-    // 3. 更新表格
-    if (allKeysHtml) {
-        tbody.innerHTML = allKeysHtml;
-    } else {
-        tbody.innerHTML = `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noKeysClickToGenerate')}</div>`;
+    // A failed or superseded SSH load must not erase the existing key table.
+    const keysCurrent = pageCurrent() && keysVersion === securityKeysLoadVersion;
+    if (keysLoaded && keysCurrent && tbody) {
+        tbody.innerHTML = allKeysHtml || `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noKeysClickToGenerate')}</div>`;
     }
-    
+    const keyResult = {keysLoaded, keysCurrent};
+    if (keysOnly) return keyResult;
+
     // SSH 已部署主机列表（加载数据并渲染到 DOM）
     await refreshSshHostsList();
     if (!pageCurrent()) return;
@@ -10395,6 +10758,7 @@ async function refreshSecurityPage() {
     // Config Pack 状态
     await refreshConfigPackStatus();
     if (!pageCurrent()) return;
+    return keyResult;
 }
 
 /**
@@ -10693,8 +11057,9 @@ function showExportSshHostModal(hostId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = exportSheet('ssh-host', t('securityPage.exportSshHostTitle'), t('securityPage.exportSshHostDesc', {hostId: escapeHtml(hostId)}), t('securityPage.exportSshHostCertHint'), 'hideExportSshHostModal', `doExportSshHostFromModal('${escapeHtml(hostId)}')`);
+    modal.innerHTML = exportSheet('ssh-host', t('securityPage.exportSshHostTitle'), t('securityPage.exportSshHostDesc', {hostId: escapeHtml(hostId)}), t('securityPage.exportSshHostCertHint'), 'hideExportSshHostModal', 'doExportSshHostFromModal');
     
+    modal.dataset.exportId = hostId;
     modal.classList.remove('hidden');
 }
 
@@ -11764,14 +12129,14 @@ async function packExportBrowseRefresh() {
             const fullPath = packExportCurrentPath + '/' + entry.name;
             const isSelected = packExportSelectedFiles.has(fullPath);
             // 转义文件名中的特殊字符
-            const safeName = entry.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const safeName = escapeHtml(entry.name);
             
             if (entry.type === 'dir') {
                 // 目录：点击进入，无复选框
-                html += `<div class="row" style="cursor:pointer" onclick="packExportBrowseInto('${safeName}')"><div class="rl"><span style="display:flex;gap:10px;align-items:center"><svg class="i"><use href="#ri-folder-line"/></svg>${escapeHtml(entry.name)}</span></div><div class="rc"></div></div>`;
+                html += `<div class="row" style="cursor:pointer" data-name="${safeName}" onclick="packExportBrowseInto(this.dataset.name)"><div class="rl"><span style="display:flex;gap:10px;align-items:center"><svg class="i"><use href="#ri-folder-line"/></svg>${escapeHtml(entry.name)}</span></div><div class="rc"></div></div>`;
             } else {
-                const checkboxId = 'pack-export-cb-' + entry.name.replace(/[^a-zA-Z0-9]/g, '_');
-                html += `<div class="row"><div class="rl"><label style="display:flex;gap:10px;align-items:center" for="${checkboxId}"><input type="checkbox" id="${checkboxId}" ${isSelected ? 'checked' : ''} onclick="packExportToggleFile('${safeName}', this.checked)">${escapeHtml(entry.name)}</label></div><div class="rc"><span class="t-note num">${formatFileSize(entry.size)}</span></div></div>`;
+                const checkboxId = 'pack-export-cb-' + filteredEntries.indexOf(entry);
+                html += `<div class="row"><div class="rl"><label style="display:flex;gap:10px;align-items:center" for="${checkboxId}"><input type="checkbox" id="${checkboxId}" ${isSelected ? 'checked' : ''} data-name="${safeName}" onclick="packExportToggleFile(this.dataset.name, this.checked)">${escapeHtml(entry.name)}</label></div><div class="rc"><span class="t-note num">${formatFileSize(entry.size)}</span></div></div>`;
             }
         }
         fileList.innerHTML = html;
@@ -12111,7 +12476,7 @@ async function refreshConfigPackList() {
                     <div>${escapeHtml(file.signer || '-')}</div>
                     <div>${file.is_official ? yesStr : noStr}</div>
                     <div>${file.valid ? '<span class="state ok">' + validStr + '</span>' : '<span class="state bad">' + invalidStr + '</span>'}</div>
-                    <div class="act"><button class="btn sm" onclick="importPackFromList('${escapeHtml(path)}/${escapeHtml(file.name)}')">${importStr}</button></div>
+                    <div class="act"><button class="btn sm" data-path="${escapeHtml(path + '/' + file.name)}" onclick="importPackFromList(this.dataset.path)">${importStr}</button></div>
                 </div>`).join('');
         }
         
@@ -12327,7 +12692,12 @@ function hideCertCSRModal() {
 }
 
 async function generateCSR() {
+    clearFieldErrors();
     const deviceId = document.getElementById('csr-device-id').value.trim();
+    if (new TextEncoder().encode(deviceId).length > 63) {
+        fieldError('csr-device-id', t('inputRepair.csrIdLimit'));
+        return;
+    }
     const org = document.getElementById('csr-org').value.trim();
     const ou = document.getElementById('csr-ou').value.trim();
     
@@ -12486,40 +12856,140 @@ async function deleteCertCredentials() {
     }
 }
 
+let keyGenerationOperation = null;
+let keyGenerationModalVersion = 0;
+let keyGenerationOperationSequence = 0;
+
+function setKeyGenerationStatus(message) {
+    const status = document.getElementById('keygen-status');
+    if (status) status.textContent = message;
+}
+
 function showGenerateKeyModal() {
+    ++keyGenerationModalVersion;
     document.getElementById('keygen-modal').classList.remove('hidden');
     document.getElementById('keygen-id').value = '';
-    document.getElementById('keygen-type').value = 'rsa2048';  // RSA 是唯一支持 SSH 公钥认证的类型
+    document.getElementById('keygen-type').value = 'rsa2048';
     document.getElementById('keygen-comment').value = '';
+    document.getElementById('keygen-alias').value = '';
     document.getElementById('keygen-exportable').checked = false;
+    document.getElementById('keygen-hidden').checked = false;
     document.getElementById('keygen-ec-warn').classList.add('hidden');
+    const button = document.getElementById('keygen-submit');
+    if (button) {
+        button.disabled = !!keyGenerationOperation;
+        button.dataset.keyGeneration = keyGenerationOperation ? String(keyGenerationOperation.sequence) : '';
+    }
+    const close = document.getElementById('keygen-close');
+    if (close) close.textContent = t(keyGenerationOperation ? 'keyGeneration.closeRunning' : 'common.cancel');
+    setKeyGenerationStatus(keyGenerationOperation ? t('keyGeneration.running', {id: keyGenerationOperation.id}) : '');
 }
 
 function hideGenerateKeyModal() {
+    ++keyGenerationModalVersion;
     document.getElementById('keygen-modal').classList.add('hidden');
 }
 
 async function generateKey() {
+    if (keyGenerationOperation) return;
     const id = document.getElementById('keygen-id').value.trim();
     const type = document.getElementById('keygen-type').value;
     const comment = document.getElementById('keygen-comment').value.trim();
     const alias = document.getElementById('keygen-alias').value.trim();
     const exportable = document.getElementById('keygen-exportable').checked;
     const hidden = document.getElementById('keygen-hidden').checked;
-    
-    if (!id) {
-        showToast(typeof t === 'function' ? t('toast.enterKeyId') : '请输入密钥 ID', 'error');
+    if (!id) { showToast(t('toast.enterKeyId'), 'error'); return; }
+    if (new TextEncoder().encode(id).length > 10 || id.includes(',')) {
+        setKeyGenerationStatus(t('keyGeneration.invalidId'));
         return;
     }
-    
+    const pageCurrent = capturePageValidity();
+    const modal = document.getElementById('keygen-modal');
+    const version = keyGenerationModalVersion;
+    const operation = {id, sequence: ++keyGenerationOperationSequence};
+    keyGenerationOperation = operation;
+    const ownsModal = () => pageCurrent() && version === keyGenerationModalVersion && document.getElementById('keygen-modal') === modal;
+    const button = document.getElementById('keygen-submit');
+    if (button) {
+        button.disabled = true;
+        button.dataset.keyGeneration = String(operation.sequence);
+    }
+    const close = document.getElementById('keygen-close');
+    if (close) close.textContent = t('keyGeneration.closeRunning');
+    setKeyGenerationStatus(t('keyGeneration.running', {id}));
+    let requestId;
+    const trace = (stage, fields) => api.recordKeyGeneration(stage, fields, requestId);
     try {
-        showToast(typeof t === 'function' ? t('toast.generatingKey') : '正在生成密钥...', 'info');
-        requireApiSuccess(await api.keyGenerate(id, type, comment, exportable, alias, hidden), 'keyGenerate');
-        hideGenerateKeyModal();
-        showToast(typeof t === 'function' ? t('toast.keyGenerated', { name: alias || id }) : `密钥 "${alias || id}" 生成成功`, 'success');
-        await refreshSecurityPage();
+        const pending = api.keyGenerate(id, type, comment, exportable, alias, hidden);
+        requestId = api.keyGenerationTrace?.requestId;
+        const result = await pending;
+        trace('api_return', {code: typeof result?.code === 'number' ? result.code : null});
+        if (typeof result?.code === 'number' && result.code !== 0 && (!result.httpStatus || result.httpStatus < 400)) {
+            const detail = result.data;
+            const reasons = {'key_storage_full':'storageFull', 'key_id_occupied':'occupied', 'key_limit_reached':'limit',
+                'key_invalid_id':'invalidId', 'Memory allocation failed':'memory'};
+            const reason = typeof result.rawMessage === 'string' ? result.rawMessage : apiErrorReason(result);
+            let message = reasons[reason] ? t('keyGeneration.' + reasons[reason]) : apiErrorMessage(result, 'keyGenerate');
+            if (detail?.failed_stage) message += '\n' + t('keyGeneration.stage', {stage: detail.failed_stage, error: detail.esp_error || ''});
+            if (detail?.cleanup_complete === false) message += '\n' + t('keyGeneration.cleanupFailed', {error: detail.cleanup_error || ''});
+            if (reason === 'key_response_failed' || (!reason && !detail?.failed_stage)) throw new ApiOperationError(result, 'keyGenerate', {kind: 'format', uncertain: true});
+            trace('business_failed', {stage: detail?.failed_stage, cleanupComplete: detail?.cleanup_complete});
+            if (ownsModal()) { setKeyGenerationStatus(message); showToast(message, 'error'); }
+            return;
+        }
+        if (result?.code !== 0 || (result.httpStatus && result.httpStatus >= 400) || result.data?.generated !== true || result.data?.id !== id) {
+            throw new ApiOperationError(result, 'keyGenerate', {kind: 'format', uncertain: true});
+        }
+        trace('saved_confirmed');
+        if (!pageCurrent()) return;
+        let notificationVersion = null;
+        if (ownsModal()) {
+            hideGenerateKeyModal();
+            notificationVersion = keyGenerationModalVersion;
+            trace('modal_closed', {hidden: modal.classList.contains('hidden')});
+            showToast(t('toast.keyGenerated', {name: alias || id}), 'success', 3000, {isCurrent: pageCurrent});
+            trace('toast_shown', {visible: document.getElementById('toast')?.classList.contains('show') === true});
+        }
+        trace('list_start');
+        try {
+            const refreshed = await refreshSecurityPage({keysOnly: true});
+            trace('list_done', {loaded: refreshed?.keysLoaded === true, current: refreshed?.keysCurrent === true});
+            if (pageCurrent() && notificationVersion === keyGenerationModalVersion && document.getElementById('keygen-modal') === modal && refreshed?.keysCurrent && !refreshed?.keysLoaded) showToast(t('keyGeneration.refreshFailed'), 'error');
+        } catch (e) {
+            trace('list_error', {kind: e.name});
+            if (pageCurrent() && notificationVersion === keyGenerationModalVersion && document.getElementById('keygen-modal') === modal) showToast(t('keyGeneration.refreshFailed'), 'error');
+        }
     } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.generateFailedMsg', { msg: e.message }) : '生成失败: ' + e.message, 'error');
+        trace('result_unknown', {kind: e.kind || e.name});
+        if (!pageCurrent()) return;
+        if (ownsModal()) setKeyGenerationStatus(t('keyGeneration.unknown'));
+        // One read-only check is evidence of a current record, never a retry or proof of this POST.
+        try {
+            const info = await api.keyInfo(id);
+            const found = info?.code === 0 && info.data?.id === id;
+            trace('record_checked', {found});
+            if (ownsModal()) setKeyGenerationStatus(t(found ? 'keyGeneration.recordFound' : 'keyGeneration.unknown'));
+        } catch (_) { trace('record_check_failed'); }
+        if (pageCurrent()) {
+            try { await refreshSecurityPage({keysOnly: true}); } catch (_) { trace('list_error'); }
+        }
+    } finally {
+        if (keyGenerationOperation === operation) {
+            keyGenerationOperation = null;
+            // A rebuilt modal may subscribe its controls to this same pending operation.
+            // Only those controls are released; result messages still belong to the original modal.
+            const currentButton = document.getElementById('keygen-submit');
+            if (currentButton?.dataset.keyGeneration === String(operation.sequence)) {
+                currentButton.disabled = false;
+                currentButton.dataset.keyGeneration = '';
+                const currentClose = document.getElementById('keygen-close');
+                if (currentClose) currentClose.textContent = t('common.cancel');
+                const currentModal = document.getElementById('keygen-modal');
+                if (currentModal && !currentModal.classList.contains('hidden') &&
+                    (version !== keyGenerationModalVersion || currentModal !== modal)) setKeyGenerationStatus('');
+            }
+        }
+        trace('ui_done');
     }
 }
 
@@ -12902,10 +13372,7 @@ function getLevelName(level) {
     return names[level] || 'UNKNOWN';
 }
 
-function escapeHtml(text) {
-    const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-    return String(text ?? '').replace(/[&<>"']/g, m => map[m]);
-}
+
 
 function escapeRegex(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -15077,15 +15544,6 @@ function formatVariableUpdateTime(variable) {
 }
 
 /**
- * HTML 转义
- */
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = String(text ?? '');
-    return div.innerHTML;
-}
-
-/**
  * 刷新动作模板列表
  */
 async function refreshActions() {
@@ -15269,7 +15727,8 @@ function updateActionTypeFields() {
 /**
  * 提交动作模板
  */
-async function submitAction() {
+async function submitAction(originalId = null) {
+    clearFieldErrors();
     const id = document.getElementById('action-id').value.trim();
     const name = document.getElementById('action-name').value.trim();
     const checked = document.querySelector('input[name="action-type"]:checked');
@@ -15287,10 +15746,15 @@ async function submitAction() {
         return;
     }
     
-    const data = { id, name: name || id, type, description, delay_ms: delay, async };
+    if (originalId && id !== originalId) {
+        fieldError('action-id', t('inputRepair.immutableId'));
+        return;
+    }
+    const data = { id, name: name || id, type, description, delay_ms: delay, async,
+        enabled: originalId ? document.getElementById('action-modal').dataset.enabled !== 'false' : true };
     
     // 根据类型收集特定字段
-    switch (type) {
+    try { switch (type) {
         case 'cli':
             const cliCmd = document.getElementById('action-cli-command')?.value?.trim();
             if (!cliCmd) {
@@ -15332,12 +15796,12 @@ async function submitAction() {
             switch (ledCtrlType) {
                 case 'fill':
                     data.led.color = document.getElementById('action-led-color')?.value || '#FF0000';
-                    data.led.brightness = parseInt(document.getElementById('action-led-brightness')?.value) || 128;
-                    data.led.index = parseInt(document.getElementById('action-led-index')?.value) || 255;
+                    data.led.brightness = readNumericInput('action-led-brightness', true);
+                    data.led.index = readNumericInput('action-led-index', true);
                     break;
                 case 'effect':
                     data.led.effect = document.getElementById('action-led-effect')?.value;
-                    data.led.speed = parseInt(document.getElementById('action-led-speed')?.value) || 50;
+                    data.led.speed = readNumericInput('action-led-speed', true);
                     data.led.color = document.getElementById('action-led-color')?.value || '#FF0000';
                     if (!data.led.effect) {
                         showToast(typeof t === 'function' ? t('toast.selectAnimation') : '请选择动画', 'error');
@@ -15345,7 +15809,7 @@ async function submitAction() {
                     }
                     break;
                 case 'brightness':
-                    data.led.brightness = parseInt(document.getElementById('action-led-brightness')?.value) || 128;
+                    data.led.brightness = readNumericInput('action-led-brightness', true);
                     break;
                 case 'off':
                     // 无需额外参数
@@ -15360,10 +15824,10 @@ async function submitAction() {
                     data.led.color = document.getElementById('action-led-color')?.value || '#00FF00';
                     data.led.align = document.getElementById('action-led-align')?.value || 'center';
                     data.led.scroll = document.getElementById('action-led-scroll')?.value || 'none';
-                    data.led.speed = parseInt(document.getElementById('action-led-speed')?.value) || 50;
+                    data.led.speed = readNumericInput('action-led-speed', true);
                     data.led.loop = document.getElementById('action-led-loop')?.checked || false;
-                    data.led.x = parseInt(document.getElementById('action-led-x')?.value) || 0;
-                    data.led.y = parseInt(document.getElementById('action-led-y')?.value) || 0;
+                    data.led.x = readNumericInput('action-led-x', true);
+                    data.led.y = readNumericInput('action-led-y', true);
                     data.led.auto_pos = document.getElementById('action-led-auto-pos')?.checked || false;
                     break;
                 case 'image':
@@ -15392,14 +15856,20 @@ async function submitAction() {
                     }
                     // 根据滤镜类型收集对应参数
                     const fConfig = filterConfig[data.led.filter];
+                    const modal = document.getElementById('action-modal');
+                    const sameFilter = originalId && modal.dataset.originalFilter === data.led.filter;
                     if (fConfig && fConfig.params) {
-                        data.led.filter_params = {};
+                        const params = sameFilter ? { ...modal._originalFilterParams } : {};
+                        const changed = modal._filterParamEdits?.get(data.led.filter);
                         fConfig.params.forEach(param => {
                             const el = document.getElementById(`action-filter-${param}`);
-                            if (el) {
-                                data.led.filter_params[param] = parseInt(el.value) || fConfig.defaults[param] || 50;
+                            if (el && (!sameFilter || changed?.has(param))) {
+                                params[param] = readNumericInput(`action-filter-${param}`, true);
                             }
                         });
+                        if (!sameFilter || modal._originalFilterParams !== undefined || Object.keys(params).length) {
+                            data.led.filter_params = params;
+                        }
                     }
                     break;
             }
@@ -15441,10 +15911,12 @@ async function submitAction() {
             break;
     }
     
+    } catch (_) { return; }
+
     try {
-        const result = await api.call('automation.actions.add', data);
+        const result = await api.call(originalId ? 'automation.actions.update' : 'automation.actions.add', data);
         if (result.code === 0) {
-            showToast(typeof t === 'function' ? t('toast.actionCreated', { id }) : `动作模板 ${id} 创建成功`, 'success');
+            showToast(originalId ? t('toast.saved') : t('toast.actionCreated', { id }), 'success');
             closeModal('action-modal');
             await refreshActions();
         } else {
@@ -15653,7 +16125,7 @@ function updateActionLedTypeFields() {
             const dots = ['#ff0000', '#ff6600', '#ffff00', '#00ff00', '#00ffff', '#0066ff', '#ffffff'].map(c => `<button type="button" class="dotc" style="background:${c}" onclick="setActionLedColor('${c}')" aria-label="${c}"></button>`).join('');
             html = row(t('dataWidget.color'), `<span class="inl">${swatch('action-led-color', '#ff0000')}${dots}</span>`) +
                 row(t('ledPage.ccBrightness'), slider('action-led-brightness', 0, 255, 128)) +
-                row(t('automationPage.indexPlaceholder'), inp('action-led-index', 80, t('automationPage.ledIndexPlaceholder'), 'num', 'type="number" value="255"'));
+                row(t('automationPage.indexPlaceholder'), inp('action-led-index', 80, t('automationPage.ledIndexPlaceholder'), 'num', 'type="number" value="255" min="0" max="255"'));
             break;
         }
         case 'effect': {
@@ -16057,6 +16529,9 @@ function updateActionFilterParams() {
     
     const filter = filterSelect.value;
     const config = filterConfig[filter];
+    const modal = document.getElementById('action-modal');
+    const original = modal?.dataset.edit === '1' && modal.dataset.originalFilter === filter;
+    const edits = modal?._filterParamEdits?.get(filter);
     
     if (!config || !config.params || config.params.length === 0) {
         paramsContainer.innerHTML = row(t('common.params'), `<span class="t-note">${t('automationPage.noExtraParams')}</span>`);
@@ -16068,11 +16543,13 @@ function updateActionFilterParams() {
         const paramInfo = paramLabels[param];
         if (!paramInfo) return;
         
-        const defaultValue = config.defaults[param] || 50;
+        const stored = original && Object.hasOwn(modal._originalFilterParams || {}, param);
+        const custom = edits?.has(param) || stored || !original;
+        const defaultValue = edits?.get(param) ?? (stored ? modal._originalFilterParams[param] : config.defaults[param] ?? 50);
         const unitTxt = paramInfo.unit || '';
         html += row(paramInfo.label,
             ledSlider(`action-filter-${param}`, paramInfo.min, paramInfo.max, defaultValue, `document.getElementById('action-filter-${param}-val').textContent=this.value+'${unitTxt}'`) +
-            ledVal(`action-filter-${param}-val`, defaultValue + unitTxt));
+            ledVal(`action-filter-${param}-val`, custom ? defaultValue + unitTxt : t('inputRepair.defaultParam')));
     });
     
     paramsContainer.innerHTML = html;
@@ -16118,7 +16595,23 @@ async function editAction(id) {
         
         // 打开添加对话框并填充数据
         await showAddActionModal();
+        document.getElementById('action-modal').dataset.enabled = String(tpl.enabled ?? true);
         document.getElementById('action-modal').dataset.edit = '1';
+        const modal = document.getElementById('action-modal');
+        modal.dataset.originalFilter = tpl.led?.ctrl_type === 'filter' ? tpl.led.filter : '';
+        modal._originalFilterParams = tpl.led?.filter_params === undefined ? undefined : { ...tpl.led.filter_params };
+        modal._filterParamEdits = new Map();
+        const markFilterChange = event => {
+            if (event.target.id?.startsWith('action-filter-')) {
+                const filter = document.getElementById('action-led-filter')?.value;
+                const key = event.target.id.slice('action-filter-'.length);
+                if (!filterConfig[filter]?.params.includes(key)) return;
+                if (!modal._filterParamEdits.has(filter)) modal._filterParamEdits.set(filter, new Map());
+                modal._filterParamEdits.get(filter).set(key, event.target.value);
+            }
+        };
+        modal.addEventListener('input', markFilterChange);
+        modal.addEventListener('change', markFilterChange);
         
         // 等待 DOM 更新
         await new Promise(r => setTimeout(r, 100));
@@ -16289,6 +16782,13 @@ async function editAction(id) {
                                 if (tpl.led.filter) {
                                     const filterEl = document.getElementById('action-led-filter');
                                     if (filterEl) filterEl.value = tpl.led.filter;
+                                    updateActionFilterParams();
+                                    if (tpl.led.filter_params === undefined) {
+                                        const hint = document.createElement('p');
+                                        hint.className = 't-note';
+                                        hint.textContent = t('inputRepair.defaultFilter');
+                                        document.getElementById('action-filter-params').prepend(hint);
+                                    }
                                 }
                                 break;
                         }
@@ -16334,43 +16834,33 @@ async function editAction(id) {
  * 更新动作模板
  */
 async function updateAction(originalId) {
-    // 先删除旧的，再创建新的（因为没有 update API）
-    try {
-        // 获取表单数据
-        const id = document.getElementById('action-id').value.trim();
-        
-        // 删除旧模板
-        const deleteResult = await api.call('automation.actions.delete', { id: originalId });
-        if (deleteResult.code !== 0) {
-            showToast(typeof t === 'function' ? t('toast.deleteOldTemplateFailed') : '更新失败: 无法删除旧模板', 'error');
-            return;
-        }
-        
-        // 重新启用 ID 字段并提交
-        document.getElementById('action-id').disabled = false;
-        
-        // 调用添加逻辑
-        await submitAction();
-        
-    } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.updateFailed') + ': ' + error.message : `更新失败: ${error.message}`, 'error');
-    }
+    await submitAction(originalId);
 }
 
 /**
  * 删除动作
  */
 async function deleteAction(id) {
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteAction', { id }) : `确定要删除动作模板 "${id}" 吗？`, { primary: t('common.delete'), tone: 'danger' })) return;
-    
+    const key = 'action:' + id;
+    if (configurationDeletesInFlight.has(key)) return;
+    configurationDeletesInFlight.add(key);
+    const pageCurrent = capturePageValidity();
     try {
+        if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteAction', { id }) : `确定要删除动作模板 "${id}" 吗？`, { primary: t('common.delete'), tone: 'danger' }) || !pageCurrent()) return;
+        showToast(t('toast.processing'), 'info');
+        const template = requireApiSuccess(await api.call('automation.actions.get', { id }), 'automation.actions.get').data;
+        if (!pageCurrent()) return;
+        if (template?.type === 'ssh_cmd_ref' && template.ssh_ref?.cmd_id &&
+            !await verifyStoppedServiceForDelete(template.ssh_ref.cmd_id, pageCurrent)) return;
+        if (!pageCurrent()) return;
         const result = await api.call('automation.actions.delete', { id });
+        if (!pageCurrent()) return;
         showToast(typeof t === 'function' ? t('toast.deleteActionResult', { id }) + ': ' + (result.message || 'OK') : `删除动作 ${id}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
-        if (result.code === 0) {
-            await refreshActions();
-        }
+        if (result.code === 0) await refreshActions();
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.deleteFailedMsg', { msg: error.message }) : `删除失败: ${error.message}`, 'error');
+        if (pageCurrent()) showToast(typeof t === 'function' ? t('toast.deleteFailedMsg', { msg: error.message }) : `删除失败: ${error.message}`, 'error');
+    } finally {
+        configurationDeletesInFlight.delete(key);
     }
 }
 
@@ -16925,7 +17415,15 @@ function renderVarSelector(containerId, data, targetInputId, prefix = '') {
         return;
     }
     
-    container.innerHTML = items.map(item => `<button type="button" class="btn sm var-item" title="${escapeHtml(item.type)}: ${escapeHtml(item.preview)}" onclick="selectVarPath('${targetInputId}', '${item.path}')">${escapeHtml(item.path)}</button>`).join('');
+    container.replaceChildren(...items.map(item => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn sm var-item';
+        button.title = item.type + ': ' + item.preview;
+        button.textContent = item.path;
+        button.addEventListener('click', () => selectVarPath(targetInputId, item.path));
+        return button;
+    }));
 }
 
 /**
@@ -17452,7 +17950,7 @@ function showAddRuleModal(ruleData = null) {
         // 填充条件
         if (ruleData.conditions && ruleData.conditions.length > 0) {
             ruleData.conditions.forEach(cond => {
-                addConditionRow(cond.variable, cond.operator, cond.value, cond);
+                addConditionRow(cond);
             });
         }
         
@@ -17596,51 +18094,88 @@ function clearRuleIconImage() {
 // 条件行计数器
 let conditionRowCount = 0;
 
-/**
- * 添加条件行
- * @param {string} variable - 预填充变量名
- * @param {string} operator - 预填充操作符
- * @param {any} value - 预填充比较值
- */
-function addConditionRow(variable = '', operator = 'eq', value = '', original = null) {
+// Matches the operators and scalar types supported by ts_rule_codec.c.
+const CONDITION_OPERATORS = ['eq', 'ne', 'lt', 'le', 'gt', 'ge', 'contains'];
+function conditionEditorFields(row, kind) {
+    const prefix = kind === 'trigger' ? 'cond' : 'action-condition';
+    return {
+        variable: row.querySelector('.' + prefix + '-variable'),
+        variableButton: row.querySelector(kind === 'trigger' ? '.cond-variable-btn' : '.action-condition-var-btn'),
+        operator: row.querySelector('.' + prefix + '-operator'),
+        value: row.querySelector('.' + prefix + '-value')
+    };
+}
+function fillConditionEditor(row, kind, condition = null) {
+    const fields = conditionEditorFields(row, kind);
+    row._originalCondition = condition ? structuredClone(condition) : null;
+    const labels = {eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=', contains: t('automation.operatorContains')};
+    for (const op of CONDITION_OPERATORS) {
+        const option = document.createElement('option');
+        option.value = op; option.textContent = labels[op]; fields.operator.appendChild(option);
+    }
+    const operator = condition?.operator ?? 'eq';
+    if (!CONDITION_OPERATORS.includes(operator)) {
+        const option = document.createElement('option');
+        option.value = operator; option.textContent = t('conditionEditor.unsupportedOperator', {operator});
+        fields.operator.appendChild(option);
+    }
+    fields.operator.value = operator;
+    fields.variable.value = condition?.variable ?? '';
+    fields.variableButton.textContent = fields.variable.value || t('automation.selectVariable');
+    fields.value.value = condition ? JSON.stringify(condition.value) : '';
+    for (const key of ['variableButton', 'operator', 'value']) fields[key].id = row.id + '-' + key;
+}
+function readConditionEditor(row, kind) {
+    const fields = conditionEditorFields(row, kind);
+    const fail = (field, key, params) => { fieldError(fields[field].id, t('conditionEditor.' + key, params)); return null; };
+    const variable = fields.variable.value;
+    if (!variable.trim()) return fail('variableButton', 'variableRequired');
+    if (variable.includes('\0') || new TextEncoder().encode(variable).length >= 64)
+        return fail('variableButton', 'variableInvalid');
+    const operator = fields.operator.value;
+    if (!CONDITION_OPERATORS.includes(operator)) return fail('operator', 'unsupportedOperator', {operator});
+    const raw = fields.value.value.trim();
+    let value;
+    try { value = JSON.parse(raw); } catch (_) { value = raw; }
+    let valueType;
+    if (value === null) valueType = 0;
+    else if (typeof value === 'boolean') valueType = 1;
+    else if (typeof value === 'number') {
+        if (!Number.isFinite(value)) return fail('value', 'numberInvalid');
+        valueType = Number.isInteger(value) && value >= -2147483648 && value <= 2147483647 ? 2 : 3;
+    } else if (typeof value === 'string') {
+        if (value.includes('\0')) return fail('value', 'stringNul');
+        if (new TextEncoder().encode(value).length >= 64) return fail('value', 'stringTooLong');
+        valueType = 4;
+    } else return fail('value', 'scalarRequired');
+    const original = row._originalCondition;
+    if (original && Object.is(value, original.value) && original.value_type !== undefined) {
+        if (original.value_type !== valueType && !(original.value_type === 3 && typeof value === 'number'))
+            return fail('value', 'typeInvalid');
+        valueType = original.value_type;
+    }
+    return {variable, operator, value, value_type: valueType};
+}
+
+/** 添加条件行；接收完整条件 {variable, operator, value, value_type}。 */
+function addConditionRow(condition = null) {
     const container = document.getElementById('conditions-container');
-    
-    // 移除空提示
-    const emptyP = container.querySelector('.empty-hint');
-    if (emptyP) emptyP.remove();
-    
-    // 取消仅手动触发勾选
+    container.querySelector('.empty-hint')?.remove();
     const manualOnly = document.getElementById('rule-manual-only');
-    if (manualOnly && manualOnly.checked) {
-        manualOnly.checked = false;
-        toggleManualOnly();
-    }
-    
-    // 处理值显示
-    let displayValue = typeof value === 'string' ? JSON.stringify(value) : value;
-    if (typeof value === 'object') {
-        displayValue = JSON.stringify(value);
-    } else if (typeof value === 'boolean') {
-        displayValue = value ? 'true' : 'false';
-    }
-    
+    if (manualOnly?.checked) { manualOnly.checked = false; toggleManualOnly(); }
     const rowId = conditionRowCount;
     const row = document.createElement('div');
     row.className = 'row condition-row';
     row.style.gap = '8px';
-    row._originalCondition = original ? structuredClone(original) : null;
     row.id = `condition-row-${rowId}`;
-    const opt = (v, label) => `<option value="${v}" ${operator === v ? 'selected' : ''}>${label}</option>`;
     row.innerHTML = `
-        <button type="button" class="field sel cond-variable-btn" onclick="openConditionVarSelector(${rowId})" title="${t('automation.selectVariable')}" style="width:190px">${escapeHtml(variable || t('automation.selectVariable'))}</button>
-        <input type="hidden" class="cond-variable" value="${escapeHtml(variable)}">
-        <select class="field cond-operator" style="width:90px" aria-label="${t('automation.conditionLogic')}">
-            ${opt('eq', '==')}${opt('ne', '!=')}${opt('gt', '&gt;')}${opt('ge', '&gt;=')}${opt('lt', '&lt;')}${opt('le', '&lt;=')}${opt('changed', t('automation.operatorChanged'))}${opt('contains', t('automation.operatorContains'))}
-        </select>
-        <input type="text" class="field cond-value" style="width:120px" placeholder="${t('automation.conditionValue')}" aria-label="${t('automation.conditionValue')}" value="${escapeHtml(String(displayValue))}">
+        <button type="button" class="field sel cond-variable-btn" onclick="openConditionVarSelector(${rowId})" title="${t('automation.selectVariable')}" style="width:190px"></button>
+        <input type="hidden" class="cond-variable">
+        <select class="field cond-operator" style="width:90px" aria-label="${t('automation.conditionLogic')}"></select>
+        <input type="text" class="field cond-value" style="width:120px" placeholder="${t('automation.conditionValue')}" aria-label="${t('automation.conditionValue')}">
         <button type="button" class="btn icon sm quiet" onclick="this.closest('.row').remove()" aria-label="${t('securityPage.remove')}" title="${t('securityPage.remove')}"><svg class="i"><use href="#ri-close-line"/></svg></button>
     `;
-    
+    fillConditionEditor(row, 'trigger', condition);
     container.appendChild(row);
     conditionRowCount++;
 }
@@ -17741,7 +18276,7 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
     cachedActionTemplates.forEach(tpl => {
         const typeLabel = getActionTypeLabel(tpl.type);
         const selected = tpl.id === templateId ? 'selected' : '';
-        optionsHtml += `<option value="${tpl.id}" ${selected}>${tpl.name || tpl.id} (${typeLabel})</option>`;
+        optionsHtml += `<option value="${escapeHtml(tpl.id)}" ${selected}>${escapeHtml(tpl.name || tpl.id)} (${typeLabel})</option>`;
     });
     
     if (templateId && !cachedActionTemplates.some(tpl => tpl.id === templateId))
@@ -17751,7 +18286,6 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
     const hasCondition = condition && condition.variable;
     
     const lab = 'display:flex;align-items:center;gap:6px';
-    const opOpt = (v, label) => `<option value="${v}" ${hasCondition && condition.operator === v ? 'selected' : ''}>${label}</option>`;
     row.innerHTML = `
         <select class="field action-template-id" onchange="updateActionTemplatePreview(this)" style="width:300px" aria-label="${t('promptRepair.chooseAction')}">
             ${optionsHtml}
@@ -17783,16 +18317,16 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
                 ${t('automationPage.execCondition')}
             </label>
             <span class="action-condition-fields" id="action-condition-${rowId}" style="display:${hasCondition ? 'flex' : 'none'};gap:6px;align-items:center">
-                <button type="button" class="field sm sel action-condition-var-btn" onclick="openActionConditionVarSelector(${rowId})" title="${t('automation.selectVariable')}" style="width:150px">${escapeHtml(hasCondition && condition.variable ? condition.variable : t('automation.selectVariable'))}</button>
-                <input type="hidden" class="action-condition-variable" value="${hasCondition ? escapeHtml(condition.variable) : ''}">
+                <button type="button" class="field sm sel action-condition-var-btn" onclick="openActionConditionVarSelector(${rowId})" title="${t('automation.selectVariable')}" style="width:150px"></button>
+                <input type="hidden" class="action-condition-variable">
                 <select class="field sm action-condition-operator" style="width:90px">
-                    ${opOpt('eq', '==')}${opOpt('ne', '!=')}${opOpt('gt', '&gt;')}${opOpt('ge', '&gt;=')}${opOpt('contains', t('automation.operatorContains'))}${opOpt('lt', '&lt;')}${opOpt('le', '&lt;=')}
                 </select>
-                <input type="text" class="field sm action-condition-value" placeholder="${t('automationPage.value')}" aria-label="${t('automationPage.value')}" value="${hasCondition ? escapeHtml(JSON.stringify(condition.value)) : ''}" style="width:90px">
+                <input type="text" class="field sm action-condition-value" placeholder="${t('automationPage.value')}" aria-label="${t('automationPage.value')}" style="width:90px">
             </span>
         </div>
     `;
     
+    fillConditionEditor(row, 'action', condition);
     container.appendChild(row);
     actionRowCount++;
 }
@@ -18023,34 +18557,18 @@ async function submitAddRule(originalId = null) {
         return;
     }
     
-    // 收集条件（仅手动触发时为空数组）
+    // Dormant trigger conditions are preserved when manual-only is selected.
     const conditions = [];
-    {
-        document.querySelectorAll('.condition-row').forEach(row => {
-            const variable = row.querySelector('.cond-variable').value.trim();
-            const operator = row.querySelector('.cond-operator').value;
-            let value = row.querySelector('.cond-value').value.trim();
-            
-            if (variable) {
-                // 尝试解析值为 JSON
-                try {
-                    value = JSON.parse(value);
-                } catch (e) {
-                    // 保持字符串
-                }
-                
-                const condition = { variable, operator, value };
-                if (row._originalCondition && Object.is(value, row._originalCondition.value) && row._originalCondition.value_type !== undefined)
-                    condition.value_type = row._originalCondition.value_type;
-                conditions.push(condition);
-            }
-        });
+    for (const row of document.querySelectorAll('#add-rule-modal .condition-row')) {
+        const condition = readConditionEditor(row, 'trigger');
+        if (!condition) return;
+        conditions.push(condition);
     }
-    
+
     // 收集动作模板引用（包含 template_id、delay_ms、重复选项和动作条件）
     const actions = [];
-    document.querySelectorAll('#add-rule-modal .action-row').forEach(row => {
-        if (row.dataset.inline === 'true') { actions.push(structuredClone(row._originalAction)); return; }
+    for (const row of document.querySelectorAll('#add-rule-modal .action-row')) {
+        if (row.dataset.inline === 'true') { actions.push(structuredClone(row._originalAction)); continue; }
         const templateId = row.querySelector('.action-template-id')?.value;
         const delay_ms = parseInt(row.querySelector('.action-delay')?.value) || 0;
         const repeat_mode = row.querySelector('.action-repeat-mode')?.value || 'once';
@@ -18059,9 +18577,7 @@ async function submitAddRule(originalId = null) {
         
         // 收集动作条件
         const hasCondition = row.querySelector('.action-has-condition')?.checked;
-        const condVariable = row.querySelector('.action-condition-variable')?.value?.trim();
-        const condOperator = row.querySelector('.action-condition-operator')?.value;
-        const condValueRaw = row.querySelector('.action-condition-value')?.value?.trim();
+        if (hasCondition && !templateId) { fieldError('actions-container', t('ui.alertSelectAction')); return; }
         
         if (templateId) {
             const actionRef = row._originalAction?.template_id === templateId ? structuredClone(row._originalAction) : {};
@@ -18081,29 +18597,15 @@ async function submitAddRule(originalId = null) {
                 }
             }
             
-            // 添加动作条件
-            if (hasCondition && condVariable) {
-                // 尝试解析条件值
-                let condValue = condValueRaw;
-                try {
-                    condValue = JSON.parse(condValueRaw);
-                } catch (e) {
-                    // 保持字符串
-                }
-                
-                actionRef.condition = {
-                    variable: condVariable,
-                    operator: condOperator,
-                    value: condValue
-                };
-                const oldCondition = row._originalAction?.condition;
-                if (oldCondition && Object.is(oldCondition.value, condValue) && oldCondition.value_type !== undefined)
-                    actionRef.condition.value_type = oldCondition.value_type;
+            if (hasCondition) {
+                const condition = readConditionEditor(row, 'action');
+                if (!condition) return;
+                actionRef.condition = condition;
             }
-            
+
             actions.push(actionRef);
         }
-    });
+    }
     
     if (actions.length === 0) {
         fieldError('actions-container', t('ui.alertSelectAction'));
@@ -18237,8 +18739,9 @@ function showExportSourceModal(sourceId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = exportSheet('source', t('automation.exportSourceTitle'), t('automation.exportSourceDesc', {id: escapeHtml(sourceId)}), t('securityPage.targetCertHint'), 'hideExportSourceModal', `doExportSource('${escapeHtml(sourceId)}')`);
+    modal.innerHTML = exportSheet('source', t('automation.exportSourceTitle'), t('automation.exportSourceDesc', {id: escapeHtml(sourceId)}), t('securityPage.targetCertHint'), 'hideExportSourceModal', 'doExportSource');
     
+    modal.dataset.exportId = sourceId;
     modal.classList.remove('hidden');
 }
 
@@ -18422,8 +18925,9 @@ function showExportRuleModal(ruleId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = exportSheet('rule', t('ruleConfig.exportTitle'), t('ruleConfig.exportDesc', {id: escapeHtml(ruleId)}), t('ruleConfig.certHint'), 'hideExportRuleModal', `doExportRule('${escapeHtml(ruleId)}')`);
+    modal.innerHTML = exportSheet('rule', t('ruleConfig.exportTitle'), t('ruleConfig.exportDesc', {id: escapeHtml(ruleId)}), t('ruleConfig.certHint'), 'hideExportRuleModal', 'doExportRule');
     
+    modal.dataset.exportId = ruleId;
     modal.classList.remove('hidden');
 }
 
@@ -18607,8 +19111,9 @@ function showExportActionModal(actionId) {
         document.body.appendChild(modal);
     }
     
-    modal.innerHTML = exportSheet('action', t('automation.exportActionTitle'), t('automation.exportActionDesc', {actionId: escapeHtml(actionId)}), t('securityPage.targetCertHint'), 'hideExportActionModal', `doExportAction('${escapeHtml(actionId)}')`);
+    modal.innerHTML = exportSheet('action', t('automation.exportActionTitle'), t('automation.exportActionDesc', {actionId: escapeHtml(actionId)}), t('securityPage.targetCertHint'), 'hideExportActionModal', 'doExportAction');
     
+    modal.dataset.exportId = actionId;
     modal.classList.remove('hidden');
 }
 

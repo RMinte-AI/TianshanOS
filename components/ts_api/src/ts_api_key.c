@@ -10,6 +10,7 @@
 #include "ts_keystore.h"
 #include "ts_log.h"
 #include "esp_heap_caps.h"
+#include "nvs.h"
 #include <string.h>
 
 #define TAG "api_key"
@@ -239,21 +240,53 @@ static esp_err_t api_key_generate(const cJSON *params, ts_api_result_t *result)
         .hidden = hidden,
     };
     
-    esp_err_t ret = ts_keystore_generate_key_ex(id->valuestring, type, &opts);
+    char request_id[32] = "legacy";
+    const cJSON *rid = cJSON_GetObjectItem(params, "request_id");
+    if (cJSON_IsString(rid) && strlen(rid->valuestring) < sizeof(request_id)) {
+        bool valid = rid->valuestring[0] != '\0';
+        for (const char *p = rid->valuestring; *p; ++p) {
+            if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                  (*p >= '0' && *p <= '9') || *p == '-')) valid = false;
+        }
+        if (valid) strcpy(request_id, rid->valuestring);
+    }
+    ts_keystore_generate_result_t detail;
+    esp_err_t ret = ts_keystore_generate_key_with_result(id->valuestring, type, &opts, &detail);
+    TS_LOGI(TAG, "key.generate request=%s storage id=%s ret=%s stage=%s stored=%d cleanup=%s", request_id, id->valuestring,
+            esp_err_to_name(ret), detail.failed_stage ? detail.failed_stage : "saved", detail.stored,
+            esp_err_to_name(detail.cleanup_error));
     if (ret != ESP_OK) {
-        if (ret == ESP_ERR_NO_MEM) {
-            ts_api_result_error(result, TS_API_ERR_NO_MEM, "Storage full");
+        const char *reason = ret == ESP_ERR_NO_MEM ? "Memory allocation failed" :
+            ret == ESP_ERR_NVS_NOT_ENOUGH_SPACE ? "key_storage_full" :
+            strcmp(detail.failed_stage, "id_occupied") == 0 ? "key_id_occupied" :
+            strcmp(detail.failed_stage, "index_capacity") == 0 ? "key_limit_reached" :
+            ret == ESP_ERR_INVALID_ARG ? "key_invalid_id" : "key_storage_failed";
+        ts_api_result_error(result, ret == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM :
+                            ret == ESP_ERR_INVALID_ARG ? TS_API_ERR_INVALID_ARG : TS_API_ERR_INTERNAL, reason);
+        cJSON *data = cJSON_CreateObject();
+        if (data && cJSON_AddStringToObject(data, "id", id->valuestring) &&
+            cJSON_AddStringToObject(data, "failed_stage", detail.failed_stage) &&
+            cJSON_AddStringToObject(data, "esp_error", esp_err_to_name(ret)) &&
+            cJSON_AddBoolToObject(data, "cleanup_complete", detail.cleanup_complete) &&
+            cJSON_AddStringToObject(data, "cleanup_error", esp_err_to_name(detail.cleanup_error))) {
+            result->data = data;
         } else {
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to generate key");
+            cJSON_Delete(data);
+            TS_LOGE(TAG, "key.generate request=%s error response allocation failed", request_id);
         }
         return ret;
     }
-    
+
     cJSON *data = cJSON_CreateObject();
-    cJSON_AddBoolToObject(data, "generated", true);
-    cJSON_AddStringToObject(data, "id", id->valuestring);
-    cJSON_AddStringToObject(data, "type", ts_keystore_type_to_string(type));
-    
+    if (!data || !cJSON_AddBoolToObject(data, "generated", true) ||
+        !cJSON_AddStringToObject(data, "id", id->valuestring) ||
+        !cJSON_AddStringToObject(data, "type", ts_keystore_type_to_string(type))) {
+        cJSON_Delete(data);
+        TS_LOGE(TAG, "key.generate request=%s saved id=%s but response allocation failed", request_id, id->valuestring);
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "key_response_failed");
+        return ESP_ERR_NO_MEM;
+    }
+
     ts_api_result_ok(result, data);
     return ESP_OK;
 }

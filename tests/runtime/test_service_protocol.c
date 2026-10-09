@@ -76,11 +76,33 @@ int main(void) {
  initialize_command("original");assert(ts_ssh_service_init()==ESP_OK);assert(ts_ssh_log_watch_init()==ESP_OK);
  ts_ssh_config_t cfg=TS_SSH_DEFAULT_CONFIG();ts_ssh_session_t session;assert(ts_ssh_session_create(&cfg,&session)==ESP_OK);
  ts_ssh_service_status_t st;
+ /* A command admitted but not yet launched must not race a successful stop. */
+ uint32_t pending_pin;assert(ts_ssh_service_pin(&command,"192.0.2.8",22,&pending_pin)==ESP_OK);
+ uint32_t pending_control;assert(ts_ssh_service_reserve_operation(command.id,pending_pin,TS_SERVICE_START,&pending_control)==ESP_OK);
+ assert(ts_ssh_service_stop(command.id,&st)==ESP_ERR_INVALID_STATE);
+ ts_ssh_service_complete_operation(command.id,pending_control,ESP_FAIL);
+ uint32_t newer_launch;assert(ts_ssh_service_reserve_operation(command.id,pending_pin,TS_SERVICE_START,&newer_launch)==ESP_OK&&newer_launch!=pending_control);
+ ts_ssh_service_complete_operation(command.id,pending_control,ESP_OK);
+ assert(ts_ssh_service_cached(command.id,&st)==ESP_OK&&st.operation_id==newer_launch&&!strcmp(st.operation_phase,"queued"));
+ uint32_t reserved_gen;remote_running=0;
+ assert(ts_ssh_service_begin_reserved(&command,session,pending_control,&reserved_gen)==ESP_ERR_INVALID_STATE);
+ assert(ts_ssh_service_begin_reserved(&command,session,newer_launch,&reserved_gen)==ESP_OK);
+ assert(ts_ssh_service_stop(command.id,&st)==ESP_ERR_INVALID_STATE);
+ remote_running=1;assert(ts_ssh_service_finish(command.id,reserved_gen,"STARTED abcd-1234:123:456\n",session));
+ ts_ssh_service_complete_operation(command.id,newer_launch,ESP_OK);
+ ts_ssh_service_observe(command.id,reserved_gen,"ready",command.var_name);
+ assert(ts_ssh_service_cached(command.id,&st)==ESP_OK&&!strcmp(st.state,"ready"));
+ /* Rule still owns its snapshot for subsequent actions: stop must succeed. */
+ assert(ts_ssh_service_command_protected(command.id));
+ assert(ts_ssh_service_stop(command.id,&st)==ESP_OK&&!remote_running&&!strcmp(st.state,"stopped"));
+ assert(ts_ssh_service_command_protected(command.id));
+ ts_ssh_service_unpin(command.id,pending_pin);
  uint32_t gen;remote_running=0;assert(ts_ssh_service_begin(&command,session,&gen)==ESP_OK);remote_running=1;
  assert(!ts_ssh_service_finish(command.id,gen,"STARTED abcd-1234:123:999\n",session));
  ts_ssh_service_cached(command.id,&st);assert(!strcmp(st.state,"unknown"));
  assert(ts_ssh_service_stop(command.id,&st)==ESP_OK);
  gen=launch(session);
+ assert(ts_ssh_service_cached(command.id,&st)==ESP_OK&&!strcmp(st.state,"running"));
  cancel_on_connect=gen;
  assert(ts_ssh_service_query(command.id,&st)==ESP_OK&&!st.busy&&!strcmp(st.state,"unknown"));
  assert(ts_ssh_service_query(command.id,&st)==ESP_OK&&!st.busy);
@@ -143,5 +165,5 @@ int main(void) {
  ts_ssh_service_observe(command.id,gen,"ready",command.var_name);
  ts_ssh_service_cached(command.id,&st);assert(!strcmp(st.state,"stopped"));
  ts_ssh_session_destroy(session);assert(!ssh_live);
- puts("PASS service protocol: stale credentials, cancellation cleanup, deletion barrier/failure/reuse, 70 replacements, missing config protection, physical identity, page-free recovery, 3-attempt budget, zero-I/O cached reads");
+ puts("PASS service protocol: queued/active launch stop guards, retained-rule READY stop, stale launch completion, stale credentials, cancellation cleanup, deletion barrier/failure/reuse, 70 replacements, missing config protection, physical identity, page-free recovery, 3-attempt budget, zero-I/O cached reads");
 }

@@ -2,10 +2,10 @@
 
 [English](README_EN.md) | [中文](README.md)
 
-[![Build Status](https://github.com/thomas-hiddenpeak/TianshanOS/actions/workflows/build.yml/badge.svg)](https://github.com/thomas-hiddenpeak/TianshanOS/actions/workflows/build.yml)
+[![Build Status](https://github.com/RMinte-AI/TianshanOS/actions/workflows/build.yml/badge.svg)](https://github.com/RMinte-AI/TianshanOS/actions/workflows/build.yml)
 ![Lighthouse Performance](https://img.shields.io/badge/Lighthouse-97-brightgreen?logo=lighthouse&logoColor=white)
-[![Release](https://img.shields.io/github/v/release/thomas-hiddenpeak/TianshanOS)](https://github.com/thomas-hiddenpeak/TianshanOS/releases/latest)
-[![License](https://img.shields.io/github/license/thomas-hiddenpeak/TianshanOS)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/RMinte-AI/TianshanOS)](https://github.com/RMinte-AI/TianshanOS/releases/latest)
+[![License](https://img.shields.io/github/license/RMinte-AI/TianshanOS)](LICENSE)
 ![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.5+-green?logo=espressif)
 ![C](https://img.shields.io/badge/C-99-blue?logo=c)
 ![ESP32-S3](https://img.shields.io/badge/ESP32--S3-supported-blue?logo=espressif)
@@ -87,9 +87,12 @@ TianshanOS/
 
 ### Quick Start
 
+The latest local **0.6.1** firmware is under `build/`: `TianShanOS.bin`, `www.bin`, `bootloader/bootloader.bin`, `partition_table/partition-table.bin`, and `ota_data_initial.bin`.
+`build/firmware-manifest.json` records the version, build identifier, and file SHA-256 values. Use `flasher_args.json` from the same directory; do not mix images from historical build directories.
+
 ```bash
 # Clone the repository
-git clone https://github.com/thomas-hiddenpeak/TianshanOS.git
+git clone https://github.com/RMinte-AI/TianshanOS.git
 cd TianshanOS
 
 # Set up ESP-IDF environment

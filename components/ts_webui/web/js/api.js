@@ -52,7 +52,8 @@ function apiErrorMessage(result, operation = '') {
         'File not found': 'fileMissing', 'Directory not found': 'directoryMissing',
         'Source file not found': 'fileMissing', 'Cannot delete root directory': 'rootDirectory',
         'Failed to stat file': 'fileInfo', 'Memory allocation failed': 'memory',
-        'Request timeout': 'timeout', 'Failed to fetch': 'connection'
+        'Request timeout': 'timeout', 'Failed to fetch': 'connection',
+        'service_delete_protected': 'serviceDeleteProtected'
     };
     const codes = ['unknownError', 'invalidInput', 'notFound', 'permission', 'busy', 'timeout',
         'memory', 'internal', 'unsupported', 'hardware', 'connection', 'auth'];
@@ -113,6 +114,13 @@ class TianShanAPI {
         localStorage.removeItem('ts_expires');
     }
     
+    // Only the latest generation is retained; no credentials or key material.
+    recordKeyGeneration(stage, fields = {}, requestId = this.keyGenerationTrace?.requestId) {
+        const trace = this.keyGenerationTrace;
+        if (!trace || trace.requestId !== requestId) return;
+        if (trace.events.length < 32) trace.events.push({stage, at: Date.now(), ...fields});
+    }
+
     /**
      * 通用 API 请求方法
      */
@@ -142,14 +150,22 @@ class TianShanAPI {
         }
         
         let httpStatus;
+        const keyRequestId = endpoint === '/key/generate' && method === 'POST' ? data?.request_id : null;
+        const traceKey = (stage, fields) => {
+            if (keyRequestId) this.recordKeyGeneration(stage, fields, keyRequestId);
+        };
+        traceKey('fetch_start');
         try {
             const response = await fetch(getApiUrl(endpoint), options);
             httpStatus = response.status;
+            traceKey('response_headers', {httpStatus});
             const text = await response.text();
+            traceKey('response_body', {length: text.length});
             let json;
             try {
                 json = JSON.parse(text);
             } catch (parseErr) {
+                if (keyRequestId) throw parseErr;
                 if (!response.ok) throw new ApiOperationError({error: text}, endpoint, {httpStatus: response.status});
                 // 响应可能被 WebSocket 等数据污染（如 ~{"type"...），尝试从某处解析出带 code 的 API 格式
                 if (parseErr instanceof SyntaxError && text) {
@@ -170,6 +186,7 @@ class TianShanAPI {
                 }
             }
             
+            traceKey('response_parsed', {code: typeof json?.code === 'number' ? json.code : null, generated: json?.data?.generated === true});
             // 返回 JSON 响应，即使是错误码也返回（让调用者决定如何处理）
             if (!response.ok) throw new ApiOperationError(json, endpoint, {httpStatus: response.status});
             const logoutResponse = endpoint === '/auth/logout' && method === 'POST';
@@ -195,6 +212,7 @@ class TianShanAPI {
             
             return json;
         } catch (error) {
+            traceKey('request_error', {kind: controller.signal.aborted ? 'timeout' : error.kind || (error instanceof SyntaxError ? 'format' : httpStatus >= 400 ? 'http' : 'network'), httpStatus});
             if (error instanceof ApiOperationError) throw error;
             const kind = controller.signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'format' : 'network';
             throw new ApiOperationError({message: error.message}, endpoint, {kind, uncertain: method !== 'GET', httpStatus});
@@ -447,8 +465,9 @@ class TianShanAPI {
     
     // 综合网络状态 (包含 ethernet, wifi_sta, wifi_ap)
     async networkStatus() { return this.call('network.status'); }
-    async lpmuAccessStart() { return this.call('network.lpmu_access.start', null, 'POST'); }
+    async lpmuAccessStart(sudoPassword) { return this.call('network.lpmu_access.start', { sudo_password: sudoPassword }, 'POST'); }
     async lpmuAccessStatus() { return this.call('network.lpmu_access.status'); }
+    async lpmuAccessLog(runId, offset = 0) { return this.call('network.lpmu_access.log', { run_id: runId, offset }, 'GET'); }
     
     // WiFi 相关
     async wifiMode(mode = null) { 
@@ -605,7 +624,7 @@ class TianShanAPI {
     async sshCopyid(host, user, password, keyid, port = 22, verify = true, options = {}) { 
         return this.call('ssh.copyid', { 
             host, user, password, keyid, port, verify,
-            trust_new: options.trust_new ?? false,
+            trust_new: options.trust_new ?? true, // 部署沿用 0.5.1：首次自动信任新主机
             confirmed_fingerprint: options.confirmed_fingerprint,
             accept_changed: options.accept_changed ?? false
         }, 'POST'); 
@@ -630,7 +649,10 @@ class TianShanAPI {
     async keyList() { return this.call('key.list'); }
     async keyInfo(id) { return this.call('key.info', { id }); }
     async keyGenerate(id, type = 'rsa2048', comment = '', exportable = false, alias = '', hidden = false) { 
-        return this.call('key.generate', { id, type, comment, exportable, alias, hidden }, 'POST'); 
+        const request_id = 'kg-' + Date.now().toString(36) + '-' + (this.keyGenerationSequence = (this.keyGenerationSequence || 0) + 1).toString(36);
+        this.keyGenerationTrace = {requestId: request_id, id, events: []};
+        this.recordKeyGeneration('submit');
+        return this.call('key.generate', { id, type, comment, exportable, alias, hidden, request_id }, 'POST');
     }
     async keyDelete(id) { return this.call('key.delete', { id }, 'POST'); }
     async keyExport(id) { return this.call('key.export', { id }); }

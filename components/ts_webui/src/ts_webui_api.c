@@ -17,6 +17,7 @@
 #include "freertos/task.h"
 #include "esp_http_server.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include <string.h>
 #include <stdint.h>
 #include <sys/stat.h>
@@ -115,6 +116,33 @@ static esp_err_t check_auth(ts_http_request_t *req, uint32_t *session_id, ts_per
 #endif
 }
 
+/* This endpoint retains storage failure details; other response contracts stay unchanged. */
+static esp_err_t send_key_generate_result(ts_http_request_t *req, ts_api_result_t *result,
+                                          const char *request_id, int64_t started)
+{
+    cJSON *response = cJSON_CreateObject();
+    bool built = response && cJSON_AddNumberToObject(response, "code", result->code);
+    if (built && result->message) {
+        built = cJSON_AddStringToObject(response, result->code == TS_API_OK ? "message" : "error", result->message) != NULL;
+    }
+    if (built && result->data) {
+        cJSON *data = cJSON_Duplicate(result->data, true);
+        if (!data) built = false;
+        else if (!cJSON_AddItemToObject(response, "data", data)) { cJSON_Delete(data); built = false; }
+    }
+    char *json = built ? cJSON_PrintUnformatted(response) : NULL;
+    cJSON_Delete(response);
+    ts_api_result_free(result);
+    TS_LOGI(TAG, "key.generate request=%s response=%s elapsed_ms=%lld", request_id,
+            json ? "built" : "allocation_failed", (long long)((esp_timer_get_time() - started) / 1000));
+    esp_err_t ret = json ? ts_http_send_json(req, 200, json)
+                        : ts_http_send_error(req, 500, "Key response serialization failed");
+    free(json);
+    TS_LOGI(TAG, "key.generate request=%s send=%s elapsed_ms=%lld", request_id,
+            esp_err_to_name(ret), (long long)((esp_timer_get_time() - started) / 1000));
+    return ret;
+}
+
 static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
 {
     (void)user_data;
@@ -161,8 +189,18 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
     //     }
     // }
     
+    bool key_generation = strcmp(api_name, "key.generate") == 0;
+    int64_t key_started = key_generation ? esp_timer_get_time() : 0;
+    char key_request_id[32] = "legacy";
+    if (key_generation) TS_LOGI(TAG, "key.generate received");
     // Build request JSON
     cJSON *request = cJSON_CreateObject();
+    if (key_generation && !request) {
+        TS_LOGE(TAG, "key.generate request=legacy request allocation failed");
+        esp_err_t send_ret = ts_http_send_error(req, 500, "Key request allocation failed");
+        TS_LOGI(TAG, "key.generate request=legacy send=%s", esp_err_to_name(send_ret));
+        return send_ret;
+    }
     
     // Parse URL query string parameters (for GET requests)
     size_t query_len = httpd_req_get_url_query_len(req->req);
@@ -239,6 +277,18 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
         }
     }
     
+    if (key_generation) {
+        const cJSON *rid = cJSON_GetObjectItem(request, "request_id");
+        if (cJSON_IsString(rid) && strlen(rid->valuestring) < sizeof(key_request_id)) {
+            bool valid = rid->valuestring[0] != '\0';
+            for (const char *p = rid->valuestring; *p; ++p) {
+                if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                       (*p >= '0' && *p <= '9') || *p == '-')) valid = false;
+            }
+            if (valid) strcpy(key_request_id, rid->valuestring);
+        }
+        TS_LOGI(TAG, "key.generate request=%s arrived", key_request_id);
+    }
     // Call API
     ts_api_result_t result = {0};
     esp_err_t ret = ts_api_call(api_name, request, &result);
@@ -249,8 +299,15 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
                 api_name, ret, result.code, result.message ? result.message : "null");
     }
     
+    if (key_generation) {
+        const cJSON *generated = cJSON_GetObjectItem(result.data, "generated");
+        TS_LOGI(TAG, "key.generate request=%s returned ret=%s code=%d generated_result=%d elapsed_ms=%lld",
+                key_request_id, esp_err_to_name(ret), result.code, cJSON_IsTrue(generated),
+                (long long)((esp_timer_get_time() - key_started) / 1000));
+    }
     cJSON_Delete(request);
-    
+    if (key_generation) return send_key_generate_result(req, &result, key_request_id, key_started);
+
     if (ret == ESP_OK || result.code == TS_API_OK) {
         // Build response JSON
         cJSON *response = cJSON_CreateObject();

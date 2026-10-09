@@ -147,7 +147,7 @@ static esp_err_t api_https_status(const cJSON *params, ts_api_result_t *result)
  * 参数：
  * {
  *   "common_name": "TianShanOS",         // 可选，默认 "TianShanOS"
- *   "organization": "HiddenPeak Labs",   // 可选，默认 "HiddenPeak Labs"
+ *   "organization": "TianShanOS",   // 可选，默认 "TianShanOS"
  *   "country": "CN",                     // 可选，默认 "CN"
  *   "days": 365                          // 可选，默认 365 天
  * }
@@ -168,7 +168,7 @@ static esp_err_t api_cert_generate(const cJSON *params, ts_api_result_t *result)
     const cJSON *days_obj = cJSON_GetObjectItem(params, "days");
     
     const char *cn = (cn_obj && cJSON_IsString(cn_obj)) ? cn_obj->valuestring : "TianShanOS";
-    const char *org = (org_obj && cJSON_IsString(org_obj)) ? org_obj->valuestring : "HiddenPeak Labs";
+    const char *org = (org_obj && cJSON_IsString(org_obj)) ? org_obj->valuestring : "TianShanOS";
     const char *country = (country_obj && cJSON_IsString(country_obj)) ? country_obj->valuestring : "CN";
     uint32_t days = (days_obj && cJSON_IsNumber(days_obj)) ? days_obj->valueint : 365;
     
@@ -264,7 +264,7 @@ static esp_err_t api_cert_upload(const cJSON *params, ts_api_result_t *result)
  *   "has_certificate": true,
  *   "cert_info": {
  *     "common_name": "TianShanOS",
- *     "organization": "HiddenPeak Labs",
+ *     "organization": "TianShanOS",
  *     "country": "CN",
  *     "valid_from": 1737705600,
  *     "valid_to": 1769241600,

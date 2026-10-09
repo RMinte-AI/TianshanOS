@@ -16,6 +16,9 @@
  */
 
 #include "ts_action_manager.h"
+#include "ts_action_filter.h"
+#include "ts_action_store.h"
+#include "ts_api.h"
 #include "ts_variable.h"
 #include "ts_event.h"
 #include "ts_ssh_client.h"
@@ -50,6 +53,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -73,6 +77,7 @@ static const char *TAG = "ts_action_mgr";
 
 /** Action executor task priority */
 #define ACTION_TASK_PRIORITY        5
+#define SERVICE_QUEUE_TIMEOUT_MS    30000
 
 /** NVS namespace for action templates */
 #define NVS_NAMESPACE               "action_tpl"
@@ -106,6 +111,8 @@ typedef struct {
     TaskHandle_t executor_task;
     atomic_bool running;
     atomic_bool accepting;
+    bool direct_closed;
+    unsigned direct_pending; /* caller + executor; at most one direct launch */
     unsigned pending; /* producers + queued + executing, protected by stats_mutex */
 
     /* Statistics */
@@ -123,7 +130,7 @@ typedef struct {
     ts_ssh_command_config_t command;
     ts_action_ssh_host_t host;
     bool pinned;
-    uint32_t registration;
+    uint32_t registration, control_id;
 } action_binding_t;
 typedef struct {
     atomic_uint refs;
@@ -154,6 +161,32 @@ void ts_action_snapshot_release(ts_auto_action_t *a) {
     }
     if (a)
         a->runtime_binding = NULL;
+}
+static esp_err_t snapshot_command(ts_auto_action_t *out, bool for_start) {
+    action_binding_t *binding =
+        heap_caps_calloc(1, sizeof(*binding), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!binding)
+        return ESP_ERR_NO_MEM;
+    atomic_init(&binding->refs, 1);
+    esp_err_t ret = ts_ssh_commands_config_get(out->ssh_ref.cmd_id, &binding->command);
+    if (ret == ESP_OK)
+        ret = ts_action_get_ssh_host(binding->command.host_id, &binding->host);
+    if (ret == ESP_OK && for_start && !binding->command.enabled)
+        ret = ESP_ERR_INVALID_STATE;
+    if (ret == ESP_OK && binding->command.nohup && binding->command.service_mode) {
+        if (for_start && !ts_ssh_service_start_admissible(binding->command.id))
+            ret = ESP_ERR_INVALID_STATE;
+        else {
+            ret = ts_ssh_service_pin(&binding->command, binding->host.host, binding->host.port, &binding->registration);
+            binding->pinned = ret == ESP_OK;
+        }
+    }
+    if (ret != ESP_OK) {
+        free(binding);
+        return ret;
+    }
+    out->runtime_binding = binding;
+    return ESP_OK;
 }
 esp_err_t ts_action_snapshot(const ts_auto_action_t *source, ts_auto_action_t *out) {
     *out = *source;
@@ -187,31 +220,9 @@ esp_err_t ts_action_snapshot(const ts_auto_action_t *source, ts_auto_action_t *o
         return ESP_OK;
     if (!source->template_id[0] && !source->runtime_snapshot)
         out->async = true;
-    action_binding_t *binding =
-        heap_caps_calloc(1, sizeof(*binding), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!binding)
-        return ESP_ERR_NO_MEM;
-    atomic_init(&binding->refs, 1);
-    esp_err_t ret = ts_ssh_commands_config_get(out->ssh_ref.cmd_id, &binding->command);
-    if (ret == ESP_OK)
-        ret = ts_action_get_ssh_host(binding->command.host_id, &binding->host);
-    if (ret == ESP_OK && !binding->command.enabled)
-        ret = ESP_ERR_INVALID_STATE;
-    if (ret == ESP_OK && binding->command.nohup && binding->command.service_mode) {
-        if (!ts_ssh_service_start_admissible(binding->command.id))
-            ret = ESP_ERR_INVALID_STATE;
-        else {
-            ret = ts_ssh_service_pin(&binding->command, binding->host.host, binding->host.port, &binding->registration);
-            binding->pinned = ret == ESP_OK;
-        }
-    }
-    if (ret != ESP_OK) {
-        free(binding);
-        return ret;
-    }
-    out->runtime_binding = binding;
-    return ESP_OK;
+    return snapshot_command(out, true);
 }
+
 /*===========================================================================*/
 /*                          Forward Declarations                              */
 /*===========================================================================*/
@@ -325,9 +336,11 @@ void ts_action_deferred_load_task(void *arg)
     }
     
     ESP_LOGI(TAG, "Deferred action template loading started");
-    ts_action_templates_load();
-    ESP_LOGI(TAG, "Deferred action template loading complete: %d templates", 
-             s_ctx->template_count);
+    esp_err_t ret = ts_action_templates_load();
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Deferred action template loading complete: %d templates",
+                 s_ctx->template_count);
+    } else ESP_LOGE(TAG, "Deferred action template loading failed: %s", esp_err_to_name(ret));
     
     vTaskDelete(NULL);
 }
@@ -341,7 +354,11 @@ esp_err_t ts_action_manager_deinit(void)
     ESP_LOGI(TAG, "Deinitializing action manager");
     
     /* Admission stays closed until every producer/executor has released ownership. */
-    if (ts_action_manager_quiesce() != ESP_OK) return ESP_ERR_TIMEOUT;
+    xSemaphoreTake(s_ctx->stats_mutex, portMAX_DELAY);
+    s_ctx->direct_closed = true;
+    bool direct_idle = s_ctx->direct_pending == 0;
+    xSemaphoreGive(s_ctx->stats_mutex);
+    if (ts_action_manager_quiesce() != ESP_OK || !direct_idle) return ESP_ERR_TIMEOUT;
     s_ctx->running = false;
     xSemaphoreTake(s_ctx->stats_mutex, portMAX_DELAY);
     bool exiting = s_ctx->executor_task != NULL;
@@ -536,6 +553,26 @@ static void action_finished(void) {
     --s_ctx->pending;
     xSemaphoreGive(s_ctx->stats_mutex);
 }
+static bool direct_service_admit(void) {
+    if (!s_ctx) return false;
+    xSemaphoreTake(s_ctx->stats_mutex, portMAX_DELAY);
+    bool accept = s_ctx->running && !s_ctx->direct_closed && !s_ctx->direct_pending;
+    if (accept) s_ctx->direct_pending = 2;
+    xSemaphoreGive(s_ctx->stats_mutex);
+    return accept;
+}
+static void direct_service_finished(void) {
+    xSemaphoreTake(s_ctx->stats_mutex, portMAX_DELAY);
+    --s_ctx->direct_pending;
+    xSemaphoreGive(s_ctx->stats_mutex);
+}
+static void entry_finished(const ts_action_queue_entry_t *entry, esp_err_t error) {
+    if (entry->service_operation_id) {
+        bool executed = ts_ssh_service_complete_operation(entry->action.ssh_ref.cmd_id, entry->service_operation_id, error);
+        if (executed && entry->service_kind == TS_SERVICE_VERIFY) ts_ssh_service_recovery_kick(entry->action.ssh_ref.cmd_id);
+        direct_service_finished();
+    } else action_finished();
+}
 bool ts_action_manager_accepting(void) { return s_ctx && s_ctx->accepting; }
 esp_err_t ts_action_manager_quiesce(void) {
     if (!s_ctx) return ESP_OK;
@@ -553,7 +590,24 @@ esp_err_t ts_action_manager_resume(void) {
     xSemaphoreGive(s_ctx->stats_mutex);
     return idle ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
-esp_err_t ts_action_manager_execute(const ts_auto_action_t *action, ts_action_result_t *result) {
+static esp_err_t prepare_action_entry(const ts_auto_action_t *action,
+                                      ts_action_queue_entry_t *entry, bool delay_handled) {
+    esp_err_t ret = ESP_OK;
+    if (action->runtime_snapshot) {
+        entry->action = *action;
+        ts_action_snapshot_retain(&entry->action);
+    } else {
+        ts_ssh_binding_lock();
+        ret = ts_action_snapshot(action, &entry->action);
+        ts_ssh_binding_unlock();
+    }
+    if (ret == ESP_OK && delay_handled)
+        entry->action.delay_ms = 0;
+    return ret;
+}
+
+static esp_err_t action_manager_execute(const ts_auto_action_t *action,
+                                        ts_action_result_t *result, bool delay_handled) {
     if (!s_ctx || !action || !s_ctx->running || !s_ctx->executor_task)
         return ESP_ERR_INVALID_STATE;
     if (!action_admit()) return ESP_ERR_INVALID_STATE;
@@ -566,26 +620,19 @@ esp_err_t ts_action_manager_execute(const ts_auto_action_t *action, ts_action_re
         return ESP_ERR_NO_MEM;
     }
     atomic_init(&c->refs, 2);
-    ts_auto_action_t frozen;
-    esp_err_t ret = ESP_OK;
-    if (action->runtime_snapshot) {
-        frozen = *action;
-        ts_action_snapshot_retain(&frozen);
-    } else {
-        ts_ssh_binding_lock();
-        ret = ts_action_snapshot(action, &frozen);
-        ts_ssh_binding_unlock();
-    }
+    ts_action_queue_entry_t entry = {0};
+    esp_err_t ret = prepare_action_entry(action, &entry, delay_handled);
     if (ret != ESP_OK) {
         completion_release(c);
         completion_release(c);
         action_finished(); action_finished();
         return ret;
     }
-    ts_action_queue_entry_t entry = {
-        .action = frozen, .completion = c, .done_sem = c->semaphore, .result_ptr = &c->result};
+    entry.completion = c;
+    entry.done_sem = c->semaphore;
+    entry.result_ptr = &c->result;
     if (xQueueSend(s_ctx->action_queue, &entry, pdMS_TO_TICKS(100)) != pdTRUE) {
-        ts_action_snapshot_release(&frozen);
+        ts_action_snapshot_release(&entry.action);
         completion_release(c);
         completion_release(c);
         action_finished(); action_finished();
@@ -610,38 +657,30 @@ esp_err_t ts_action_manager_execute(const ts_auto_action_t *action, ts_action_re
     return ret;
 }
 
-esp_err_t ts_action_queue(const ts_auto_action_t *action,
-                          ts_action_callback_t callback,
-                          void *user_data,
-                          uint8_t priority)
+esp_err_t ts_action_manager_execute(const ts_auto_action_t *action, ts_action_result_t *result) {
+    return action_manager_execute(action, result, false);
+}
+
+static esp_err_t action_queue(const ts_auto_action_t *action,
+                              ts_action_callback_t callback,
+                              void *user_data,
+                              uint8_t priority, bool delay_handled)
 {
     if (!s_ctx || !s_ctx->running || !action) {
         return ESP_ERR_INVALID_ARG;
     }
 
     if (!action_admit()) return ESP_ERR_INVALID_STATE;
-    ts_auto_action_t frozen;
-    if (action->runtime_snapshot) {
-        frozen = *action;
-        ts_action_snapshot_retain(&frozen);
-    } else {
-        ts_ssh_binding_lock();
-        esp_err_t ret = ts_action_snapshot(action, &frozen);
-        ts_ssh_binding_unlock();
-        if (ret != ESP_OK) { action_finished(); action_finished(); return ret; }
-    }
-    ts_action_queue_entry_t entry = {
-        .action = frozen,
-        .callback = callback,
-        .user_data = user_data,
-        .priority = priority,
-        .enqueue_time = esp_timer_get_time() / 1000,
-        .done_sem = NULL,  /* Async mode: no sync semaphore */
-        .result_ptr = NULL /* Async mode: no result pointer */
-    };
+    ts_action_queue_entry_t entry = {0};
+    esp_err_t ret = prepare_action_entry(action, &entry, delay_handled);
+    if (ret != ESP_OK) { action_finished(); action_finished(); return ret; }
+    entry.callback = callback;
+    entry.user_data = user_data;
+    entry.priority = priority;
+    entry.enqueue_time = esp_timer_get_time() / 1000;
 
     if (xQueueSend(s_ctx->action_queue, &entry, pdMS_TO_TICKS(100)) != pdTRUE) {
-        ts_action_snapshot_release(&frozen);
+        ts_action_snapshot_release(&entry.action);
         ESP_LOGW(TAG, "Action queue full");
         action_finished(); action_finished();
         return ESP_ERR_NO_MEM;
@@ -656,6 +695,18 @@ esp_err_t ts_action_queue(const ts_auto_action_t *action,
     xSemaphoreGive(s_ctx->stats_mutex);
     action_finished();
     return ESP_OK;
+}
+
+esp_err_t ts_action_queue(const ts_auto_action_t *action, ts_action_callback_t callback,
+                          void *user_data, uint8_t priority) {
+    return action_queue(action, callback, user_data, priority, false);
+}
+
+esp_err_t ts_action_submit_prepared(const ts_auto_action_t *action) {
+    if (!action || !action->runtime_snapshot)
+        return ESP_ERR_INVALID_ARG;
+    return action->async ? action_queue(action, NULL, NULL, 5, true)
+                         : action_manager_execute(action, NULL, true);
 }
 
 esp_err_t ts_action_execute_sequence(const ts_auto_action_t *actions,
@@ -697,7 +748,7 @@ esp_err_t ts_action_cancel_all(void)
         if (entry.done_sem)
             xSemaphoreGive(entry.done_sem);
         completion_release(entry.completion);
-        action_finished();
+        entry_finished(&entry, ESP_ERR_INVALID_STATE);
     }
     ESP_LOGI(TAG, "Cancelled all pending actions");
     return ESP_OK;
@@ -738,7 +789,12 @@ esp_err_t ts_action_exec_ssh(const ts_auto_action_ssh_t *ssh,
         snprintf(result->output, sizeof(result->output), "Out of memory");
         return ESP_ERR_NO_MEM;
     }
-    ts_action_expand_variables(ssh->command, expanded_cmd, TS_SSH_CMD_COMMAND_MAX);
+    if (ts_action_expand_variables(ssh->command, expanded_cmd, TS_SSH_CMD_COMMAND_MAX) < 0) {
+        free(expanded_cmd);
+        result->status = TS_ACTION_STATUS_FAILED;
+        snprintf(result->output, sizeof(result->output), "Expanded command exceeds capacity");
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     ESP_LOGD(TAG, "SSH host=%s, command bytes=%u", ssh->host_ref, (unsigned)strlen(expanded_cmd));
 
@@ -890,30 +946,28 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
     ts_auto_action_led_t led_expanded;
     memcpy(&led_expanded, led, sizeof(ts_auto_action_led_t));
     
-    /* 展开字符串字段中的变量 */
-    char expanded_buf[128];
-    
-    if (led->text[0]) {
-        ts_action_expand_variables(led->text, expanded_buf, sizeof(expanded_buf));
-        strncpy(led_expanded.text, expanded_buf, sizeof(led_expanded.text) - 1);
+    /* Expand into each actual destination; reject rather than truncate. */
+    if (ts_action_expand_variables(led->text, led_expanded.text, sizeof(led_expanded.text)) < 0) {
+        result->status = TS_ACTION_STATUS_FAILED;
+        return ESP_ERR_INVALID_SIZE;
     }
-    if (led->image_path[0]) {
-        ts_action_expand_variables(led->image_path, expanded_buf, sizeof(expanded_buf));
-        strncpy(led_expanded.image_path, expanded_buf, sizeof(led_expanded.image_path) - 1);
+    if (ts_action_expand_variables(led->image_path, led_expanded.image_path, sizeof(led_expanded.image_path)) < 0) {
+        result->status = TS_ACTION_STATUS_FAILED;
+        return ESP_ERR_INVALID_SIZE;
     }
-    if (led->qr_text[0]) {
-        ts_action_expand_variables(led->qr_text, expanded_buf, sizeof(expanded_buf));
-        strncpy(led_expanded.qr_text, expanded_buf, sizeof(led_expanded.qr_text) - 1);
+    if (ts_action_expand_variables(led->qr_text, led_expanded.qr_text, sizeof(led_expanded.qr_text)) < 0) {
+        result->status = TS_ACTION_STATUS_FAILED;
+        return ESP_ERR_INVALID_SIZE;
     }
-    if (led->filter[0]) {
-        ts_action_expand_variables(led->filter, expanded_buf, sizeof(expanded_buf));
-        strncpy(led_expanded.filter, expanded_buf, sizeof(led_expanded.filter) - 1);
+    if (ts_action_expand_variables(led->filter, led_expanded.filter, sizeof(led_expanded.filter)) < 0) {
+        result->status = TS_ACTION_STATUS_FAILED;
+        return ESP_ERR_INVALID_SIZE;
     }
-    if (led->effect[0]) {
-        ts_action_expand_variables(led->effect, expanded_buf, sizeof(expanded_buf));
-        strncpy(led_expanded.effect, expanded_buf, sizeof(led_expanded.effect) - 1);
+    if (ts_action_expand_variables(led->effect, led_expanded.effect, sizeof(led_expanded.effect)) < 0) {
+        result->status = TS_ACTION_STATUS_FAILED;
+        return ESP_ERR_INVALID_SIZE;
     }
-    
+
     /* 使用展开后的结构 */
     const ts_auto_action_led_t *led_final = &led_expanded;
     
@@ -1092,11 +1146,29 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
                 break;
             }
             if (led_final->filter[0]) {
+                if (led_final->filter_params.present) {
+                    cJSON *params = cJSON_CreateObject();
+                    if (!params || !cJSON_AddStringToObject(params, "device", device_name) ||
+                        !cJSON_AddStringToObject(params, "filter", led_final->filter) ||
+                        !ts_action_filter_api_params(&led_final->filter_params, params)) {
+                        cJSON_Delete(params);
+                        ret = ESP_ERR_NO_MEM;
+                        break;
+                    }
+                    ts_api_result_t response = {0};
+                    ret = ts_api_call("led.filter.start", params, &response);
+                    if (ret == ESP_OK && response.code != TS_API_OK) ret = ESP_FAIL;
+                    ts_api_result_free(&response);
+                    cJSON_Delete(params);
+                    snprintf(result->output, sizeof(result->output), "LED filter: %s", led_final->filter);
+                    break;
+                }
                 char cmd[128];
                 if (strcmp(led_final->filter, "none") == 0 || strcmp(led_final->filter, "stop") == 0) {
                     snprintf(cmd, sizeof(cmd), "led --stop-filter --device matrix");
                 } else {
-                    snprintf(cmd, sizeof(cmd), "led --filter --device matrix --filter-name %s", led_final->filter);
+                    snprintf(cmd, sizeof(cmd), "led --filter --device matrix --filter-name %.*s",
+                             (int)sizeof(led_final->filter) - 1, led_final->filter);
                 }
 
                 ESP_LOGD(TAG, "Executing LED CLI (%u bytes)", (unsigned)strlen(cmd));
@@ -1240,7 +1312,10 @@ esp_err_t ts_action_exec_log(const ts_auto_action_log_t *log_action,
     
     /* Expand variables in message */
     char expanded_msg[256];
-    ts_action_expand_variables(log_action->message, expanded_msg, sizeof(expanded_msg));
+    if (ts_action_expand_variables(log_action->message, expanded_msg, sizeof(expanded_msg)) < 0) {
+        result->status = TS_ACTION_STATUS_FAILED;
+        return ESP_ERR_INVALID_SIZE;
+    }
     
     /* Log at appropriate level */
     switch (log_action->level) {
@@ -1317,12 +1392,48 @@ esp_err_t ts_action_exec_device(const ts_auto_action_device_t *device,
 }
 
 static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *, const action_binding_t *,
-                                    ts_action_result_t *);
+                                    uint32_t, ts_action_result_t *);
+/* One direct launch may use the existing executor, independently of rule admission. */
+esp_err_t ts_action_service_control(const char *id, ts_service_operation_t kind, uint32_t *operation_id) {
+    if (!id || !id[0] || strlen(id) >= sizeof(((ts_auto_action_ssh_ref_t *)0)->cmd_id) || !operation_id)
+        return ESP_ERR_INVALID_ARG;
+    *operation_id = 0;
+    if (kind < TS_SERVICE_START || kind > TS_SERVICE_STOP) return ESP_ERR_INVALID_ARG;
+    if (!direct_service_admit()) return ESP_ERR_INVALID_STATE;
+    ts_action_queue_entry_t *entry = heap_caps_calloc(1, sizeof(*entry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!entry) { direct_service_finished(); direct_service_finished(); return ESP_ERR_NO_MEM; }
+    entry->action.type = TS_AUTO_ACT_SSH_CMD_REF;
+    entry->service_kind = kind;
+    entry->enqueue_time = esp_timer_get_time() / 1000;
+    strcpy(entry->action.ssh_ref.cmd_id, id);
+    ts_ssh_binding_lock();
+    esp_err_t ret = snapshot_command(&entry->action, kind == TS_SERVICE_START);
+    action_binding_t *binding = entry->action.runtime_binding;
+    if (ret == ESP_OK && (!binding->command.nohup || !binding->command.service_mode)) ret = ESP_ERR_INVALID_ARG;
+    if (ret == ESP_OK) {
+        ret = ts_ssh_service_reserve_operation(id, binding->registration, kind, &binding->control_id);
+        entry->service_operation_id = binding->control_id;
+    }
+    ts_ssh_binding_unlock();
+    /* No semaphore, no new task, no queue wait in the HTTP handler. */
+    if (ret == ESP_OK && xQueueSend(s_ctx->action_queue, entry, 0) != pdTRUE) ret = ESP_ERR_NO_MEM;
+    if (ret == ESP_OK) {
+        *operation_id = entry->service_operation_id;
+        /* Queue owns the snapshot from here; worker may already have finished. */
+    } else {
+        if (entry->service_operation_id) ts_ssh_service_complete_operation(id, entry->service_operation_id, ret);
+        ts_action_snapshot_release(&entry->action);
+        direct_service_finished();
+    }
+    free(entry);
+    direct_service_finished();
+    return ret;
+}
 esp_err_t ts_action_exec_ssh_ref(const ts_auto_action_ssh_ref_t *ref, ts_action_result_t *result) {
-    return exec_ssh_ref_bound(ref, NULL, result);
+    return exec_ssh_ref_bound(ref, NULL, 0, result);
 }
 static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
-                                    const action_binding_t *binding, ts_action_result_t *result) {
+                                    const action_binding_t *binding, uint32_t launch_id, ts_action_result_t *result) {
     if (!ssh_ref || !result) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -1379,7 +1490,16 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
         snprintf(result->output, sizeof(result->output), "Out of memory");
         return ESP_ERR_NO_MEM;
     }
-    ts_action_expand_variables(cmd_config.command, expanded_cmd, TS_SSH_CMD_COMMAND_MAX);
+    /* Direct commands retain their literal text; only automation expands variables. */
+    int expanded_length = binding && binding->control_id
+        ? snprintf(expanded_cmd, TS_SSH_CMD_COMMAND_MAX, "%s", cmd_config.command)
+        : ts_action_expand_variables(cmd_config.command, expanded_cmd, TS_SSH_CMD_COMMAND_MAX);
+    if (expanded_length < 0 || expanded_length >= TS_SSH_CMD_COMMAND_MAX) {
+        free(expanded_cmd);
+        result->status = TS_ACTION_STATUS_FAILED;
+        snprintf(result->output, sizeof(result->output), "Expanded command exceeds capacity");
+        return ESP_ERR_INVALID_SIZE;
+    }
     
     /* Handle nohup mode: wrap command for background execution */
     char *nohup_cmd =
@@ -1484,7 +1604,7 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
 
     uint32_t run_generation = 0;
     if (cmd_config.nohup && cmd_config.service_mode) {
-        ret = ts_ssh_service_begin(&cmd_config, session, &run_generation);
+        ret = ts_ssh_service_begin_reserved(&cmd_config, session, launch_id, &run_generation);
         if (ret != ESP_OK) {
             result->status = TS_ACTION_STATUS_FAILED;
             snprintf(result->output, sizeof(result->output),
@@ -1708,6 +1828,23 @@ esp_err_t ts_action_exec_cli(const ts_auto_action_cli_t *cli,
 /*                          Internal Execute                                  */
 /*===========================================================================*/
 
+/* Reserve an automation launch when its action actually starts, not while the
+ * rule merely holds a configuration snapshot or waits for a later action. */
+static esp_err_t execute_bound_ref(const ts_auto_action_t *action, ts_action_result_t *result) {
+    const action_binding_t *binding = action->runtime_binding;
+    uint32_t launch_id = binding ? binding->control_id : 0;
+    bool own_reservation = binding && binding->command.nohup && binding->command.service_mode && !launch_id;
+    if (own_reservation) {
+        esp_err_t ret = ts_ssh_service_reserve_operation(binding->command.id, binding->registration, TS_SERVICE_START, &launch_id);
+        if (ret != ESP_OK) { result->status = TS_ACTION_STATUS_FAILED; return ret; }
+    }
+    esp_err_t ret = launch_id ? ts_ssh_service_operation_begin(binding->command.id, launch_id) : ESP_OK;
+    if (ret == ESP_OK) ret = exec_ssh_ref_bound(&action->ssh_ref, binding, launch_id, result);
+    else result->status = TS_ACTION_STATUS_FAILED;
+    if (own_reservation) ts_ssh_service_complete_operation(binding->command.id, launch_id, ret);
+    return ret;
+}
+
 static esp_err_t execute_action_internal(const ts_auto_action_t *action, 
                                           ts_action_result_t *result)
 {
@@ -1716,7 +1853,7 @@ static esp_err_t execute_action_internal(const ts_auto_action_t *action,
             return ts_action_exec_ssh(&action->ssh, result);
             
         case TS_AUTO_ACT_SSH_CMD_REF:
-            return exec_ssh_ref_bound(&action->ssh_ref, action->runtime_binding, result);
+            return execute_bound_ref(action, result);
 
         case TS_AUTO_ACT_CLI:
             return ts_action_exec_cli(&action->cli, result);
@@ -1754,6 +1891,23 @@ static esp_err_t execute_action_internal(const ts_auto_action_t *action,
 /*                          Executor Task                                     */
 /*===========================================================================*/
 
+static esp_err_t execute_service_control(const ts_action_queue_entry_t *entry, ts_action_result_t *result) {
+    if (esp_timer_get_time() / 1000 - entry->enqueue_time >= SERVICE_QUEUE_TIMEOUT_MS) {
+        result->status = TS_ACTION_STATUS_TIMEOUT;
+        return ESP_ERR_TIMEOUT; /* Still queued: completion reports expired, never executes. */
+    }
+    if (entry->service_kind == TS_SERVICE_START) return execute_action_internal(&entry->action, result);
+    esp_err_t ret = ts_ssh_service_operation_begin(entry->action.ssh_ref.cmd_id, entry->service_operation_id);
+    if (ret == ESP_OK) {
+        ts_ssh_service_status_t state;
+        ret = ts_ssh_service_execute_control(entry->action.ssh_ref.cmd_id, entry->service_operation_id,
+                                             entry->service_kind, &state);
+    }
+    result->status = ret == ESP_OK ? TS_ACTION_STATUS_SUCCESS :
+        ret == ESP_ERR_TIMEOUT ? TS_ACTION_STATUS_TIMEOUT : TS_ACTION_STATUS_FAILED;
+    return ret;
+}
+
 static void action_executor_task(void *arg)
 {
     ESP_LOGI(TAG, "Action executor task started (DRAM stack)");
@@ -1769,7 +1923,7 @@ static void action_executor_task(void *arg)
                 if (entry.done_sem)
                     xSemaphoreGive(entry.done_sem);
                 completion_release(entry.completion);
-                action_finished();
+                entry_finished(&entry, ESP_ERR_INVALID_STATE);
                 break;
             }
 
@@ -1784,10 +1938,15 @@ static void action_executor_task(void *arg)
                 delay -= slice;
             }
             /* Stop discards work not yet started; active I/O owns its cleanup. */
-            if (s_ctx->accepting)
-                execute_action_internal(&entry.action, result);
+            esp_err_t execution_error = ESP_ERR_INVALID_STATE;
+            if (entry.service_operation_id)
+                execution_error = execute_service_control(&entry, result);
+            else if (s_ctx->accepting)
+                execution_error = execute_action_internal(&entry.action, result);
             else
                 result->status = TS_ACTION_STATUS_CANCELLED;
+            if (execution_error == ESP_OK && result->status != TS_ACTION_STATUS_SUCCESS)
+                execution_error = result->status == TS_ACTION_STATUS_TIMEOUT ? ESP_ERR_TIMEOUT : ESP_FAIL;
             
             /* Callback (async mode) */
             if (entry.callback) {
@@ -1811,7 +1970,7 @@ static void action_executor_task(void *arg)
             if (entry.done_sem)
                 xSemaphoreGive(entry.done_sem);
             completion_release(entry.completion);
-            action_finished();
+            entry_finished(&entry, execution_error);
         }
     }
     
@@ -1870,77 +2029,63 @@ void ts_action_reset_stats(void)
 
 int ts_action_expand_variables(const char *input, char *output, size_t output_size)
 {
-    if (!input || !output || output_size == 0) {
-        return -1;
-    }
-    
-    const char *p = input;
-    char *out = output;
-    char *out_end = output + output_size - 1;
-    
-    while (*p && out < out_end) {
-        if (*p == '$' && *(p + 1) == '{') {
-            /* Find closing brace */
+    if (!input || !output || !output_size) return -1;
+    size_t used = 0;
+    output[0] = 0;
+    for (const char *p = input; *p;) {
+        const char *text = p;
+        size_t length = 1, consumed = 1;
+        ts_auto_value_t value;
+        char formatted[64];
+        if (p[0] == '$' && p[1] == '{') {
             const char *end = strchr(p + 2, '}');
             if (end) {
-                /* Extract variable name */
-                size_t name_len = end - (p + 2);
-                char var_name[64];
-                if (name_len < sizeof(var_name)) {
-                    memcpy(var_name, p + 2, name_len);
-                    var_name[name_len] = '\0';
-                    
-                    /* Get variable value */
-                    ts_auto_value_t value;
-                    if (ts_variable_get(var_name, &value) == ESP_OK) {
-                        /* Format value based on type */
-                        char val_str[64];
+                consumed = length = (size_t)(end + 1 - p);
+                size_t name_length = (size_t)(end - p - 2);
+                char name[64];
+                if (name_length < sizeof(name)) {
+                    memcpy(name, p + 2, name_length);
+                    name[name_length] = 0;
+                    if (ts_variable_get(name, &value) == ESP_OK) {
+                        int written = 0;
                         switch (value.type) {
+                            case TS_AUTO_VAL_STRING:
+                                text = value.str_val;
+                                length = strnlen(value.str_val, sizeof(value.str_val));
+                                break;
                             case TS_AUTO_VAL_BOOL:
-                                snprintf(val_str, sizeof(val_str), "%s", 
-                                         value.bool_val ? "true" : "false");
+                                text = value.bool_val ? "true" : "false";
+                                length = strlen(text);
                                 break;
                             case TS_AUTO_VAL_INT:
-                                snprintf(val_str, sizeof(val_str), "%ld", 
-                                         (long)value.int_val);
+                                written = snprintf(formatted, sizeof(formatted), "%ld", (long)value.int_val);
+                                text = formatted;
+                                length = written < 0 ? sizeof(formatted) : (size_t)written;
                                 break;
                             case TS_AUTO_VAL_FLOAT:
-                                snprintf(val_str, sizeof(val_str), "%.2f", 
-                                         value.float_val);
-                                break;
-                            case TS_AUTO_VAL_STRING:
-                                strncpy(val_str, value.str_val, sizeof(val_str) - 1);
+                                written = snprintf(formatted, sizeof(formatted), "%.2f", value.float_val);
+                                text = formatted;
+                                length = written < 0 ? sizeof(formatted) : (size_t)written;
                                 break;
                             default:
-                                val_str[0] = '\0';
-                                break;
+                                text = "";
+                                length = 0;
                         }
-                        
-                        /* Copy value to output */
-                        size_t val_len = strlen(val_str);
-                        if (out + val_len < out_end) {
-                            memcpy(out, val_str, val_len);
-                            out += val_len;
-                        }
-                    } else {
-                        /* Variable not found, keep original */
-                        size_t orig_len = (end + 1) - p;
-                        if (out + orig_len < out_end) {
-                            memcpy(out, p, orig_len);
-                            out += orig_len;
-                        }
+                        if (text == formatted && length >= sizeof(formatted)) goto overflow;
                     }
                 }
-                p = end + 1;
-                continue;
             }
         }
-        
-        *out++ = *p++;
+        if (length > output_size - 1 - used) goto overflow;
+        memcpy(output + used, text, length);
+        used += length;
+        p += consumed;
     }
-    
-    *out = '\0';
-    return out - output;
+    output[used] = 0;
+    return (int)used;
+overflow:
+    output[0] = 0; /* No caller may execute or publish a partial expansion. */
+    return -1;
 }
 
 esp_err_t ts_action_parse_color(const char *color_str, uint8_t *r, uint8_t *g, uint8_t *b)
@@ -2217,40 +2362,52 @@ esp_err_t ts_action_template_execute(const char *id, ts_action_result_t *result)
     return ret;
 }
 
+static char *template_to_json(const ts_action_template_t *tpl);
+static esp_err_t ensure_actions_dir(void);
+static esp_err_t export_template_to_file(const ts_action_template_t *tpl);
+
 static esp_err_t template_update_impl(const char *id, const ts_action_template_t *tpl) {
-    if (!s_ctx || !id || !tpl) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
+    if (!s_ctx || !id || !tpl || strcmp(id, tpl->id)) return ESP_ERR_INVALID_ARG;
+    ts_action_template_t *candidate = TS_MALLOC_PSRAM(sizeof(*candidate));
+    if (!candidate) return ESP_ERR_NO_MEM;
+    esp_err_t ret = ESP_ERR_NOT_FOUND;
     xSemaphoreTake(s_ctx->templates_mutex, portMAX_DELAY);
-    
     for (int i = 0; i < s_ctx->template_count; i++) {
-        if (strcmp(s_ctx->templates[i].id, id) == 0) {
-            /* Preserve some fields */
-            int64_t created_at = s_ctx->templates[i].created_at;
-            uint32_t use_count = s_ctx->templates[i].use_count;
-            int64_t last_used = s_ctx->templates[i].last_used_at;
-            
-            /* Update template */
-            memcpy(&s_ctx->templates[i], tpl, sizeof(ts_action_template_t));
-            
-            /* Restore preserved fields */
-            s_ctx->templates[i].created_at = created_at;
-            s_ctx->templates[i].use_count = use_count;
-            s_ctx->templates[i].last_used_at = last_used;
-            
-            xSemaphoreGive(s_ctx->templates_mutex);
-            
-            /* Save to NVS */
-            ts_action_templates_save();
-            
-            ESP_LOGI(TAG, "Updated action template: %s", id);
-            return ESP_OK;
+        if (strcmp(s_ctx->templates[i].id, id)) continue;
+        *candidate = *tpl;
+        candidate->created_at = s_ctx->templates[i].created_at;
+        candidate->use_count = s_ctx->templates[i].use_count;
+        candidate->last_used_at = s_ctx->templates[i].last_used_at;
+        char *json = template_to_json(candidate);
+        if (!json) { ret = ESP_ERR_NO_MEM; break; }
+        /* Follow the same authority as the loader: SD first when mounted,
+         * otherwise NVS. A failed SD write must not advance the NVS backup. */
+        bool sd_authority = ts_storage_sd_mounted();
+        ret = ESP_OK;
+        if (sd_authority) {
+            ret = ensure_actions_dir();
+            if (ret == ESP_OK) ret = ts_action_store_save(id, json, true);
         }
+        if (ret == ESP_OK) {
+            nvs_handle_t handle;
+            esp_err_t backup = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+            if (backup == ESP_OK) {
+                char key[16];
+                snprintf(key, sizeof(key), "%s%d", NVS_KEY_PREFIX, i);
+                backup = nvs_set_str(handle, key, json);
+                if (backup == ESP_OK) backup = nvs_commit(handle);
+                nvs_close(handle);
+            }
+            if (!sd_authority) ret = backup;
+            else if (backup != ESP_OK) ESP_LOGW(TAG, "Template saved to SD; NVS backup failed: %s", esp_err_to_name(backup));
+        }
+        free(json);
+        if (ret == ESP_OK) s_ctx->templates[i] = *candidate;
+        break;
     }
-    
     xSemaphoreGive(s_ctx->templates_mutex);
-    return ESP_ERR_NOT_FOUND;
+    free(candidate);
+    return ret;
 }
 
 /*===========================================================================*/
@@ -2302,32 +2459,36 @@ static char *template_to_json(const ts_action_template_t *tpl)
     cJSON *root = cJSON_CreateObject();
     if (!root) return NULL;
     
-    cJSON_AddStringToObject(root, "id", tpl->id);
-    cJSON_AddStringToObject(root, "name", tpl->name);
-    cJSON_AddStringToObject(root, "description", tpl->description);
-    cJSON_AddBoolToObject(root, "enabled", tpl->enabled);
-    cJSON_AddStringToObject(root, "type", action_type_to_str(tpl->action.type));
-    cJSON_AddNumberToObject(root, "delay_ms", tpl->action.delay_ms);
-    cJSON_AddNumberToObject(root, "created_at", tpl->created_at);
-    cJSON_AddNumberToObject(root, "use_count", tpl->use_count);
+    if (!cJSON_AddStringToObject(root, "id", tpl->id)) goto failed;
+    if (!cJSON_AddStringToObject(root, "name", tpl->name)) goto failed;
+    if (!cJSON_AddStringToObject(root, "description", tpl->description)) goto failed;
+    if (!cJSON_AddBoolToObject(root, "enabled", tpl->enabled)) goto failed;
+    if (!cJSON_AddBoolToObject(root, "async", tpl->async)) goto failed;
+    if (!cJSON_AddStringToObject(root, "type", action_type_to_str(tpl->action.type))) goto failed;
+    if (!cJSON_AddNumberToObject(root, "delay_ms", tpl->action.delay_ms)) goto failed;
+    if (!cJSON_AddNumberToObject(root, "created_at", tpl->created_at)) goto failed;
+    if (!cJSON_AddNumberToObject(root, "use_count", tpl->use_count)) goto failed;
     
     /* Serialize type-specific data */
     switch (tpl->action.type) {
         case TS_AUTO_ACT_CLI: {
             cJSON *cli = cJSON_AddObjectToObject(root, "cli");
-            cJSON_AddStringToObject(cli, "command", tpl->action.cli.command);
-            cJSON_AddStringToObject(cli, "var_name", tpl->action.cli.var_name);
-            cJSON_AddNumberToObject(cli, "timeout_ms", tpl->action.cli.timeout_ms);
+            if (!cli) goto failed;
+            if (!cJSON_AddStringToObject(cli, "command", tpl->action.cli.command)) goto failed;
+            if (!cJSON_AddStringToObject(cli, "var_name", tpl->action.cli.var_name)) goto failed;
+            if (!cJSON_AddNumberToObject(cli, "timeout_ms", tpl->action.cli.timeout_ms)) goto failed;
             break;
         }
         case TS_AUTO_ACT_SSH_CMD_REF: {
             cJSON *ssh_ref = cJSON_AddObjectToObject(root, "ssh_ref");
-            cJSON_AddStringToObject(ssh_ref, "cmd_id", tpl->action.ssh_ref.cmd_id);
+            if (!ssh_ref) goto failed;
+            if (!cJSON_AddStringToObject(ssh_ref, "cmd_id", tpl->action.ssh_ref.cmd_id)) goto failed;
             break;
         }
         case TS_AUTO_ACT_LED: {
             cJSON *led = cJSON_AddObjectToObject(root, "led");
-            cJSON_AddStringToObject(led, "device", tpl->action.led.device);
+            if (!led) goto failed;
+            if (!cJSON_AddStringToObject(led, "device", tpl->action.led.device)) goto failed;
             /* 控制类型 */
             const char *ctrl_type_str = "fill";
             switch (tpl->action.led.ctrl_type) {
@@ -2342,71 +2503,75 @@ static char *template_to_json(const ts_action_template_t *tpl)
                 case TS_LED_CTRL_TEXT_STOP: ctrl_type_str = "text_stop"; break;
                 default: ctrl_type_str = "fill"; break;
             }
-            cJSON_AddStringToObject(led, "ctrl_type", ctrl_type_str);
-            cJSON_AddNumberToObject(led, "index", tpl->action.led.index);
+            if (!cJSON_AddStringToObject(led, "ctrl_type", ctrl_type_str)) goto failed;
+            if (!cJSON_AddNumberToObject(led, "index", tpl->action.led.index)) goto failed;
             /* 颜色输出为 hex */
             char color_hex[8];
             snprintf(color_hex, sizeof(color_hex), "#%02X%02X%02X", 
                      tpl->action.led.r, tpl->action.led.g, tpl->action.led.b);
-            cJSON_AddStringToObject(led, "color", color_hex);
-            cJSON_AddNumberToObject(led, "brightness", tpl->action.led.brightness);
+            if (!cJSON_AddStringToObject(led, "color", color_hex)) goto failed;
+            if (!cJSON_AddNumberToObject(led, "brightness", tpl->action.led.brightness)) goto failed;
             if (tpl->action.led.effect[0]) {
-                cJSON_AddStringToObject(led, "effect", tpl->action.led.effect);
+                if (!cJSON_AddStringToObject(led, "effect", tpl->action.led.effect)) goto failed;
             }
-            cJSON_AddNumberToObject(led, "speed", tpl->action.led.speed);
-            cJSON_AddNumberToObject(led, "duration_ms", tpl->action.led.duration_ms);
+            if (!cJSON_AddNumberToObject(led, "speed", tpl->action.led.speed)) goto failed;
+            if (!cJSON_AddNumberToObject(led, "duration_ms", tpl->action.led.duration_ms)) goto failed;
             /* Matrix 高级功能 */
             if (tpl->action.led.text[0]) {
-                cJSON_AddStringToObject(led, "text", tpl->action.led.text);
+                if (!cJSON_AddStringToObject(led, "text", tpl->action.led.text)) goto failed;
             }
             if (tpl->action.led.font[0]) {
-                cJSON_AddStringToObject(led, "font", tpl->action.led.font);
+                if (!cJSON_AddStringToObject(led, "font", tpl->action.led.font)) goto failed;
             }
             if (tpl->action.led.image_path[0]) {
-                cJSON_AddStringToObject(led, "image_path", tpl->action.led.image_path);
+                if (!cJSON_AddStringToObject(led, "image_path", tpl->action.led.image_path)) goto failed;
             }
             if (tpl->action.led.qr_text[0]) {
-                cJSON_AddStringToObject(led, "qr_text", tpl->action.led.qr_text);
+                if (!cJSON_AddStringToObject(led, "qr_text", tpl->action.led.qr_text)) goto failed;
             }
             if (tpl->action.led.qr_ecc) {
                 char ecc_str[2] = { tpl->action.led.qr_ecc, '\0' };
-                cJSON_AddStringToObject(led, "qr_ecc", ecc_str);
+                if (!cJSON_AddStringToObject(led, "qr_ecc", ecc_str)) goto failed;
             }
             if (tpl->action.led.filter[0]) {
-                cJSON_AddStringToObject(led, "filter", tpl->action.led.filter);
+                if (!cJSON_AddStringToObject(led, "filter", tpl->action.led.filter)) goto failed;
             }
-            cJSON_AddBoolToObject(led, "center", tpl->action.led.center);
-            cJSON_AddBoolToObject(led, "loop", tpl->action.led.loop);
+            if (!ts_action_filter_encode(&tpl->action.led.filter_params, led)) goto failed;
+            if (!cJSON_AddBoolToObject(led, "center", tpl->action.led.center)) goto failed;
+            if (!cJSON_AddBoolToObject(led, "loop", tpl->action.led.loop)) goto failed;
             if (tpl->action.led.scroll[0]) {
-                cJSON_AddStringToObject(led, "scroll", tpl->action.led.scroll);
+                if (!cJSON_AddStringToObject(led, "scroll", tpl->action.led.scroll)) goto failed;
             }
             if (tpl->action.led.align[0]) {
-                cJSON_AddStringToObject(led, "align", tpl->action.led.align);
+                if (!cJSON_AddStringToObject(led, "align", tpl->action.led.align)) goto failed;
             }
-            cJSON_AddNumberToObject(led, "x", tpl->action.led.x);
-            cJSON_AddNumberToObject(led, "y", tpl->action.led.y);
+            if (!cJSON_AddNumberToObject(led, "x", tpl->action.led.x)) goto failed;
+            if (!cJSON_AddNumberToObject(led, "y", tpl->action.led.y)) goto failed;
             break;
         }
         case TS_AUTO_ACT_LOG: {
             cJSON *log_obj = cJSON_AddObjectToObject(root, "log");
-            cJSON_AddNumberToObject(log_obj, "level", tpl->action.log.level);
-            cJSON_AddStringToObject(log_obj, "message", tpl->action.log.message);
+            if (!log_obj) goto failed;
+            if (!cJSON_AddNumberToObject(log_obj, "level", tpl->action.log.level)) goto failed;
+            if (!cJSON_AddStringToObject(log_obj, "message", tpl->action.log.message)) goto failed;
             break;
         }
         case TS_AUTO_ACT_SET_VAR: {
             cJSON *set_var = cJSON_AddObjectToObject(root, "set_var");
-            cJSON_AddStringToObject(set_var, "variable", tpl->action.set_var.variable);
+            if (!set_var) goto failed;
+            if (!cJSON_AddStringToObject(set_var, "variable", tpl->action.set_var.variable)) goto failed;
             /* Store value as string for simplicity */
             if (tpl->action.set_var.value.type == TS_AUTO_VAL_STRING) {
-                cJSON_AddStringToObject(set_var, "value", tpl->action.set_var.value.str_val);
+                if (!cJSON_AddStringToObject(set_var, "value", tpl->action.set_var.value.str_val)) goto failed;
             }
             break;
         }
         case TS_AUTO_ACT_WEBHOOK: {
             cJSON *webhook = cJSON_AddObjectToObject(root, "webhook");
-            cJSON_AddStringToObject(webhook, "url", tpl->action.webhook.url);
-            cJSON_AddStringToObject(webhook, "method", tpl->action.webhook.method);
-            cJSON_AddStringToObject(webhook, "body_template", tpl->action.webhook.body_template);
+            if (!webhook) goto failed;
+            if (!cJSON_AddStringToObject(webhook, "url", tpl->action.webhook.url)) goto failed;
+            if (!cJSON_AddStringToObject(webhook, "method", tpl->action.webhook.method)) goto failed;
+            if (!cJSON_AddStringToObject(webhook, "body_template", tpl->action.webhook.body_template)) goto failed;
             break;
         }
         default:
@@ -2416,6 +2581,9 @@ static char *template_to_json(const ts_action_template_t *tpl)
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     return json;
+failed:
+    cJSON_Delete(root);
+    return NULL;
 }
 
 /* Forward declarations for SD card loading */
@@ -2458,25 +2626,11 @@ static esp_err_t export_template_to_file(const ts_action_template_t *tpl)
 {
     if (!tpl || !tpl->id[0]) return ESP_ERR_INVALID_ARG;
     
-    char filepath[128];
-    snprintf(filepath, sizeof(filepath), "%s/%s.json", ACTIONS_SDCARD_DIR, tpl->id);
-    
     char *json = template_to_json(tpl);
     if (!json) return ESP_ERR_NO_MEM;
-    
-    FILE *fp = fopen(filepath, "w");
-    if (!fp) {
-        free(json);
-        ESP_LOGE(TAG, "Failed to open file: %s", filepath);
-        return ESP_FAIL;
-    }
-    
-    fprintf(fp, "%s\n", json);
-    fclose(fp);
+    esp_err_t ret = ts_action_store_save(tpl->id, json, false);
     free(json);
-    
-    ESP_LOGD(TAG, "Exported template to %s", filepath);
-    return ESP_OK;
+    return ret;
 }
 
 /**
@@ -2530,6 +2684,9 @@ static esp_err_t load_templates_from_dir(void)
         if (!is_json && !is_tscfg) {
             continue;
         }
+
+        size_t id_length = len - (is_tscfg ? 6 : 5);
+        if (id_length >= TS_AUTO_NAME_MAX_LEN) continue;
         
         /* 对于 .json 文件，检查是否存在对应的 .tscfg（跳过以使用加密版本） */
         if (is_json) {
@@ -2544,18 +2701,9 @@ static esp_err_t load_templates_from_dir(void)
             }
         }
         
-        /* 限制文件名长度避免缓冲区溢出 */
-        if (len > 60) {
-            continue;
-        }
-        
         char filepath[128];
-        if (is_tscfg) {
-            snprintf(filepath, sizeof(filepath), "%s/%.*s.json", 
-                     ACTIONS_SDCARD_DIR, (int)(len - 6), entry->d_name);
-        } else {
-            snprintf(filepath, sizeof(filepath), "%s/%.60s", ACTIONS_SDCARD_DIR, entry->d_name);
-        }
+        snprintf(filepath, sizeof(filepath), "%s/%.*s.json",
+                 ACTIONS_SDCARD_DIR, (int)id_length, entry->d_name);
         
         /* 使用 .tscfg 优先加载 */
         char *content = NULL;
@@ -2571,7 +2719,8 @@ static esp_err_t load_templates_from_dir(void)
         
         /* 解析并添加 */
         memset(tpl, 0, sizeof(ts_action_template_t));
-        if (json_to_template(content, tpl) == ESP_OK && tpl->id[0]) {
+        esp_err_t parsed = json_to_template(content, tpl);
+        if (parsed == ESP_OK) {
             if (s_ctx->template_count < TS_ACTION_TEMPLATE_MAX) {
                 memcpy(&s_ctx->templates[s_ctx->template_count], tpl, sizeof(ts_action_template_t));
                 s_ctx->template_count++;
@@ -2579,7 +2728,7 @@ static esp_err_t load_templates_from_dir(void)
                 ESP_LOGD(TAG, "Loaded template from file: %s%s", tpl->id,
                          used_tscfg ? " (encrypted)" : "");
             }
-        }
+        } else ESP_LOGE(TAG, "Invalid action template in %s: %s", filepath, esp_err_to_name(parsed));
         free(content);
     }
     
@@ -2608,14 +2757,17 @@ static esp_err_t export_all_templates_to_dir(void)
     if (ret != ESP_OK) return ret;
     
     int exported = 0;
+    xSemaphoreTake(s_ctx->templates_mutex, portMAX_DELAY);
     for (int i = 0; i < s_ctx->template_count; i++) {
-        if (export_template_to_file(&s_ctx->templates[i]) == ESP_OK) {
+        ret = export_template_to_file(&s_ctx->templates[i]);
+        if (ret == ESP_OK) {
             exported++;
-        }
+        } else break;
     }
+    xSemaphoreGive(s_ctx->templates_mutex);
     
     ESP_LOGI(TAG, "Exported %d templates to directory: %s", exported, ACTIONS_SDCARD_DIR);
-    return ESP_OK;
+    return ret;
 }
 
 /**
@@ -2625,6 +2777,24 @@ static esp_err_t json_to_template(const char *json, ts_action_template_t *tpl)
 {
     cJSON *root = cJSON_Parse(json);
     if (!root) return ESP_ERR_INVALID_ARG;
+    cJSON *owner = root;
+    const cJSON *kind = cJSON_GetObjectItemCaseSensitive(root, "type");
+    bool envelope = cJSON_IsString(kind) && !strcmp(kind->valuestring, "action_template");
+    if (envelope) {
+        root = cJSON_GetObjectItemCaseSensitive(owner, "template");
+    }
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    if (!cJSON_IsObject(root) || !cJSON_IsString(id) || !id->valuestring[0] ||
+        strlen(id->valuestring) >= sizeof(tpl->id) ||
+        (envelope && !cJSON_IsString(type)) ||
+        (type && (!cJSON_IsString(type) ||
+         strcmp(action_type_to_str(str_to_action_type(type->valuestring)), type->valuestring))) ||
+        (cJSON_IsString(type) && !strcmp(type->valuestring, "led") &&
+         !cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(root, "led")))) {
+        cJSON_Delete(owner);
+        return ESP_ERR_INVALID_ARG;
+    }
     
     memset(tpl, 0, sizeof(ts_action_template_t));
     
@@ -2645,6 +2815,9 @@ static esp_err_t json_to_template(const char *json, ts_action_template_t *tpl)
     }
     if ((item = cJSON_GetObjectItem(root, "type")) && cJSON_IsString(item)) {
         tpl->action.type = str_to_action_type(item->valuestring);
+    }
+    if ((item = cJSON_GetObjectItem(root, "async")) && cJSON_IsBool(item)) {
+        tpl->async = cJSON_IsTrue(item);
     }
     if ((item = cJSON_GetObjectItem(root, "delay_ms")) && cJSON_IsNumber(item)) {
         tpl->action.delay_ms = (uint16_t)item->valueint;
@@ -2768,6 +2941,11 @@ static esp_err_t json_to_template(const char *json, ts_action_template_t *tpl)
                     strncpy(tpl->action.led.filter, item->valuestring, 
                             sizeof(tpl->action.led.filter) - 1);
                 }
+                if (ts_action_filter_decode(cJSON_GetObjectItemCaseSensitive(led, "filter_params"),
+                                            &tpl->action.led.filter_params) != ESP_OK) {
+                    cJSON_Delete(owner);
+                    return ESP_ERR_INVALID_ARG;
+                }
                 if ((item = cJSON_GetObjectItem(led, "center")) && cJSON_IsBool(item)) {
                     tpl->action.led.center = cJSON_IsTrue(item);
                 }
@@ -2841,7 +3019,7 @@ static esp_err_t json_to_template(const char *json, ts_action_template_t *tpl)
             break;
     }
     
-    cJSON_Delete(root);
+    cJSON_Delete(owner);
     return ESP_OK;
 }
 
@@ -2922,7 +3100,15 @@ esp_err_t ts_action_templates_load(void)
     
     /* 1. 优先从 SD 卡独立文件目录加载 */
     if (ts_storage_sd_mounted()) {
+        xSemaphoreTake(s_ctx->templates_mutex, portMAX_DELAY);
+        ret = ts_action_store_recover();
+        if (ret != ESP_OK) {
+            xSemaphoreGive(s_ctx->templates_mutex);
+            ESP_LOGE(TAG, "Action template storage recovery failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
         ret = load_templates_from_dir();
+        xSemaphoreGive(s_ctx->templates_mutex);
         if (ret == ESP_OK && s_ctx->template_count > 0) {
             ESP_LOGI(TAG, "Loaded %d action templates from SD card directory", s_ctx->template_count);
             loaded_from_sdcard = true;

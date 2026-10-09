@@ -3,6 +3,34 @@ const assert=require('node:assert/strict');
 const {harness}=require('./harness.cjs');
 async function setup(lang){const h=harness(lang);await h.ready();h.load();h.ctx.confirmSheet=async()=>h.ctx.confirm();return h;}
 for(const lang of ['zh-CN','en-US']) {
+ test(`${lang}: first deployment sends automatic first trust once, with no confirmation and factual registration result`,async()=>{
+    const h=await setup(lang),requests=[];let confirmations=0;
+    for(const id of ['deploy-host','deploy-user','deploy-password'])h.el(id).value='fixture';
+    h.el('deploy-port').value='2222';h.el('deploy-result');h.el('deploy-btn');
+    h.ctx.confirmSheet=async()=>{confirmations++;return false;};
+    h.ctx.fetch=async(url,options)=>{
+        requests.push({url,method:options.method,params:JSON.parse(options.body)});
+        return {ok:true,status:200,text:async()=>JSON.stringify({code:0,data:{deployed:true,verified:true,registered:true}})};
+    };
+    h.run("currentDeployKeyId='key';refreshSshHostsList=async()=>({hosts:[]});");
+    await h.run('deployKey()');
+    assert.equal(confirmations,0);assert.equal(requests.length,1);
+    assert.equal(requests[0].url,'/api/v1/ssh/copyid');assert.equal(requests[0].method,'POST');
+    assert.deepEqual(requests[0].params,{host:'fixture',user:'fixture',password:'fixture',keyid:'key',port:2222,verify:true,trust_new:true,accept_changed:false});
+    assert(h.el('deploy-result').classList.contains('success'));assert.equal(h.el('deploy-btn').disabled,false);
+    assert.equal(h.el('deploy-result').textContent,h.ctx.t('promptRepair.keyVerified',{id:'key',target:'fixture@fixture'}));
+ });
+ test(`${lang}: deployment honors explicit first-trust opt-out and does not change other SSH defaults`,async()=>{
+    const h=await setup(lang),requests=[];
+    h.ctx.fetch=async(url,options)=>{requests.push(JSON.parse(options.body));return {ok:true,status:200,text:async()=>JSON.stringify({code:0,data:{}})};};
+    await h.run("api.sshCopyid('fixture','user','password','key',22,true,{trust_new:false})");
+    await h.run("api.sshTest('fixture','user','password')");
+    await h.run("api.sshExec('fixture','user','password','true')");
+    await h.run("api.sshRevoke('fixture','user','password','key')");
+    assert(requests.every(params=>params.trust_new===false && params.accept_changed===false));
+ });
+}
+for(const lang of ['zh-CN','en-US']) {
  test(`${lang}: actual inline translator, cold language, missing/objects/parameters and confirmations`, async()=>{
     const h=await setup(lang),{ctx,run}=h;
     assert.equal(ctx.getLanguage(),lang);
@@ -78,17 +106,17 @@ for(const lang of ['zh-CN','en-US']) {
     const h=await setup(lang);for(const id of ['exec-result','cancel-exec-btn','match-result-panel','match-status-badge','match-final-status'])h.el(id);
     const cases=[['match_failed',0,false,'sshExpectedMissing'],['match_failed',0,true,'sshFailureOutput'],['timeout',0,false,'sshTimeout'],['cancelled',0,false,'sshCancelled'],['unknown',0,false,'sshUnknown'],['success',7,false,'sshUnknown'],['match_success',7,false,'sshSuccess'],['success',0,false,'sshSuccess']];
     for(const[status,exit_code,fail_matched,key]of cases){
-        h.run('currentExecSessionId=17;toastDeadline=0;');h.ctx.handleSshExecMessage({type:'ssh_exec_done',session_id:17,status,exit_code,fail_matched});
+        h.run("acknowledgeExecSession(claimExecDisplay('ssh',document.getElementById('exec-result')),17);toastDeadline=0;");h.ctx.handleSshExecMessage({type:'ssh_exec_done',session_id:17,status,exit_code,fail_matched});
         assert.equal(h.el('toast').textContent,h.ctx.t('promptRepair.'+key));assert.equal(h.el('match-final-status').textContent,h.ctx.t('promptRepair.'+key));
     }
-    h.run('currentExecSessionId=17;toastDeadline=0;');
+    h.run("acknowledgeExecSession(claimExecDisplay('ssh',document.getElementById('exec-result')),17);toastDeadline=0;");
     h.ctx.handleSshExecMessage({type:'ssh_exec_cancelled',session_id:17});
     assert.equal(h.run('currentExecSessionId'),null);
     assert(h.el('exec-result').textContent.includes(h.ctx.t('promptRepair.sshCancelOutput')));
     assert.match(h.el('exec-result').textContent,lang==='zh-CN'?/远端命令是否终止尚未确认/:/remote command termination is not confirmed/);
     assert.equal(h.el('toast').textContent,h.ctx.t('toast.commandCancelled'));
     assert.equal(h.ctx.sshTerminalResult({status:'match_failed',success:true}).key,'sshUnknown');
-    h.run('currentExecSessionId=17;toastDeadline=0;');h.ctx.handleSshExecMessage({type:'ssh_exec_match',session_id:17,is_final:true,fail_matched:true});
+    h.run("acknowledgeExecSession(claimExecDisplay('ssh',document.getElementById('exec-result')),17);toastDeadline=0;");h.ctx.handleSshExecMessage({type:'ssh_exec_match',session_id:17,is_final:true,fail_matched:true});
     assert.equal(h.el('toast').textContent,h.ctx.t('promptRepair.sshFailureOutput'));
  });
  test(`${lang}: background command timeout is unconfirmed and never resubmitted`,async()=>{
@@ -158,15 +186,13 @@ for(const lang of ['zh-CN','en-US']) {
   assert(await h.ctx.confirmAction(h.ctx.t('ui.confirmDeleteCmd',{name:'file{my_name}'})));
   for(const phase of ['PLATFORM','HAL','DRIVER','NETWORK','UNKNOWN'])assert(!h.ctx.servicePhaseLabel(phase).includes('promptRepair.'));
  });
- test(`${lang}: unknown stop result never escalates to forced termination`,async()=>{
+ test(`${lang}: unknown asynchronous stop never retries or escalates`,async()=>{
   const h=await setup(lang);for(const id of ['exec-result-section','exec-result','cancel-exec-btn','nohup-actions'])h.el(id);
-  h.run("selectedHostId='test';sshCommands={test:[{name:'fixture'}]};window._cmdHostsList=[{id:'test',host:'fixture'}];updateServiceStatusInList=()=>{};");
-  for(const outputs of [[''],['RUNNING:123',''],['RUNNING:123','STILL_RUNNING','']]){
-   h.ctx.outputs=[...outputs];h.run("window.calls=[];api.call=async(name,args)=>{calls.push(args.command);return {code:0,data:{stdout:outputs.shift()}};};");
-   await h.run("stopServiceProcess(0,'fixture')");assert.equal(h.ctx.calls.length,outputs.length);
-   if(outputs.length<3)assert(h.ctx.calls.every(c=>!c.includes('kill -9')));
-   assert(!h.el('toast').classList.contains('toast-success'));
-  }
+  h.run("selectedHostId='test';sshCommands={test:[{id:'fixture',name:'fixture'}]};window.calls=[];api.call=async(name,args)=>{calls.push({name,args});return {code:0,data:{operation_id:31,operation_phase:'unconfirmed',state:'unknown'}};};");
+  await h.run("stopServiceProcess(0)");
+  assert.equal(h.ctx.calls.filter(c=>c.name==='automation.services.stop').length,1);
+  assert(h.ctx.calls.every(c=>c.name!=='ssh.exec'&&c.name!=='ssh.exec_stream'));
+  assert(!h.el('toast').classList.contains('toast-success'));
  });
 }
 
