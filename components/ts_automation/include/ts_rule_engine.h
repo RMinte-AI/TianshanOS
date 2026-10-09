@@ -83,7 +83,12 @@ esp_err_t ts_rule_disable(const char *id);
  * @param id Rule ID
  * @return Rule pointer or NULL
  */
-typedef struct {int applied,durable,mirror_synced;uint32_t revision;const char *error_code;} ts_rule_commit_result_t;
+typedef struct {
+    int applied, durable, mirror_synced;
+    uint32_t revision;
+    const char *error_code;
+    char missing_template_id[TS_AUTO_NAME_MAX_LEN]; /* Request-local diagnostic, never persisted. */
+} ts_rule_commit_result_t;
 esp_err_t ts_rule_acquire(const char *id,ts_auto_rule_t *out);
 void ts_rule_release(ts_auto_rule_t *rule);
 esp_err_t ts_rule_commit(const ts_auto_rule_t *candidate,const char *id,uint32_t expected_revision,ts_rule_commit_result_t *result);

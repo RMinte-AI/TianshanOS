@@ -542,6 +542,8 @@ static void rule_commit_reply(ts_api_result_t *result, esp_err_t ret,
     cJSON_AddNumberToObject(result->data, "revision", commit->revision);
     cJSON_AddStringToObject(result->data, "error_code",
                             commit->error_code ? commit->error_code : "invalid_configuration");
+    if (commit->missing_template_id[0])
+        cJSON_AddStringToObject(result->data, "missing_template_id", commit->missing_template_id);
 }
 static esp_err_t rule_mutate_locked(const cJSON *params, ts_api_result_t *result, int operation) {
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(params, "id"),
@@ -2335,7 +2337,8 @@ static esp_err_t api_automation_actions_delete(const cJSON *params, ts_api_resul
     }
     
     const char *action_id = id->valuestring;
-    esp_err_t ret = ts_action_template_remove(action_id);
+    ts_action_template_delete_result_t detail = {0};
+    esp_err_t ret = ts_action_template_remove_checked(action_id, &detail);
     
     if (ret == ESP_OK) {
         // 同时删除 SD 卡上的配置文件（.json 和 .tscfg）
@@ -2351,17 +2354,38 @@ static esp_err_t api_automation_actions_delete(const cJSON *params, ts_api_resul
         
         result->code = TS_API_OK;
         result->message = strdup("Action template deleted");
+    } else if (detail.reason) {
+        result->code = TS_API_ERR_BUSY;
+        result->message = strdup(detail.reason);
+        cJSON *data = cJSON_CreateObject();
+        cJSON_AddStringToObject(data, "action_id", action_id);
+        if (detail.references_confirmed) {
+            cJSON_AddBoolToObject(data, "references_confirmed", true);
+            cJSON *rules = cJSON_CreateArray();
+            bool complete = rules && detail.rules;
+            for (size_t i = 0; complete && i < detail.rule_count; ++i) {
+                cJSON *rule = cJSON_CreateObject();
+                complete = rule && cJSON_AddStringToObject(rule, "id", detail.rules[i].id) &&
+                           cJSON_AddStringToObject(rule, "name", detail.rules[i].name);
+                if (complete) complete = cJSON_AddItemToArray(rules, rule);
+                if (!complete) cJSON_Delete(rule);
+            }
+            if (complete) {
+                complete = cJSON_AddItemToObject(data, "rules", rules);
+                if (!complete) cJSON_Delete(rules);
+            } else cJSON_Delete(rules);
+            cJSON_AddBoolToObject(data, "details_available", complete);
+        }
+        if (detail.check_reason) cJSON_AddStringToObject(data, "check_reason", detail.check_reason);
+        result->data = data;
     } else if (ret == ESP_ERR_NOT_FOUND) {
         result->code = TS_API_ERR_NOT_FOUND;
         result->message = strdup("Template not found");
-    } else if (ret == ESP_ERR_INVALID_STATE) {
-        result->code = TS_API_ERR_BUSY;
-        result->message = strdup("service_delete_protected");
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to delete template");
     }
-    
+    free(detail.rules);
     return ESP_OK;
 }
 

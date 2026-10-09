@@ -16,6 +16,7 @@
  */
 
 #include "ts_action_manager.h"
+#include "ts_rule_engine.h"
 #include "ts_action_filter.h"
 #include "ts_action_store.h"
 #include "ts_api.h"
@@ -3314,12 +3315,80 @@ esp_err_t ts_action_template_update(const char *id, const ts_action_template_t *
     ts_ssh_binding_unlock();
     return ret;
 }
-esp_err_t ts_action_template_remove(const char *id) {
-    if (!id)
-        return ESP_ERR_INVALID_ARG;
+/* The caller holds transaction before binding: count/get/release cannot race a rule reload. */
+static esp_err_t template_references(const char *id, ts_action_template_delete_result_t *result) {
+    int total = ts_rule_count();
+    size_t matches = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        size_t at = 0;
+        for (int i = 0; i < total; ++i) {
+            ts_auto_rule_t rule;
+            esp_err_t ret = ts_rule_get_by_index(i, &rule);
+            if (ret != ESP_OK) {
+                result->reason = "action_reference_check_unavailable";
+                result->check_reason = "failed";
+                result->references_confirmed = false;
+                ESP_LOGE(TAG, "Rule reference check failed: %s", esp_err_to_name(ret));
+                return ret;
+            }
+            bool used = false;
+            for (unsigned n = 0; n < rule.action_count; ++n)
+                used |= !strcmp(rule.actions[n].template_id, id);
+            if (used) {
+                if (!pass) ++matches;
+                else {
+                    memcpy(result->rules[at].id, rule.id, sizeof(rule.id));
+                    memcpy(result->rules[at].name, rule.name, sizeof(rule.name));
+                    ++at;
+                }
+            }
+            ts_rule_release(&rule);
+        }
+        if (!pass) {
+            if (!matches) return ESP_OK;
+            result->references_confirmed = true;
+            result->rule_count = matches;
+            result->reason = "action_in_use";
+            result->rules = heap_caps_calloc(matches, sizeof(*result->rules),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!result->rules) return ESP_ERR_INVALID_STATE; /* Confirmed blocked, details optional. */
+        }
+    }
+    return ESP_ERR_INVALID_STATE;
+}
+esp_err_t ts_action_template_remove_checked(const char *id, ts_action_template_delete_result_t *result) {
+    if (!id || !id[0] || !result) return ESP_ERR_INVALID_ARG;
+    *result = (ts_action_template_delete_result_t){0};
+    bool loaded, recovery;
+    if (!ts_rule_edit_begin()) {
+        ts_rule_config_status(&loaded, &recovery);
+        result->reason = "action_reference_check_unavailable";
+        result->check_reason = recovery ? "recovery" : loaded ? "busy" : "loading";
+        return ESP_ERR_INVALID_STATE;
+    }
     ts_ssh_binding_lock();
-    esp_err_t ret =
-        template_binding_protected(id, NULL) ? ESP_ERR_INVALID_STATE : template_remove_impl(id);
+    ts_rule_config_status(&loaded, &recovery);
+    esp_err_t ret;
+    if (!loaded || recovery) {
+        result->reason = "action_reference_check_unavailable";
+        result->check_reason = recovery ? "recovery" : "loading";
+        ret = ESP_ERR_INVALID_STATE;
+    } else {
+        ret = template_references(id, result);
+        if (ret == ESP_OK) {
+            if (template_binding_protected(id, NULL)) {
+                result->reason = "service_delete_protected";
+                ret = ESP_ERR_INVALID_STATE;
+            } else ret = template_remove_impl(id);
+        }
+    }
     ts_ssh_binding_unlock();
+    ts_rule_edit_end();
+    return ret;
+}
+esp_err_t ts_action_template_remove(const char *id) {
+    ts_action_template_delete_result_t result = {0};
+    esp_err_t ret = ts_action_template_remove_checked(id, &result);
+    free(result.rules);
     return ret;
 }

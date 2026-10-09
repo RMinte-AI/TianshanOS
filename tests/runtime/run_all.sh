@@ -9,6 +9,7 @@ python3 tests/runtime/test_completion.py
 python3 tests/runtime/test_action_submission.py
 python3 tests/runtime/test_service_control.py
 python3 tests/runtime/test_delete_api.py
+python3 tests/runtime/test_delete_reference.py
 python3 tests/runtime/test_condition_roundtrip.py
 python3 tests/runtime/test_expansion.py
 python3 tests/runtime/test_configuration_protocol.py

@@ -32,13 +32,24 @@ for(const entry of ['action','command'])for(const state of ['stopped','ready'])t
  });
  try{
   await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&typeof deleteAction==='function');
-  await page.evaluate(()=>{confirmAction=async()=>true;refreshActions=async()=>{};refreshCommandsList=()=>{};selectedHostId='host';sshCommands={host:[{id:'model',name:'Model'}]};});
-  await page.evaluate(entry=>entry==='action'?deleteAction('template'):deleteCommand(0),entry);
+  await page.evaluate(()=>{confirmAction=async()=>true;refreshActions=async()=>{};window.commandRefreshes=0;refreshCommandsList=()=>{window.commandRefreshes++;};window.deleteNavigationCalls=0;const navigate=router.navigate.bind(router);router.navigate=(...args)=>{window.deleteNavigationCalls++;return navigate(...args);};selectedHostId='host';sshCommands={host:[{id:'model',name:'Model'}]};});
+  const deletion=page.evaluate(entry=>entry==='action'?deleteAction('template'):deleteCommand(0),entry);
+  if(state==='ready'){
+   await page.locator('.confirm-sheet').waitFor();assert((await page.locator('.confirm-sheet').textContent()).includes('仍在运行'));
+   if(entry==='command'){
+    assert.equal(await page.locator('.confirm-sheet button').count(),1);
+    assert.equal(await page.locator('.confirm-sheet button').textContent(),await page.evaluate(()=>t('common.close')));
+    const before=await page.evaluate(()=>({nav:window.deleteNavigationCalls,refresh:window.commandRefreshes,hash:location.hash}));
+    await page.locator('.confirm-sheet button').click();await deletion;
+    assert.deepEqual(await page.evaluate(()=>({nav:window.deleteNavigationCalls,refresh:window.commandRefreshes,hash:location.hash})),before);
+   }else await page.keyboard.press('Escape');
+  }
+  await deletion;
   const deletes=calls.filter(c=>c.endpoint===('action'===entry?'automation/actions/delete':'ssh/commands/remove'));
   assert.equal(deletes.length,state==='stopped'?1:0);
   const verify=calls.find(c=>c.endpoint==='automation/services/status'&&c.method==='POST');assert.equal(verify.params.verify,true);assert.equal(verify.params.command_id,'model');
   assert(!calls.some(c=>c.endpoint==='automation/services/stop'||c.endpoint==='ssh/services/start'));
-  if(state==='ready')assert((await page.locator('#toast').textContent()).includes('尚未确认停止'));
+  if(state==='ready')assert.equal(await page.locator('.confirm-sheet').count(),0);
  }finally{await context.close();}
 });
 for(const entry of ['action','command'])test(`${entry}: delayed verification cannot overwrite a newer real start`,async()=>{

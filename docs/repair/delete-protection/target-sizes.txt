@@ -1,0 +1,9 @@
+From final ESP32-S3 ELF DWARF using xtensa-esp32s3-elf-gdb:
+ts_action_template_reference_t = 112 B
+ts_action_template_delete_result_t = 20 B
+ts_rule_commit_result_t = 84 B (old scalar fields 20 B, added request-local ID 64 B)
+ts_action_template_t = 1224 B
+ts_auto_rule_t = 240 B (persistent rule layout unchanged)
+Reference details: default32 *112 =3584 B temporary PSRAM; configured max64 *112 =7168 B.
+New-reference check: one template buffer1224 B temporary PSRAM; freed on all exits.
+No added resident task, per-rule field, partition, or network polling.

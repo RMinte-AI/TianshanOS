@@ -505,6 +505,36 @@ static bool protected_bindings(const ts_auto_rule_t *old, const ts_auto_rule_t *
     }
     return false;
 }
+/* Historical missing references may remain, but a write cannot introduce or multiply them. */
+static esp_err_t validate_new_template_refs(const ts_auto_rule_t *candidate,
+                                           const ts_auto_rule_t *old,
+                                           ts_rule_commit_result_t *result) {
+    ts_action_template_t *tpl = NULL;
+    esp_err_t ret = ESP_OK;
+    for (unsigned i = 0; i < candidate->action_count; ++i) {
+        const char *id = candidate->actions[i].template_id;
+        if (!id[0]) continue;
+        unsigned prior = 0, current = 0;
+        if (old)
+            for (unsigned k = 0; k < old->action_count; ++k)
+                prior += !strcmp(old->actions[k].template_id, id);
+        for (unsigned k = 0; k <= i; ++k)
+            current += !strcmp(candidate->actions[k].template_id, id);
+        if (current <= prior) continue;
+        if (!tpl) tpl = heap_caps_malloc(sizeof(*tpl), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!tpl) { ret = ESP_ERR_NO_MEM; result->error_code = "no_memory"; break; }
+        ret = ts_action_template_get(id, tpl);
+        if (ret != ESP_OK) {
+            result->error_code = ret == ESP_ERR_NOT_FOUND ? "action_missing" :
+                                 ret == ESP_ERR_NO_MEM ? "no_memory" : "template_lookup_failed";
+            if (ret == ESP_ERR_NOT_FOUND)
+                memcpy(result->missing_template_id, id, sizeof(result->missing_template_id));
+            break;
+        }
+    }
+    free(tpl);
+    return ret;
+}
 esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t expected,
                          ts_rule_commit_result_t *result) {
     ts_rule_commit_result_t local = {.error_code = "invalid_argument"};
@@ -587,6 +617,13 @@ esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t e
     candidate.revision = i >= 0 ? s_rule_ctx.rules[i].revision + 1 : 1;
     xSemaphoreGive(s_rule_ctx.mutex);
     ts_ssh_binding_lock();
+    if (input && (ret = validate_new_template_refs(&candidate, i >= 0 ? &s_rule_ctx.rules[i] : NULL, result)) != ESP_OK) {
+        ts_ssh_binding_unlock();
+        xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
+        if (i >= 0) s_rule_ctx.meta[i].committing = false;
+        xSemaphoreGive(s_rule_ctx.mutex);
+        goto done;
+    }
     if (i >= 0 && protected_bindings(&s_rule_ctx.rules[i], input ? &candidate : NULL)) {
         ts_ssh_binding_unlock();
         xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);

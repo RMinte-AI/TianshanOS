@@ -6,6 +6,11 @@ function runtimeText(key) {
 function runtimeSaveError(result) {
     const code = result.data?.error_code || result.rawMessage || result.error || result.message;
     const known = ['revision_conflict', 'source_read_only', 'recovery_required', 'commit_unknown', 'execution_busy', 'service_busy', 'busy_retired_config'];
+    if (code === 'action_missing') {
+        const name = result.missingTemplateName || result.data?.missing_template_id;
+        return name ? t('deleteProtection.actionMissing', {name}) : runtimeText('saveFailed');
+    }
+    if (code === 'template_lookup_failed') return runtimeText('saveFailed');
     return known.includes(code) ? runtimeText(code) : (typeof code === 'string' ? code : runtimeText('saveFailed'));
 }
 async function ruleWriteWithRevision(method, id) {
@@ -3833,7 +3838,7 @@ async function refreshQuickActions() {
         if (result.code === 0 && result.data && result.data.rules) {
             // 过滤出启用且标记为可手动触发的规则
             if (!result.data.loaded || result.data.recovery_required) {
-                container.textContent = runtimeText(result.data.recovery_required ? 'recovery_required' : 'configLoading'); return;
+                renderQuickActionNotice(container, result.data.recovery_required ? 'recovery' : 'loading'); return;
             }
             const allRules = result.data.rules;
             const manualRules = allRules.filter(r => r.show_on_dashboard === true);
@@ -3900,12 +3905,7 @@ async function refreshQuickActions() {
                 // 启动定时刷新服务状态（每 3 秒）
                 startServiceStatusRefresh();
             } else {
-                container.innerHTML = `
-                    <div class="empty">
-                        <p class="t-body">${typeof t === 'function' ? t('automationPage.noQuickActions') : '暂无快捷操作'}</p>
-                        <p class="t-note">${typeof t === 'function' ? t('automationPage.quickActionsHint') : '在自动化规则中启用"手动触发"选项'}</p>
-                    </div>
-                `;
+                renderQuickActionNotice(container, 'empty');
             }
         } else {
             container.innerHTML = '<p class="t-note">' + (typeof t === 'function' ? (t('automationPage.loadQuickActionsFailed') || '无法加载快捷操作') : '无法加载快捷操作') + '</p>';
@@ -8257,8 +8257,77 @@ async function saveSshCommandToBackend(hostId, cmdData, cmdId) {
  */
 // Deletion needs fresh remote evidence: a missing registry entry is unknown,
 // including after a controller reboot. Reuse queued verification, never stop here.
+// Only queued/executing operations are current work; terminal receipts are not busy evidence.
+function deleteServiceMessage(data = {}) {
+    const pending = data.busy || ['queued', 'executing'].includes(data.operation_phase);
+    if (pending && ['start', 'stop', 'verify'].includes(data.operation_kind))
+        return {start: 'starting', stop: 'stopping', verify: 'verifying'}[data.operation_kind];
+    if (pending) return 'operationPending';
+    if (data.state === 'stopped') return null;
+    if (['running', 'ready', 'checking'].includes(data.state)) return 'running';
+    if (['starting', 'stopping'].includes(data.state)) return data.state;
+    if (['unknown', 'failed', 'timeout'].includes(data.state)) return 'unconfirmed';
+    return 'unconfirmed';
+}
+async function showDeleteProtection(result, context, pageCurrent) {
+    if (!pageCurrent()) return false;
+    const reason = apiErrorReason(result);
+    const data = result.data || {};
+    let title, bodyHtml, target = null, primary;
+    if (reason === 'action_in_use') {
+        title = t('deleteProtection.actionTitle');
+        const rules = data.details_available && Array.isArray(data.rules) ? data.rules : [];
+        bodyHtml = escapeHtml(t('deleteProtection.' + (rules.length ? 'actionInUse' : 'actionInUseWithoutDetails'), {name: context.name}));
+        if (rules.length) bodyHtml += '<div class="grp" style="margin-top:12px">' + rules.map(rule =>
+            '<div class="row" style="align-items:flex-start;flex-wrap:wrap"><div class="rl" style="min-width:0;max-width:100%;overflow-wrap:anywhere">' + escapeHtml(rule.name || rule.id) +
+            '</div><div class="rc mono" style="max-width:100%;overflow-wrap:anywhere">' + escapeHtml(rule.id) + '</div></div>').join('') + '</div>';
+        primary = t('deleteProtection.viewRules'); target = '/automation';
+    } else if (reason === 'action_reference_check_unavailable') {
+        title = t('deleteProtection.actionTitle');
+        const key = {busy: 'checkBusy', loading: 'checkLoading', recovery: 'checkRecovery'}[data.check_reason] || 'checkFailed';
+        bodyHtml = escapeHtml(t('deleteProtection.' + key));
+        primary = t('common.close');
+    } else if (reason === 'service_delete_protected') {
+        title = t('deleteProtection.' + (context.type === 'action' ? 'templateTitle' : 'commandTitle'), {name: context.name});
+        const state = context.service;
+        const key = state ? deleteServiceMessage(state) : null;
+        bodyHtml = context.type === 'action' && (context.commandName || context.commandId) ? escapeHtml(t('deleteProtection.boundCommand', {command: context.commandName || context.commandId})) + '\n\n' : '';
+        bodyHtml += escapeHtml(key ? t('deleteProtection.' + key, {command: context.commandName || context.commandId}) : t('promptRepair.serviceDeleteProtected'));
+        if (context.type === 'command') primary = t('common.close');
+        else { primary = t('deleteProtection.viewCommand'); target = '/commands'; }
+    } else return false;
+    const toast = document.getElementById('toast');
+    if (toast?.classList.contains('toast-info') && toast.textContent === t('toast.processing')) {
+        clearTimeout(toastTimer); toast.classList.remove('show'); toast.classList.add('hidden'); toastDeadline = 0;
+    }
+    const pending = confirmSheet({title, bodyHtml, primary, secondary: target ? t('common.close') : false});
+    let modal = document.getElementById('confirm-sheet-' + confirmSheetSeq);
+    if (typeof router !== 'undefined') router.navigation?.onDispose(() => {
+        if (modal?.isConnected) (modal.querySelector('button[data-r="0"]') || modal.querySelector('button[data-r="1"]'))?.click();
+    });
+    const choice = await pending;
+    modal = null; // A closed sheet must not stay retained by the navigation disposer.
+    if (choice && target && pageCurrent()) {
+        if (typeof router !== 'undefined') await router.navigate(target);
+        else window.location.hash = target;
+    }
+    return true;
+}
+function renderQuickActionNotice(container, state) {
+    const loading = state === 'loading', recovery = state === 'recovery';
+    const isRoot = api.isRoot();
+    const title = t(loading ? 'deleteProtection.quickLoadingTitle' : recovery ? 'deleteProtection.quickRecoveryTitle' : 'automationPage.noQuickActions');
+    const body = loading ? runtimeText('configLoading') : recovery ? runtimeText('recovery_required') :
+        (isRoot ? t('automationPage.quickActionsHint') : t('deleteProtection.quickEmptyNeedRoot'));
+    const detail = loading ? (isRoot ? t('deleteProtection.loadingDetails') : t('deleteProtection.quickLoadingNeedRoot')) :
+        recovery ? (isRoot ? t('deleteProtection.recoveryDetails') : t('deleteProtection.quickRecoveryNeedRoot')) : '';
+    container.innerHTML = '<div class="empty"><p class="t-body">' + escapeHtml(title) + '</p><p class="t-note">' + escapeHtml(body) +
+        '</p>' + (detail ? '<p class="t-note">' + escapeHtml(detail) + '</p>' : '') +
+        (isRoot ? '<button type="button" class="btn sm" onclick="window.location.hash=\'/automation\'">' + t('deleteProtection.goAutomation') + '</button>' : '') + '</div>';
+}
+
 const configurationDeletesInFlight = new Set();
-async function verifyStoppedServiceForDelete(commandId, pageCurrent) {
+async function verifyStoppedServiceForDelete(commandId, pageCurrent, context = {type: 'command', name: commandId}) {
     const revision = advanceServiceState(commandId);
     const isCurrent = () => pageCurrent() && revision === serviceStateVersions.get(commandId);
     try {
@@ -8271,8 +8340,11 @@ async function verifyStoppedServiceForDelete(commandId, pageCurrent) {
         const data = await requestServiceControl(commandId, false, isCurrent);
         if (!data || !isCurrent()) return false;
         renderServiceCommand(commandId, data);
-        if (data.state !== 'stopped' || data.busy)
-            throw new ApiOperationError({code: 4, error: 'service_delete_protected'});
+        if (deleteServiceMessage(data)) {
+            await showDeleteProtection({code: 4, error: 'service_delete_protected'},
+                {...context, commandId, commandName: command.name || commandId, service: data}, isCurrent);
+            return false;
+        }
         return true;
     } catch (error) {
         if (!isCurrent()) return false;
@@ -9432,7 +9504,7 @@ async function deleteCommand(idx) {
         if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteCmd', { name: cmd.name }) : `确定要删除指令「${cmd.name}」吗？`, { primary: t('common.delete'), tone: 'danger' }) || !pageCurrent()) return;
         if (cmd.id) {
             showToast(t('toast.processing'), 'info');
-            if (!await verifyStoppedServiceForDelete(cmd.id, pageCurrent) || !pageCurrent()) return;
+            if (!await verifyStoppedServiceForDelete(cmd.id, pageCurrent, {type: 'command', name: cmd.name || cmd.id}) || !pageCurrent()) return;
             await deleteSshCommandFromBackend(cmd.id);
         }
         if (!pageCurrent()) return;
@@ -9442,6 +9514,7 @@ async function deleteCommand(idx) {
         if (selectedHostId === hostId) refreshCommandsList();
         showToast((typeof t === 'function' ? t('toast.commandDeleted') : '指令已删除'), 'success');
     } catch (e) {
+        if (pageCurrent() && await showDeleteProtection(e, {type: 'command', name: cmd.name || cmd.id}, pageCurrent)) return;
         if (pageCurrent()) showToast((typeof t === 'function' ? t('toast.deleteCommandFailedMsg', { msg: e.message }) : '删除指令失败: ' + e.message), 'error');
     } finally {
         configurationDeletesInFlight.delete(key);
@@ -13048,7 +13121,7 @@ function confirmSheet({ title, body = '', bodyHtml = '', primary, tone = 'neutra
             else if (e.key === 'Enter' && tone !== 'danger' && e.target.tagName !== 'BUTTON') { e.preventDefault(); finish(true); }
         };
         modal.innerHTML = sheet(width, escapeHtml(title), `<div class="t-body" style="color:var(--ink-2);white-space:pre-line">${bodyHtml || escapeHtml(body)}</div>`,
-            `<button type="button" class="btn lg" data-r="0">${secondary || t('common.cancel')}</button>` +
+            (secondary === false ? '' : `<button type="button" class="btn lg" data-r="0">${secondary || t('common.cancel')}</button>`) +
             (third ? `<button type="button" class="btn lg" data-r="alt">${third}</button>` : '') +
             `<button type="button" class="btn lg primary${tone === 'danger' ? ' bad' : ''}" data-r="1">${primary || t('common.confirm')}</button>`);
         modal.onclick = e => {
@@ -16850,11 +16923,13 @@ async function deleteAction(id) {
         showToast(t('toast.processing'), 'info');
         const template = requireApiSuccess(await api.call('automation.actions.get', { id }), 'automation.actions.get').data;
         if (!pageCurrent()) return;
+        const context = {type: 'action', name: template?.name || id, commandId: template?.ssh_ref?.cmd_id};
         if (template?.type === 'ssh_cmd_ref' && template.ssh_ref?.cmd_id &&
-            !await verifyStoppedServiceForDelete(template.ssh_ref.cmd_id, pageCurrent)) return;
+            !await verifyStoppedServiceForDelete(template.ssh_ref.cmd_id, pageCurrent, context)) return;
         if (!pageCurrent()) return;
         const result = await api.call('automation.actions.delete', { id });
         if (!pageCurrent()) return;
+        if (result.code !== 0 && await showDeleteProtection(result, context, pageCurrent)) return;
         showToast(typeof t === 'function' ? t('toast.deleteActionResult', { id }) + ': ' + (result.message || 'OK') : `删除动作 ${id}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
         if (result.code === 0) await refreshActions();
     } catch (error) {
@@ -18276,11 +18351,11 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
     cachedActionTemplates.forEach(tpl => {
         const typeLabel = getActionTypeLabel(tpl.type);
         const selected = tpl.id === templateId ? 'selected' : '';
-        optionsHtml += `<option value="${escapeHtml(tpl.id)}" ${selected}>${escapeHtml(tpl.name || tpl.id)} (${typeLabel})</option>`;
+        optionsHtml += `<option value="${escapeHtml(tpl.id)}" data-template-name="${escapeHtml(tpl.name || tpl.id)}" ${selected}>${escapeHtml(tpl.name || tpl.id)} (${typeLabel})</option>`;
     });
     
     if (templateId && !cachedActionTemplates.some(tpl => tpl.id === templateId))
-        optionsHtml += `<option value="${escapeHtml(templateId)}" selected>${escapeHtml(templateId)} (${runtimeText('referenceUnresolved')})</option>`;
+        optionsHtml += `<option value="${escapeHtml(templateId)}" data-template-name="${escapeHtml(templateId)}" selected>${escapeHtml(templateId)} (${runtimeText('referenceUnresolved')})</option>`;
     const rowId = actionRowCount;
     const showRepeatOptions = repeatMode !== 'once';
     const hasCondition = condition && condition.variable;
@@ -18567,6 +18642,7 @@ async function submitAddRule(originalId = null) {
 
     // 收集动作模板引用（包含 template_id、delay_ms、重复选项和动作条件）
     const actions = [];
+    const selectedTemplateNames = new Map();
     for (const row of document.querySelectorAll('#add-rule-modal .action-row')) {
         if (row.dataset.inline === 'true') { actions.push(structuredClone(row._originalAction)); continue; }
         const templateId = row.querySelector('.action-template-id')?.value;
@@ -18580,6 +18656,8 @@ async function submitAddRule(originalId = null) {
         if (hasCondition && !templateId) { fieldError('actions-container', t('ui.alertSelectAction')); return; }
         
         if (templateId) {
+            const select = row.querySelector('.action-template-id');
+            selectedTemplateNames.set(templateId, select.selectedOptions?.[0]?.dataset.templateName || templateId);
             const actionRef = row._originalAction?.template_id === templateId ? structuredClone(row._originalAction) : {};
             actionRef.template_id = templateId;
             actionRef.delay_ms = delay_ms;
@@ -18641,6 +18719,8 @@ async function submitAddRule(originalId = null) {
             closeModal('add-rule-modal');
             await Promise.all([refreshRules(), refreshAutomationStatus()]);
         } else {
+            if (result.data?.error_code === 'action_missing')
+                result.missingTemplateName = selectedTemplateNames.get(result.data.missing_template_id) || result.data.missing_template_id;
             showToast(runtimeSaveError(result), 'error');
         }
     } catch (error) {

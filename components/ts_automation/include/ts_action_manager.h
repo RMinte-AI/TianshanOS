@@ -465,6 +465,18 @@ esp_err_t ts_action_template_add(const ts_action_template_t *tpl);
  * @param id Template ID to remove
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not exists
  */
+typedef struct {
+    char id[TS_AUTO_NAME_MAX_LEN];
+    char name[TS_AUTO_LABEL_MAX_LEN];
+} ts_action_template_reference_t;
+typedef struct {
+    const char *reason;
+    const char *check_reason;
+    bool references_confirmed;
+    size_t rule_count;
+    ts_action_template_reference_t *rules; /* Caller frees; NULL when details are unavailable. */
+} ts_action_template_delete_result_t;
+esp_err_t ts_action_template_remove_checked(const char *id, ts_action_template_delete_result_t *result);
 esp_err_t ts_action_template_remove(const char *id);
 
 /**
