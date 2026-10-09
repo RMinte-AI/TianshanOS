@@ -12409,6 +12409,21 @@ function reportFailure(spec, {type = null, attempt = null} = {}) {
 
 // The same sentence written into the page (a list that could not be loaded, a status line, a result box) instead of a
 // toast. Returns HTML-safe markup; the technical details become the tooltip.
+// A failure inside the result box of a dialog (config pack export / verification / import): the sentence in the box, the
+// technical details as its tooltip.
+function packBox(box, spec) {
+    const failure = describeFailure(spec);
+    box.className = 'result-box error';
+    box.textContent = failure.message;
+    box.title = failure.details || '';
+    return failure;
+}
+
+// An address in a sentence: long ones are cut so the sentence stays readable.
+function shortUrl(url) {
+    const text = String(url ?? '');
+    return text.length > 60 ? text.slice(0, 57) + '…' : text;
+}
 function failureNote(spec) {
     const failure = describeFailure(spec);
     return `<span${failure.details ? ` title="${escapeHtml(failure.details)}"` : ''}>${escapeHtml(failure.message)}</span>`;
@@ -15400,6 +15415,7 @@ async function showImageSelectModal(title, onSelect) {
     // 加载图像列表
     try {
         const result = await api.storageList('/sdcard/images');
+        if (result.code !== 0) throw new ApiOperationError(result, 'storage.list');   // not an empty folder: the folder could not be read
         const files = result.data?.entries || [];
         const imageExts = ['.png', '.jpg', '.jpeg', '.bmp', '.gif'];
         const images = files.filter(f => {
@@ -15432,7 +15448,7 @@ async function showImageSelectModal(title, onSelect) {
     } catch (e) {
         console.error('加载图像列表失败:', e);
         const ld = document.getElementById('image-select-loading');
-        if (ld) ld.innerHTML = `<span class="form-error">${t('common.loadFailed')}: ${escapeHtml(e.message)}</span>`;
+        if (ld) ld.innerHTML = `<span class="form-error">${failureNote({ op: 'image.list', error: e, endpoint: 'storage.list', write: false })}</span>`;
     }
 }
 
@@ -15495,6 +15511,7 @@ async function loadVarSelectList(asExpr = false) {
             include_value: false,
             include_meta: false
         });
+        if (result.code !== 0) throw new ApiOperationError(result, 'automation.variables.list');
         const variables = result.data?.variables || [];
         document.getElementById('variable-select-loading').style.display = 'none';
         if (variables.length === 0) {
@@ -15540,7 +15557,7 @@ async function loadVarSelectList(asExpr = false) {
     } catch (e) {
         console.error('加载变量列表失败:', e);
         const ld = document.getElementById('variable-select-loading');
-        if (ld) ld.innerHTML = `<span class="form-error">${t('common.loadFailed')}: ${escapeHtml(e.message)}</span>`;
+        if (ld) ld.innerHTML = `<span class="form-error">${failureNote({ op: 'variable.list', error: e, endpoint: 'automation.variables.list', write: false })}</span>`;
     }
 }
 
@@ -16417,11 +16434,12 @@ async function testRestConnection() {
                 document.getElementById('rest-json-preview').textContent = lastTestData;
             }
         } else {
-            statusSpan.innerHTML = `<span class="state bad">${t('automationPage.testFailed')}: ${escapeHtml(result.message || t('errors.unknownError'))}</span>`;
+            // a test changes nothing: write:false, so a lost connection is "cannot reach", not "result unconfirmed"
+            statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testRest', params: { url: shortUrl(url) }, result, endpoint: 'automation.proxy.fetch', write: false })}</span>`;
             document.querySelector('#rest-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
-        statusSpan.innerHTML = `<span class="state bad">${t('common.error')}: ${escapeHtml(error.message)}</span>`;
+        statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testRest', params: { url: shortUrl(url) }, error, endpoint: 'automation.proxy.fetch', write: false })}</span>`;
         document.querySelector('#rest-var-selector .var-list').innerHTML = '';
     }
     
@@ -16473,11 +16491,11 @@ async function testWsConnection() {
                 document.getElementById('ws-json-preview').textContent = lastTestData;
             }
         } else {
-            statusSpan.innerHTML = `<span class="state bad">${escapeHtml(result.message || t('ssh.connectionFailed'))}</span>`;
+            statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testWs', params: { url: shortUrl(uri) }, result, endpoint: 'automation.proxy.websocket_test', write: false })}</span>`;
             document.querySelector('#ws-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
-        statusSpan.innerHTML = `<span class="state bad">${t('common.error')}: ${escapeHtml(error.message)}</span>`;
+        statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testWs', params: { url: shortUrl(uri) }, error, endpoint: 'automation.proxy.websocket_test', write: false })}</span>`;
         document.querySelector('#ws-var-selector .var-list').innerHTML = '';
     }
     
@@ -16550,12 +16568,8 @@ async function testSioConnection() {
                 document.getElementById('sio-json-preview').textContent = String(lastTestData);
             }
         } else {
-            // 显示详细错误信息
-            let errorMsg = result.message || t('ssh.connectionFailed');
-            if (result.data && result.data.sid) {
-                errorMsg += ' ' + t('promptRepair.noEvent');
-            }
-            statusSpan.innerHTML = `<span class="state bad">${escapeHtml(errorMsg)}</span>`;
+            // the reason comes from the device; the folded details carry the rest
+            statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testSio', params: { url: shortUrl(url) }, result, endpoint: 'automation.proxy.socketio_test', write: false })}</span>`;
             document.querySelector('#sio-var-selector .var-list').innerHTML = 
                 ("<span class=\"t-note\">" + t('automationPage.hintAutoDiscoverEvent') + "</span>");
             
@@ -16566,7 +16580,7 @@ async function testSioConnection() {
             }
         }
     } catch (error) {
-        statusSpan.innerHTML = `<span class="state bad">${t('common.error')}: ${escapeHtml(error.message)}</span>`;
+        statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testSio', params: { url: shortUrl(url) }, error, endpoint: 'automation.proxy.socketio_test', write: false })}</span>`;
         document.querySelector('#sio-var-selector .var-list').innerHTML = '';
     }
     
@@ -16778,10 +16792,10 @@ async function loadSshHostsForSource() {
             });
             hostSelect.innerHTML = html;
         } else {
-            hostSelect.innerHTML = `<option value="">${escapeHtml(t('common.loadFailedMsg', {msg: result.message || t('errors.unknownError')}))}</option>`;
+            hostSelect.innerHTML = `<option value="">${escapeHtml(describeFailure({ op: 'host.list', result, endpoint: 'ssh.hosts.list', write: false }).message)}</option>`;
         }
     } catch (error) {
-        hostSelect.innerHTML = `<option value="">${escapeHtml(t('common.loadFailedMsg', {msg: error.message}))}</option>`;
+        hostSelect.innerHTML = `<option value="">${escapeHtml(describeFailure({ op: 'host.list', error, endpoint: 'ssh.hosts.list', write: false }).message)}</option>`;
     }
 }
 
@@ -17857,15 +17871,16 @@ async function doExportSource(sourceId) {
     resultBox.textContent = (typeof t === 'function' ? t('securityPage.generatingPack') : '正在生成配置包...');
     exportBtn.disabled = true;
     
+    const packParams = { kind: t('failure.kinds.source'), name: sourceNames.get(sourceId) || sourceId, file: '' };
     try {
         const params = { id: sourceId };
         if (certText) params.recipient_cert = certText;
         
         const result = await api.call('automation.sources.export', params);
-        if (result.code !== 0) throw new Error(result.message || (typeof t === 'function' ? t('toast.exportFailed') : '导出失败'));
+        if (result.code !== 0) { packBox(resultBox, { op: 'pack.export', params: packParams, result, endpoint: 'automation.sources.export', write: false }); return; }
         
         const data = result.data;
-        if (!data?.tscfg) throw new Error(typeof t === 'function' ? t('toast.invalidResponse') : '无效的响应数据');
+        if (!data?.tscfg) { packBox(resultBox, { op: 'pack.export', params: packParams, token: 'invalid_response', endpoint: 'automation.sources.export' }); return; }
         
         // 下载文件
         const blob = new Blob([data.tscfg], { type: 'application/json' });
@@ -17880,11 +17895,10 @@ async function doExportSource(sourceId) {
         
         resultBox.className = 'result-box success';
         resultBox.textContent = (typeof t === 'function' ? t('toast.exportSuccess') : '导出成功');
-        showToast((typeof t === 'function' ? t('toast.exportedSourceConfig', {filename: data.filename}) : `已导出数据源配置: ${data.filename}`), 'success');
+        showToast(t('failure.ops.pack.export.done', { kind: packParams.kind, name: packParams.name, file: data.filename }), 'success');
         setTimeout(() => hideExportSourceModal(), 1000);
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.export', params: packParams, error: e, endpoint: 'automation.sources.export', write: false });
     } finally {
         exportBtn.disabled = false;
     }
@@ -17955,12 +17969,10 @@ async function previewSourceImport() {
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || t('ssh.cannotVerifyPack'));
+            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.source'), file: file.name }, result, endpoint: 'automation.sources.import', write: false });
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.source'), file: file.name }, error: e, endpoint: 'automation.sources.import', write: false });
     }
 }
 
@@ -17974,6 +17986,7 @@ async function confirmSourceImport() {
         return;
     }
     
+    const packParams = { kind: t('failure.kinds.source'), file: window._importSourceFilename || '' };
     resultBox.classList.remove('hidden', 'success', 'error');
     resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
     importBtn.disabled = true;
@@ -17996,17 +18009,15 @@ async function confirmSourceImport() {
             } else {
                 resultBox.className = 'result-box success';
                 resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(typeof t === 'function' ? t('toast.configImported') : '已导入配置，重启后生效', 'success');
+                showToast(t('failure.ops.pack.import.done', packParams), 'success');
                 setTimeout(() => hideImportSourceModal(), 2000);
             }
         } else {
-            resultBox.className = 'result-box error';
-resultBox.textContent = (result.message || (typeof t === 'function' ? t('toast.importFailed') : '导入失败'));
+            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'automation.sources.import' });
                 importBtn.disabled = false;
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'automation.sources.import', write: true });
         importBtn.disabled = false;
     }
 }
@@ -18043,15 +18054,16 @@ async function doExportRule(ruleId) {
     resultBox.textContent = typeof t === 'function' ? t('securityPage.generatingPack') : '正在生成配置包...';
     exportBtn.disabled = true;
     
+    const packParams = { kind: t('failure.kinds.rule'), name: ruleNames.get(ruleId) || ruleId, file: '' };
     try {
         const params = { id: ruleId };
         if (certText) params.recipient_cert = certText;
         
         const result = await api.call('automation.rules.export', params);
-        if (result.code !== 0) throw new Error(result.message || t('toast.exportFailed'));
+        if (result.code !== 0) { packBox(resultBox, { op: 'pack.export', params: packParams, result, endpoint: 'automation.rules.export', write: false }); return; }
         
         const data = result.data;
-        if (!data?.tscfg) throw new Error(t('toast.invalidResponse'));
+        if (!data?.tscfg) { packBox(resultBox, { op: 'pack.export', params: packParams, token: 'invalid_response', endpoint: 'automation.rules.export' }); return; }
         
         // 下载文件
         const blob = new Blob([data.tscfg], { type: 'application/json' });
@@ -18066,11 +18078,10 @@ async function doExportRule(ruleId) {
         
         resultBox.className = 'result-box success';
         resultBox.textContent = typeof t === 'function' ? t('toast.exportSuccess') : '导出成功';
-        showToast(typeof t === 'function' ? t('toast.ruleConfigExported', { filename: data.filename }) : `已导出规则配置: ${data.filename}`, 'success');
+        showToast(t('failure.ops.pack.export.done', { kind: packParams.kind, name: packParams.name, file: data.filename }), 'success');
         setTimeout(() => hideExportRuleModal(), 1000);
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.export', params: packParams, error: e, endpoint: 'automation.rules.export', write: false });
     } finally {
         exportBtn.disabled = false;
     }
@@ -18141,12 +18152,10 @@ async function previewRuleImport() {
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('ssh.cannotVerifyPack') : '无法验证配置包'));
+            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.rule'), file: file.name }, result, endpoint: 'automation.rules.import', write: false });
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.rule'), file: file.name }, error: e, endpoint: 'automation.rules.import', write: false });
     }
 }
 
@@ -18160,6 +18169,7 @@ async function confirmRuleImport() {
         return;
     }
     
+    const packParams = { kind: t('failure.kinds.rule'), file: window._importRuleFilename || '' };
     resultBox.classList.remove('hidden', 'success', 'error');
     resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
     importBtn.disabled = true;
@@ -18182,17 +18192,15 @@ async function confirmRuleImport() {
             } else {
                 resultBox.className = 'result-box success';
                 resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(typeof t === 'function' ? t('toast.configImported') : '已导入配置，重启后生效', 'success');
+                showToast(t('failure.ops.pack.import.done', packParams), 'success');
                 setTimeout(() => hideImportRuleModal(), 2000);
             }
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('toast.importFailed') : '导入失败'));
+            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'automation.rules.import' });
             importBtn.disabled = false;
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'automation.rules.import', write: true });
         importBtn.disabled = false;
     }
 }
@@ -18229,15 +18237,16 @@ async function doExportAction(actionId) {
     resultBox.textContent = (typeof t === 'function' ? t('securityPage.generatingPack') : '正在生成配置包...');
     exportBtn.disabled = true;
     
+    const packParams = { kind: t('failure.kinds.action'), name: actionNames.get(actionId) || actionId, file: '' };
     try {
         const params = { id: actionId };
         if (certText) params.recipient_cert = certText;
         
         const result = await api.call('automation.actions.export', params);
-        if (result.code !== 0) throw new Error(result.message || (typeof t === 'function' ? t('toast.exportFailed') : '导出失败'));
+        if (result.code !== 0) { packBox(resultBox, { op: 'pack.export', params: packParams, result, endpoint: 'automation.actions.export', write: false }); return; }
         
         const data = result.data;
-        if (!data?.tscfg) throw new Error(typeof t === 'function' ? t('toast.invalidResponse') : '无效的响应数据');
+        if (!data?.tscfg) { packBox(resultBox, { op: 'pack.export', params: packParams, token: 'invalid_response', endpoint: 'automation.actions.export' }); return; }
         
         // 下载文件
         const blob = new Blob([data.tscfg], { type: 'application/json' });
@@ -18252,11 +18261,10 @@ async function doExportAction(actionId) {
         
         resultBox.className = 'result-box success';
         resultBox.textContent = (typeof t === 'function' ? t('toast.exportSuccess') : '导出成功');
-        showToast((typeof t === 'function' ? t('toast.exportedActionTemplate', {filename: data.filename}) : `已导出动作模板: ${data.filename}`), 'success');
+        showToast(t('failure.ops.pack.export.done', { kind: packParams.kind, name: packParams.name, file: data.filename }), 'success');
         setTimeout(() => hideExportActionModal(), 1000);
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.export', params: packParams, error: e, endpoint: 'automation.actions.export', write: false });
     } finally {
         exportBtn.disabled = false;
     }
@@ -18327,12 +18335,10 @@ async function previewActionImport() {
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || t('ssh.cannotVerifyPack'));
+            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.action'), file: file.name }, result, endpoint: 'automation.actions.import', write: false });
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.action'), file: file.name }, error: e, endpoint: 'automation.actions.import', write: false });
     }
 }
 
@@ -18346,6 +18352,7 @@ async function confirmActionImport() {
         return;
     }
     
+    const packParams = { kind: t('failure.kinds.action'), file: window._importActionFilename || '' };
     resultBox.classList.remove('hidden', 'success', 'error');
     resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
     importBtn.disabled = true;
@@ -18368,17 +18375,15 @@ async function confirmActionImport() {
             } else {
                 resultBox.className = 'result-box success';
                 resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(typeof t === 'function' ? t('toast.configImported') : '已导入配置，重启后生效', 'success');
+                showToast(t('failure.ops.pack.import.done', packParams), 'success');
                 setTimeout(() => hideImportActionModal(), 2000);
             }
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('toast.importFailed') : '导入失败'));
+            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'automation.actions.import' });
             importBtn.disabled = false;
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'automation.actions.import', write: true });
         importBtn.disabled = false;
     }
 }

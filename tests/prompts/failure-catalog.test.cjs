@@ -10,7 +10,7 @@ const failure = lang => langs[lang].failure;
 const slots = text => [...new Set([...text.matchAll(/(?<!\$)\{(\w+)\}/g)].map(m => m[1]))].sort();
 const CJK = /[㐀-鿿＀-￯　-〿]/;
 // "automation" is the service name exactly as the System page's service list shows it; "json" is in a file name; "ID" is the field's label
-const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID']);
+const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'HTTP', 'WebSocket', 'Socket', 'IO', 'REST', 'OS', 'tscfg']);
 const flat = (object, prefix = '') => Object.entries(object).flatMap(([k, v]) => typeof v === 'string' ? [[prefix + k, v]] : flat(v, prefix + k + '.'));
 
 test('both languages have the same reasons, the same parts of each reason and the same placeholders', () => {
@@ -130,6 +130,7 @@ test('every reason token the firmware can send has a message in both languages',
     const tokens = new Set([
         ...returned(functionBody(automation, 'trigger_reject_token')),
         ...returned(functionBody(automation, 'engine_refusal_token')),
+        ...returned(functionBody(component('ts_config_pack/src/ts_config_pack.c'), 'ts_config_pack_reason')),
         ...returned(functionBody(ssh, 'ssh_connect_reason')),
         // rule save / enable / disable: the engine, the store and the API layer
         ...[component('ts_automation/src/ts_rule_engine.c'), component('ts_automation/src/ts_rule_store.c'), automation]
@@ -137,6 +138,8 @@ test('every reason token the firmware can send has a message in both languages',
         ...[...automation.matchAll(/ts_api_result_error\(result, TS_API_ERR_\w+, "([a-z][a-z0-9_]*)"\)/g)].map(m => m[1]),
         // fail_with(result, CODE, "token", detail): the helper the automation handlers use for a reason the page can state
         ...[...automation.matchAll(/fail_with\(result, TS_API_ERR_\w+, "([a-z][a-z0-9_]*)"/g)].map(m => m[1]),
+        // reasons the handlers put straight into the message: result->message = strdup("token")
+        ...[...automation.matchAll(/\bstrdup\("([a-z][a-z0-9_]*)"\)/g)].map(m => m[1]),
         // the replies the handlers' tails delegate to
         ...[...automation.matchAll(/message = strdup\([^;]*?"(action_failed|action_timeout)"/g)].map(m => m[1]),
     ]);
@@ -150,7 +153,7 @@ test('every reason token the firmware can send has a message in both languages',
 
 test('the catalogue has no reason that nothing can produce (a sentence nobody can reach is a trap for the next edit)', () => {
     const sources = [component('ts_api/src/ts_api_automation.c'), component('ts_api/src/ts_api_ssh.c'), component('ts_automation/src/ts_rule_engine.c'),
-        component('ts_automation/src/ts_rule_store.c'), read('js/app.js'), read('js/api.js')].join('\n');
+        component('ts_automation/src/ts_rule_store.c'), component('ts_config_pack/src/ts_config_pack.c'), read('js/app.js'), read('js/api.js')].join('\n');
     // reasons the page produces from the error class, from a transport state, or from the API envelope of other modules
     const GENERIC = new Set(['busy', 'no_memory', 'not_found', 'no_permission', 'timeout', 'invalid_request', 'invalid_argument', 'not_supported', 'hardware_failed',
         'target_unreachable', 'auth_required', 'network_lost', 'invalid_response', 'no_detail', 'result_unknown', 'storage_failed']);

@@ -29,7 +29,7 @@ function checkSentence(language, shown, where) {
     assert(!/code=|errno|ESP_/.test(text), `${where}: an internal word reached the user: ${text}`);
     if (language === 'zh-CN') {
         assert(CJK.test(text), `${where}: no Chinese: ${text}`);
-        const latin = (text.replace(/[“”‘’]/g, '').match(/[A-Za-z]{2,}/g) || []).filter(word => !['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'LED', 'REST', 'Webhook', 'QR', 'URL', 'WebSocket', 'Socket', 'IO'].includes(word));
+        const latin = (text.replace(/[“”‘’]/g, '').match(/[A-Za-z]{2,}/g) || []).filter(word => !['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'LED', 'REST', 'Webhook', 'QR', 'URL', 'WebSocket', 'Socket', 'IO', 'HTTP', 'API', 'OS', 'tscfg'].includes(word));
         assert.deepEqual(latin, [], `${where}: English in the Chinese text: ${text}`);
     } else {
         assert(!CJK.test(text.replace(/[“”’]/g, '')), `${where}: Chinese in the English text: ${text}`);
@@ -225,6 +225,72 @@ scenarioTests('automation', [
     {id: 'source.add.no-answer', setup: (p, c) => p.evaluate(n => { showAddSourceModal(); document.getElementById('source-id').value = 'temp'; document.getElementById('source-label').value = n; document.getElementById('source-rest-url').value = 'http://192.0.2.1/api/status'; }, c.source),
      act: p => p.evaluate(() => submitAddSource()), device: {'automation/sources/add': DROP}},
     {id: 'source.list.no-answer', setup: page.rules, act: p => p.evaluate(() => refreshSources()), device: {'automation/sources/list': DROP}, show: {inline: '#sources-list'}},
+
+    // ---- config packs: export, verify (the preview after choosing a file) and import
+    {id: 'pack.export-source.not-allowed', setup: (p, c) => p.evaluate(n => { sourceNames.set('temp', n); showExportSourceModal('temp'); }, c.source), act: p => p.evaluate(() => doExportSource('temp')),
+     device: {'automation/sources/export': wire('wire-pack-not-allowed.json')}, show: {inline: '#export-source-result'}},
+    {id: 'pack.export-source.no-memory', setup: (p, c) => p.evaluate(n => { sourceNames.set('temp', n); showExportSourceModal('temp'); }, c.source), act: p => p.evaluate(() => doExportSource('temp')),
+     device: {'automation/sources/export': '{"code":6,"message":"no_memory"}'}, show: {inline: '#export-source-result'}},
+    {id: 'pack.export-source.invalid-answer', setup: (p, c) => p.evaluate(n => { sourceNames.set('temp', n); showExportSourceModal('temp'); }, c.source), act: p => p.evaluate(() => doExportSource('temp')),
+     device: {'automation/sources/export': '{"code":0,"data":{}}'}, show: {inline: '#export-source-result'}},
+    {id: 'pack.export-source.no-answer', setup: (p, c) => p.evaluate(n => { sourceNames.set('temp', n); showExportSourceModal('temp'); }, c.source), act: p => p.evaluate(() => doExportSource('temp')),
+     device: {'automation/sources/export': DROP}, show: {inline: '#export-source-result'}},
+    {id: 'pack.export-rule.cert-unavailable', setup: (p, c) => p.evaluate(n => { ruleNames.set('night-off', n); showExportRuleModal('night-off'); }, c.rule), act: p => p.evaluate(() => doExportRule('night-off')),
+     device: {'automation/rules/export': '{"code":7,"message":"device_cert_unavailable","data":{"detail":"ESP_FAIL"}}'}, show: {inline: '#export-rule-result'}},
+    {id: 'pack.export-action.not-found', setup: (p, c) => p.evaluate(n => { actionNames.set('restart-agx', n); showExportActionModal('restart-agx'); }, c.action), act: p => p.evaluate(() => doExportAction('restart-agx')),
+     device: {'automation/actions/export': '{"code":2,"message":"Action template not found"}'}, show: {inline: '#export-action-result'}},
+    {id: 'pack.verify-source.wrong-device', setup: p => p.evaluate(() => { showImportSourceModal(); const dt = new DataTransfer(); dt.items.add(new File(['{}'], 'source_temp.tscfg')); document.getElementById('import-source-file').files = dt.files; }),
+     act: p => p.evaluate(() => previewSourceImport()), device: {'automation/sources/import': wire('wire-pack-wrong-device.json')}, show: {inline: '#import-source-result'}},
+    {id: 'pack.verify-rule.signature', setup: p => p.evaluate(() => { showImportRuleModal(); const dt = new DataTransfer(); dt.items.add(new File(['{}'], 'rule_night.tscfg')); document.getElementById('import-rule-file').files = dt.files; }),
+     act: p => p.evaluate(() => previewRuleImport()), device: {'automation/rules/import': wire('wire-pack-signature.json')}, show: {inline: '#import-rule-result'}},
+    {id: 'pack.verify-action.not-a-pack', setup: p => p.evaluate(() => { showImportActionModal(); const dt = new DataTransfer(); dt.items.add(new File(['hello'], 'notes.txt')); document.getElementById('import-action-file').files = dt.files; }),
+     act: p => p.evaluate(() => previewActionImport()), device: {'automation/actions/import': wire('wire-pack-parse.json')}, show: {inline: '#import-action-result'}},
+    {id: 'pack.verify-source.no-answer', setup: p => p.evaluate(() => { showImportSourceModal(); const dt = new DataTransfer(); dt.items.add(new File(['{}'], 'source_temp.tscfg')); document.getElementById('import-source-file').files = dt.files; }),
+     act: p => p.evaluate(() => previewSourceImport()), device: {'automation/sources/import': DROP}, show: {inline: '#import-source-result'}},
+    {id: 'pack.import-source.ok', setup: p => p.evaluate(() => { showImportSourceModal(); window._importSourceTscfg = '{}'; window._importSourceFilename = 'source_temp.tscfg'; }),
+     act: p => p.evaluate(() => confirmSourceImport()), device: {'automation/sources/import': '{"code":0,"data":{"id":"temp","imported":true}}'}},
+    {id: 'pack.import-source.storage-failed', setup: p => p.evaluate(() => { showImportSourceModal(); window._importSourceTscfg = '{}'; window._importSourceFilename = 'source_temp.tscfg'; }),
+     act: p => p.evaluate(() => confirmSourceImport()), device: {'automation/sources/import': '{"code":7,"message":"storage_failed","data":{"detail":"No such file or directory"}}'}, show: {inline: '#import-source-result'}},
+    {id: 'pack.import-source.no-answer', setup: p => p.evaluate(() => { showImportSourceModal(); window._importSourceTscfg = '{}'; window._importSourceFilename = 'source_temp.tscfg'; }),
+     act: p => p.evaluate(() => confirmSourceImport()), device: {'automation/sources/import': DROP}, show: {inline: '#import-source-result'}},
+    {id: 'pack.import-rule.unavailable', setup: p => p.evaluate(() => { showImportRuleModal(); window._importRuleTscfg = '{}'; window._importRuleFilename = 'rule_night.tscfg'; }),
+     act: p => p.evaluate(() => confirmRuleImport()), device: {'automation/rules/import': '{"code":8,"message":"rule_import_unavailable","data":{"detail":"encrypted rule import requires a recoverable writer"}}'}, show: {inline: '#import-rule-result'}},
+    {id: 'pack.import-action.no-file', setup: p => p.evaluate(() => { showImportActionModal(); window._importActionTscfg = null; }), act: p => p.evaluate(() => confirmActionImport())},
+
+    // ---- lists the rule / data source forms read
+    {id: 'variable.list.refused', setup: p => p.evaluate(() => { document.body.insertAdjacentHTML('beforeend', '<div id="variable-select-loading"></div><div id="variable-select-empty"></div><div id="variable-select-list"></div>'); }),
+     act: p => p.evaluate(() => loadVarSelectList()), device: {'automation/variables/list': '{"code":7,"message":"Failed to list variables"}'}, show: {inline: '#variable-select-loading'}},
+    {id: 'variable.list.no-answer', setup: p => p.evaluate(() => { document.body.insertAdjacentHTML('beforeend', '<div id="variable-select-loading"></div><div id="variable-select-empty"></div><div id="variable-select-list"></div>'); }),
+     act: p => p.evaluate(() => loadVarSelectList()), device: {'automation/variables/list': DROP}, show: {inline: '#variable-select-loading'}},
+    {id: 'image.list.no-answer', act: p => p.evaluate(() => showImageSelectModal('x', () => {})), device: {'storage/list': DROP}, show: {inline: '#image-select-loading'}},
+    {id: 'image.list.sd-missing', act: p => p.evaluate(() => showImageSelectModal('x', () => {})), device: {'storage/list': '{"code":2,"message":"SD card not mounted"}'}, show: {inline: '#image-select-loading'}},
+    {id: 'host.list.refused', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('variable'); }), act: p => p.evaluate(() => loadSshHostsForSource()),
+     device: {'ssh/hosts/list': '{"code":7,"message":"Failed to list hosts"}'}, show: {inline: '#source-ssh-host'}},
+
+    // ---- testing a data source's address (the answer is shown next to the Test button)
+    {id: 'source.test-rest.connect-failed', setup: p => p.evaluate(() => { showAddSourceModal(); document.getElementById('source-rest-url').value = 'http://192.0.2.9/api/status'; }), act: p => p.evaluate(() => testRestConnection()),
+     device: {'automation/proxy/fetch': wire('wire-proxy-connect-failed.json')}, show: {inline: '#rest-test-result .test-status'}},
+    {id: 'source.test-rest.http-error', setup: p => p.evaluate(() => { showAddSourceModal(); document.getElementById('source-rest-url').value = 'http://192.0.2.9/api/status'; }), act: p => p.evaluate(() => testRestConnection()),
+     device: {'automation/proxy/fetch': wire('wire-proxy-http-error.json')}, show: {inline: '#rest-test-result .test-status'}},
+    {id: 'source.test-rest.init-failed', setup: p => p.evaluate(() => { showAddSourceModal(); document.getElementById('source-rest-url').value = 'not an address'; }), act: p => p.evaluate(() => testRestConnection()),
+     device: {'automation/proxy/fetch': '{"code":7,"message":"proxy_init_failed"}'}, show: {inline: '#rest-test-result .test-status'}},
+    {id: 'source.test-rest.no-answer', setup: p => p.evaluate(() => { showAddSourceModal(); document.getElementById('source-rest-url').value = 'http://192.0.2.9/api/status'; }), act: p => p.evaluate(() => testRestConnection()),
+     device: {'automation/proxy/fetch': DROP}, show: {inline: '#rest-test-result .test-status'}},
+    {id: 'source.test-rest.missing-address', setup: p => p.evaluate(() => { showAddSourceModal(); }), act: p => p.evaluate(() => testRestConnection()), show: {field: 'source-rest-url'}},
+    {id: 'source.test-ws.start-failed', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('websocket'); document.getElementById('source-ws-uri').value = 'ws://192.0.2.9:81/feed'; }), act: p => p.evaluate(() => testWsConnection()),
+     device: {'automation/proxy/websocket_test': '{"code":10,"message":"ws_start_failed","data":{"detail":"ESP_ERR_INVALID_ARG"}}'}, show: {inline: '#ws-test-result .test-status'}},
+    {id: 'source.test-ws.connect-failed', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('websocket'); document.getElementById('source-ws-uri').value = 'ws://192.0.2.9:81/feed'; }), act: p => p.evaluate(() => testWsConnection()),
+     device: {'automation/proxy/websocket_test': '{"code":7,"message":"ws_connect_failed","data":{"connected":false,"error":"ws_connect_failed"}}'}, show: {inline: '#ws-test-result .test-status'}},
+    {id: 'source.test-ws.timeout', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('websocket'); document.getElementById('source-ws-uri').value = 'ws://192.0.2.9:81/feed'; }), act: p => p.evaluate(() => testWsConnection()),
+     device: {'automation/proxy/websocket_test': '{"code":7,"message":"ws_connect_timeout","data":{"connected":false,"error":"ws_connect_timeout"}}'}, show: {inline: '#ws-test-result .test-status'}},
+    {id: 'source.test-ws.no-data', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('websocket'); document.getElementById('source-ws-uri').value = 'ws://192.0.2.9:81/feed'; }), act: p => p.evaluate(() => testWsConnection()),
+     device: {'automation/proxy/websocket_test': '{"code":7,"message":"ws_no_data","data":{"connected":true,"error":"No data received within timeout"}}'}, show: {inline: '#ws-test-result .test-status'}},
+    {id: 'source.test-sio.no-session', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('socketio'); document.getElementById('source-sio-url').value = 'http://192.0.2.9:3000'; }), act: p => p.evaluate(() => testSioConnection()),
+     device: {'automation/proxy/socketio_test': '{"code":7,"message":"sio_no_session","data":{"connected":false,"error":"No session ID received"}}'}, show: {inline: '#sio-test-result .test-status'}},
+    {id: 'source.test-sio.event-timeout', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('socketio'); document.getElementById('source-sio-url').value = 'http://192.0.2.9:3000'; document.getElementById('source-sio-event').value = 'stats'; }), act: p => p.evaluate(() => testSioConnection()),
+     device: {'automation/proxy/socketio_test': '{"code":5,"message":"sio_event_timeout","data":{"connected":true,"sid":"abcdef123456"}}'}, show: {inline: '#sio-test-result .test-status'}},
+    {id: 'source.test-sio.connect-timeout', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('socketio'); document.getElementById('source-sio-url').value = 'http://192.0.2.9:3000'; }), act: p => p.evaluate(() => testSioConnection()),
+     device: {'automation/proxy/socketio_test': '{"code":7,"message":"ws_connect_timeout","data":{"connected":false,"error":"WebSocket connection failed"}}'}, show: {inline: '#sio-test-result .test-status'}},
 ]);
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -1669,7 +1669,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         exportedCmdWithHost: 'Exported command config (with host {hostId}): {filename}',
         exportedCmdConfig: 'Exported command config: {filename}',
         exportedActionTemplate: 'Exported action template: {filename}',
-        selectFileFirst: 'Please select a file first',
+        selectFileFirst: 'Please choose the config pack file (.tscfg) to import first',
         importedRestartRequired: 'Imported config, restart required',
         // OTA
         enterFirmwareUrl: 'Please enter firmware URL',
@@ -3904,17 +3904,17 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         confirmRestoreDefaults: 'Confirm restore default settings?',
         // Alert dialogs and other prompts
         alertHostFingerprint: 'Host: {host}:{port}\nType: {type}\nFingerprint (SHA256):\n{fingerprint}',
-        alertEnterWsAddress: 'Please enter WebSocket address',
+        alertEnterWsAddress: 'Please enter the WebSocket address',
         // Form validation alerts
-        alertEnterApiAddress: 'Please enter API address',
-        alertEnterSioAddress: 'Please enter Socket.IO server address',
-        alertEnterSourceId: 'Please enter data source ID',
-        alertEnterWsUri: 'Please enter WebSocket URI',
-        alertEnterRestUrl: 'Please enter REST URL',
-        alertEnterSioEvent: 'Please enter event name to listen (you can use test button to auto-discover)',
-        alertSelectSshHost: 'Please select SSH host',
-        alertSelectSshCmd: 'Please select SSH command',
-        alertCmdNotExist: 'Command does not exist, please select again',
+        alertEnterApiAddress: 'Please enter the API address',
+        alertEnterSioAddress: 'Please enter the Socket.IO server address',
+        alertEnterSourceId: 'Please enter the data source ID',
+        alertEnterWsUri: 'Please enter the WebSocket URI',
+        alertEnterRestUrl: 'Please enter the REST URL',
+        alertEnterSioEvent: 'Please enter the name of the event to listen for (the Test button can find it for you)',
+        alertSelectSshHost: 'Please select an SSH host',
+        alertSelectSshCmd: 'Please select an SSH command',
+        alertCmdNotExist: 'That command no longer exists. Please select another one.',
         alertEnterRuleId: 'Please enter rule ID',
         alertEnterRuleName: 'Please enter rule name',
         alertSelectAction: 'Please select at least one action template',
@@ -4143,6 +4143,16 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         },
         ops: {
             generic: { failed: 'The operation failed', unknown: 'The result of the operation is unconfirmed' },
+            // -- Lists read by several pages --
+            image: { list: { failed: 'Failed to read the image list' } },
+            variable: { list: { failed: 'Failed to read the variable list' } },
+            host: { list: { failed: 'Failed to read the host list' } },
+            // -- Config packs (.tscfg): export / verify / import --
+            pack: {
+                export: { failed: 'Failed to export the {kind} “{name}”', done: 'Exported the {kind} “{name}”: {file}' },
+                verify: { failed: 'Failed to verify the config pack “{file}”' },
+                import: { failed: 'Failed to import the config pack “{file}”', unknown: 'The result of importing the config pack “{file}” is unconfirmed', done: 'Imported the config pack “{file}”. It takes effect after a restart.' }
+            },
             // -- Automation --
             engine: {
                 start: { failed: 'Failed to start the automation engine', unknown: 'The result of starting the automation engine is unconfirmed', done: 'Automation engine started' },
@@ -4173,7 +4183,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
                 disable: { failed: 'Failed to disable data source “{name}”', unknown: 'The result of disabling data source “{name}” is unconfirmed', done: 'Data source “{name}” disabled' },
                 delete: { failed: 'Failed to delete data source “{name}”', unknown: 'The result of deleting data source “{name}” is unconfirmed', done: 'Data source “{name}” deleted' },
                 add: { failed: 'Failed to create data source “{name}”', unknown: 'The result of creating data source “{name}” is unconfirmed', done: 'Data source “{name}” created' },
-                list: { failed: 'Failed to read the data source list' }
+                list: { failed: 'Failed to read the data source list' },
+                testRest: { failed: 'The request to “{url}” failed' },
+                testWs: { failed: 'Failed to connect to WebSocket “{url}”' },
+                testSio: { failed: 'Failed to connect to Socket.IO “{url}”' }
             },
             quick: {
                 start: { blocked: 'Can\'t start “{name}”', failed: 'Failed to start “{name}”', unknown: 'The result of starting “{name}” is unconfirmed' },
@@ -4183,6 +4196,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
                 connect: { failed: 'Failed to connect to {host}', unknown: 'The result of connecting to {host} is unconfirmed', cancelled: 'Cancelled: the fingerprint of {host} was not trusted, so no connection was made.' }
             }
         },
+        // what a kind of object is called inside a sentence ({kind})
+        kinds: { source: 'data source', rule: 'rule', action: 'action template', sshHost: 'SSH host', sshCommand: 'SSH command' },
         reasons: {
             // -- Generic (when the device gave no recognisable reason: an honest statement by error class) --
             busy: { why: 'the device is busy with another operation', hint: 'Wait for it to finish, then try again.' },
@@ -4198,6 +4213,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             auth_required: { why: 'your session is no longer valid', hint: 'Sign in again.' },
             network_lost: { why: 'the device cannot be reached', hint: 'Check the network connection between this computer and the device.' },
             invalid_response: { why: 'the device\'s response could not be read', hint: 'Refresh the page and try again.' },
+            sd_unavailable: { why: 'the SD card is not available', hint: 'Make sure the SD card is inserted and mounted.' },
             storage_failed: { why: 'writing to the device storage failed', hint: 'If you use an SD card, make sure it is inserted; see Terminal → System Logs.' },
             no_detail: { why: 'the device did not return a specific reason', hint: 'Open Terminal → System Logs to see the details of this operation.' },
             page_error: { why: 'the page ran into a problem while handling this', hint: 'Refresh the page and try again. If it keeps happening, report the details to the developers.' },
@@ -4205,6 +4221,21 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             commit_unknown: { hint: 'Reload and check the current state before submitting again.' },
             // -- Automation: editing a rule --
             no_action_template: { why: 'there are no action templates yet', hint: 'Create one in the “Action templates” area of the page first, then come back and choose it.' },
+            // -- Config packs --
+            pack_parse_failed: { why: 'this file is not a valid config pack (its content cannot be parsed)', hint: 'Make sure you picked a .tscfg file exported from TianshanOS and that it has not been modified.' },
+            pack_version_unsupported: { why: 'this device does not support the version of the config pack', hint: 'Export it again with a matching firmware version, or update this device.' },
+            pack_wrong_device: { why: 'this config pack was not made for this device', hint: 'Ask whoever exported it to export it again with this device’s certificate.' },
+            pack_cert_invalid: { why: 'the certificate chain in the config pack did not pass verification', hint: 'Export the config pack again from a trusted source.' },
+            pack_signature_invalid: { why: 'the signature of the config pack did not pass verification', hint: 'The file may have been modified. Export it again, and only use config packs from a trusted source.' },
+            pack_decrypt_failed: { why: 'the config pack could not be decrypted', hint: 'Make sure it was exported with this device’s certificate.' },
+            pack_corrupted: { why: 'the content of the config pack was modified or damaged', hint: 'Export it again, or download the file again.' },
+            pack_expired: { why: 'the config pack has expired', hint: 'Export a new config pack.' },
+            pack_io_failed: { why: 'reading or writing the config pack file failed', hint: 'If you use an SD card, make sure it is inserted; see Terminal → System Logs.' },
+            pack_not_allowed: { why: 'this device is not a developer device and may not export config packs', hint: 'Export the config pack on a developer device.' },
+            pack_not_ready: { why: 'the config pack feature is not initialized yet', hint: 'Wait a few seconds and try again.' },
+            pack_verify_failed: { why: 'the config pack could not be verified', hint: 'Make sure the file is complete and was exported from TianshanOS.' },
+            device_cert_unavailable: { why: 'the device certificate is not available', hint: 'Check the device certificate on the Security page first.' },
+            rule_import_unavailable: { why: 'a rule config pack can only be verified for now, not imported', hint: 'Create the rule by hand on the Automation page.' },
             // -- Automation: engine, action templates, data sources --
             engine_unavailable: { why: 'the automation engine is stopping, still busy with actions, or not initialized yet', hint: 'Wait a few seconds and try again.' },
             engine_paused: { why: 'the automation engine is paused', hint: 'To resume it, click Stop first, then Start.' },
@@ -4217,6 +4248,16 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             source_capacity: { why: 'the limit for data sources has been reached', hint: 'Delete data sources you no longer need.' },
             action_failed: { why: 'the action did not run successfully', hint: 'Click Details to see what the device returned.' },
             action_timeout: { why: 'the action timed out', hint: 'Check that what the action targets (such as the host or command) is available.' },
+            // -- Automation: testing a data source's connection --
+            proxy_init_failed: { why: 'the device could not start this connection', hint: 'Check that the address is written correctly.' },
+            proxy_connect_failed: { why: 'the device cannot connect to this address', hint: 'Check the address and port, that the other side is online, and the device’s own network (including DNS).' },
+            proxy_http_error: { why: 'the other side answered with HTTP error {status}', hint: 'Check the path of the address and the authentication header; click Details to see what it returned.' },
+            ws_start_failed: { why: 'the device could not start the WebSocket connection', hint: 'Check that the address is written correctly.' },
+            ws_connect_failed: { why: 'the connection could not be established (the other side did not respond, or refused it)', hint: 'Check the address and port, and that the other side supports WebSocket.' },
+            ws_connect_timeout: { why: 'the connection timed out', hint: 'Make sure the other side is online, reachable, and not blocked by a firewall.' },
+            ws_no_data: { why: 'it connected, but no message arrived after waiting', hint: 'Make sure this address pushes messages by itself.' },
+            sio_no_session: { why: 'the other side did not answer the way a Socket.IO server does', hint: 'Make sure this is the address of a Socket.IO server and that the protocol versions are compatible.' },
+            sio_event_timeout: { why: 'it connected, but no event arrived after waiting', hint: 'Check the event name, or leave it empty so the device discovers it.' },
             // -- Automation: enable / disable / save a rule --
             execution_busy: { why: 'it is running right now', hint: 'Wait for it to finish, then try again.' },
             revision_conflict: { why: 'it was just changed by another operation', hint: 'Refresh, check the latest content, then try again.' },

@@ -1594,7 +1594,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         exportedCmdWithHost: '已导出指令配置（包含主机 {hostId}）: {filename}',
         exportedCmdConfig: '已导出指令配置: {filename}',
         exportedActionTemplate: '已导出动作模板: {filename}',
-        selectFileFirst: '请先选择文件',
+        selectFileFirst: '请先选择要导入的配置包文件（.tscfg）',
         importedRestartRequired: '已导入配置，重启后生效',
         importFailed: '导入失败',
         // OTA
@@ -4106,6 +4106,16 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         },
         ops: {
             generic: { failed: '操作失败', unknown: '操作结果未确认' },
+            // —— 通用的列表读取（各页都会用到）——
+            image: { list: { failed: '读取图片列表失败' } },
+            variable: { list: { failed: '读取变量列表失败' } },
+            host: { list: { failed: '读取主机列表失败' } },
+            // —— 配置包（.tscfg）的导出 / 验证 / 导入 ——
+            pack: {
+                export: { failed: '导出{kind}“{name}”失败', done: '已导出{kind}“{name}”：{file}' },
+                verify: { failed: '验证配置包“{file}”失败' },
+                import: { failed: '导入配置包“{file}”失败', unknown: '导入配置包“{file}”的结果未确认', done: '已导入配置包“{file}”，重启后生效' }
+            },
             // —— 自动化 ——
             engine: {
                 start: { failed: '启动自动化引擎失败', unknown: '启动自动化引擎的结果未确认', done: '已启动自动化引擎' },
@@ -4136,7 +4146,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
                 disable: { failed: '禁用数据源“{name}”失败', unknown: '禁用数据源“{name}”的结果未确认', done: '已禁用数据源“{name}”' },
                 delete: { failed: '删除数据源“{name}”失败', unknown: '删除数据源“{name}”的结果未确认', done: '已删除数据源“{name}”' },
                 add: { failed: '创建数据源“{name}”失败', unknown: '创建数据源“{name}”的结果未确认', done: '已创建数据源“{name}”' },
-                list: { failed: '读取数据源列表失败' }
+                list: { failed: '读取数据源列表失败' },
+                testRest: { failed: '请求“{url}”失败' },
+                testWs: { failed: '连接 WebSocket“{url}”失败' },
+                testSio: { failed: '连接 Socket.IO“{url}”失败' }
             },
             quick: {
                 start: { blocked: '无法启动“{name}”', failed: '启动“{name}”失败', unknown: '启动“{name}”的结果未确认' },
@@ -4146,6 +4159,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
                 connect: { failed: '连接 {host} 失败', unknown: '连接 {host} 的结果未确认', cancelled: '已取消：没有信任 {host} 的指纹，未连接。' }
             }
         },
+        // 句子里怎么称呼一类对象（{kind}）
+        kinds: { source: '数据源', rule: '规则', action: '动作模板', sshHost: 'SSH 主机', sshCommand: 'SSH 指令' },
         reasons: {
             // —— 通用（设备没给出可识别的原因时，按错误类别给一个诚实的说法）——
             busy: { why: '设备正在处理另一项操作', hint: '等它完成后再试。' },
@@ -4161,6 +4176,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             auth_required: { why: '登录已失效', hint: '请重新登录。' },
             network_lost: { why: '无法连接到设备', hint: '请检查这台电脑与设备之间的网络连接。' },
             invalid_response: { why: '设备返回的内容无法识别', hint: '请刷新页面后再试。' },
+            sd_unavailable: { why: 'SD 卡不可用', hint: '请确认 SD 卡已插好并已挂载。' },
             storage_failed: { why: '写入设备存储失败', hint: '若在用 SD 卡，请确认卡已插好；详情见「终端」→「系统日志」。' },
             no_detail: { why: '设备没有返回具体原因', hint: '可在「终端」页打开「系统日志」查看这次操作的详细记录。' },
             page_error: { why: '页面处理这次操作时出了问题', hint: '请刷新页面后再试；如果仍然如此，请把「详情」里的内容反馈给开发者。' },
@@ -4168,6 +4184,21 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             commit_unknown: { hint: '请重新读取并核对当前状态，不要重复提交。' },
             // —— 自动化：规则编辑 ——
             no_action_template: { why: '还没有任何动作模板', hint: '请先到页面里的“动作模板”区域创建一个，再回来选择。' },
+            // —— 配置包 ——
+            pack_parse_failed: { why: '这个文件不是有效的配置包（内容无法解析）', hint: '请确认选的是从天山 OS 导出的 .tscfg 文件，并且没有被改动过。' },
+            pack_version_unsupported: { why: '配置包的版本这台设备不支持', hint: '请换用匹配的固件版本重新导出，或把这台设备升级到较新的版本。' },
+            pack_wrong_device: { why: '这个配置包不是为这台设备生成的', hint: '请让导出方用这台设备的证书重新导出。' },
+            pack_cert_invalid: { why: '配置包里的证书链验证没有通过', hint: '请从可信的来源重新导出配置包。' },
+            pack_signature_invalid: { why: '配置包的签名验证没有通过', hint: '文件可能被改动过；请重新导出，并且只使用可信来源的配置包。' },
+            pack_decrypt_failed: { why: '配置包无法解密', hint: '请确认它是用这台设备的证书导出的。' },
+            pack_corrupted: { why: '配置包的内容已被改动或损坏', hint: '请重新导出，或重新下载这个文件。' },
+            pack_expired: { why: '配置包已过期', hint: '请重新导出一个新的配置包。' },
+            pack_io_failed: { why: '读写配置包文件失败', hint: '若在用 SD 卡，请确认卡已插好；详情见「终端」→「系统日志」。' },
+            pack_not_allowed: { why: '这台设备不是开发者设备，没有导出配置包的权限', hint: '请在开发者设备上导出配置包。' },
+            pack_not_ready: { why: '配置包功能还没有初始化', hint: '请稍等几秒再试。' },
+            pack_verify_failed: { why: '没能验证这个配置包', hint: '请确认文件完整，并且是从天山 OS 导出的。' },
+            device_cert_unavailable: { why: '设备证书不可用', hint: '请先到「安全」页检查设备证书。' },
+            rule_import_unavailable: { why: '规则配置包目前只能验证，还不能导入', hint: '请在自动化页手动创建这条规则。' },
             // —— 自动化：引擎、动作模板、数据源 ——
             engine_unavailable: { why: '自动化引擎正在停止、仍有操作在执行，或还没有完成初始化', hint: '请稍等几秒再试。' },
             engine_paused: { why: '自动化引擎处于暂停状态', hint: '如要恢复运行，请先点“停止”，再点“启动”。' },
@@ -4180,6 +4211,16 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             source_capacity: { why: '数据源数量已达上限', hint: '请先删除不用的数据源。' },
             action_failed: { why: '动作执行时没有成功', hint: '点“详情”可以看到设备返回的内容。' },
             action_timeout: { why: '动作执行超时', hint: '请检查动作的目标（如主机、命令）是否可用。' },
+            // —— 自动化：数据源的连接测试 ——
+            proxy_init_failed: { why: '设备没能发起这次连接', hint: '请检查地址的写法是否正确。' },
+            proxy_connect_failed: { why: '设备连不上这个地址', hint: '请检查地址和端口是否正确、对方是否在线，以及设备自己的网络（含 DNS）是否正常。' },
+            proxy_http_error: { why: '对方返回了错误状态 HTTP {status}', hint: '请检查地址的路径和认证头是否正确；点“详情”可以看到对方返回的内容。' },
+            ws_start_failed: { why: '设备没能启动 WebSocket 连接', hint: '请检查地址的写法是否正确。' },
+            ws_connect_failed: { why: '没能建立连接（对方没有响应，或拒绝了连接）', hint: '请检查地址和端口，以及对方是否支持 WebSocket。' },
+            ws_connect_timeout: { why: '连接超时', hint: '请确认对方在线、网络可达，且没有防火墙拦截。' },
+            ws_no_data: { why: '已经连上，但等了一会儿没有收到任何消息', hint: '请确认这个地址会主动推送消息。' },
+            sio_no_session: { why: '对方没有按 Socket.IO 的方式回应', hint: '请确认这是 Socket.IO 服务器的地址，并且协议版本兼容。' },
+            sio_event_timeout: { why: '已经连上，但等了一会儿没有收到事件', hint: '请确认事件名是否正确，或者把事件名留空，让设备自动发现。' },
             // —— 自动化：规则启用 / 禁用 / 保存 ——
             execution_busy: { why: '它正在执行中', hint: '等执行完成后再试。' },
             revision_conflict: { why: '它刚被其他操作修改过', hint: '请刷新后确认最新内容，再重新操作。' },

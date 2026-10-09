@@ -98,15 +98,19 @@ function requireApiSuccess(result, operation = '') {
 // honest generic reason chosen by the error class, and the original text is kept in the folded details.
 // ---------------------------------------------------------------------------------------------------------------------
 const FAILURE_LEGACY_TEXT = {   // English texts the device sends without a reason token
-    'Memory allocation failed': 'no_memory', 'Rule not found': 'rule_not_found', 'Request timeout': 'timeout', 'Failed to fetch': 'network_lost'
+    'Memory allocation failed': 'no_memory', 'Rule not found': 'rule_not_found', 'Request timeout': 'timeout', 'Failed to fetch': 'network_lost',
+    'SD card not mounted': 'sd_unavailable'
 };
 const FAILURE_CODE_TOKEN = {1: 'invalid_request', 2: 'not_found', 3: 'no_permission', 4: 'busy', 5: 'timeout', 6: 'no_memory',
     7: 'no_detail', 8: 'not_supported', 9: 'hardware_failed', 10: 'target_unreachable', 11: 'auth_required'};
 const FAILURE_CODE_NAME = {INVALID_ARG: 1, NOT_FOUND: 2, NO_PERMISSION: 3, BUSY: 4, TIMEOUT: 5, NO_MEM: 6, INTERNAL: 7,
     NOT_SUPPORTED: 8, HARDWARE: 9, CONNECTION: 10, AUTH: 11};
 const FAILURE_UNCONFIRMED = new Set(['result_unknown', 'commit_unknown']);
-function describeFailure({op, phase = 'failed', params = {}, result = null, error = null, token = null, endpoint = '', write = false} = {}) {
+function describeFailure({op, phase = 'failed', params = {}, result = null, error = null, token = null, endpoint = '', write} = {}) {
     const ready = typeof i18n !== 'undefined' && typeof t === 'function';
+    // numbers the device sends in `data` (e.g. an HTTP status) can fill the placeholders of the reason's text; the caller's params win
+    const sent = Object.fromEntries(Object.entries(result?.data && typeof result.data === 'object' ? result.data : {}).filter(([, value]) => typeof value === 'number'));
+    params = {...sent, ...params};
     const has = (key, values = params) => ready && i18n.complete(key, values);
     const anything = new Proxy({}, {get: () => 'x'});
     const exists = key => ready && i18n.complete(key, anything);   // the text exists, whatever its placeholders need
@@ -121,7 +125,9 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     const pageError = !!error && error.name !== 'ApiOperationError';
     let tok = token;
     // (a request the page sends as GET can still change something: the caller says so with `write`)
-    if (!tok && error?.kind) tok = (error.uncertain || write) ? 'result_unknown' : ({network: 'network_lost', timeout: 'timeout', format: 'invalid_response'})[error.kind];
+    // write: true = changes something (unconfirmed when no answer came); false = a read or a test even if it was sent as POST; unset = by the request method
+    const writeMayHaveHappened = write === true || (write === undefined && error?.uncertain);
+    if (!tok && error?.kind) tok = writeMayHaveHappened ? 'result_unknown' : ({network: 'network_lost', timeout: 'timeout', format: 'invalid_response'})[error.kind];
     // A write that ended in an exception without an answer from the device may or may not have happened.
     if (!tok && write && error && !(typeof error.code === 'number' && error.code !== 0)) tok = 'result_unknown';
     if (!tok && pageError) tok = 'page_error';
