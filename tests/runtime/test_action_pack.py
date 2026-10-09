@@ -72,7 +72,9 @@ int main(void){
  puts("PASS actual action pack: complete export envelope -> SDK encrypted/plain priority -> real boot load entry and directory parser; identity/type/enabled/async/partial-zero parameters, flat legacy JSON, 63-byte ASCII/UTF-8 IDs, interrupted save recovery before load, unresolved recovery blocks stale fallback, malformed envelope rejection (crypto/NVS backup mocked)");
 }
 '''
-with tempfile.TemporaryDirectory(prefix='ts-action-pack-',dir='/private/tmp') as tmp:
+# A short POSIX path keeps the fixture within the device's SD path budget on
+# both macOS and Linux; macOS's default per-user temp path is much longer.
+with tempfile.TemporaryDirectory(prefix='ts-action-pack-', dir='/tmp') as tmp:
  d=Path(tmp);(d/'actions').mkdir();f=d/'test.c';b=d/'test';f.write_text('#define ACTIONS_SDCARD_DIR "'+str(d/'actions')+'"\n'+code)
  idf=Path(os.environ.get('IDF_PATH','/Users/massif/esp/v5.5.2/esp-idf'))
  includes=['tests/runtime/stubs','tests/certificate/stubs','components/ts_api/include','components/ts_automation/include','components/ts_automation/src','components/ts_security/include','components/ts_led/include',str(idf/'components/json/cJSON')]
