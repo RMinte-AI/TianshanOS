@@ -116,13 +116,13 @@ for(const language of ['zh-CN','en-US']){
    assert.deepEqual(f.errors,[]);
   }finally{await f.context.close();}
  });
- test(`${language}: modal and matrix manual filters convert frequency and retain zero decay`,async()=>{
+ test(`${language}: modal manual filters convert frequency and retain zero intensity, decay and density`,async()=>{
   const f=await fixture(language);try{
    const requests=await f.page.evaluate(async()=>{
-    document.body.insertAdjacentHTML('beforeend','<input id="modal-filter-frequency" value="100"><input id="modal-filter-intensity" value="0"><input id="filter-decay" value="0"><input id="filter-density" value="0"><input id="filter-speed" value="5">');
+    document.body.insertAdjacentHTML('beforeend','<input id="modal-filter-frequency" value="100"><input id="modal-filter-intensity" value="0"><input id="modal-filter-decay" value="0"><input id="modal-filter-density" value="0"><input id="modal-filter-speed" value="5">');
     const calls=[];api.call=async(name,params)=>{if(name==='led.filter.start')calls.push(params);return {code:0,data:{}};};
     selectedModalFilter='glitch';await applyFilterFromModal();
-    selectedFilter='sparkle';await applySelectedFilter();return calls;
+    selectedModalFilter='sparkle';await applyFilterFromModal();return calls;
    });
    assert.equal(requests[0].frequency,255);assert.equal(requests[0].intensity,0);
    assert.equal(requests[1].decay,0);assert.equal(requests[1].density,0);assert.deepEqual(f.errors,[]);

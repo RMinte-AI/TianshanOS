@@ -82,13 +82,6 @@
   "sel": "#revoke-key-modal .sheet",
   "after": "document.getElementById('revoke-key-id').parentElement.style.display='none';document.querySelector('#revoke-key-modal .warnrow').style.display='none'"
  },
- "mismatch": {
-  "board": "SheetsSec",
-  "nth": 9,
-  "route": "/security",
-  "open": "showHostMismatchModal({host:'192.0.2.30',port:22,stored_fingerprint:'SHA256:aB…',current_fingerprint:'SHA256:xY…'})",
-  "sel": "#host-mismatch-modal .sheet"
- },
  "ssh-host-import": {
   "board": "SheetsSec",
   "nth": 10,

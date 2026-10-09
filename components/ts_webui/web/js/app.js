@@ -2319,14 +2319,6 @@ async function unbindTempVariable() {
 }
 
 /**
- * 保存 AGX 服务器配置 (保留用于兼容)
- */
-async function saveAgxConfig() {
-    showToast((typeof t === 'function' ? t('toast.agxMovedToBinding') : 'AGX 配置已移至变量绑定'), 'info');
-    await loadVariableBindStatus();
-}
-
-/**
  * 应用风扇曲线
  */
 async function applyFanCurve() {
@@ -2985,29 +2977,6 @@ function evaluateExpression(expression, variables) {
         console.warn('表达式计算失败:', expression, e);
         return null;
     }
-}
-
-/**
- * 格式化显示值
- * @param {any} value - 原始值
- * @param {object} config - 格式化配置 { decimals, prefix, suffix, format }
- */
-function formatDisplayValue(value, config) {
-    if (value === null || value === undefined) return '-';
-    
-    const { decimals = 1, prefix = '', suffix = '', format } = config || {};
-    
-    // 自定义格式
-    if (format) {
-        return format.replace('{value}', value).replace('{prefix}', prefix).replace('{suffix}', suffix);
-    }
-    
-    // 数字格式化
-    if (typeof value === 'number') {
-        return prefix + value.toFixed(decimals) + suffix;
-    }
-    
-    return prefix + String(value) + suffix;
 }
 
 /**
@@ -4503,19 +4472,6 @@ async function syncTimeFromBrowser(silent = false) {
     }
 }
 
-async function forceNtpSync() {
-    try {
-        showToast(t('toast.ntpSyncing'), 'info');
-        const result = await api.timeForceSync();
-        if (result.data?.syncing) {
-            showToast(t('toast.ntpStarted'), 'success');
-            setTimeout(refreshSystemPage, 3000);
-        }
-    } catch (e) {
-        showToast(t('toast.ntpFailed') + ': ' + e.message, 'error');
-    }
-}
-
 function showTimezoneModal() {
     let modal = document.getElementById('timezone-modal');
     if (!modal) {
@@ -4572,80 +4528,6 @@ async function applyTimezone() {
 // 存储设备信息和特效列表
 let ledDevices = {};
 let ledEffects = [];
-
-async function loadLedPage() {
-    clearInterval(refreshInterval);
-    
-    // 取消系统页面的订阅
-    
-    const content = document.getElementById('page-content');
-    content.innerHTML = `
-        <div class="page-led">
-            <div class="led-page-header">
-                <h1>${t('nav.led')}</h1>
-                <div class="led-quick-actions">
-                    <button type="button" class="btn btn-sm btn-gray led-refresh-btn" onclick="refreshLedPage()" title="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
-                    <button class="btn btn-sm btn-gray led-color-correction-btn" id="led-page-cc-btn" onclick="openLedModal('matrix', 'colorcorrection')" style="display:none"><svg class="i"><use href="#ri-contrast-line"/></svg> ${t('ledPage.colorCorrectionTitle')}</button>
-                    <button class="btn btn-sm btn-gray" onclick="allLedsOff()">${typeof t === 'function' ? t('ledPage.allOff') : '全部关闭'}</button>
-                </div>
-            </div>
-            <div id="led-devices-grid" class="led-devices-grid">
-                <div class="loading-inline">${typeof t === 'function' ? t('ledPage.loadingDevices') : '加载设备中...'}</div>
-            </div>
-        </div>
-    `;
-    
-    await refreshLedPage();
-}
-
-async function refreshLedPage() {
-    const container = document.getElementById('led-devices-grid');
-    
-    try {
-        const result = await api.ledList();
-        
-        if (result.data && result.data.devices && result.data.devices.length > 0) {
-            // 存储设备信息
-            result.data.devices.forEach(dev => {
-                ledDevices[dev.name] = dev;
-                if (dev.current && dev.current.animation) {
-                    selectedEffects[dev.name] = dev.current.animation;
-                }
-                // 初始化 LED 状态
-                if (dev.current) {
-                    ledStates[dev.name] = dev.current.on || false;
-                }
-            });
-            
-            window.ledDevicesCache = result.data.devices;
-            
-            // 渲染设备卡片
-            container.innerHTML = result.data.devices.map(dev => generateLedDeviceCard(dev)).join('');
-            
-            // 加载字体列表 & 显示色彩校正按钮
-            if (result.data.devices.some(d => d.name === 'matrix' || d.layout === 'matrix')) {
-                loadFontList();
-                const ccBtn = document.getElementById('led-page-cc-btn');
-                if (ccBtn) ccBtn.style.display = '';
-            }
-        } else {
-            container.innerHTML = `
-                <div class="led-empty-state">
-                    <div class="empty-icon"><svg class="i" style="color:var(--warn-dot)"><use href="#ri-error-warning-line"/></svg></div>
-                    <h3>${t('ledPage.ledNotFound')}</h3>
-                    <p>${t('ledPage.ledNotStartedHint')}</p>
-                    <ul>
-                        <li>${t('promptRepair.ledServiceStatus')} (<code>service --status</code>)</li>
-                        <li>${t('ledPage.checkGpioConfig')}</li>
-                    </ul>
-                </div>
-            `;
-        }
-    } catch (e) {
-        console.error('LED list error:', e);
-        container.innerHTML = `<div class="error-state">${escapeHtml(typeof t === 'function' ? t('common.loadFailedMsg', { msg: e.message }) : '加载失败: ' + e.message)}</div>`;
-    }
-}
 
 // 色块：[显示色, 下发给灯的颜色, 名称 key 后缀]
 const LED_PRESETS = [['#ff3b30', '#ff0000', 'Red'], ['#ff6b00', '#ff6600', 'Orange'], ['#ffd60a', '#ffd700', 'Yellow'], ['#00c766', '#00d26a', 'Green'], ['#00e5ff', '#00ffff', 'Cyan'], ['#2d7dff', '#2d7dff', 'Blue'], ['#d630ff', '#d630ff', 'Purple'], ['#ffffff', '#ffffff', 'White'], ['#ffcccc', '#ffcccc', 'Pink'], ['#e0e0e0', '#e0e0e0', 'Gray']];
@@ -4742,18 +4624,6 @@ async function quickFillColor(device, color) {
     }
 }
 
-async function quickStartEffect(device, effect) {
-    try {
-        requireApiSuccess(await api.ledEffectStart(device, effect, { speed: 50 }), 'ledEffectStart');
-        selectedEffects[device] = effect;
-        ledStates[device] = true;
-        updateLedCardState(device, true, effect);
-        showToast(typeof t === 'function' ? t('toast.ledEffectStarted', { device: getDeviceDescription(device), effect }) : `${device}: ${effect}`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledEffectStartFailed') + ': ' + e.message : `启动失败: ${e.message}`, 'error');
-    }
-}
-
 async function allLedsOff() {
     const devices = window.ledDevicesCache || [];
     let success = 0; const failures = [];
@@ -4794,90 +4664,6 @@ function updateLedCardState(device, isOn, effect = undefined) {
     card.querySelectorAll('.led-quick-effect').forEach(btn => {
         btn.classList.toggle('active', !!effect && btn.getAttribute('title') === effect);
     });
-}
-
-// 颜色选择模态框
-function openColorModal(device) {
-    const deviceData = window.ledDevicesCache?.find(d => d.name === device);
-    const current = deviceData?.current || {};
-    const currentColor = current.color || {r: 255, g: 0, b: 0};
-    const colorHex = '#' + 
-        currentColor.r.toString(16).padStart(2, '0') +
-        currentColor.g.toString(16).padStart(2, '0') +
-        currentColor.b.toString(16).padStart(2, '0');
-    
-    const modal = document.getElementById('led-modal');
-    const title = document.getElementById('led-modal-title');
-    const body = document.getElementById('led-modal-body');
-    
-    title.textContent = `${device} - ${typeof t === 'function' ? t('ui.colorSettings') : '颜色设置'}`;
-    body.innerHTML = `
-        <div class="modal-section">
-            <h3>${typeof t === 'function' ? t('ledPage.colorSelect') : '颜色选择'}</h3>
-            <div class="config-row">
-                <input type="color" id="modal-color-picker-${device}" value="${colorHex}" style="width:60px;height:40px;">
-                <button class="btn btn-service-style" onclick="applyColorFromModal('${device}')">${typeof t === 'function' ? t('ledPage.fillColor') : '填充颜色'}</button>
-            </div>
-            <h3 style="margin-top:16px;">${typeof t === 'function' ? t('ledPage.quickColors') : '快捷颜色'}</h3>
-            <div class="preset-colors-grid">
-                <button class="color-preset" style="background:#ff0000" onclick="quickFillFromModal('${device}', '#ff0000')"></button>
-                <button class="color-preset" style="background:#ff6600" onclick="quickFillFromModal('${device}', '#ff6600')"></button>
-                <button class="color-preset" style="background:#ffff00" onclick="quickFillFromModal('${device}', '#ffff00')"></button>
-                <button class="color-preset" style="background:#00ff00" onclick="quickFillFromModal('${device}', '#00ff00')"></button>
-                <button class="color-preset" style="background:#00ffff" onclick="quickFillFromModal('${device}', '#00ffff')"></button>
-                <button class="color-preset" style="background:#0000ff" onclick="quickFillFromModal('${device}', '#0000ff')"></button>
-                <button class="color-preset" style="background:#ff00ff" onclick="quickFillFromModal('${device}', '#ff00ff')"></button>
-                <button class="color-preset" style="background:#ffffff" onclick="quickFillFromModal('${device}', '#ffffff')"></button>
-                <button class="color-preset" style="background:#ffcccc" onclick="quickFillFromModal('${device}', '#ffcccc')"></button>
-                <button class="color-preset" style="background:#ccffcc" onclick="quickFillFromModal('${device}', '#ccffcc')"></button>
-                <button class="color-preset" style="background:#ccccff" onclick="quickFillFromModal('${device}', '#ccccff')"></button>
-                <button class="color-preset" style="background:#000000" onclick="quickFillFromModal('${device}', '#000000')"></button>
-            </div>
-        </div>
-    `;
-    
-    modal.classList.remove('hidden');
-}
-
-async function applyColorFromModal(device) {
-    const color = document.getElementById(`modal-color-picker-${device}`)?.value || '#ffffff';
-    try {
-        requireApiSuccess(await api.ledFill(device, color), 'ledFill');
-        ledStates[device] = true;
-        updateToggleButton(device, true);
-        showToast(typeof t === 'function' ? t('toast.ledFilled', { device: getDeviceDescription(device), color }) : `${device} 已填充 ${color}`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledFillFailed') + ': ' + e.message : `填充失败: ${e.message}`, 'error');
-    }
-}
-
-async function quickFillFromModal(device, color) {
-    try {
-        requireApiSuccess(await api.ledFill(device, color), 'ledFill');
-        ledStates[device] = true;
-        updateToggleButton(device, true);
-        showToast(typeof t === 'function' ? t('toast.ledFilled', { device: getDeviceDescription(device), color }) : `${device} → ${color}`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledFillFailed') + ': ' + e.message : `填充失败: ${e.message}`, 'error');
-    }
-}
-
-// 更新开关按钮状态
-function updateToggleButton(device, isOn) {
-    // 更新新版卡片
-    updateLedCardState(device, isOn);
-    
-    // 旧版兼容
-    const btn = document.getElementById(`toggle-${device}`);
-    if (btn && !btn.classList.contains('led-power-btn')) {
-        if (isOn) {
-            btn.classList.add('on');
-            btn.innerHTML = '<svg class="i"><use href="#ri-sun-line"/></svg> ' + (typeof t === 'function' ? t('ledPage.on') : '已开启');
-        } else {
-            btn.classList.remove('on');
-            btn.innerHTML = '<svg class="i"><use href="#ri-lightbulb-line"/></svg> ' + (typeof t === 'function' ? t('ledPage.off') : '已关闭');
-        }
-    }
 }
 
 // 生成 LED 模态框内容
@@ -5614,24 +5400,9 @@ async function ccImport() {
     }
 }
 
-function getDeviceIcon(name) {
-    const icons = {
-        'touch': '<svg class="i"><use href="#ri-lightbulb-flash-line"/></svg>',
-        'board': '<svg class="i"><use href="#ri-dashboard-3-line"/></svg>',
-        'matrix': '<svg class="i"><use href="#ri-apps-line"/></svg>'
-    };
-    return icons[name.toLowerCase()] || '<svg class="i"><use href="#ri-lightbulb-line"/></svg>';
-}
-
 function getDeviceDescription(name) {
     const keys = { 'touch': 'ledPage.deviceTouch', 'board': 'ledPage.deviceBoard', 'matrix': 'ledPage.deviceMatrix' };
     return t(keys[name.toLowerCase()] || 'ledPage.deviceDefault');
-}
-
-/** 程序动画模态框内使用的 RemixIcon（无 emoji，用已纳入 minimal 字体的 ri-play-line） */
-function getEffectIconRemix(name) {
-    if (!name) return '';
-    return '<svg class="i"><use href="#ri-play-line"/></svg> ';
 }
 
 /** 动画名称首字母大写（用于更多动画弹窗展示） */
@@ -5650,63 +5421,6 @@ const selectedEffects = {};
 
 // 支持颜色参数的动画
 const colorSupportedEffects = ['breathing', 'solid', 'rain'];
-
-// 选择动画（旧版兼容，保留）
-function selectEffect(device, effect, btn) {
-    selectedEffects[device] = effect;
-    
-    // 更新按钮状态
-    const panel = btn.closest('.led-panel');
-    panel.querySelectorAll('.effect-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-}
-
-// 旧版 showEffectConfig 保持兼容
-function showEffectConfig(device, effect) {
-    selectedEffects[device] = effect;
-}
-
-async function applyEffect(device) {
-    const effect = selectedEffects[device];
-    if (!effect) {
-        showToast((typeof t === 'function' ? t('toast.selectAnimation') : '请先选择一个动画'), 'warning');
-        return;
-    }
-    
-    const speed = parseInt(document.getElementById(`effect-speed-${device}`)?.value || '50');
-    const color = document.getElementById(`effect-color-${device}`)?.value || '#ff0000';
-    
-    try {
-        const params = { speed };
-        // 只有支持颜色的动画才传递颜色参数
-        if (colorSupportedEffects.includes(effect)) {
-            params.color = color;
-        }
-        requireApiSuccess(await api.ledEffectStart(device, effect, params), 'ledEffectStart');
-        
-        // 更新状态为开启
-        ledStates[device] = true;
-        const btn = document.getElementById(`toggle-${device}`);
-        if (btn) {
-            btn.classList.add('on');
-            const icon = btn.querySelector('.power-icon');
-            if (icon) icon.innerHTML = '<svg class="i"><use href="#ri-sun-line"/></svg>';
-        }
-        
-        // 更新顶部当前动画显示
-        const currentAnim = document.getElementById(`current-anim-${device}`);
-        if (currentAnim) currentAnim.textContent = `▶ ${effectDisplayName(effect)}`;
-        
-        showToast(typeof t === 'function' ? t('toast.ledEffectStarted', { device: getDeviceDescription(device), effect }) : `${device}: ${effect} 已启动`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledEffectStartFailed') + ': ' + e.message : `启动动画失败: ${e.message}`, 'error');
-    }
-}
-
-function updateBrightnessLabel(device, value) {
-    const label = document.getElementById(`brightness-val-${device}`);
-    if (label) label.textContent = value;
-}
 
 async function setBrightness(device, value) {
     try {
@@ -5739,87 +5453,6 @@ async function toggleLed(device) {
         }
     } catch (e) {
         showToast(typeof t === 'function' ? t('toast.operationFailedMsg', { msg: e.message }) : `操作失败: ${e.message}`, 'error');
-    }
-}
-
-async function ledOn(device, color = '#ffffff') {
-    try {
-        requireApiSuccess(await api.ledFill(device, color), 'ledFill');
-        ledStates[device] = true;
-        updateToggleButton(device, true);
-        showToast(typeof t === 'function' ? t('toast.ledTurnedOn', { device: getDeviceDescription(device) }) : `${device} 已开启`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledOnFailed') + ': ' + e.message : `开启失败: ${e.message}`, 'error');
-    }
-}
-
-async function fillColor(device) {
-    const color = document.getElementById(`color-${device}`).value;
-    try {
-        requireApiSuccess(await api.ledFill(device, color), 'ledFill');
-        // 更新状态为开启
-        ledStates[device] = true;
-        const btn = document.getElementById(`toggle-${device}`);
-        if (btn) {
-            btn.classList.add('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-checkbox-blank-circle-fill"/></svg>';
-            btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOffLight') : '关灯';
-        }
-        showToast(typeof t === 'function' ? t('toast.ledFilled', { device: getDeviceDescription(device), color }) : `${device} 已填充 ${color}`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledFillFailed') + ': ' + e.message : `${device} 填充失败: ${e.message}`, 'error');
-    }
-}
-
-async function quickFill(device, color) {
-    document.getElementById(`color-${device}`).value = color;
-    try {
-        requireApiSuccess(await api.ledFill(device, color), 'ledFill');
-        // 更新状态为开启
-        ledStates[device] = true;
-        const btn = document.getElementById(`toggle-${device}`);
-        if (btn) {
-            btn.classList.add('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-checkbox-blank-circle-fill"/></svg>';
-            btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOffLight') : '关灯';
-        }
-        showToast(typeof t === 'function' ? t('toast.ledFilled', { device: getDeviceDescription(device), color }) : `${device} → ${color}`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledFillFailed') + ': ' + e.message : `填充失败: ${e.message}`, 'error');
-    }
-}
-
-async function clearLed(device) {
-    try {
-        requireApiSuccess(await api.ledClear(device), 'ledClear');
-        // 更新状态为关闭
-        ledStates[device] = false;
-        const btn = document.getElementById(`toggle-${device}`);
-        if (btn) {
-            btn.classList.remove('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-lightbulb-line"/></svg>';
-            btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOnLight') : '开灯';
-        }
-        showToast(typeof t === 'function' ? t('toast.ledTurnedOff', { device: getDeviceDescription(device) }) : `${device} 已关闭`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledOffFailed') + ': ' + e.message : `关闭失败: ${e.message}`, 'error');
-    }
-}
-
-async function startEffect(device, effect) {
-    try {
-        requireApiSuccess(await api.ledEffectStart(device, effect), 'ledEffectStart');
-        // 更新状态为开启
-        ledStates[device] = true;
-        const btn = document.getElementById(`toggle-${device}`);
-        if (btn) {
-            btn.classList.add('on');
-            btn.querySelector('.toggle-icon').innerHTML = '<svg class="i"><use href="#ri-checkbox-blank-circle-fill"/></svg>';
-            btn.querySelector('.toggle-text').textContent = typeof t === 'function' ? t('ui.turnOffLight') : '关灯';
-        }
-        showToast(typeof t === 'function' ? t('toast.ledEffectStarted', { device: getDeviceDescription(device), effect }) : `${device}: ${effect} 已启动`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledEffectStartFailed') + ': ' + e.message : `启动动画失败: ${e.message}`, 'error');
     }
 }
 
@@ -5982,26 +5615,6 @@ function filePickerItemClick(element, path, isDir) {
     }
 }
 
-// 文件选择器项目双击
-async function filePickerItemDblClick(path, isDir) {
-    if (isDir) {
-        await loadFilePickerDirectory(path);
-    } else {
-        // 双击文件直接确认
-        filePickerSelectedFile = path;
-        confirmFilePicker();
-    }
-}
-
-// 文件选择器上级目录
-async function filePickerGoUp() {
-    if (filePickerCurrentPath === '/sdcard' || filePickerCurrentPath === '/') {
-        return;
-    }
-    const parentPath = filePickerCurrentPath.substring(0, filePickerCurrentPath.lastIndexOf('/')) || '/sdcard';
-    await loadFilePickerDirectory(parentPath);
-}
-
 // 关闭文件选择器
 function closeFilePicker() {
     document.getElementById('file-picker-modal').classList.add('hidden');
@@ -6015,62 +5628,6 @@ function confirmFilePicker() {
         filePickerCallback(filePickerSelectedFile);
     }
     closeFilePicker();
-}
-
-// 显示图像
-async function displayImage() {
-    const pathInput = document.getElementById('matrix-image-path');
-    const centerCheckbox = document.getElementById('matrix-image-center');
-    
-    const path = pathInput.value.trim();
-    if (!path) {
-        showToast((typeof t === 'function' ? t('toast.enterImagePath') : '请输入图像路径'), 'error');
-        return;
-    }
-    
-    try {
-        const result = requireApiSuccess(await api.ledImage(path, 'matrix', centerCheckbox.checked), 'ledImage');
-        showToast(typeof t === 'function' ? t('toast.imageDisplayed') : '图像显示成功', 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledImageFailed') + ': ' + e.message : `显示图像失败: ${e.message}`, 'error');
-    }
-}
-
-// 生成 QR 码
-async function generateQrCode() {
-    const textInput = document.getElementById('matrix-qr-text');
-    const eccSelect = document.getElementById('matrix-qr-ecc');
-    const fgColor = document.getElementById('matrix-qr-fg');
-    const bgImageInput = document.getElementById('matrix-qr-bg-image');
-    
-    const text = textInput.value.trim();
-    if (!text) {
-        showToast((typeof t === 'function' ? t('toast.enterQrContent') : '请输入 QR 码内容'), 'error');
-        return;
-    }
-    
-    const params = {
-        ecc: eccSelect.value,
-        color: fgColor.value
-    };
-    
-    // 添加背景图（如果有）
-    const bgImage = bgImageInput.value.trim();
-    if (bgImage) {
-        params.bg_image = bgImage;
-    }
-    
-    try {
-        const result = requireApiSuccess(await api.ledQrcode(text, params), 'ledQrcode');
-        showToast(typeof t === 'function' ? t('toast.qrGenerated') : 'QR 码生成成功', 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledQrFailed') + ': ' + e.message : `生成 QR 码失败: ${e.message}`, 'error');
-    }
-}
-
-// 清除 QR 码背景图
-function clearQrBgImage() {
-    document.getElementById('matrix-qr-bg-image').value = '';
 }
 
 // 加载字体列表
@@ -6122,59 +5679,6 @@ async function loadFontList() {
     }
 }
 
-// 显示文本
-async function displayText() {
-    const textInput = document.getElementById('matrix-text-content');
-    const fontSelect = document.getElementById('matrix-text-font');
-    const alignSelect = document.getElementById('matrix-text-align');
-    const colorInput = document.getElementById('matrix-text-color');
-    const xInput = document.getElementById('matrix-text-x');
-    const yInput = document.getElementById('matrix-text-y');
-    const autoPos = document.getElementById('matrix-text-auto-pos');
-    const scrollSelect = document.getElementById('matrix-text-scroll');
-    const speedInput = document.getElementById('matrix-text-speed');
-    const loopCheckbox = document.getElementById('matrix-text-loop');
-    
-    const text = textInput.value.trim();
-    if (!text) {
-        showToast((typeof t === 'function' ? t('toast.enterDisplayText') : '请输入显示文本'), 'error');
-        return;
-    }
-    
-    const params = {
-        device: 'matrix',
-        font: fontSelect.value,
-        align: alignSelect.value,
-        color: colorInput.value,
-        scroll: scrollSelect.value,  // 滚动方向：none/left/right/up/down
-        speed: parseInt(speedInput.value),
-        loop: loopCheckbox.checked
-    };
-    
-    // 添加坐标（如果不是自动定位）
-    if (!autoPos.checked) {
-        params.x = parseInt(xInput.value) || 0;
-        params.y = parseInt(yInput.value) || 0;
-    }
-    
-    try {
-        const result = requireApiSuccess(await api.ledText(text, params), 'ledText');
-        showToast(typeof t === 'function' ? t('toast.textDisplayed') : '文本显示成功', 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledTextFailed') + ': ' + e.message : `显示文本失败: ${e.message}`, 'error');
-    }
-}
-
-// 停止文本
-async function stopText() {
-    try {
-        requireApiSuccess(await api.ledTextStop('matrix'), 'ledTextStop');
-        showToast((typeof t === 'function' ? t('toast.textStopped') : '文本已停止'), 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.ledTextStopFailed') + ': ' + e.message : `停止失败: ${e.message}`, 'error');
-    }
-}
-
 // 滤镜配置：每个滤镜的参数列表和默认值
 const filterConfig = {
     'pulse': { params: ['speed'], defaults: { speed: 50 } },
@@ -6214,144 +5718,10 @@ const paramLabels = {
     'amount': { get label() { return t('ledPage.paramAmount'); }, min: 0, max: 100, unit: '%' }
 };
 
-let selectedFilter = null;
-
 function getParamLabel(paramKey) {
     const keyMap = { speed: 'ledPage.paramSpeed', intensity: 'ledPage.paramIntensity', wavelength: 'ledPage.paramWavelength', amplitude: 'ledPage.paramAmplitude', direction: 'ledPage.paramDirection', angle: 'ledPage.paramAngle', width: 'ledPage.paramWidth', frequency: 'ledPage.paramFrequency', saturation: 'ledPage.paramSaturation', density: 'ledPage.paramDensity', decay: 'ledPage.paramDecay', scale: 'ledPage.paramScale', levels: 'ledPage.paramLevels', amount: 'ledPage.paramAmount' };
     const key = keyMap[paramKey];
     return (typeof t === 'function' && key) ? t(key) : (paramLabels[paramKey]?.label || paramKey);
-}
-
-// 选择滤镜
-function selectFilter(filterName, btnElement) {
-    selectedFilter = filterName;
-    
-    // 高亮当前选中的按钮
-    document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('selected'));
-    if (btnElement) btnElement.classList.add('selected');
-    
-    // 更新显示的滤镜名称
-    const nameSpan = document.getElementById('selected-filter-name');
-    if (nameSpan) nameSpan.textContent = typeof t === 'function' ? t('led.selectedFilter', { filter: filterDisplayName(filterName) }) : `已选择: ${filterName}`;
-    
-    // 启用应用按钮
-    const applyBtn = document.getElementById('apply-filter-btn');
-    if (applyBtn) applyBtn.disabled = false;
-    
-    // 动态生成参数控件
-    const paramsDiv = document.getElementById('filter-params');
-    const config = filterConfig[filterName];
-    
-    if (config && config.params && config.params.length > 0) {
-        paramsDiv.style.display = 'block';
-        paramsDiv.innerHTML = ''; // 清空现有控件
-        
-        config.params.forEach(param => {
-            const paramInfo = paramLabels[param];
-            const defaultValue = config.defaults[param] ?? 50;
-            
-            const row = document.createElement('div');
-            row.className = 'config-row';
-            row.style.cssText = 'display: flex; align-items: center; gap: 10px; margin-bottom: 10px;';
-            
-            const label = document.createElement('label');
-            label.textContent = getParamLabel(param);
-            label.style.minWidth = '60px';
-            
-            const slider = document.createElement('input');
-            slider.type = 'range';
-            slider.id = `filter-${param}`;
-            slider.min = paramInfo.min;
-            slider.max = paramInfo.max;
-            slider.value = defaultValue;
-            slider.style.flex = '1';
-            
-            const valueSpan = document.createElement('span');
-            valueSpan.id = `filter-${param}-val`;
-            valueSpan.textContent = defaultValue + paramInfo.unit;
-            valueSpan.style.minWidth = '50px';
-            valueSpan.style.textAlign = 'right';
-            
-            slider.oninput = () => {
-                valueSpan.textContent = slider.value + paramInfo.unit;
-            };
-            
-            row.appendChild(label);
-            row.appendChild(slider);
-            row.appendChild(valueSpan);
-            paramsDiv.appendChild(row);
-        });
-    } else {
-        paramsDiv.style.display = 'none';
-        paramsDiv.innerHTML = '';
-    }
-}
-
-// 应用选中的滤镜
-async function applySelectedFilter() {
-    if (!selectedFilter) {
-        showToast((typeof t === 'function' ? t('toast.selectFilter') : '请先选择滤镜'), 'error');
-        return;
-    }
-    
-    // 收集所有参数
-    const params = { device: 'matrix', filter: selectedFilter };
-    const config = filterConfig[selectedFilter];
-    
-    if (config && config.params) {
-        config.params.forEach(param => {
-            const input = document.getElementById(`filter-${param}`);
-            if (input) {
-                let value = parseInt(input.value);
-                // 根据参数类型转换值
-                if (param === 'saturation' || param === 'frequency') {
-                    value = Math.round(value * 2.55); // 0-100 转 0-255
-
-                } else if (param === 'amount') {
-                    value = value - 50; // 0-100 转 -50 to +50
-                }
-                params[param] = value;
-            }
-        });
-    }
-    
-    try {
-        requireApiSuccess(await api.call('led.filter.start', params), 'call');
-        showToast(typeof t === 'function' ? t('toast.filterApplied', { filter: filterDisplayName(selectedFilter) }) : `已应用滤镜: ${selectedFilter}`, 'success');
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.filterApplyFailed') + ': ' + e.message : `应用滤镜失败: ${e.message}`, 'error');
-    }
-}
-
-// 应用滤镜（兼容旧接口）
-async function applyFilter(filterName, btnElement) {
-    selectFilter(filterName, btnElement);
-    await applySelectedFilter();
-}
-
-// 停止滤镜
-async function stopFilter() {
-    try {
-        requireApiSuccess(await api.ledFilterStop('matrix'), 'ledFilterStop');
-        showToast((typeof t === 'function' ? t('toast.filterStopped') : '滤镜已停止'), 'success');
-        
-        // 移除滤镜按钮高亮和选中状态
-        document.querySelectorAll('.filter-btn').forEach(btn => {
-            btn.classList.remove('active');
-            btn.classList.remove('selected');
-        });
-        selectedFilter = null;
-        
-        // 重置 UI
-        const nameSpan = document.getElementById('selected-filter-name');
-        if (nameSpan) nameSpan.textContent = typeof t === 'function' ? t('ui.noFilterSelected') : '未选择滤镜';
-        const applyBtn = document.getElementById('apply-filter-btn');
-        if (applyBtn) applyBtn.disabled = true;
-        const paramsDiv = document.getElementById('filter-params');
-        if (paramsDiv) paramsDiv.style.display = 'none';
-    } catch (e) {
-        showToast(typeof t === 'function' ? t('toast.filterStopFailed') + ': ' + e.message : `停止滤镜失败: ${e.message}`, 'error');
-    }
 }
 
 // =========================================================================
@@ -7160,10 +6530,6 @@ function hideWifiScan() {
     document.getElementById('wifi-scan-section').classList.add('hidden');
 }
 
-function getSignalIcon(rssi) {
-    return '<svg class="i"><use href="#ri-signal-wifi-3-line"/></svg>';
-}
-
 function escapeHtml(str) {
     return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
@@ -7816,10 +7182,6 @@ function navigateToPath(path) {
     loadDirectory(path);
 }
 
-function getFileIcon(name) {
-    return '';
-}
-
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 B';
     if (bytes === undefined) return '-';
@@ -8288,17 +7650,6 @@ async function deleteSshCommandFromBackend(cmdId) {
 }
 
 /**
- * 预创建 SSH 命令相关的变量（保留用于兼容，实际由后端处理）
- * 后端在保存指令时已自动创建变量
- * @param {string} varName - 变量名前缀（如 "ping_test"）
- */
-async function preCreateCommandVariables(varName) {
-    // 后端 ssh.commands.add API 在保存时已自动创建变量
-    // 此函数保留作为兼容占位符
-    console.debug(`Variables for ${escapeHtml(varName)}.* are managed by backend`);
-}
-
-/**
  * 确保所有已保存指令的变量都已创建（保留用于兼容，实际由后端处理）
  * 后端在 ESP32 启动时会自动预创建所有命令变量
  */
@@ -8616,15 +7967,6 @@ function refreshCommandsList() {
 async function updateServiceStatusInList() {
     await refreshServiceStates();
     if (document.querySelector('.service-mode-status')) startServiceStatusRefresh();
-}
-
-/**
- * 获取服务状态显示文本
- */
-function getServiceStatusLabel(status) {
-    const keyMap = { 'ready': 'sshPage.statusReady', 'checking': 'sshPage.statusChecking', 'timeout': 'sshPage.statusTimeout', 'failed': 'sshPage.statusFailed', 'idle': 'sshPage.statusIdle', 'stopped': 'sshPage.statusStopped' };
-    const key = keyMap[status];
-    return key ? t(key) : t('common.unknown');
 }
 
 function showAddCommandModal() {
@@ -10565,18 +9907,7 @@ async function loadSecurityPage() {
                 <div class="warnrow"><svg class="i"><use href="#ri-alert-line"/></svg><span>${t('securityPage.revokeWarning')}</span></div>
                 <div id="revoke-result" class="result-box hidden" style="margin-top:12px"></div>`,
                 `<button class="btn lg" onclick="hideRevokeKeyModal()">${t('common.cancel')}</button><button class="btn lg primary bad" id="revoke-btn" onclick="revokeKey()">${t('securityPage.revokeKey')}</button>`)}</div>
-            
-            <!-- 主机指纹不匹配警告弹窗 -->
-            <div class="modal hidden" id="host-mismatch-modal">${sheet(560, t('securityPage.mismatchTitle'), `
-                <div class="t-body" style="margin-bottom:8px">${t('securityPage.hostKeyChangedWarning')}</div>
-                <div class="t-body" style="color:var(--ink-2);line-height:22px;margin-bottom:14px">• ${t('securityPage.mitmAttack')}<br>• ${t('securityPage.serverReinstalled')}<br>• ${t('securityPage.ipReassigned')}</div>
-                ${grp(
-                    row(t('securityPage.hostLabel'), '<span class="mono" id="mismatch-host"></span>') +
-                    row(t('securityPage.storedFingerprint'), '<span class="mono t-label" id="mismatch-stored-fp"></span>') +
-                    row(t('securityPage.currentFingerprint'), '<span class="mono t-label" id="mismatch-current-fp"></span>'))}
-                <div class="t-note" style="margin-top:12px;line-height:18px">${t('securityPage.mismatchAdvice')}</div>`,
-                `<button class="btn lg" onclick="hideHostMismatchModal()">${t('common.cancel')}</button><button class="btn lg primary bad" onclick="removeAndRetry()">${t('securityPage.updateHostKey')}</button>`)}</div>
-            
+
             <!-- HTTPS 证书：生成密钥对弹窗 -->
             <div class="modal hidden" id="cert-genkey-modal">${sheet(520, t('securityPage.genHttpsKeyTitle'), `
                 <div class="t-body" style="color:var(--ink-2)">${t('securityPage.genHttpsKeyDescFull')}</div>
@@ -10925,49 +10256,6 @@ async function removeKnownHost(index) {
         }
     } catch (e) {
         showToast((typeof t === 'function' ? t('toast.deleteFailedMsg', { msg: e.message }) : '删除失败: ' + e.message), 'error');
-    }
-}
-
-/**
- * 测试 SSH 连接
- */
-async function testSshConnection(hostId) {
-    showToast(typeof t === 'function' ? t('toast.testingConnection', { host: hostId }) : `正在测试连接 ${hostId}...`, 'info');
-    
-    try {
-        // 获取主机信息
-        const hostResult = await api.call('ssh.hosts.get', { id: hostId });
-        console.log('ssh.hosts.get result:', hostResult);
-        
-        if (hostResult.code !== 0) {
-            showToast(typeof t === 'function' ? t('toast.cannotGetHostInfo') + ': ' + (hostResult.message || t('common.unknown')) : `无法获取主机信息: ${hostResult.message || '未知错误'}`, 'error');
-            return;
-        }
-        
-        if (!hostResult.data) {
-            showToast((typeof t === 'function' ? t('toast.hostInfoEmpty') : '主机信息为空'), 'error');
-            return;
-        }
-        
-        const host = hostResult.data;
-        
-        // 执行 ssh.exec 测试连接（执行简单命令）
-        const execResult = await api.call('ssh.exec', {
-            host: host.host,
-            port: host.port,
-            username: host.username,
-            keyid: host.keyid || 'default',
-            command: 'echo "TianshanOS SSH Test OK"'
-        });
-        
-        if (execResult.code === 0) {
-            showToast(typeof t === 'function' ? t('toast.connectionSuccess', { host: hostId }) : `连接 ${hostId} 成功！`, 'success');
-        } else {
-            showToast(typeof t === 'function' ? t('toast.connectFailedMsg', { msg: execResult.message || t('common.unknown') }) : `连接失败: ${execResult.message || '未知错误'}`, 'error');
-        }
-    } catch (e) {
-        console.error('Test SSH connection error:', e);
-        showToast(typeof t === 'function' ? t('toast.testConnectionFailed') + ': ' + e.message : `测试失败: ${e.message}`, 'error');
     }
 }
 
@@ -11379,25 +10667,6 @@ async function doRevokeFromHost(index) {
     }
 }
 
-/**
- * 从安全页面删除 SSH 主机（保留兼容性）
- */
-async function deleteSshHostFromSecurity(id) {
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRemoveHostLocal2', { id }) : `确定要从列表中移除主机 "${id}" 吗？\n\n注意：这只会移除本地记录，不会删除已部署到服务器上的公钥。如需撤销公钥，请使用密钥管理中的「撤销」功能。`, { primary: t('securityPage.remove'), tone: 'danger' })) return;
-    
-    try {
-        const result = await api.call('ssh.hosts.remove', { id });
-        if (result.code === 0) {
-            showToast(typeof t === 'function' ? t('toast.sshHostRemoved', { id }) : `SSH 主机 ${id} 已从列表移除`, 'success');
-            await loadSshHostsData();
-        } else {
-            showToast((typeof t === 'function' ? t('toast.removeFailedMsg', { msg: result.message || t('common.unknown') }) : '移除失败: ' + (result.message || '未知错误')), 'error');
-        }
-    } catch (e) {
-        showToast((typeof t === 'function' ? t('toast.removeFailedMsg', { msg: e.message }) : '移除失败: ' + e.message), 'error');
-    }
-}
-
 async function deleteKey(id) {
     if (await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteKey', { id }) : `确定要删除密钥 "${id}" 吗？此操作不可撤销！`, { primary: t('common.delete'), tone: 'danger' })) {
         try {
@@ -11699,61 +10968,6 @@ async function revokeKey() {
         resultBox.classList.add('error');
     } finally {
         revokeBtn.disabled = false;
-    }
-}
-
-// ====== 主机指纹不匹配警告 ======
-
-let currentMismatchInfo = null;
-
-function showHostMismatchModal(info) {
-    currentMismatchInfo = info;
-    document.getElementById('mismatch-host').textContent = `${info.host}:${info.port || 22}`;
-    document.getElementById('mismatch-stored-fp').textContent = info.stored_fingerprint || t('common.unknown');
-    document.getElementById('mismatch-current-fp').textContent = info.current_fingerprint || t('common.unknown');
-    document.getElementById('host-mismatch-modal').classList.remove('hidden');
-}
-
-function hideHostMismatchModal() {
-    document.getElementById('host-mismatch-modal').classList.add('hidden');
-    currentMismatchInfo = null;
-}
-
-async function removeAndRetry() {
-    if (!currentMismatchInfo) return;
-    
-    try {
-        // 使用新的 hosts.update API 更新主机密钥
-        requireApiSuccess(await api.hostsUpdate(currentMismatchInfo.host, currentMismatchInfo.port || 22), 'hostsUpdate');
-        showToast((typeof t === 'function' ? t('toast.oldHostKeyRemoved') : '旧主机密钥已移除，请重新连接以信任新密钥'), 'success');
-        hideHostMismatchModal();
-        await refreshSecurityPage();
-    } catch (e) {
-        showToast((typeof t === 'function' ? t('toast.updateFailedMsg', { msg: e.message }) : '更新失败: ' + e.message), 'error');
-    }
-}
-
-async function removeHost(host, port) {
-    if (await confirmAction(typeof t === 'function' ? t('ui.confirmRemoveKnownHost', { host, port }) : `确定要移除主机 "${host}:${port}" 的记录吗？`, { primary: t('securityPage.remove'), tone: 'danger' })) {
-        try {
-            requireApiSuccess(await api.hostsRemove(host, port), 'hostsRemove');
-            showToast((typeof t === 'function' ? t('toast.hostRemoved') : '主机已移除'), 'success');
-            await refreshSecurityPage();
-        } catch (e) {
-            showToast((typeof t === 'function' ? t('toast.removeFailedMsg', { msg: e.message }) : '移除失败: ' + e.message), 'error');
-        }
-    }
-}
-
-async function clearAllHosts() {
-    if (await confirmAction(typeof t === 'function' ? t('ui.confirmClearKnownHosts') : '确定要清除所有已知主机记录吗？此操作不可撤销！', { primary: t('common.clear'), tone: 'danger' })) {
-        try {
-            requireApiSuccess(await api.hostsClear(), 'hostsClear');
-            showToast((typeof t === 'function' ? t('toast.allHostsCleared') : '已清除所有已知主机'), 'success');
-            await refreshSecurityPage();
-        } catch (e) {
-            showToast((typeof t === 'function' ? t('toast.clearFailedMsg', { msg: e.message }) : '清除失败: ' + e.message), 'error');
-        }
     }
 }
 
@@ -13402,21 +12616,13 @@ window.clearModalLogs = clearModalLogs;
 window.closeLoginModal = closeLoginModal;
 window.confirmReboot = confirmReboot;
 window.syncTimeFromBrowser = syncTimeFromBrowser;
-window.forceNtpSync = forceNtpSync;
 window.showTimezoneModal = showTimezoneModal;
 window.hideTimezoneModal = hideTimezoneModal;
 window.applyTimezone = applyTimezone;
 window.serviceAction = serviceAction;
 window.setBrightness = setBrightness;
 window.toggleLed = toggleLed;
-window.clearLed = clearLed;
-window.fillColor = fillColor;
-window.quickFill = quickFill;
-window.startEffect = startEffect;
 window.stopEffect = stopEffect;
-window.showEffectConfig = showEffectConfig;
-window.applyEffect = applyEffect;
-window.updateBrightnessLabel = updateBrightnessLabel;
 window.showWifiScan = showWifiScan;
 window.connectWifi = connectWifi;
 window.toggleNat = toggleNat;
@@ -13447,8 +12653,6 @@ window.refreshSshHostsList = refreshSshHostsList;
 window.refreshKnownHostsList = refreshKnownHostsList;
 window.showFullFingerprint = showFullFingerprint;
 window.removeKnownHost = removeKnownHost;
-window.deleteSshHostFromSecurity = deleteSshHostFromSecurity;
-window.testSshConnection = testSshConnection;
 window.testSshHostByIndex = testSshHostByIndex;
 window.removeHostByIndex = removeHostByIndex;
 window.exportSshHost = exportSshHost;
@@ -13473,8 +12677,6 @@ window.showPrivkeyModal = showPrivkeyModal;
 window.closePrivkeyModal = closePrivkeyModal;
 window.copyPrivkey = copyPrivkey;
 window.downloadPrivkey = downloadPrivkey;
-window.removeHost = removeHost;
-window.clearAllHosts = clearAllHosts;
 window.showGenerateKeyModal = showGenerateKeyModal;
 window.hideGenerateKeyModal = hideGenerateKeyModal;
 window.generateKey = generateKey;
@@ -13484,9 +12686,6 @@ window.deployKey = deployKey;
 window.showRevokeKeyModal = showRevokeKeyModal;
 window.hideRevokeKeyModal = hideRevokeKeyModal;
 window.revokeKey = revokeKey;
-window.showHostMismatchModal = showHostMismatchModal;
-window.hideHostMismatchModal = hideHostMismatchModal;
-window.removeAndRetry = removeAndRetry;
 window.terminalClear = terminalClear;
 window.terminalDisconnect = terminalDisconnect;
 // 文件管理
@@ -13511,25 +12710,13 @@ window.toggleSelectAll = toggleSelectAll;
 window.clearSelection = clearSelection;
 window.batchDelete = batchDelete;
 window.batchDownload = batchDownload;
-// Matrix 滤镜
-window.selectFilter = selectFilter;
-window.applySelectedFilter = applySelectedFilter;
-window.applyFilter = applyFilter;
-window.stopFilter = stopFilter;
 // Matrix 功能
-window.displayImage = displayImage;
-window.generateQrCode = generateQrCode;
-window.clearQrBgImage = clearQrBgImage;
-window.displayText = displayText;
-window.stopText = stopText;
 window.saveLedConfig = saveLedConfig;
 window.loadFontList = loadFontList;
 // 文件选择器
 window.openFilePickerFor = openFilePickerFor;
 window.browseImages = browseImages;
 window.filePickerItemClick = filePickerItemClick;
-window.filePickerItemDblClick = filePickerItemDblClick;
-window.filePickerGoUp = filePickerGoUp;
 window.closeFilePicker = closeFilePicker;
 window.confirmFilePicker = confirmFilePicker;
 window.createAndOpenDir = createAndOpenDir;
@@ -14377,19 +13564,6 @@ function compareSemVer(v1, v2) {
     }
     
     return 0;
-}
-
-/**
- * 格式化版本显示
- * @param {object} versionInfo - 版本信息对象
- * @returns {string} - 格式化的版本字符串
- */
-function formatVersionDisplay(versionInfo) {
-    if (!versionInfo) return 'Unknown';
-    const v = versionInfo.version || '0.0.0';
-    const date = versionInfo.compile_date || '';
-    const time = versionInfo.compile_time || '';
-    return `${v} (${date} ${time})`.trim();
 }
 
 // OTA 服务器相关函数
@@ -15386,109 +14560,6 @@ async function refreshSources() {
     }
 }
 
-// 缓存变量数据用于过滤
-let allVariables = [];
-
-/**
- * 刷新变量列表
- */
-async function refreshVariables() {
-    const pageCurrent = capturePageValidity();
-    const container = document.getElementById('variables-list');
-    const countBadge = document.getElementById('variables-count');
-    if (!container) return;
-    
-    container.innerHTML = '<div class="loading-small">' + t('common.loading') + '</div>';
-    
-    try {
-        const result = await api.call('automation.variables.list', { include_meta: true });
-        if (!pageCurrent()) return;
-        if (result.code === 0 && result.data && result.data.variables) {
-            allVariables = result.data.variables;
-            if (countBadge) countBadge.textContent = allVariables.length;
-            renderVariables(allVariables);
-        } else {
-            container.innerHTML = `<p style="text-align:center;color:var(--ink-3)">${escapeHtml(result.message || (typeof t === 'function' ? t('sshPage.getVarFailed') : '获取变量失败'))}</p>`;
-        }
-    } catch (error) {
-        if (!pageCurrent()) return;
-        container.innerHTML = `<p style="text-align:center;color:var(--bad)">${escapeHtml(error.message)}</p>`;
-    }
-}
-
-/**
- * 过滤变量
- */
-function filterVariables() {
-    const filter = document.getElementById('variable-filter').value.toLowerCase().trim();
-    if (!filter) {
-        renderVariables(allVariables);
-        return;
-    }
-    const filtered = allVariables.filter(v => 
-        v.name.toLowerCase().includes(filter) || 
-        (v.source_id && v.source_id.toLowerCase().includes(filter))
-    );
-    renderVariables(filtered);
-}
-
-/**
- * 渲染变量列表
- */
-function renderVariables(variables) {
-    const container = document.getElementById('variables-list');
-    if (!container) return;
-    
-    if (variables.length === 0) {
-        container.innerHTML = '<p style="text-align:center;color:var(--ink-3)">' + (typeof t === 'function' ? t('automationPage.noVariables') : '暂无变量数据') + '</p>';
-        return;
-    }
-    
-    // 按来源分组
-    const grouped = {};
-    variables.forEach(v => {
-        const source = v.source_id || 'system';
-        if (!grouped[source]) grouped[source] = [];
-        grouped[source].push(v);
-    });
-    
-    let html = '<div class="variables-grouped">';
-    for (const [source, vars] of Object.entries(grouped)) {
-        html += `
-            <details class="variable-group" open>
-                <summary class="variable-group-header">
-                    <span class="source-name"><svg class="i"><use href="#ri-signal-wifi-3-line"/></svg> ${source}</span>
-                    <span class="variable-count">${t('promptRepair.variableCount', {count: vars.length})}</span>
-                </summary>
-                <div class="variable-items">
-                    <table class="data-table compact">
-                        <thead>
-                            <tr>
-                                <th>${typeof t === 'function' ? t('sshPage.varTableName') : '变量名'}</th>
-                                <th>${typeof t === 'function' ? t('sshPage.varTableType') : '类型'}</th>
-                                <th>${typeof t === 'function' ? t('sshPage.varTableValue') : '当前值'}</th>
-                                <th>${typeof t === 'function' ? t('sshPage.varTableUpdated') : '更新时间'}</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${vars.map(v => `
-                                <tr>
-                                    <td><code class="variable-name">${v.name}</code></td>
-                                    <td><span class="type-badge type-${v.type || 'unknown'}">${v.type || '-'}</span></td>
-                                    <td class="variable-value">${formatVariableValue(v.value, v.type)}</td>
-                                    <td class="variable-time">${formatVariableUpdateTime(v)}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            </details>
-        `;
-    }
-    html += '</div>';
-    container.innerHTML = html;
-}
-
 /**
  * 格式化变量值显示
  */
@@ -15606,22 +14677,6 @@ function getActionTypeLabel(type) {
         'device_ctrl': t('common.devices')
     };
     return labels[type] || type;
-}
-
-/**
- * 获取动作类型徽章样式
- */
-function getActionTypeBadge(type) {
-    const badges = {
-        'led': 'info',
-        'ssh_cmd': 'primary',
-        'gpio': 'warning',
-        'webhook': 'secondary',
-        'log': 'light',
-        'set_var': 'dark',
-        'device_ctrl': 'danger'
-    };
-    return badges[type] || 'secondary';
 }
 
 /**
@@ -15945,39 +15000,6 @@ function setCliPreset(cmd) {
     if (input) {
         input.value = cmd;
         input.focus();
-    }
-}
-
-/**
- * 加载 SSH 主机列表 (用于动作模板)
- */
-async function loadSshHostsForAction() {
-    try {
-        const select = document.getElementById('action-ssh-host');
-        if (!select) return;
-        
-        const result = await api.call('ssh.hosts.list', {});
-        select.innerHTML = ("<option value=\"\">" + t('sshPage.selectHost') + "</option>");
-        
-        if (result.code === 0 && result.data?.hosts) {
-            result.data.hosts.forEach(host => {
-                const opt = document.createElement('option');
-                opt.value = host.id;
-                opt.textContent = `${host.name || host.id} (${host.host}:${host.port || 22})`;
-                select.appendChild(opt);
-            });
-        }
-        
-        if (select.options.length === 1) {
-            // 没有配置主机，提示用户
-            select.innerHTML = ("<option value=\"\">" + t('sshPage.pleaseConfigSshHost') + "</option>");
-        }
-    } catch (e) {
-        console.error('加载 SSH 主机列表失败:', e);
-        const select = document.getElementById('action-ssh-host');
-        if (select) {
-            select.innerHTML = '<option value="">-- ' + (typeof t === 'function' ? t('common.loadFailed') : '加载失败') + ' --</option>';
-        }
     }
 }
 
@@ -17564,14 +16586,6 @@ function switchSourceType(type) {
     }
 }
 
-/**
- * 根据数据源类型更新表单字段（兼容旧调用）
- */
-function updateSourceTypeFields() {
-    const type = document.getElementById('source-type').value;
-    switchSourceType(type);
-}
-
 // updateBuiltinFields 函数已移除 - 内置数据源由系统自动注册，无需手动配置
 
 /**
@@ -18458,89 +17472,6 @@ function handleActionConditionVarSelect(varName) {
     window._actionConditionMode = false;
 }
 
-// 保留旧的 addActionRow 和 updateActionFields 用于兼容，但标记为废弃
-/**
- * @deprecated 使用 addActionTemplateRow 代替
- */
-function addActionRow() {
-    console.warn('addActionRow 已废弃，请使用 addActionTemplateRow');
-    addActionTemplateRow();
-}
-
-/**
- * 根据动作类型更新参数字段
- */
-function updateActionFields(selectElement) {
-    const row = selectElement.closest('.action-row');
-    const paramsContainer = row.querySelector('.action-params');
-    const type = selectElement.value;
-    
-    switch (type) {
-        case 'led':
-            paramsContainer.innerHTML = `
-                <select class="input action-led-device">
-                    <option value="board">Board</option>
-                    <option value="matrix">Matrix</option>
-                    <option value="touch">Touch</option>
-                </select>
-                <input type="number" class="input action-led-index" placeholder="${t('automationPage.indexPlaceholder')}" value="255" min="0" max="255" style="width:70px">
-                <input type="text" class="input action-led-color" placeholder="#RRGGBB" value="#FF0000" style="width:90px">
-            `;
-            break;
-        case 'gpio':
-            paramsContainer.innerHTML = `
-                <input type="number" class="input action-gpio-pin" placeholder="Pin" value="0" min="0" max="48" style="width:60px">
-                <select class="input action-gpio-level">
-                    <option value="true">${t('common.high')}</option>
-                    <option value="false">${t('common.low')}</option>
-                </select>
-                <input type="number" class="input action-gpio-pulse" placeholder="${t('automationPage.pulseMsPlaceholder')}" value="0" min="0" style="width:80px">
-            `;
-            break;
-        case 'device':
-            paramsContainer.innerHTML = `
-                <select class="input action-device-name">
-                    <option value="agx0">AGX 0</option>
-                    <option value="lpmu0">LPMU 0</option>
-                </select>
-                <select class="input action-device-action">
-                    <option value="power_on">${t('device.powerOn')}</option>
-                    <option value="power_off">${t('device.powerOff')}</option>
-                    <option value="reset">${t('common.restart')}</option>
-                    <option value="force_off">${t('promptRepair.forceOff')}</option>
-                </select>
-            `;
-            break;
-        case 'set_var':
-            paramsContainer.innerHTML = `
-                <input type="text" class="input action-setvar-name" placeholder="${typeof t === 'function' ? t('automationPage.varNamePlaceholder') : '变量名'}" style="width:120px">
-                <input type="text" class="input action-setvar-value" placeholder="${typeof t === 'function' ? t('automationPage.jsonValuePlaceholder') : '值 (JSON)'}" style="flex:1">
-            `;
-            break;
-        case 'log':
-            paramsContainer.innerHTML = `
-                <select class="input action-log-level" style="width:100px">
-                    <option value="3">INFO</option>
-                    <option value="4">WARN</option>
-                    <option value="5">ERROR</option>
-                </select>
-                <input type="text" class="input action-log-message" placeholder="${typeof t === 'function' ? t('automationPage.logMessagePlaceholder') : '日志消息'}" style="flex:1">
-            `;
-            break;
-        case 'webhook':
-            paramsContainer.innerHTML = `
-                <select class="input action-webhook-method" style="width:80px">
-                    <option value="POST">POST</option>
-                    <option value="GET">GET</option>
-                    <option value="PUT">PUT</option>
-                </select>
-                <input type="text" class="input action-webhook-url" placeholder="URL" style="flex:1">
-                <input type="text" class="input action-webhook-body" placeholder='Body JSON' style="width:120px">
-            `;
-            break;
-    }
-}
-
 /**
  * 提交添加/更新规则
  * 规则只引用动作模板 ID，不再内联定义动作
@@ -18687,7 +17618,6 @@ window.toggleSource = toggleSource;
 window.deleteSource = deleteSource;
 window.showAddSourceModal = showAddSourceModal;
 window.switchSourceType = switchSourceType;
-window.updateSourceTypeFields = updateSourceTypeFields;
 window.loadSshHostsForSource = loadSshHostsForSource;
 window.onSshHostChangeForSource = onSshHostChangeForSource;
 window.onSshCmdChange = onSshCmdChange;
@@ -18696,8 +17626,6 @@ window.showAddRuleModal = showAddRuleModal;
 window.addConditionRow = addConditionRow;
 window.openConditionVarSelector = openConditionVarSelector;
 window.handleConditionVarSelect = handleConditionVarSelect;
-window.addActionRow = addActionRow;
-window.updateActionFields = updateActionFields;
 window.submitAddRule = submitAddRule;
 window.closeModal = closeModal;
 window.toggleManualOnly = toggleManualOnly;
