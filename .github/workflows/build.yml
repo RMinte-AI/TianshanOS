@@ -108,17 +108,19 @@ jobs:
           path: |
             ~/esp/esp-idf
             ~/.espressif
-          key: esp-idf-${{ env.IDF_VERSION }}-${{ runner.os }}
+          key: esp-idf-${{ env.IDF_VERSION }}-${{ runner.os }}-python3.11
           restore-keys: |
             esp-idf-${{ env.IDF_VERSION }}-
 
-      - name: Install ESP-IDF
-        if: steps.cache-idf.outputs.cache-hit != 'true'
+      - name: Install ESP-IDF tools and matching Python environment
         run: |
           mkdir -p ~/esp
-          cd ~/esp
-          git clone -b ${{ env.IDF_VERSION }} --depth 1 --recursive https://github.com/espressif/esp-idf.git
-          cd esp-idf
+          if [ ! -d ~/esp/esp-idf ]; then
+            git clone -b ${{ env.IDF_VERSION }} --depth 1 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf
+          fi
+          cd ~/esp/esp-idf
+          # Cached tools may have been installed with a different Python.
+          # install.sh creates/checks the environment for the active Python.
           ./install.sh ${{ env.TARGET }}
 
       - name: Setup ESP-IDF environment
