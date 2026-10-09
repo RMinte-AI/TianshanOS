@@ -54,6 +54,7 @@ static esp_err_t ensure_actions_dir(void) { return sd_failure?ESP_FAIL:ESP_OK; }
 static struct { ts_action_template_t templates[2]; int template_count; SemaphoreHandle_t templates_mutex; } storage;
 static typeof(storage) *s_ctx = &storage;
 void ts_api_result_error(ts_api_result_t *r,ts_api_result_code_t c,const char *s) { r->code=c;r->message=strdup(s); }
+void ts_api_result_reason(ts_api_result_t *r,ts_api_result_code_t c,const char *s,const char *d) { ts_api_result_error(r,c,s);if(d&&d[0]){r->data=cJSON_CreateObject();cJSON_AddStringToObject(r->data,"detail",d);} }
 void ts_api_result_ok(ts_api_result_t *r,cJSON *j) { r->code=TS_API_OK;r->data=j; }
 void ts_api_result_free(ts_api_result_t *r) { free(r->message);cJSON_Delete(r->data);memset(r,0,sizeof(*r)); }
 esp_err_t ts_action_template_get(const char *id,ts_action_template_t *out) { if(strcmp(id,s_ctx->templates[0].id))return ESP_ERR_NOT_FOUND;*out=s_ctx->templates[0];return ESP_OK; }
@@ -75,7 +76,7 @@ code += r'''
 esp_err_t ts_action_template_update(const char *id,const ts_action_template_t *t) { ++updates;return template_update_impl(id,t); }
 '''
 for name in ['action_type_from_string', 'action_type_to_string',
-             'fail_with', 'action_template_write_reply',
+             'action_template_write_reply',
              'api_automation_actions_write', 'api_automation_actions_get',
              'action_template_to_export_json']:
     code += extract(api, name)

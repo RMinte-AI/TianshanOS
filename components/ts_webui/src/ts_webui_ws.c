@@ -1632,7 +1632,7 @@ static void ssh_exec_task(void *arg)
         bool encoded=msg!=NULL;
             encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
             encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
-            encoded = (cJSON_AddStringToObject(msg, "error", "Failed to load SSH key"))!=NULL && encoded;
+            encoded = (cJSON_AddStringToObject(msg, "error", "key_not_found"))!=NULL && encoded;
             char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
             cJSON_Delete(msg);
             ts_ws_op_close_finish(params->op,json); free(json);
@@ -1656,7 +1656,7 @@ static void ssh_exec_task(void *arg)
         bool encoded=msg!=NULL;
         encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
         encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
-        encoded = (cJSON_AddStringToObject(msg, "error", "Failed to create SSH session"))!=NULL && encoded;
+        encoded = (cJSON_AddStringToObject(msg, "error", "no_memory"))!=NULL && encoded;
         char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
         cJSON_Delete(msg);
         ts_ws_op_close_finish(params->op,json); free(json);
@@ -1676,7 +1676,11 @@ static void ssh_exec_task(void *arg)
         bool encoded=msg!=NULL;
         encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
         encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
-        encoded = (cJSON_AddStringToObject(msg, "error", err ? err : "Connection failed"))!=NULL && encoded;
+        const char *stage = "connect";
+        const char *reason = ts_ssh_connect_reason(params->session, &stage);
+        encoded = (cJSON_AddStringToObject(msg, "error", reason))!=NULL && encoded;
+        encoded = (cJSON_AddStringToObject(msg, "stage", stage))!=NULL && encoded;
+        if (err && err[0]) encoded = (cJSON_AddStringToObject(msg, "detail", err))!=NULL && encoded;
         char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
         cJSON_Delete(msg);
         ts_ws_op_close_finish(params->op,json); free(json);

@@ -101,7 +101,7 @@ esp_err_t ts_ssh_exec(ts_ssh_session_t s,const char *cmd,ts_ssh_exec_result_t *r
 }
 void ts_ssh_exec_result_free(ts_ssh_exec_result_t *r) {free(r->stdout_data);free(r->stderr_data);}
 '''
-for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error']:
+for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error', 'ts_api_result_reason']:
     code += extract('components/ts_api/src/ts_api.c', name)
 code += extract('components/ts_api/src/ts_api_ssh.c', 'cleanup_key_buffer')
 code += extract('components/ts_api/src/ts_api_ssh.c', 'configure_ssh_from_params')
@@ -109,7 +109,8 @@ code += extract('components/ts_api/src/ts_api_ssh.c', 'verify_host_fingerprint')
 source = Path('components/ts_api/src/ts_api_ssh.c').read_text()
 start = source.index('typedef struct {\n    const cJSON *params;')
 code += source[start:source.index('} verify_context_t;', start) + len('} verify_context_t;')] + '\n'
-for name in ['ssh_connect_reason', 'ssh_connect_error', 'verify_before_auth', 'connect_verified', 'api_ssh_exec', 'api_ssh_test']:
+code += extract('components/ts_security/src/ts_ssh_client.c', 'ts_ssh_connect_reason')
+for name in ['ssh_connect_error', 'verify_before_auth', 'connect_verified', 'api_ssh_exec', 'api_ssh_test']:
     code += extract('components/ts_api/src/ts_api_ssh.c', name)
 
 # The production response chain (success / API-not-found / failure) of api_handler, taken from the source.
@@ -171,7 +172,7 @@ static void new_host(void) {
     assert(ret!=ESP_OK && code==TS_API_ERR_HOST_NEW);
     /* THE regression: the fingerprint must reach the client even though ssh.exec returned a failure. */
     cJSON *data=cJSON_GetObjectItem(wire,"data");assert(cJSON_IsObject(data));
-    assert(!strcmp(str(wire,"error"),"New host requires confirmation"));
+    assert(!strcmp(str(wire,"error"),"ssh_host_key_unknown"));
     assert(!strcmp(str(data,"status"),"new_host") && !strcmp(str(data,"host"),"192.0.2.8"));
     assert(cJSON_GetObjectItem(data,"port")->valueint==22);
     assert(!strcmp(str(data,"fingerprint"),observed_fp));
@@ -207,7 +208,7 @@ static void changed_host(void) {
     cJSON *wire=wire_of(api_ssh_exec,p,"wire-changed-host.json",&ret,&code);
     assert(ret!=ESP_OK && code==TS_API_ERR_HOST_MISMATCH);
     cJSON *data=cJSON_GetObjectItem(wire,"data");assert(cJSON_IsObject(data));
-    assert(!strcmp(str(wire,"error"),"Host key mismatch - possible MITM attack"));
+    assert(!strcmp(str(wire,"error"),"ssh_host_key_changed"));
     assert(!strcmp(str(data,"status"),"mismatch"));
     assert(!strcmp(str(data,"current_fingerprint"),observed_fp));
     assert(!strncmp(str(data,"stored_fingerprint"),"SHA256:SYNTHETICstored",22));
@@ -314,7 +315,7 @@ static void failure_branch_under_allocation_failure(void) {
             assert(sent==ESP_OK && !http_error_status);
             cJSON *wire=cJSON_Parse(http_body);assert(wire);
             assert(cJSON_GetObjectItem(wire,"code")->valueint==TS_API_ERR_HOST_NEW);
-            assert(!strcmp(str(wire,"error"),"New host requires confirmation"));
+            assert(!strcmp(str(wire,"error"),"ssh_host_key_unknown"));
             cJSON *data=cJSON_GetObjectItem(wire,"data");
             if(data) {                                                     /* complete, never partial */
                 assert(!strcmp(str(data,"status"),"new_host") && !strcmp(str(data,"host"),"192.0.2.8"));

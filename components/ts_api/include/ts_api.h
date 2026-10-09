@@ -217,6 +217,21 @@ void ts_api_result_error(ts_api_result_t *result, ts_api_result_code_t code,
                           const char *message);
 
 /**
+ * @brief Set result error with a reason the Web UI can state exactly
+ *
+ * The reason token (lower_snake, e.g. "ssh_auth_failed") becomes the message: the page translates it into the user's
+ * language. `detail` (optional) goes to data.detail and is only shown in the page's folded details. The numeric `code`
+ * is still the nearest error class, so an older page degrades to the class sentence.
+ *
+ * @param result Result structure
+ * @param code Nearest error class
+ * @param token Reason token
+ * @param detail Optional technical detail (the device's own text), may be NULL
+ */
+void ts_api_result_reason(ts_api_result_t *result, ts_api_result_code_t code,
+                          const char *token, const char *detail);
+
+/**
  * @brief Convert result to JSON
  * 
  * @param result Result structure

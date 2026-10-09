@@ -71,9 +71,10 @@ esp_err_t ts_automation_pause(void) {return mock_engine;}
 esp_err_t ts_automation_reload(void) {return mock_engine;}
 esp_err_t ts_automation_get_status(ts_automation_status_t *s) {memset(s,0,sizeof *s);s->state=mock_state;return ESP_OK;}
 '''
-for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error']:
+for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error', 'ts_api_result_reason']:
     code += extract('components/ts_api/src/ts_api.c', name)
-for name in ['fail_with', 'pack_failure', 'proxy_http_error', 'automation_state', 'engine_refusal_token', 'api_automation_start', 'api_automation_stop', 'api_automation_pause',
+code += extract('components/ts_api/src/ts_api_pack.h', 'pack_failure')
+for name in ['proxy_http_error', 'automation_state', 'engine_refusal_token', 'api_automation_start', 'api_automation_stop', 'api_automation_pause',
              'api_automation_reload', 'action_template_write_reply', 'action_execute_failure', 'source_register_reply',
              'rule_commit_reply', 'trigger_reject_token', 'trigger_reject_code', 'api_automation_rules_trigger']:
     code += extract('components/ts_api/src/ts_api_automation.c', name)
@@ -187,7 +188,7 @@ int main(void) {
     {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_ERR_INVALID_STATE,&src);sent_with_detail(r,"wire-source-add-unavailable.json",TS_API_ERR_BUSY,"engine_unavailable",NULL);}
     {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_FAIL,&src);assert(!strcmp(r.message,"Failed to create source"));ts_api_result_free(&r);}
     /* testing a data source's address: the reason for the page, the status as a number, the start of the body as detail */
-    {ts_api_result_t r={0};fail_with(&r,TS_API_ERR_CONNECTION,"proxy_connect_failed","ESP_ERR_TIMEOUT");sent_with_detail(r,"wire-proxy-connect-failed.json",TS_API_ERR_CONNECTION,"proxy_connect_failed","ESP_ERR_TIMEOUT");}
+    {ts_api_result_t r={0};ts_api_result_reason(&r,TS_API_ERR_CONNECTION,"proxy_connect_failed","ESP_ERR_TIMEOUT");sent_with_detail(r,"wire-proxy-connect-failed.json",TS_API_ERR_CONNECTION,"proxy_connect_failed","ESP_ERR_TIMEOUT");}
     {ts_api_result_t r={0};proxy_http_error(&r,401,"Unauthorized");cJSON *w=sent(r,"wire-proxy-http-error.json",TS_API_ERR_INTERNAL,"proxy_http_error");
      cJSON *d=cJSON_GetObjectItem(w,"data");assert(cJSON_GetObjectItem(d,"status")->valueint==401&&!strcmp(str(d,"detail"),"Unauthorized"));cJSON_Delete(w);}
     {char body[400];memset(body,'x',sizeof body);body[399]=0;ts_api_result_t r={0};proxy_http_error(&r,500,body);

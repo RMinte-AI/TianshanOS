@@ -232,6 +232,15 @@ typedef enum {
 ts_ssh_fail_t ts_ssh_get_fail_stage(ts_ssh_session_t session);
 
 /**
+ * @brief Reason token for a failed connection attempt; the Web UI turns it into a sentence (failure.reasons.ssh_*)
+ *
+ * @param session SSH session whose connection failed
+ * @param stage Output: short name of the stage that failed ("dns", "refused", "timeout", ...), never NULL after the call
+ * @return Reason token (never NULL)
+ */
+const char *ts_ssh_connect_reason(ts_ssh_session_t session, const char **stage);
+
+/**
  * @brief Get the remote host address
  * 
  * @param session Session handle

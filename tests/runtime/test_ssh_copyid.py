@@ -62,6 +62,7 @@ esp_err_t ts_ssh_connect(ts_ssh_session_t s) {
     return fail_verify?ESP_FAIL:ESP_OK;
 }
 const char *ts_ssh_get_error(ts_ssh_session_t s) {return "synthetic transport failure";}
+ts_ssh_fail_t ts_ssh_get_fail_stage(ts_ssh_session_t s) {return TS_SSH_FAIL_NONE;}
 esp_err_t ts_known_hosts_verify(ts_ssh_session_t s,ts_host_verify_result_t *status,ts_known_host_t *info) {
     *status=host_status;
     if(info) {
@@ -91,13 +92,14 @@ esp_err_t ts_ssh_hosts_config_add(const ts_ssh_host_config_t *cfg) {
     ++registrations;registered_config=*cfg;return registration_error;
 }
 '''
-for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error']:
+for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error', 'ts_api_result_reason']:
     code += extract('components/ts_api/src/ts_api.c', name)
 code += extract('components/ts_api/src/ts_api_ssh.c', 'verify_host_fingerprint')
 source = Path('components/ts_api/src/ts_api_ssh.c').read_text()
 start = source.index('typedef struct {\n    const cJSON *params;')
 code += source[start:source.index('} verify_context_t;', start) + len('} verify_context_t;')] + '\n'
-for name in ['verify_before_auth', 'connect_verified', 'cleanup_key_buffer', 'api_ssh_copyid']:
+code += extract('components/ts_security/src/ts_ssh_client.c', 'ts_ssh_connect_reason')
+for name in ['ssh_connect_error', 'verify_before_auth', 'connect_verified', 'cleanup_key_buffer', 'api_ssh_copyid']:
     code += extract('components/ts_api/src/ts_api_ssh.c', name)
 # Exercise the actual HTTP success/partial-result serialization branch as well.
 web_source = Path('components/ts_webui/src/ts_webui_api.c').read_text()
@@ -216,7 +218,7 @@ int main(void) {
     fail_deploy=true;registrations=deployments=0;
     cJSON *p=cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"password\":\"synthetic\",\"keyid\":\"synthetic-key\"}");
     ts_api_result_t r={0};assert(api_ssh_copyid(p,&r)==ESP_FAIL && r.code!=TS_API_OK);
-    assert(!r.data && registrations==0 && deployments==1 && sessions==0);
+    assert(!strcmp(r.message,"ssh_deploy_failed") && registrations==0 && deployments==1 && sessions==0);   /* the server's own text, if any, is data.detail */
     ts_api_result_free(&r);cJSON_Delete(p);
     free(http_body);
     puts("PASS production ssh.copyid + HTTP serialization: actual deployment/verification/registration outcomes, default/custom IDs, busy/capacity/storage errors, partial data retained, no repeat or rollback");

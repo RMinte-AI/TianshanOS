@@ -382,6 +382,19 @@ failed:
 
 ts_ssh_fail_t ts_ssh_get_fail_stage(ts_ssh_session_t s) { return s ? s->fail : TS_SSH_FAIL_NONE; }
 
+const char *ts_ssh_connect_reason(ts_ssh_session_t session, const char **stage)
+{
+    switch (ts_ssh_get_fail_stage(session)) {
+    case TS_SSH_FAIL_DNS:         *stage = "dns";         return "ssh_dns_failed";
+    case TS_SSH_FAIL_REFUSED:     *stage = "refused";     return "ssh_port_refused";
+    case TS_SSH_FAIL_UNREACHABLE: *stage = "unreachable"; return "ssh_host_unreachable";
+    case TS_SSH_FAIL_TIMEOUT:     *stage = "timeout";     return "ssh_connect_timeout";
+    case TS_SSH_FAIL_HANDSHAKE:   *stage = "handshake";   return "ssh_handshake_failed";
+    case TS_SSH_FAIL_AUTH:        *stage = "auth";        return "ssh_auth_failed";
+    default:                      *stage = "connect";     return "ssh_connect_failed";
+    }
+}
+
 esp_err_t ts_ssh_disconnect(ts_ssh_session_t s) {
     if (!s)
         return ESP_ERR_INVALID_ARG;

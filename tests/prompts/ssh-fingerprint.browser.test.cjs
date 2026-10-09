@@ -177,7 +177,7 @@ for (const language of ['zh-CN', 'en-US']) {
 
 test(`the fixtures are real firmware output: failures carry data, plain failures do not`, () => {
     assert.equal(NEW_HOST.code, 1002);
-    assert.equal(NEW_HOST.error, 'New host requires confirmation');
+    assert.equal(NEW_HOST.error, 'ssh_host_key_unknown');
     assert.equal(typeof NEW_HOST.data.fingerprint, 'string');
     assert.equal(CHANGED_HOST.code, 1001);
     assert.equal(typeof CHANGED_HOST.data.current_fingerprint, 'string');
@@ -225,7 +225,7 @@ for (const language of ['zh-CN', 'en-US']) {
     }
 
     test(`${language}: a device that sends no fingerprint (older firmware) is told apart from a failed connection`, async () => {
-        await withPage(language, () => '{"code":1002,"error":"New host requires confirmation"}', async ({page, execRequests}) => {
+        await withPage(language, () => '{"code":1002,"error":"ssh_host_key_unknown"}', async ({page, execRequests}) => {
             await page.locator(TEST_BUTTON).click();
             await toastKind(page, 'error');
             await page.waitForFunction(text => document.querySelector('#toast .toast-msg')?.textContent === text,

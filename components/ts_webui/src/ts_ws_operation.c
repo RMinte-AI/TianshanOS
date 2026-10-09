@@ -105,7 +105,8 @@ static void fallback(ts_ws_operation_t *op,char *text,size_t size,bool failed) {
     const char *reason=failed ? "SSH output delivery incomplete; remote command result is not confirmed" : "SSH result delivery failed; result is unknown";
     if(op->kind==TS_WS_OP_SHELL && !failed)reason="SSH status delivery failed";
     if(op->kind==TS_WS_OP_SHELL)snprintf(text,size,"{\"type\":\"ssh_status\",\"status\":\"error\",\"message\":\"%s\"}",reason);
-    else snprintf(text,size,"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"%s\"}",(unsigned long)ts_ws_op_id(op),reason);
+    else snprintf(text,size,"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"%s\"}",(unsigned long)ts_ws_op_id(op),
+                  failed ? "ssh_output_incomplete" : "ssh_result_unknown");   /* reason tokens: the page translates them */
 }
 void ts_ws_op_close_finish(ts_ws_operation_t *op,const char *json) {
     char text[256];fallback(op,text,sizeof(text),false);

@@ -29,6 +29,7 @@
 #include "ts_temp_source.h"
 #include "ts_action_manager.h"
 #include "ts_config_pack.h"
+#include "ts_api_pack.h"
 #include "ts_cert.h"
 #include "ts_log.h"
 #include "cJSON.h"
@@ -83,21 +84,6 @@ static cJSON *value_to_json(const ts_auto_value_t *val)
     }
 }
 
-/* A failure whose reason the Web UI can state exactly: the reason token is the message (the page translates it into the
- * user's language); `detail` (optional) goes to data.detail and is only shown in the page's folded details. */
-static void fail_with(ts_api_result_t *result, ts_api_result_code_t code, const char *token, const char *detail)
-{
-    ts_api_result_error(result, code, token);
-    if (detail && detail[0]) {
-        cJSON *data = cJSON_CreateObject();
-        if (data && cJSON_AddStringToObject(data, "detail", detail)) {
-            result->data = data;
-        } else {
-            cJSON_Delete(data);
-        }
-    }
-}
-
 /*===========================================================================*/
 /*                           Status API                                       */
 /*===========================================================================*/
@@ -138,23 +124,13 @@ static esp_err_t api_automation_status(const cJSON *params, ts_api_result_t *res
 /*                           Control API                                      */
 /*===========================================================================*/
 
-/** A config pack operation failed: the reason token for the page, the library's own English text for the folded details. */
-static void pack_failure(ts_api_result_t *result, ts_config_pack_result_t pack_result)
-{
-    ts_api_result_code_t code = pack_result == TS_CONFIG_PACK_ERR_NO_MEM ? TS_API_ERR_NO_MEM
-        : pack_result == TS_CONFIG_PACK_ERR_PERMISSION ? TS_API_ERR_NO_PERMISSION
-        : (pack_result == TS_CONFIG_PACK_ERR_IO || pack_result == TS_CONFIG_PACK_ERR_NOT_INIT) ? TS_API_ERR_INTERNAL
-        : TS_API_ERR_INVALID_ARG;
-    fail_with(result, code, ts_config_pack_reason(pack_result), ts_config_pack_strerror(pack_result));
-}
-
 /** The remote server answered the proxied request with an error status: the page gets the status as a number and the start
  * of the body (a few lines at most) as detail for the folded details. */
 static void proxy_http_error(ts_api_result_t *result, int status, const char *body)
 {
     char detail[161] = {0};
     if (body) snprintf(detail, sizeof(detail), "%.160s", body);
-    fail_with(result, TS_API_ERR_INTERNAL, "proxy_http_error", detail);
+    ts_api_result_reason(result, TS_API_ERR_INTERNAL, "proxy_http_error", detail);
     if (!result->data) result->data = cJSON_CreateObject();
     if (result->data) cJSON_AddNumberToObject(result->data, "status", status);
 }
@@ -185,9 +161,9 @@ static esp_err_t api_automation_start(const cJSON *params, ts_api_result_t *resu
         result->code = TS_API_OK;
         result->message = strdup("Automation engine started");
     } else if (ret == ESP_ERR_INVALID_STATE) {
-        fail_with(result, TS_API_ERR_BUSY, engine_refusal_token(automation_state(), false), NULL);
+        ts_api_result_reason(result, TS_API_ERR_BUSY, engine_refusal_token(automation_state(), false), NULL);
     } else if (ret == ESP_ERR_NO_MEM) {
-        fail_with(result, TS_API_ERR_NO_MEM, "no_memory", NULL);
+        ts_api_result_reason(result, TS_API_ERR_NO_MEM, "no_memory", NULL);
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to start automation engine");
@@ -207,7 +183,7 @@ static esp_err_t api_automation_stop(const cJSON *params, ts_api_result_t *resul
         result->code = TS_API_OK;
         result->message = strdup("Automation engine stopped");
     } else if (ret == ESP_ERR_TIMEOUT) {
-        fail_with(result, TS_API_ERR_BUSY, "engine_stop_timeout", NULL);
+        ts_api_result_reason(result, TS_API_ERR_BUSY, "engine_stop_timeout", NULL);
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to stop automation engine");
@@ -227,7 +203,7 @@ static esp_err_t api_automation_pause(const cJSON *params, ts_api_result_t *resu
         result->code = TS_API_OK;
         result->message = strdup("Automation engine paused");
     } else if (ret == ESP_ERR_INVALID_STATE) {
-        fail_with(result, TS_API_ERR_BUSY, engine_refusal_token(automation_state(), true), NULL);
+        ts_api_result_reason(result, TS_API_ERR_BUSY, engine_refusal_token(automation_state(), true), NULL);
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to pause automation engine");
@@ -265,11 +241,11 @@ static esp_err_t api_automation_reload(const cJSON *params, ts_api_result_t *res
         result->code = TS_API_OK;
         result->message = strdup("Configuration reloaded");
     } else if (ret == ESP_ERR_INVALID_STATE) {
-        fail_with(result, TS_API_ERR_BUSY, "engine_unavailable", NULL);
+        ts_api_result_reason(result, TS_API_ERR_BUSY, "engine_unavailable", NULL);
     } else if (ret == ESP_ERR_INVALID_SIZE || ret == ESP_ERR_INVALID_ARG) {   /* the engine settings file is empty, too big or not JSON */
-        fail_with(result, TS_API_ERR_INTERNAL, "config_file_invalid", esp_err_to_name(ret));
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "config_file_invalid", esp_err_to_name(ret));
     } else if (ret == ESP_ERR_NO_MEM) {
-        fail_with(result, TS_API_ERR_NO_MEM, "no_memory", NULL);
+        ts_api_result_reason(result, TS_API_ERR_NO_MEM, "no_memory", NULL);
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to reload configuration");
@@ -933,9 +909,9 @@ static void source_register_reply(ts_api_result_t *result, esp_err_t ret, const 
         result->data = cJSON_CreateObject();
         cJSON_AddStringToObject(result->data, "id", source->id);
     } else if (ret == ESP_ERR_NO_MEM) {
-        fail_with(result, TS_API_ERR_INTERNAL, "source_capacity", NULL);
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "source_capacity", NULL);
     } else if (ret == ESP_ERR_INVALID_STATE) {
-        fail_with(result, TS_API_ERR_BUSY, "engine_unavailable", NULL);
+        ts_api_result_reason(result, TS_API_ERR_BUSY, "engine_unavailable", NULL);
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to create source");
@@ -1929,12 +1905,12 @@ static void action_template_write_reply(ts_api_result_t *result, esp_err_t ret, 
         result->code = TS_API_OK;
         result->message = strdup(update ? "Action template updated" : "Action template created");
     } else if (ret == ESP_ERR_NO_MEM) {   /* the store is full (TS_ACTION_TEMPLATE_MAX), not out of memory */
-        fail_with(result, TS_API_ERR_INTERNAL, "template_capacity", NULL);
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "template_capacity", NULL);
     } else if (ret == ESP_ERR_INVALID_STATE) {
         if (update) {
-            fail_with(result, TS_API_ERR_BUSY, "service_delete_protected", NULL);
+            ts_api_result_reason(result, TS_API_ERR_BUSY, "service_delete_protected", NULL);
         } else {
-            fail_with(result, TS_API_ERR_INVALID_ARG, "template_exists", NULL);
+            ts_api_result_reason(result, TS_API_ERR_INVALID_ARG, "template_exists", NULL);
         }
     } else if (ret == ESP_ERR_NOT_FOUND) {
         result->code = TS_API_ERR_NOT_FOUND;
@@ -2706,7 +2682,7 @@ static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        fail_with(result, TS_API_ERR_INTERNAL, "proxy_init_failed", NULL);
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "proxy_init_failed", NULL);
         return ESP_OK;
     }
     
@@ -2724,7 +2700,7 @@ static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         esp_http_client_cleanup(client);
-        fail_with(result, TS_API_ERR_CONNECTION, "proxy_connect_failed", esp_err_to_name(err));
+        ts_api_result_reason(result, TS_API_ERR_CONNECTION, "proxy_connect_failed", esp_err_to_name(err));
         return ESP_OK;
     }
     
@@ -3057,7 +3033,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         esp_websocket_client_destroy(client);
         vSemaphoreDelete(ctx.connect_sem);
         vSemaphoreDelete(ctx.data_sem);
-        fail_with(result, TS_API_ERR_CONNECTION, "ws_start_failed", esp_err_to_name(err));
+        ts_api_result_reason(result, TS_API_ERR_CONNECTION, "ws_start_failed", esp_err_to_name(err));
         return ESP_OK;
     }
     
@@ -3770,7 +3746,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
     }
     
     if (!ts_config_pack_can_export()) {
-        fail_with(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
+        ts_api_result_reason(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
     
@@ -3817,7 +3793,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            fail_with(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
         free_cert = true;
@@ -3949,7 +3925,7 @@ static esp_err_t api_automation_sources_import(const cJSON *params, ts_api_resul
     snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", SOURCES_SDCARD_DIR, config_id);
     FILE *f = fopen(filepath, "w");
     if (!f) {
-        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
         return ESP_OK;
     }
     
@@ -3958,7 +3934,7 @@ static esp_err_t api_automation_sources_import(const cJSON *params, ts_api_resul
     
     if (written != strlen(tscfg->valuestring)) {
         unlink(filepath);
-        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
         return ESP_OK;
     }
     
@@ -4006,7 +3982,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
     }
     
     if (!ts_config_pack_can_export()) {
-        fail_with(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
+        ts_api_result_reason(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
 
@@ -4058,7 +4034,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            fail_with(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
         free_cert = true;
@@ -4181,7 +4157,7 @@ static esp_err_t api_automation_rules_import(const cJSON *params, ts_api_result_
     }
 
     /* a rule pack can be verified and previewed, but the rule store has no recoverable writer for an encrypted pack yet */
-    fail_with(result, TS_API_ERR_NOT_SUPPORTED, "rule_import_unavailable", "encrypted rule import requires a recoverable writer");
+    ts_api_result_reason(result, TS_API_ERR_NOT_SUPPORTED, "rule_import_unavailable", "encrypted rule import requires a recoverable writer");
     return ESP_OK;
 }
 
@@ -4301,7 +4277,7 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
     }
     
     if (!ts_config_pack_can_export()) {
-        fail_with(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
+        ts_api_result_reason(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
     
@@ -4350,7 +4326,7 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            fail_with(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
         free_cert = true;
@@ -4481,7 +4457,7 @@ static esp_err_t api_automation_actions_import(const cJSON *params, ts_api_resul
     snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", ACTIONS_SDCARD_DIR, config_id);
     FILE *f = fopen(filepath, "w");
     if (!f) {
-        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
         return ESP_OK;
     }
     
@@ -4490,7 +4466,7 @@ static esp_err_t api_automation_actions_import(const cJSON *params, ts_api_resul
     
     if (written != strlen(tscfg->valuestring)) {
         unlink(filepath);
-        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
         return ESP_OK;
     }
     
