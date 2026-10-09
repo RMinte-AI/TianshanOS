@@ -8,15 +8,31 @@
 extern "C" {
 #endif
 
+typedef enum { TS_SERVICE_START = 1, TS_SERVICE_VERIFY, TS_SERVICE_STOP } ts_service_operation_t;
+
 typedef struct {
     char state[16], last_known[16], source[16];
     uint32_t generation;
     int64_t confirmed_ms;
     bool busy;
+    uint32_t operation_id;
+    char operation_phase[12];
+    char operation_kind[8];
+    esp_err_t operation_error;
 } ts_ssh_service_status_t;
 esp_err_t ts_ssh_service_init(void);
 void ts_ssh_service_safe_name(const ts_ssh_command_config_t *cmd, char out[32]);
 /* reserve -> probe -> execute -> finish; network calls never hold registry lock */
+/* Pending controls own a reservation, separate from configuration pins. */
+esp_err_t ts_ssh_service_reserve_operation(const char *id, uint32_t registration,
+    ts_service_operation_t kind, uint32_t *operation_id);
+esp_err_t ts_ssh_service_operation_begin(const char *id, uint32_t operation_id);
+esp_err_t ts_ssh_service_execute_control(const char *id, uint32_t operation_id,
+    ts_service_operation_t kind, ts_ssh_service_status_t *out);
+/* Returns true only if this credential actually entered execution. */
+bool ts_ssh_service_complete_operation(const char *id, uint32_t operation_id, esp_err_t error);
+esp_err_t ts_ssh_service_begin_reserved(const ts_ssh_command_config_t *cmd, ts_ssh_session_t session,
+                                       uint32_t operation_id, uint32_t *generation);
 esp_err_t ts_ssh_service_begin(const ts_ssh_command_config_t *cmd, ts_ssh_session_t session,
                                uint32_t *generation);
 bool ts_ssh_service_finish(const char *id, uint32_t generation, const char *receipt, ts_ssh_session_t session);

@@ -17,6 +17,7 @@
 
 #include "ts_api.h"
 #include "ts_cert.h"
+#include "ts_cert_subject.h"
 #include "ts_https.h"
 #include "ts_log.h"
 #include <string.h>
@@ -240,7 +241,7 @@ static esp_err_t api_cert_generate_keypair(const cJSON *params, ts_api_result_t 
  * Params:
  * {
  *   "device_id": "TIANSHAN-RM01-0001",  // optional, uses config default
- *   "organization": "HiddenPeak Labs",   // optional
+ *   "organization": "My Company",   // optional
  *   "org_unit": "Device"                 // optional
  * }
  * 
@@ -253,6 +254,28 @@ static esp_err_t api_cert_generate_keypair(const cJSON *params, ts_api_result_t 
 static esp_err_t api_cert_generate_csr(const cJSON *params, ts_api_result_t *result)
 {
     TS_LOGI(TAG, "API: cert.generate_csr called");
+    const cJSON *device_id_obj = cJSON_GetObjectItem(params, "device_id");
+    const cJSON *org_obj = cJSON_GetObjectItem(params, "organization");
+    const cJSON *ou_obj = cJSON_GetObjectItem(params, "org_unit");
+    if ((device_id_obj && !cJSON_IsString(device_id_obj)) ||
+        (org_obj && !cJSON_IsString(org_obj)) || (ou_obj && !cJSON_IsString(ou_obj))) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "CSR fields must be strings");
+        return ESP_ERR_INVALID_ARG;
+    }
+    ts_cert_csr_opts_t opts = {
+        .device_id = device_id_obj && device_id_obj->valuestring[0]
+            ? device_id_obj->valuestring : TS_CERT_DEFAULT_DEVICE_ID,
+        .organization = org_obj ? org_obj->valuestring : NULL,
+        .org_unit = ou_obj ? ou_obj->valuestring : NULL,
+    };
+    char subject[TS_CERT_SUBJECT_CAPACITY];
+    esp_err_t validation = ts_cert_build_subject(opts.device_id, opts.organization,
+                                                opts.org_unit, subject, sizeof(subject));
+    if (validation != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG,
+            "CSR device ID must fit 63 UTF-8 bytes and encoded subject must fit 255 bytes");
+        return validation;
+    }
     
     // 检查是否有密钥
     if (!ts_cert_has_keypair()) {
@@ -275,16 +298,7 @@ static esp_err_t api_cert_generate_csr(const cJSON *params, ts_api_result_t *res
     esp_err_t ret;
     
     // 如果提供了参数，使用自定义选项
-    const cJSON *device_id_obj = cJSON_GetObjectItem(params, "device_id");
-    const cJSON *org_obj = cJSON_GetObjectItem(params, "organization");
-    const cJSON *ou_obj = cJSON_GetObjectItem(params, "org_unit");
-    
     if (device_id_obj || org_obj || ou_obj) {
-        ts_cert_csr_opts_t opts = {0};
-        opts.device_id = cJSON_IsString(device_id_obj) ? device_id_obj->valuestring : NULL;
-        opts.organization = cJSON_IsString(org_obj) ? org_obj->valuestring : NULL;
-        opts.org_unit = cJSON_IsString(ou_obj) ? ou_obj->valuestring : NULL;
-        
         ret = ts_cert_generate_csr(&opts, csr_pem, &csr_len);
     } else {
         // 使用默认选项

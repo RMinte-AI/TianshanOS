@@ -18,6 +18,7 @@ typedef int SemaphoreHandle_t;
 #define TS_AUTO_VAL_FLOAT 1
 #define TS_AUTO_VAL_INT 2
 
+#define CONFIG_TS_DRIVERS_FAN_TEMP_UPDATE_MS 1000
 #include "fan_types.inc"
 #include "temp_types.inc"
 static fan_instance_t s_fans[TS_FAN_MAX];
@@ -55,6 +56,11 @@ static esp_err_t ts_pwm_set_duty(ts_pwm_handle_t pwm, float duty) {
     pwm_output = duty;
     return ESP_OK;
 }
+#define ESP_ERR_INVALID_SIZE 0x104
+static bool ts_variable_exists(const char *name){return true;}
+static esp_err_t save_bound_vars_to_nvs(void){return ESP_OK;}
+static esp_err_t save_bound_variable_to_nvs(const char *name){return ESP_OK;}
+static void export_temp_config_to_sdcard(void){}
 static esp_err_t update_pwm(fan_instance_t *fan, uint8_t duty);
 #include "temp_core.inc"
 #include "fan_core.inc"
@@ -190,5 +196,27 @@ int main(void) {
     tick(3000, 49.5, true);
     assert_temperature(495, true);
     puts("PASS explicit auto-temperature disable/enable remains honored");
+    setup(TS_FAN_MODE_AUTO);
+    uint32_t identity=s_state.identity_revision;
+    tick(2000,95.0,true);tick(3000,89.0,true);
+    for(int t=4;t<=20;t++)tick(t*1000,89.0,true);
+    assert(s_state.identity_revision==identity); /* Normal reports do not change identity. */
+    ts_temp_bound_var_t binding={.name="gpu.temperature",.weight=1.0f};
+    assert(ts_temp_bind_variables(&binding,1)==ESP_OK);
+    assert(s_state.identity_revision!=identity);
+    tick(21000,89.0,true);assert(s_fans[0].guard_release_since_ms==21000);
+    identity=s_state.identity_revision;
+    assert(ts_temp_bind_variables(&binding,1)==ESP_OK);
+    assert(s_state.identity_revision==identity); /* Saving the same binding is not a source change. */
+    for(int t=22;t<=51;t++) {
+        tick(t*1000,89.0,true);
+        if(t<51)assert(s_fans[0].guard_active);
+    }
+    assert(!s_fans[0].guard_active);
+    identity=s_state.identity_revision;
+    assert(ts_temp_unbind_variable()==ESP_OK);
+    ts_temp_data_t data;ts_temp_get_effective_nonblocking(&data);
+    assert(data.identity_revision!=identity&&!data.valid);
+    puts("PASS actual temperature binding -> identity -> protection: normal reports retain identity; rebind restarts 30s qualification; unbind becomes invalid");
     return 0;
 }

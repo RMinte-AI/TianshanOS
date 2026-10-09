@@ -20,6 +20,22 @@ bool ts_ssh_shell_quote(const char *input, char *out, size_t cap) {
     return true;
 }
 
+bool ts_ssh_copyid_command(const char *public_key, char *out, size_t cap) {
+    if (!public_key || !*public_key || !out) return false;
+    const char *prefix = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%s' ";
+    const char *suffix = " >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && "
+                         "printf '%s\\n' 'Key deployed successfully'";
+    size_t n = strlen(prefix);
+    if (n >= cap) return false;
+    memcpy(out, prefix, n);
+    if (!ts_ssh_shell_quote(public_key, out + n, cap - n)) return false;
+    n += strlen(out + n);
+    size_t len = strlen(suffix);
+    if (len >= cap - n) return false;
+    memcpy(out + n, suffix, len + 1);
+    return true;
+}
+
 bool ts_ssh_log_probe_command(const char *path, const char *ready, const char *fail, char *out,
                               size_t cap) {
     /* Build each quoted value directly in the bounded output, without scratch

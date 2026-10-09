@@ -109,7 +109,7 @@
 ## 🔗 相关资源
 
 ### 外部链接
-- [GitHub 仓库](https://github.com/thomas-hiddenpeak/TianshanOS)
+- [GitHub 仓库](https://github.com/RMinte-AI/TianshanOS)
 - [ESP-IDF 文档](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
 - [ESP32-S3 技术规格](https://www.espressif.com/en/products/socs/esp32-s3)
 
@@ -160,8 +160,8 @@
 
 ## 📮 反馈与支持
 
-- **问题反馈**：[GitHub Issues](https://github.com/thomas-hiddenpeak/TianshanOS/issues)
-- **功能建议**：[GitHub Discussions](https://github.com/thomas-hiddenpeak/TianshanOS/discussions)
+- **问题反馈**：[GitHub Issues](https://github.com/RMinte-AI/TianshanOS/issues)
+- **功能建议**：[GitHub Discussions](https://github.com/RMinte-AI/TianshanOS/discussions)
 - **文档问题**：在对应文档的 Issue 中注明 `[docs]`
 
 ---

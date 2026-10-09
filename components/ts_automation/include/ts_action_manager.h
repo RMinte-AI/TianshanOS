@@ -25,6 +25,7 @@
 
 #include "esp_err.h"
 #include "ts_automation_types.h"
+#include "ts_ssh_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <stdbool.h>
@@ -100,6 +101,8 @@ typedef void (*ts_action_callback_t)(const ts_auto_action_t *action,
  */
 typedef struct {
     ts_auto_action_t action;            /**< Action definition */
+    uint32_t service_operation_id;      /**< Direct service operation; zero for automation. */
+    ts_service_operation_t service_kind;
     ts_action_callback_t callback;       /**< Completion callback */
     void *user_data;                     /**< User data for callback */
     uint8_t priority;                    /**< Priority (0=highest) */
@@ -239,6 +242,14 @@ esp_err_t ts_action_queue(const ts_auto_action_t *action,
                           uint8_t priority);
 
 /**
+ * Submit an execution snapshot after its action delay was handled by the rule
+ * sequencer. The caller keeps its snapshot; a successful queue submission owns
+ * a separate binding reference. The source action is never modified.
+ * Sync snapshots return the execution result; async snapshots return admission.
+ */
+esp_err_t ts_action_submit_prepared(const ts_auto_action_t *action);
+
+/**
  * @brief Execute multiple actions in sequence
  * 
  * @param actions Array of actions
@@ -331,6 +342,10 @@ esp_err_t ts_action_exec_device(const ts_auto_action_device_t *device,
  * @param result Output result
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if command not found
  */
+/* Start/verify/stop independently of engine state. One direct control in flight.
+ * Returns admission without remote I/O; queued controls expire after 30 seconds. */
+esp_err_t ts_action_service_control(const char *id, ts_service_operation_t kind, uint32_t *operation_id);
+
 esp_err_t ts_action_exec_ssh_ref(const ts_auto_action_ssh_ref_t *ssh_ref,
                                   ts_action_result_t *result);
 

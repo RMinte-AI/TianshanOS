@@ -21,6 +21,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -39,6 +41,8 @@ static const char *TAG = "ts_keystore";
 static struct {
     bool initialized;
     nvs_handle_t nvs_handle;
+    SemaphoreHandle_t write_lock;
+    StaticSemaphore_t write_lock_storage;
 } s_keystore = {
     .initialized = false,
     .nvs_handle = 0,
@@ -89,15 +93,15 @@ static int parse_index(const char *index_str, char ids[][TS_KEYSTORE_ID_MAX_LEN]
     int count = 0;
     char *copy = TS_STRDUP_PSRAM(index_str);
     if (!copy) return 0;
-    
-    char *token = strtok(copy, ",");
+    char *saveptr = NULL;
+    char *token = strtok_r(copy, ",", &saveptr);
     while (token && count < max_ids) {
         strncpy(ids[count], token, TS_KEYSTORE_ID_MAX_LEN - 1);
         ids[count][TS_KEYSTORE_ID_MAX_LEN - 1] = '\0';
         count++;
-        token = strtok(NULL, ",");
+        token = strtok_r(NULL, ",", &saveptr);
     }
-    
+
     free(copy);
     return count;
 }
@@ -105,30 +109,49 @@ static int parse_index(const char *index_str, char ids[][TS_KEYSTORE_ID_MAX_LEN]
 /**
  * @brief 添加 ID 到索引
  */
+/* Writers hold write_lock across the entire read/modify/write operation. */
+static esp_err_t read_index(char *index, size_t size, bool *present)
+{
+    index[0] = '\0';
+    if (present) *present = false;
+    esp_err_t ret = nvs_get_str(s_keystore.nvs_handle, KEYSTORE_INDEX_KEY, index, &size);
+    if (present && ret == ESP_OK) *present = true;
+    return ret == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : ret;
+}
+
+static bool index_contains(const char *index, const char *id)
+{
+    size_t id_len = strlen(id);
+    for (const char *p = index; *p;) {
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len == id_len && memcmp(p, id, len) == 0) return true;
+        if (!end) break;
+        p = end + 1;
+    }
+    return false;
+}
+
+static esp_err_t append_index(char *index, size_t size, const char *id)
+{
+    if (index_contains(index, id)) return ESP_OK;
+    size_t used = strlen(index), count = used ? 1 : 0;
+    for (const char *p = index; *p; ++p) if (*p == ',') ++count;
+    if (count >= TS_KEYSTORE_MAX_KEYS) return ESP_ERR_INVALID_SIZE;
+    size_t needed = used + (used ? 1 : 0) + strlen(id) + 1;
+    if (needed > size) return ESP_ERR_INVALID_SIZE;
+    if (used) index[used++] = ',';
+    strcpy(index + used, id);
+    return ESP_OK;
+}
+
 static esp_err_t add_to_index(const char *id)
 {
-    char index_str[MAX_INDEX_LEN] = {0};
-    size_t len = sizeof(index_str);
-    
-    /* 读取现有索引 */
-    esp_err_t ret = nvs_get_str(s_keystore.nvs_handle, KEYSTORE_INDEX_KEY, index_str, &len);
-    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
-        return ret;
-    }
-    
-    /* 检查是否已存在 */
-    if (strstr(index_str, id) != NULL) {
-        return ESP_OK;  /* 已存在 */
-    }
-    
-    /* 追加新 ID */
-    if (strlen(index_str) > 0) {
-        strncat(index_str, ",", sizeof(index_str) - strlen(index_str) - 1);
-    }
-    strncat(index_str, id, sizeof(index_str) - strlen(index_str) - 1);
-    
-    /* 写回 */
-    return nvs_set_str(s_keystore.nvs_handle, KEYSTORE_INDEX_KEY, index_str);
+    char index[MAX_INDEX_LEN];
+    esp_err_t ret = read_index(index, sizeof(index), NULL);
+    if (ret != ESP_OK) return ret;
+    ret = append_index(index, sizeof(index), id);
+    return ret == ESP_OK ? nvs_set_str(s_keystore.nvs_handle, KEYSTORE_INDEX_KEY, index) : ret;
 }
 
 /**
@@ -169,15 +192,18 @@ static esp_err_t store_metadata(const char *id, const ts_keystore_key_info_t *in
     cJSON *json = cJSON_CreateObject();
     if (!json) return ESP_ERR_NO_MEM;
     
-    cJSON_AddStringToObject(json, "type", ts_keystore_type_to_string(info->type));
-    cJSON_AddStringToObject(json, "comment", info->comment);
-    cJSON_AddStringToObject(json, "alias", info->alias);
-    cJSON_AddNumberToObject(json, "created_at", info->created_at);
-    cJSON_AddNumberToObject(json, "last_used", info->last_used);
-    cJSON_AddBoolToObject(json, "has_pubkey", info->has_public_key);
-    cJSON_AddBoolToObject(json, "exportable", info->exportable);
-    cJSON_AddBoolToObject(json, "hidden", info->hidden);
-    
+    if (!cJSON_AddStringToObject(json, "type", ts_keystore_type_to_string(info->type)) ||
+        !cJSON_AddStringToObject(json, "comment", info->comment) ||
+        !cJSON_AddStringToObject(json, "alias", info->alias) ||
+        !cJSON_AddNumberToObject(json, "created_at", info->created_at) ||
+        !cJSON_AddNumberToObject(json, "last_used", info->last_used) ||
+        !cJSON_AddBoolToObject(json, "has_pubkey", info->has_public_key) ||
+        !cJSON_AddBoolToObject(json, "exportable", info->exportable) ||
+        !cJSON_AddBoolToObject(json, "hidden", info->hidden)) {
+        cJSON_Delete(json);
+        return ESP_ERR_NO_MEM;
+    }
+
     char *str = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
     
@@ -260,10 +286,11 @@ static esp_err_t load_metadata(const char *id, ts_keystore_key_info_t *info)
 /* ========== 公开 API ========== */
 
 /* 内部函数：带选项的密钥存储 */
-static esp_err_t ts_keystore_store_key_ex(const char *id, 
+static esp_err_t store_key_locked(const char *id,
                                           const ts_keystore_keypair_t *keypair,
                                           ts_keystore_key_type_t type,
-                                          const ts_keystore_gen_opts_t *opts)
+                                          const ts_keystore_gen_opts_t *opts,
+                                          ts_keystore_generate_result_t *detail)
 {
     if (!s_keystore.initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -290,6 +317,7 @@ static esp_err_t ts_keystore_store_key_ex(const char *id,
     char nvs_key[TS_KEYSTORE_ID_MAX_LEN + 8];
     esp_err_t ret;
     
+    if (detail) detail->failed_stage = "private_write";
     /* 存储私钥 */
     make_nvs_key(nvs_key, sizeof(nvs_key), id, "_priv");
     ret = nvs_set_blob(s_keystore.nvs_handle, nvs_key, 
@@ -302,12 +330,13 @@ static esp_err_t ts_keystore_store_key_ex(const char *id,
     /* 存储公钥（如果有） */
     bool has_pubkey = false;
     if (keypair->public_key && keypair->public_key_len > 0) {
+        if (detail) detail->failed_stage = "public_write";
         make_nvs_key(nvs_key, sizeof(nvs_key), id, "_pub");
         ret = nvs_set_blob(s_keystore.nvs_handle, nvs_key,
                            keypair->public_key, keypair->public_key_len);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Failed to store public key: %s", esp_err_to_name(ret));
-            /* 继续，公钥是可选的 */
+            if (detail) return ret; /* Generated keys require their public key. */
         } else {
             has_pubkey = true;
         }
@@ -330,60 +359,126 @@ static esp_err_t ts_keystore_store_key_ex(const char *id,
         strncpy(info.alias, alias, sizeof(info.alias) - 1);
     }
     
+    if (detail) detail->failed_stage = "metadata_write";
     ret = store_metadata(id, &info);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to store metadata: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     /* 添加到索引 */
+    if (detail) detail->failed_stage = "index_write";
     ret = add_to_index(id);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to update index: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     /* 提交更改 */
+    if (detail) detail->failed_stage = "commit";
     ret = nvs_commit(s_keystore.nvs_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(ret));
         return ret;
     }
     
+    if (detail) { detail->stored = true; detail->failed_stage = NULL; }
     ESP_LOGI(TAG, "Key '%s' stored successfully", id);
     return ESP_OK;
 }
 
+static esp_err_t ts_keystore_store_key_ex(const char *id,
+                                         const ts_keystore_keypair_t *keypair,
+                                         ts_keystore_key_type_t type,
+                                         const ts_keystore_gen_opts_t *opts)
+{
+    if (!s_keystore.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
+    esp_err_t ret = store_key_locked(id, keypair, type, opts, NULL);
+    xSemaphoreGive(s_keystore.write_lock);
+    return ret;
+}
+
+/* New generation cannot replace an indexed key or an unlisted fragment. */
+static esp_err_t check_new_key(const char *id, char *index, bool *index_present,
+                               ts_keystore_generate_result_t *detail)
+{
+    detail->failed_stage = "initialization";
+    if (!s_keystore.initialized) return ESP_ERR_INVALID_STATE;
+    detail->failed_stage = "index_read";
+    esp_err_t ret = read_index(index, MAX_INDEX_LEN, index_present);
+    if (ret != ESP_OK) return ret;
+    detail->failed_stage = "id_occupied";
+    if (index_contains(index, id)) return ESP_ERR_INVALID_STATE;
+    const char *suffixes[] = {"_priv", "_pub", "_meta"};
+    char key[TS_KEYSTORE_ID_MAX_LEN + 8];
+    for (size_t i = 0; i < 3; ++i) {
+        make_nvs_key(key, sizeof(key), id, suffixes[i]);
+        size_t len = 0;
+        ret = i == 2 ? nvs_get_str(s_keystore.nvs_handle, key, NULL, &len)
+                     : nvs_get_blob(s_keystore.nvs_handle, key, NULL, &len);
+        if (ret == ESP_OK) return ESP_ERR_INVALID_STATE;
+        if (ret != ESP_ERR_NVS_NOT_FOUND) { detail->failed_stage = "record_read"; return ret; }
+    }
+    detail->failed_stage = "index_capacity";
+    char updated[MAX_INDEX_LEN];
+    strcpy(updated, index);
+    return append_index(updated, sizeof(updated), id);
+}
+
+static esp_err_t cleanup_new_key(const char *id, const char *old_index,
+                                 bool index_attempted, bool index_present)
+{
+    esp_err_t ret;
+    if (index_attempted) {
+        char current[MAX_INDEX_LEN];
+        ret = read_index(current, sizeof(current), NULL);
+        if (ret != ESP_OK) return ret;
+        if (index_contains(current, id)) {
+            ret = index_present ? nvs_set_str(s_keystore.nvs_handle, KEYSTORE_INDEX_KEY, old_index)
+                                : nvs_erase_key(s_keystore.nvs_handle, KEYSTORE_INDEX_KEY);
+            if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) return ret; /* Keep materials if index removal failed. */
+        }
+    }
+    const char *suffixes[] = {"_meta", "_pub", "_priv"};
+    esp_err_t first_error = ESP_OK;
+    char key[TS_KEYSTORE_ID_MAX_LEN + 8];
+    for (size_t i = 0; i < 3; ++i) {
+        make_nvs_key(key, sizeof(key), id, suffixes[i]);
+        ret = nvs_erase_key(s_keystore.nvs_handle, key);
+        if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND && first_error == ESP_OK) first_error = ret;
+    }
+    ret = nvs_commit(s_keystore.nvs_handle);
+    return first_error != ESP_OK ? first_error : ret;
+}
+
 esp_err_t ts_keystore_init(void)
 {
-    if (s_keystore.initialized) {
-        return ESP_OK;
+    /* Static lock remains valid for writers waiting while the service stops. */
+    if (!s_keystore.write_lock) {
+        s_keystore.write_lock = xSemaphoreCreateMutexStatic(&s_keystore.write_lock_storage);
+        if (!s_keystore.write_lock) return ESP_ERR_NO_MEM;
     }
-    
-    ESP_LOGI(TAG, "Initializing secure keystore...");
-    
-    /* 打开 NVS 命名空间 */
-    esp_err_t ret = nvs_open(KEYSTORE_NAMESPACE, NVS_READWRITE, &s_keystore.nvs_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(ret));
-        return ret;
+    xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
+    esp_err_t ret = ESP_OK;
+    if (!s_keystore.initialized) {
+        ret = nvs_open(KEYSTORE_NAMESPACE, NVS_READWRITE, &s_keystore.nvs_handle);
+        if (ret == ESP_OK) s_keystore.initialized = true;
     }
-    
-    s_keystore.initialized = true;
-    ESP_LOGI(TAG, "Keystore initialized");
-    
-    return ESP_OK;
+    xSemaphoreGive(s_keystore.write_lock);
+    return ret;
 }
 
 esp_err_t ts_keystore_deinit(void)
 {
-    if (!s_keystore.initialized) {
-        return ESP_OK;
+    if (!s_keystore.write_lock) return ESP_OK;
+    xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
+    if (s_keystore.initialized) {
+        nvs_close(s_keystore.nvs_handle);
+        s_keystore.nvs_handle = 0;
+        s_keystore.initialized = false;
     }
-    
-    nvs_close(s_keystore.nvs_handle);
-    s_keystore.nvs_handle = 0;
-    s_keystore.initialized = false;
-    
-    ESP_LOGI(TAG, "Keystore deinitialized");
+    xSemaphoreGive(s_keystore.write_lock);
     return ESP_OK;
 }
 
@@ -508,6 +603,11 @@ esp_err_t ts_keystore_delete_key(const char *id)
         return ESP_ERR_INVALID_ARG;
     }
     
+    xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
+    if (!s_keystore.initialized) {
+        xSemaphoreGive(s_keystore.write_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     ESP_LOGI(TAG, "Deleting key '%s'", id);
     
     char nvs_key[TS_KEYSTORE_ID_MAX_LEN + 8];
@@ -529,6 +629,7 @@ esp_err_t ts_keystore_delete_key(const char *id)
     
     nvs_commit(s_keystore.nvs_handle);
     
+    xSemaphoreGive(s_keystore.write_lock);
     ESP_LOGI(TAG, "Key '%s' deleted", id);
     return ESP_OK;
 }
@@ -666,14 +767,15 @@ esp_err_t ts_keystore_touch_key(const char *id)
         return ESP_ERR_INVALID_ARG;
     }
     
+    xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
     ts_keystore_key_info_t info;
-    esp_err_t ret = load_metadata(id, &info);
-    if (ret != ESP_OK) {
-        return ret;
+    esp_err_t ret = s_keystore.initialized ? load_metadata(id, &info) : ESP_ERR_INVALID_STATE;
+    if (ret == ESP_OK) {
+        info.last_used = (uint32_t)time(NULL);
+        ret = store_metadata(id, &info);
     }
-    
-    info.last_used = (uint32_t)time(NULL);
-    return store_metadata(id, &info);
+    xSemaphoreGive(s_keystore.write_lock);
+    return ret;
 }
 
 esp_err_t ts_keystore_import_from_file(const char *id, 
@@ -903,15 +1005,19 @@ esp_err_t ts_keystore_export_private_key_to_file(const char *id, const char *pat
     return ESP_OK;
 }
 
-esp_err_t ts_keystore_generate_key_ex(const char *id,
+esp_err_t ts_keystore_generate_key_with_result(const char *id,
                                        ts_keystore_key_type_t type,
-                                       const ts_keystore_gen_opts_t *opts)
+                                       const ts_keystore_gen_opts_t *opts,
+                                       ts_keystore_generate_result_t *detail)
 {
+    ts_keystore_generate_result_t local = {0};
+    if (!detail) detail = &local;
+    *detail = (ts_keystore_generate_result_t){ .failed_stage = "validation", .cleanup_complete = true };
     if (!s_keystore.initialized) {
         return ESP_ERR_INVALID_STATE;
     }
     
-    if (!id || type == TS_KEYSTORE_TYPE_UNKNOWN) {
+    if (!id || !*id || strlen(id) > NVS_KEY_NAME_MAX_SIZE - 1 - 5 || strchr(id, ',') || type == TS_KEYSTORE_TYPE_UNKNOWN) {
         return ESP_ERR_INVALID_ARG;
     }
     
@@ -943,15 +1049,23 @@ esp_err_t ts_keystore_generate_key_ex(const char *id,
             return ESP_ERR_INVALID_ARG;
     }
     
+    char old_index[MAX_INDEX_LEN];
+    bool index_present;
+    xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
+    esp_err_t ret = check_new_key(id, old_index, &index_present, detail);
+    xSemaphoreGive(s_keystore.write_lock);
+    if (ret != ESP_OK) return ret;
+    detail->failed_stage = "generate";
     /* 生成密钥对 */
     ts_keypair_t keypair = NULL;
-    esp_err_t ret = ts_crypto_keypair_generate(crypto_type, &keypair);
+    ret = ts_crypto_keypair_generate(crypto_type, &keypair);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to generate keypair: %s", esp_err_to_name(ret));
         return ret;
     }
     
     /* 导出私钥 PEM */
+    detail->failed_stage = "private_export";
     char *priv_key = TS_MALLOC_PSRAM(TS_KEYSTORE_PRIVKEY_MAX_LEN);
     if (!priv_key) {
         ts_crypto_keypair_free(keypair);
@@ -959,27 +1073,25 @@ esp_err_t ts_keystore_generate_key_ex(const char *id,
     }
     size_t priv_len = TS_KEYSTORE_PRIVKEY_MAX_LEN;
     ret = ts_crypto_keypair_export_private(keypair, priv_key, &priv_len);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK || priv_len == 0) {
         ESP_LOGE(TAG, "Failed to export private key: %s", esp_err_to_name(ret));
         secure_free_key(priv_key, TS_KEYSTORE_PRIVKEY_MAX_LEN);
         ts_crypto_keypair_free(keypair);
-        return ret;
+        return ret != ESP_OK ? ret : ESP_ERR_INVALID_RESPONSE;
     }
     
     /* 导出公钥 OpenSSH 格式 */
+    detail->failed_stage = "public_export";
     char *pub_key = TS_MALLOC_PSRAM(TS_KEYSTORE_PUBKEY_MAX_LEN);
-    size_t pub_len = 0;
-    if (pub_key) {
-        pub_len = TS_KEYSTORE_PUBKEY_MAX_LEN;
-        ret = ts_crypto_keypair_export_openssh(keypair, pub_key, &pub_len, opts->comment);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to export public key: %s", esp_err_to_name(ret));
-            free(pub_key);
-            pub_key = NULL;
-            pub_len = 0;
-        }
+    size_t pub_len = TS_KEYSTORE_PUBKEY_MAX_LEN;
+    ret = pub_key ? ts_crypto_keypair_export_openssh(keypair, pub_key, &pub_len, opts->comment) : ESP_ERR_NO_MEM;
+    if (ret != ESP_OK || pub_len == 0) {
+        secure_free_key(priv_key, TS_KEYSTORE_PRIVKEY_MAX_LEN);
+        free(pub_key);
+        ts_crypto_keypair_free(keypair);
+        return ret != ESP_OK ? ret : ESP_ERR_INVALID_RESPONSE;
     }
-    
+
     ts_crypto_keypair_free(keypair);
     
     /* 存储密钥 */
@@ -990,13 +1102,31 @@ esp_err_t ts_keystore_generate_key_ex(const char *id,
         .public_key_len = pub_len,
     };
     
-    ret = ts_keystore_store_key_ex(id, &kp, type, opts);
+    xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
+    ret = check_new_key(id, old_index, &index_present, detail);
+    if (ret == ESP_OK) {
+        ret = store_key_locked(id, &kp, type, opts, detail);
+        if (ret != ESP_OK) {
+            bool index_attempted = strcmp(detail->failed_stage, "index_write") == 0 ||
+                                   strcmp(detail->failed_stage, "commit") == 0;
+            detail->cleanup_error = cleanup_new_key(id, old_index, index_attempted, index_present);
+            detail->cleanup_complete = detail->cleanup_error == ESP_OK;
+        }
+    }
+    xSemaphoreGive(s_keystore.write_lock);
     
     /* 安全清零私钥内存 */
     secure_free_key(priv_key, priv_len);
     if (pub_key) free(pub_key);
     
     return ret;
+}
+
+esp_err_t ts_keystore_generate_key_ex(const char *id,
+                                      ts_keystore_key_type_t type,
+                                      const ts_keystore_gen_opts_t *opts)
+{
+    return ts_keystore_generate_key_with_result(id, type, opts, NULL);
 }
 
 esp_err_t ts_keystore_generate_key(const char *id,

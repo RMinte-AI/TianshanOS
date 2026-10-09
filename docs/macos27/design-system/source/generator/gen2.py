@@ -79,7 +79,7 @@ login=flow('登录 TianshanOS',ROW(fld('用户名',IN('admin','用户名')),cols
 board('SheetsLed','LED · 网络 · 日志 · 登录 弹窗 目标稿',two(led1+cc+txt+login+logs,img+flt+scan+wpw+ap+aps+dhcp+pick))
 
 # ---------- 安全弹窗
-csr=flow('生成证书签名请求',ROW(fld('设备 ID',IN('TIANSHAN-RM01-0001','设备 ID')),fld('组织',IN('HiddenPeak Labs','组织')),fld('部门',IN('Device','部门')),cols='1.4fr 1fr 1fr')+'<div style="height:12px"></div>'+fld('CSR (PEM)',TA('生成后显示在此',90)),B('复制到剪贴板','cpy','lg')+B('关闭','','lg')+B('生成证书签名请求','','lg primary'),w=660,close=False)
+csr=flow('生成证书签名请求',ROW(fld('设备 ID',IN('TIANSHAN-RM01-0001','设备 ID')),fld('组织',IN('','组织')),fld('部门',IN('Device','部门')),cols='1.4fr 1fr 1fr')+'<div style="height:12px"></div>'+fld('CSR (PEM)',TA('生成后显示在此',90)),B('复制到剪贴板','cpy','lg')+B('关闭','','lg')+B('生成证书签名请求','','lg primary'),w=660,close=False)
 ic_=lambda t,ph,ro=False:flow(t,TA(ph,120),B('取消','','lg')+B('安装','','lg primary'),w=560)
 certv=flow('查看证书',TA('-----BEGIN CERTIFICATE-----',140),B('复制到剪贴板','cpy','lg')+B('关闭','','lg primary'),w=560,close=False)
 ckp=flow('生成密钥对',f'<div class="t-note">用于 HTTPS 服务器证书的密钥对。生成后可继续「生成 CSR」。</div>',B('取消','','lg')+B('生成','','lg primary'),w=460)

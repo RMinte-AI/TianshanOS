@@ -11,14 +11,17 @@
 | `tslogo-256.png` | 256x256 | 中高分辨率 | 应用图标、大型展示 |
 | `tslogo-128.png` | 128x128 | 标准分辨率 | 应用列表图标 |
 | `tslogo-64.png` | 64x64 | 中等图标 | 工具栏、通知 |
-| `tslogo-48.png` | 48x48 | Header 导航栏 | WebUI 顶部 Logo |
-| `tslogo-32.png` | 32x32 | 小图标 | 按钮、标签页图标 |
-| `favicon.ico` | 多尺寸 | 浏览器标签图标 | 浏览器 favicon |
-| `favicon.icns` | 多尺寸 | macOS 图标格式 | 中间产物 |
+| `tslogo-48.png` | 48x48 | 旧版彩色 Logo | 保留资源 |
+| `tslogo-32.png` | 32x32 | 旧版彩色小图标 | 保留资源 |
+| `favicon.svg` | 矢量 | 当前页头山形，透明底黑色线条 | 标签图标生成源 |
+| `../favicon.ico` | 16/32/48/64/128/256 | 透明底黑色线条 | 浏览器标签图标 |
+| `favicon.icns` | 多尺寸 | 旧版 macOS 图标格式 | 保留资源 |
 
 ## 设计说明
 
-Logo 采用渐变背景设计：
+浏览器标签图标与当前页头山形一致，采用透明背景、纯黑线条。彩色 PNG 为旧版资源，保留供其他场景使用，不再作为标签图标。
+
+旧版 Logo 采用渐变背景设计：
 - **颜色渐变**：从左下角的青色 (#00BCD4) 渐变到右上角的紫色 (#9C27B0)
 - **主体图形**：黑色山形轮廓，象征"天山"主题
 - **圆角设计**：柔和的圆角矩形背景，现代化风格
@@ -28,11 +31,8 @@ Logo 采用渐变背景设计：
 
 ### HTML
 ```html
-<!-- Header 导航栏 -->
-<img src="/images/tslogo-48.png" alt="TianshanOS Logo" class="logo-icon">
-
 <!-- Favicon -->
-<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<link rel="icon" href="/favicon.ico?v=mono-1" type="image/x-icon" sizes="16x16 32x32 48x48 64x64 128x128 256x256">
 ```
 
 ### CSS

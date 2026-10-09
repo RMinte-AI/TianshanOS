@@ -58,12 +58,15 @@ static cJSON *status_to_json(ts_fan_id_t fan_id, const ts_fan_status_t *status)
     cJSON *obj = cJSON_CreateObject();
     cJSON_AddNumberToObject(obj, "id", fan_id);
     cJSON_AddStringToObject(obj, "mode", mode_to_string(status->mode));
-    cJSON_AddNumberToObject(obj, "duty", status->duty_percent);
+    cJSON_AddBoolToObject(obj, "duty_valid", status->duty_valid);
+    if (status->duty_valid) cJSON_AddNumberToObject(obj, "duty", status->duty_percent);
+    else cJSON_AddNullToObject(obj, "duty");
     cJSON_AddNumberToObject(obj, "target_duty", status->target_duty);
     cJSON_AddNumberToObject(obj, "rpm", status->rpm);
     cJSON_AddNumberToObject(obj, "temperature", status->temp / 10.0);
     cJSON_AddBoolToObject(obj, "enabled", status->enabled);
-    cJSON_AddBoolToObject(obj, "running", status->is_running);
+    if (status->duty_valid) cJSON_AddBoolToObject(obj, "running", status->is_running);
+    else cJSON_AddNullToObject(obj, "running");
     cJSON_AddBoolToObject(obj, "fault", status->fault);
     cJSON_AddNumberToObject(obj, "control_temperature", status->control_temp / 10.0);
     cJSON_AddNumberToObject(obj, "guard_temperature", status->guard_temp / 10.0);
@@ -173,10 +176,13 @@ static esp_err_t api_fan_set(const cJSON *params, ts_api_result_t *result)
         return ret;
     }
     
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddNumberToObject(data, "id", fan_id);
-    cJSON_AddNumberToObject(data, "duty", duty);
-    cJSON_AddStringToObject(data, "mode", "manual");
+    ts_fan_status_t status;
+    ret = ts_fan_get_status(fan_id, &status);
+    if (ret != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to get fan status after setting");
+        return ret;
+    }
+    cJSON *data = status_to_json(fan_id, &status);
     
     ts_api_result_ok(result, data);
     return ESP_OK;

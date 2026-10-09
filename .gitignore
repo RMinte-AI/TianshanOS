@@ -5,6 +5,7 @@ build-root-reset/
 !build/www.bin
 !build/ota_data_initial.bin
 !build/flasher_args.json
+!build/firmware-manifest.json
 !build/bootloader/
 build/bootloader/*
 !build/bootloader/bootloader.bin
@@ -63,3 +64,7 @@ frontend_emoji_list.md
 
 # Local regression dependencies
 tests/prompts/node_modules/
+
+# Local browser traces and validation/build snapshots
+.playwright-cli/
+output/

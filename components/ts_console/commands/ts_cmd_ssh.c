@@ -21,6 +21,7 @@
 #include "ts_log.h"
 #include "ts_core.h"  /* TS_MALLOC_PSRAM, TS_STRDUP_PSRAM */
 #include "ts_ssh_client.h"
+#include "ts_ssh_probe.h"
 #include "ts_ssh_shell.h"
 #include "ts_port_forward.h"
 #include "ts_crypto.h"
@@ -895,7 +896,8 @@ static int do_ssh_copy_id(const char *host, int port, const char *user,
     ts_console_printf("[3/4] Deploying public key... ");
     
     /* 命令：创建 .ssh 目录并追加公钥到 authorized_keys */
-    char *deploy_cmd = TS_MALLOC_PSRAM(strlen(pubkey_data) + 512);
+    size_t deploy_capacity = strlen(pubkey_data) * 4 + 256;
+    char *deploy_cmd = TS_MALLOC_PSRAM(deploy_capacity);
     if (!deploy_cmd) {
         ts_console_printf("FAILED (out of memory)\n");
         ts_ssh_disconnect(session);
@@ -904,12 +906,14 @@ static int do_ssh_copy_id(const char *host, int port, const char *user,
         return 1;
     }
     
-    snprintf(deploy_cmd, strlen(pubkey_data) + 512,
-             "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-             "echo '%s' >> ~/.ssh/authorized_keys && "
-             "chmod 600 ~/.ssh/authorized_keys && "
-             "echo 'Key deployed successfully'",
-             pubkey_data);
+    if (!ts_ssh_copyid_command(pubkey_data, deploy_cmd, deploy_capacity)) {
+        free(deploy_cmd);
+        ts_ssh_disconnect(session);
+        ts_ssh_session_destroy(session);
+        free(pubkey_data);
+        ts_console_printf("FAILED (invalid public key deployment command)\n");
+        return 1;
+    }
     
     ts_ssh_exec_result_t result;
     ret = ts_ssh_exec(session, deploy_cmd, &result);

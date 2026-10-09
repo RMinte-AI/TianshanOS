@@ -5,8 +5,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "cd ../.. && node --test tests/prompts/static.test.cjs tests/prompts/regression.test.cjs",
-    "test:browser": "cd ../.. && node --test tests/prompts/browser.test.cjs tests/prompts/ownership.browser.test.cjs",
+    "test": "cd ../.. && node --test tests/prompts/static.test.cjs tests/prompts/regression.test.cjs tests/prompts/service-ownership.test.cjs tests/prompts/widgets-structure.test.cjs tests/prompts/delete-protection.test.cjs tests/prompts/key-generation.test.cjs",
+    "test:browser": "cd ../.. && node --test tests/prompts/browser.test.cjs tests/prompts/ownership.browser.test.cjs tests/prompts/widgets-layout.test.cjs tests/prompts/delete-protection.browser.test.cjs tests/prompts/condition-editor.browser.test.cjs tests/prompts/input-repair.browser.test.cjs tests/prompts/ssh-copyid-cache.browser.test.cjs tests/prompts/key-generation.browser.test.cjs tests/prompts/key-generation-cache.browser.test.cjs tests/prompts/lpmu-lifecycle.browser.test.cjs",
     "test:xterm": "cd ../.. && node --test tests/prompts/xterm-vendor.test.cjs tests/prompts/xterm-offline.test.cjs"
   },
   "devDependencies": {

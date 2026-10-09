@@ -51,6 +51,7 @@ typedef struct {
     bool manual_mode;
     int16_t manual_temp;
     int16_t current_temp;
+    uint32_t identity_revision;
     bool variable_valid;
     int64_t variable_last_update_ms;
     int16_t variable_guard_temp;
@@ -418,6 +419,7 @@ done:
         ts_temp_source_type_t prev_source = s_state.active_source;
         
         s_state.current_temp = best_temp;
+        if (best_source != prev_source) s_state.identity_revision++;
         s_state.active_source = best_source;
         
         publish_temp_event(best_temp, best_source, prev_temp, prev_source);
@@ -649,6 +651,7 @@ static void fill_effective_data_locked(ts_temp_data_t *data)
 
     data->value = temp;
     data->source = source;
+    data->identity_revision = s_state.identity_revision;
     data->timestamp_ms = (source == TS_TEMP_SOURCE_VARIABLE)
                          ? s_state.variable_last_update_ms
                          : s_state.providers[source].last_update_ms;
@@ -709,6 +712,7 @@ esp_err_t ts_temp_get_by_source(ts_temp_source_type_t type, ts_temp_data_t *data
         store_variable_snapshot(&snapshot);
         data->value = valid ? snapshot.temp : TS_TEMP_DEFAULT_VALUE;
         data->source = TS_TEMP_SOURCE_VARIABLE;
+        data->identity_revision = s_state.identity_revision;
         data->timestamp_ms = snapshot.timestamp_ms;
         data->valid = valid;
         data->guard_value = snapshot.guard_temp;
@@ -730,6 +734,7 @@ esp_err_t ts_temp_get_by_source(ts_temp_source_type_t type, ts_temp_data_t *data
     
     data->value = p->value;
     data->source = p->type;
+    data->identity_revision = s_state.identity_revision;
     data->timestamp_ms = p->last_update_ms;
     data->valid = (type != TS_TEMP_SOURCE_DEFAULT) &&
                   is_provider_valid(type, get_current_ms(), false);
@@ -894,6 +899,7 @@ esp_err_t ts_temp_set_preferred_source(ts_temp_source_type_t type)
     
     ts_temp_source_type_t old_preferred = s_state.preferred_source;
     s_state.preferred_source = type;
+    if (type != old_preferred) s_state.identity_revision++;
     
     // 切换到非手动源时，自动禁用手动模式
     if (s_state.manual_mode) {
@@ -963,6 +969,7 @@ static esp_err_t load_preferred_source_from_nvs(void)
         return ESP_OK;
     }
     
+    s_state.identity_revision++;
     uint8_t preferred = 0;
     ret = nvs_get_u8(handle, NVS_KEY_PREFERRED, &preferred);
     
@@ -1053,6 +1060,7 @@ static esp_err_t load_temp_config_from_file(const char *filepath)
         return ESP_ERR_INVALID_ARG;
     }
     
+    s_state.identity_revision++;
     /* Parse preferred_source */
     cJSON *pref = cJSON_GetObjectItem(root, "preferred_source");
     if (pref && cJSON_IsString(pref)) {
@@ -1360,6 +1368,12 @@ esp_err_t ts_temp_bind_variables(const ts_temp_bound_var_t *vars, uint8_t count)
 
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
 
+    bool changed = s_state.bound_var_count != count;
+    for (uint8_t i = 0; !changed && i < count; i++) {
+        changed = strcmp(s_state.bound_vars[i].name, validated_vars[i].name) != 0 ||
+                  s_state.bound_vars[i].weight != validated_vars[i].weight;
+    }
+    if (changed) s_state.identity_revision++;
     s_state.bound_var_count = count;
     memcpy(s_state.bound_vars, validated_vars, count * sizeof(ts_temp_bound_var_t));
     sync_bound_variable_compat();
@@ -1425,6 +1439,7 @@ esp_err_t ts_temp_unbind_variable(void)
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     
     bool was_bound = (s_state.bound_var_count > 0);
+    if (was_bound) s_state.identity_revision++;
     s_state.bound_var_count = 0;
     memset(s_state.bound_vars, 0, sizeof(s_state.bound_vars));
     s_state.bound_variable[0] = '\0';
