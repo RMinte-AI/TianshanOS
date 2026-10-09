@@ -23,6 +23,8 @@ entry = re.search(r'typedef struct __attribute__\(\(packed\)\) \{.*?\} nvs_host_
 state = re.search(r'static struct \{.*?\} s_state = \{0\};', SOURCE, re.S).group()
 code = prefix + '\n#include "freertos/semphr.h"\n#include "cJSON.h"\n#include <dirent.h>\n#include <sys/stat.h>\n#include <unistd.h>\n' + entry + '\n' + state
 code += r'''
+#include "ts_rule_engine.h"
+esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind,const char *id,const void *next){return ESP_OK;}
 #define NVS_KEY_PREFIX "h_"
 static char sd_dir[256];
 #undef TS_SSH_HOSTS_SDCARD_DIR
@@ -40,6 +42,7 @@ static atomic_int backup_started, backup_writes;
 static int import_result;
 static ts_ssh_host_config_t concurrent_host;
 static TaskHandle_t initial_loader;
+static atomic_int initial_load_result=ESP_ERR_INVALID_STATE;
 static bool s_hosts_pending_export;
 static int slot(const char *key) { int n=-1; assert(sscanf(key,"h_%d",&n)==1 && n>=0 && n<TS_SSH_HOSTS_MAX); return n; }
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *len) {
@@ -92,7 +95,7 @@ for name in ['make_nvs_key', 'get_current_time', 'host_add_impl', 'ts_ssh_hosts_
              'host_add_guarded', 'ts_ssh_hosts_config_add', 'json_to_host', 'load_hosts_from_dir',
              'ts_ssh_hosts_config_import_from_sdcard', 'host_entry_to_config',
              'ts_ssh_hosts_config_iterate', 'host_to_json', 'host_export_iterator_cb',
-             'ts_ssh_hosts_config_export_to_sdcard', 'hosts_deferred_export_task']:
+             'ts_ssh_hosts_config_export_to_sdcard', 'hosts_load_once', 'hosts_deferred_export_task']:
     code += extract(name)
 code += r'''
 static ts_ssh_host_config_t host(const char *id) {

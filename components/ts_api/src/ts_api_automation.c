@@ -204,6 +204,10 @@ static esp_err_t api_automation_resume(const cJSON *params, ts_api_result_t *res
  */
 static esp_err_t api_automation_reload(const cJSON *params, ts_api_result_t *result)
 {
+    if (ts_rule_restart_pending()) {
+        ts_api_result_error(result, TS_API_ERR_BUSY, "restart_pending");
+        return ESP_OK;
+    }
     esp_err_t ret = ts_automation_reload();
 
     if (ret == ESP_OK) {
@@ -478,11 +482,20 @@ static esp_err_t api_automation_variables_set(const cJSON *params, ts_api_result
  */
 static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t *result)
 {
-    result->data = cJSON_CreateObject();
     bool loaded, recovery;
+    ts_rule_config_status(&loaded,&recovery);
+    bool view_gate=loaded||recovery;
+    if(view_gate&&!ts_rule_edit_begin()){
+        ts_api_result_error(result,TS_API_ERR_INTERNAL,"config_loading");return ESP_OK;
+    }
+    /* One configuration admission boundary keeps row payloads and saved
+     * metadata in the same view while an import or ordinary edit is committing. */
+    (void)ts_rule_refresh_saved();
+    result->data = cJSON_CreateObject();
     ts_rule_config_status(&loaded, &recovery);
     cJSON_AddBoolToObject(result->data, "loaded", loaded);
     cJSON_AddBoolToObject(result->data, "recovery_required", recovery);
+    cJSON_AddStringToObject(result->data,"load_error",ts_rule_load_error());
     cJSON *rules_array = cJSON_AddArrayToObject(result->data, "rules");
 
     // 遍历所有规则
@@ -507,13 +520,21 @@ static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t 
         cJSON_AddNumberToObject(rule_obj, "cooldown_ms", rule.cooldown_ms);
         cJSON_AddNumberToObject(rule_obj, "conditions_count", rule.conditions.count);
         cJSON_AddNumberToObject(rule_obj, "actions_count", rule.action_count);
+        ts_rule_saved_status(rule.id, rule_obj);
 
         cJSON_AddItemToArray(rules_array, rule_obj);
         ts_rule_release(&rule);
     }
 
-    cJSON_AddNumberToObject(result->data, "count", count);
+    cJSON *pending=ts_rule_pending_list();
+    if(!pending){if(view_gate)ts_rule_edit_end();ts_api_result_error(result,TS_API_ERR_INTERNAL,"recovery_required");return ESP_OK;}
+    while(cJSON_GetArraySize(pending))
+        cJSON_AddItemToArray(rules_array,cJSON_DetachItemFromArray(pending,0));
+    cJSON_Delete(pending);
+    cJSON_AddNumberToObject(result->data, "count", cJSON_GetArraySize(rules_array));
+    cJSON_AddBoolToObject(result->data, "restart_required", ts_rule_restart_pending());
     result->code = TS_API_OK;
+    if(view_gate)ts_rule_edit_end();
     return ESP_OK;
 }
 
@@ -717,6 +738,7 @@ static esp_err_t api_automation_rules_get(const cJSON *params, ts_api_result_t *
     }
     ts_rule_resolve_presentation(&rule);
     result->data = ts_rule_encode(&rule);
+    if(result->data)ts_rule_saved_status(rule.id,result->data);
     ts_rule_release(&rule);
     result->code = result->data ? TS_API_OK : TS_API_ERR_INTERNAL;
     return ESP_OK;
@@ -3996,93 +4018,36 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
  */
 static esp_err_t api_automation_rules_import(const cJSON *params, ts_api_result_t *result)
 {
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
+    const cJSON *bytes=cJSON_GetObjectItemCaseSensitive(params,"tscfg");
+    bool preview=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params,"preview"));
+    const cJSON *revision=cJSON_GetObjectItemCaseSensitive(params,"expected_revision"),
+                *generation=cJSON_GetObjectItemCaseSensitive(params,"expected_generation"),
+                *credential=cJSON_GetObjectItemCaseSensitive(params,"credential_generation"),
+                *digest=cJSON_GetObjectItemCaseSensitive(params,"package_digest");
+    if(!cJSON_IsString(bytes)||!bytes->valuestring[0]) {
+        ts_api_result_error(result,TS_API_ERR_INVALID_ARG,"invalid_pack");return ESP_OK;
     }
-    
-    const cJSON *tscfg = cJSON_GetObjectItem(params, "tscfg");
-    const cJSON *filename = cJSON_GetObjectItem(params, "filename");
-    if (!tscfg || !cJSON_IsString(tscfg) || !tscfg->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'tscfg' parameter");
-        return ESP_OK;
+    if(!preview&&(!cJSON_IsNumber(revision)||!cJSON_IsNumber(generation)||!cJSON_IsNumber(credential)||
+        !cJSON_IsString(digest)||!isfinite(revision->valuedouble)||!isfinite(generation->valuedouble)||
+        !isfinite(credential->valuedouble)||credential->valuedouble<0||credential->valuedouble>UINT32_MAX||
+        credential->valuedouble!=(uint32_t)credential->valuedouble||
+        revision->valuedouble<0||revision->valuedouble>UINT32_MAX||
+        generation->valuedouble<0||generation->valuedouble>UINT32_MAX||
+        revision->valuedouble!=(uint32_t)revision->valuedouble||
+        generation->valuedouble!=(uint32_t)generation->valuedouble)) {
+        ts_api_result_error(result,TS_API_ERR_INVALID_ARG,"preview_required");return ESP_OK;
     }
-    
-    const cJSON *overwrite = cJSON_GetObjectItem(params, "overwrite");
-    const cJSON *preview = cJSON_GetObjectItem(params, "preview");
-    bool do_overwrite = overwrite && cJSON_IsTrue(overwrite);
-    bool do_preview = preview && cJSON_IsTrue(preview);
-    
-    // Lightweight verification
-    ts_config_pack_sig_info_t sig_info = {0};
-    ts_config_pack_result_t pack_result = ts_config_pack_verify_mem(
-        tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
-    
-    if (pack_result != TS_CONFIG_PACK_OK) {
-        const char *err_msg = "Failed to verify config pack";
-        if (pack_result == TS_CONFIG_PACK_ERR_RECIPIENT) {
-            err_msg = "This config pack is not for this device";
-        } else if (pack_result == TS_CONFIG_PACK_ERR_SIGNATURE) {
-            err_msg = "Invalid signature";
-        }
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, err_msg);
-        return ESP_OK;
+    cJSON *data=NULL;const char *reason=NULL;
+    esp_err_t ret=ts_rule_import_pack(bytes->valuestring,strlen(bytes->valuestring),preview,
+        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params,"overwrite")),
+        preview?0:(uint32_t)revision->valuedouble,preview?0:(uint32_t)generation->valuedouble,
+        preview?0:(uint32_t)credential->valuedouble,preview?NULL:digest->valuestring,&data,&reason);
+    if(ret==ESP_OK)ts_api_result_ok(result,data);
+    else {
+        ts_api_result_error(result,ret==ESP_ERR_NO_MEM?TS_API_ERR_NO_MEM:TS_API_ERR_INVALID_ARG,
+                            reason?reason:"invalid_pack");
+        result->data=data;
     }
-    
-    // Extract config ID from filename
-    char config_id[64] = {0};
-    if (filename && cJSON_IsString(filename) && filename->valuestring[0]) {
-        const char *name = filename->valuestring;
-        if (strncmp(name, "rule_", 5) == 0) {
-            name += 5;
-        }
-        const char *dot = strrchr(name, '.');
-        if (dot && strcmp(dot, ".tscfg") == 0) {
-            size_t len = dot - name;
-            if (len > sizeof(config_id) - 1) len = sizeof(config_id) - 1;
-            strncpy(config_id, name, len);
-        } else {
-            strncpy(config_id, name, sizeof(config_id) - 1);
-        }
-    } else {
-        snprintf(config_id, sizeof(config_id), "rule_%lld", (long long)time(NULL));
-    }
-    
-    // Check if exists
-    char filepath[128];
-    snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", RULES_SDCARD_DIR, config_id);
-    struct stat st;
-    bool exists = (stat(filepath, &st) == 0);
-    if (!exists) {
-        snprintf(filepath, sizeof(filepath), "%s/%s.json", RULES_SDCARD_DIR, config_id);
-        exists = (stat(filepath, &st) == 0);
-    }
-    
-    // Preview mode
-    if (do_preview) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddBoolToObject(data, "valid", true);
-        cJSON_AddStringToObject(data, "type", "automation_rule");
-        cJSON_AddStringToObject(data, "id", config_id);
-        cJSON_AddBoolToObject(data, "exists", exists);
-        cJSON_AddStringToObject(data, "signer", sig_info.signer_cn[0] ? sig_info.signer_cn : "unknown");
-        cJSON_AddBoolToObject(data, "official", sig_info.is_official);
-        cJSON_AddStringToObject(data, "note", "Content will be decrypted on system restart");
-        ts_api_result_ok(result, data);
-        return ESP_OK;
-    }
-    
-    if (exists && !do_overwrite) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddStringToObject(data, "id", config_id);
-        cJSON_AddBoolToObject(data, "exists", true);
-        cJSON_AddStringToObject(data, "message", "Rule config already exists, set overwrite=true to replace");
-        ts_api_result_ok(result, data);
-        return ESP_OK;
-    }
-
-    ts_api_result_error(result, TS_API_ERR_INVALID_ARG,
-                        "source_read_only: encrypted rule import requires a recoverable writer");
     return ESP_OK;
 }
 

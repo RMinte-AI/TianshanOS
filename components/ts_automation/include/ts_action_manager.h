@@ -161,6 +161,7 @@ esp_err_t ts_action_manager_resume(void);
  * @return true if initialized
  */
 bool ts_action_manager_is_initialized(void);
+bool ts_action_templates_ready(void);
 
 /*===========================================================================*/
 /*                          SSH Host Management                               */
@@ -190,6 +191,7 @@ esp_err_t ts_action_unregister_ssh_host(const char *host_id);
  * @return ESP_OK if found
  */
 esp_err_t ts_action_get_ssh_host(const char *host_id, ts_action_ssh_host_t *host_out);
+esp_err_t ts_action_get_ssh_host_ex(const char *host_id, ts_action_ssh_host_t *host_out, bool *internal);
 
 /**
  * @brief Get number of registered SSH hosts

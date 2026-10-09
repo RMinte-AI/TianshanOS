@@ -2,6 +2,52 @@
  * TianShanOS WebUI - 简体中文语言包
  */
 if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
+    rulePack: {
+    content: "查看规则内容",
+    overwriteLabel: "覆盖影响",
+    overwriteImpact: "替换已保存的第 {revision} 版；重启前仍运行当前版本。",
+    "disabledDependency": "此规则已禁用，部分依赖也已禁用；请在启用前检查依赖状态。",
+    "pending": "已保存，待重启",
+    "runCurrent": "执行正在使用的旧版本",
+    "exportCurrent": "导出正在使用的版本",
+    "verified": "来源、目标设备和规则内容已验证。",
+    "saved": "已保存，重启后生效；当前运行版本未改变。",
+    "alreadyActive": "此配置已保存，当前运行版本已是这一版。",
+    "unknown": "保存结果尚未确认，请读取规则列表核对，不要重复导入。",
+    "cleanupPending": "旧存储对象尚待清理，请保留 SD 卡并在重启后核对。",
+    "dynamicInputs": "条件变量可能由运行时产生；没有采样值不代表配置缺失。",
+    "summaryLabel": "规则摘要",
+    "summary": "{conditions} 项条件，{actions} 项动作",
+    "verifyFailed": "未能完成验证，请检查连接后重新选择文件。",
+    "errors": {
+        "config_loading": "规则配置仍在加载，请稍后刷新。",
+        "invalid_pack": "配置包格式或内容无效，请重新导出。",
+        "invalid_rule_pack": "此文件不是有效的规则配置包。",
+        "wrong_device": "此包属于另一台设备，请用目标设备证书重新导出。",
+        "signature_invalid": "签名验证失败，请重新取得原始配置包。",
+        "time_unverified": "设备时间尚未确认，请先完成时间同步。",
+        "signing_trust_unconfigured": "设备尚未指定配置签发信任根，请由管理员完成部署配置。",
+        "signer_untrusted": "签名者不受设备配置签发策略信任。",
+        "signer_unauthorized": "签名者证书没有配置签发权限。",
+        "credential_changed": "凭证或所选文件在预览后发生变化，请重新验证。",
+        "dependency_loading": "依赖配置仍在加载，请稍后重新验证。",
+        "dependency_unavailable": "依赖配置加载失败，请先检查并恢复相关配置。",
+        "dependency_missing": "规则引用的必要配置不存在，请先补齐动作模板、指令或主机。",
+        "dependency_disabled": "启用的规则依赖已禁用的配置，请先检查依赖状态。",
+        "preview_required": "请先重新选择文件并完成预览。",
+        "overwrite_required": "已有同 ID 配置，请核对内容后勾选覆盖。",
+        "revision_conflict": "已保存的配置在预览后发生变化，请重新验证。",
+        "restart_pending": "此规则已有待重启版本，普通编辑、启停和删除暂不可用。",
+        "recovery_required": "已保存配置需要恢复核对，当前不能导入。",
+        "source_unavailable": "配置所需的 SD 卡不可用，请检查挂载状态。",
+        "source_read_only": "当前配置来源为只读，请恢复可写来源后再导入。",
+        "service_busy": "规则绑定的服务仍在运行或状态未确认，请先核验并停止服务。",
+        "capacity": "已保存规则数量已达上限，包括待重启规则。",
+        "no_memory": "设备内存不足，请稍后再试。",
+        "storage_failed": "配置未能可靠保存，请检查存储后重新验证。",
+        "commit_unknown": "保存结果尚未确认，请读取状态核对，不要重复导入。"
+    }
+},
     conditionEditor: {
         variableRequired: "请选择条件变量。",
         variableInvalid: "条件变量名称无效或过长（最多 63 个 UTF-8 字节）。",
@@ -235,6 +281,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
 },
 
     runtimeRepair: {
+        restart_pending: "此规则已有待重启版本，普通编辑、启停和删除暂不可用。",
         configLoading: '配置正在加载，请稍后刷新。',
         confirmFingerprint: '请通过可信渠道核对以下服务器指纹。确认信任此指纹并继续连接？',
         saved: '已保存',

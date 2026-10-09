@@ -1,0 +1,42 @@
+Implementation base: main at bdc0354b; independent branch fix/rule-pack-import-standalone.
+Claude prompt fixes remain separate; only his one-line datasource toggle routing fix is included with independent click tests.
+The existing dirty source-switch test and main's untracked guides remain in their original worktrees.
+
+Save-only contract: imported packs alter the durable set; the active set and leased payloads remain unchanged until boot.
+Authority: one versioned selector chooses one bounded complete bank. Each record has a local revision, source,
+readonly reason, exact bytes hash/length, managed object name, and (for packs) a local acceptance record.
+Existing ordinary records stay ordinary. Imported pack plaintext is never added to a new NVS mirror.
+Legacy transactions are recovered before migration. Legacy authority is retained until the new selector is confirmed.
+Boot migration commits the fully validated legacy set without incrementing individual revisions. Legacy encrypted
+packages receive a durable acceptance record and immutable byte copy before being published, so a later offline
+boot does not lose the acceptance evidence. Custom read-only single-file sources retain their original policy.
+Ordinary SD JSON records retain their same-generation inline NVS mirror and SD source on edits; new COW object
+paths are internal. Legacy visible filenames remain untouched and are no longer authoritative after selection.
+
+Commit states:
+1. Prepare immutable managed objects outside the legacy scanner, sync/close and verify exact bytes.
+2. Write and verify every inactive-bank record and its aggregate metadata.
+3. Write the sole selector, commit, and read it back. A confirmed new selector commits the complete new set.
+4. Confirmed old selector means not committed; unreadable/ambiguous selector means commit_unknown and closes writes.
+5. Post-commit object cleanup cannot roll back authority; cleanup is bounded and repeatable.
+Boot chooses precisely the selected set. No fallback to older banks, directory shadows or decrypted pack mirrors.
+Healthy storage after an injected failure must recover the selected old/new set; permanent loss reports failure.
+
+Trust: explicitly configured signing-root digest must match a root in the installed CA material; exact Developer OU
+and applicable certificate usage must authorize signing. New imports require trusted time. Accepted package bytes,
+root/signer/device identity and policy are stored with the record so unchanged packages can reload offline after expiry.
+The v1 recipient fingerprint remains the trimmed-PEM hash. Root/recipient/policy change invalidates acceptance.
+An unset signing-root configuration is a deployment prerequisite, never a reason to bypass verification.
+Deployment facts not established here: the real device's installed signing root, Developer certificate usage,
+trusted clock and available NVS/SD space. No CA, credential, device setting or firmware was changed by testing.
+There is no promised downgrade after committing v3 sets: older releases do not understand set_select and may scan
+stale legacy files/NVS. Retain this firmware or a future v3-aware build; explicit backup/restore is needed before
+using an older release. Historical plaintext banks are preserved, not securely erased.
+
+Fault matrix: fail-before/effect-then-error/crash/short-write/sync-close failure at each persistent operation; FAT
+rename refuses occupied targets; bank preparation, selector uncertainty and cleanup/recovery interrupted repeatedly.
+Assertions compare the full set, source, revision and readonly state, reset all production memory between boots,
+and never exempt healthy-storage failures because recover returned an error.
+Run: IDF_PATH=/path/to/esp-idf bash tests/runtime/run_rule_pack.sh (also included by run_all.sh).
+The fixture builds the SDK's native Mbed TLS and generates disposable OpenSSL PKI; no installed device credential
+is read. Browser tests: node --test tests/prompts/rule-pack.browser.test.cjs with the existing Playwright dependency.

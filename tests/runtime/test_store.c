@@ -30,7 +30,7 @@ esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *data,size_t si
  for(int i=0;i<80;i++)if(!nv[i].name[0]||!strcmp(nv[i].name,key)){free(nv[i].data);strcpy(nv[i].name,key);nv[i].data=malloc(size);memcpy(nv[i].data,data,size);nv[i].size=size;return ESP_OK;}
  return ESP_ERR_NO_MEM;
 }
-static int test_rename(const char *a,const char *b){if(failure())return -1;return rename(a,b);}
+static int test_rename(const char *a,const char *b){if(failure())return -1;struct stat st;if(stat(b,&st)==0){errno=EEXIST;return -1;}return rename(a,b);}
 static int test_unlink(const char *a){if(failure()){errno=EIO;return -1;}return unlink(a);}
 static size_t test_write(const void *p,size_t s,size_t n,FILE *f){if(failure())return 0;return fwrite(p,s,n,f);}
 static int test_flush(FILE *f){int rc=fflush(f);return failure()?-1:rc;}
@@ -64,6 +64,8 @@ int main(void){
   clear_all();assert(ts_rule_store_commit(NULL,0,&old,old.id,source,&result)==ESP_OK);
   operations=0;fail_at=fault;esp_err_t ret=ts_rule_store_commit(&old,1,&next,next.id,source,&result);fail_at=0;
   bool bank=false,sd=false;esp_err_t recovery=ts_rule_store_recover(source==1,&bank,&sd);
+  if(recovery!=ESP_OK)fprintf(stderr,"healthy recovery failed: source=%d fault=%d ret=%d recovery=%d\n",source,fault,ret,recovery);
+  assert(recovery==ESP_OK);
   if(recovery==ESP_OK){if(source==1)assert_sd_complete();else{ts_auto_rule_t r[2]={0};int n;esp_err_t loaded=ts_rule_store_load_bank(r,2,&n);if(loaded!=ESP_OK||n!=1)fprintf(stderr,"source=%d fault=%d ret=%d guardbank=%u loaded=%d count=%d\n",source,fault,ret,guard.bank,loaded,n);assert(loaded==ESP_OK&&n==1);assert(!strcmp(r[0].name,"old")||!strcmp(r[0].name,"new"));if(ret==ESP_OK)assert(!strcmp(r[0].name,"new"));ts_rule_dispose(&r[0]);}}
   if(ret==ESP_OK)assert(result.applied==1&&result.durable==1);
  }
@@ -73,7 +75,7 @@ int main(void){
   operations=0;crash_at=fault;
   if(!setjmp(crash_jump))ts_rule_store_commit(&old,1,&next,next.id,1,&result);
   crash_at=0;bool bank=false,sd=false;
-  if(ts_rule_store_recover(true,&bank,&sd)==ESP_OK)assert_sd_complete();
+  assert(ts_rule_store_recover(true,&bank,&sd)==ESP_OK);assert_sd_complete();
  }
  clear_all();assert(ts_rule_store_commit(NULL,0,&old,old.id,0,&result)==ESP_OK);assert_bank("old");
  assert(ts_rule_store_commit(&old,1,&next,next.id,2,&result)==ESP_ERR_NOT_SUPPORTED);assert_bank("old");

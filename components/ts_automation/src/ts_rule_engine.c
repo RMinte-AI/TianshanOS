@@ -1,5 +1,9 @@
 #include "ts_rule_codec.h"
 #include "ts_rule_store.h"
+#include "ts_rule_store_set.h"
+#include "ts_rule_pack.h"
+#include "ts_cert.h"
+#include "ts_ssh_hosts_config.h"
 #include "ts_ssh_commands_config.h"
 #include "ts_ssh_service.h"
 /**
@@ -43,6 +47,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <errno.h>
 
 static const char *TAG = "ts_rule_engine";
 
@@ -52,6 +57,9 @@ static const char *TAG = "ts_rule_engine";
 
 #ifndef CONFIG_TS_AUTOMATION_MAX_RULES
 #define CONFIG_TS_AUTOMATION_MAX_RULES  32
+#endif
+#ifndef CONFIG_TS_CONFIG_PACK_MAX_SIZE
+#define CONFIG_TS_CONFIG_PACK_MAX_SIZE 65536
 #endif
 
 /** NVS namespace for rules */
@@ -77,6 +85,7 @@ typedef struct {
     SemaphoreHandle_t mutex;             // 访问互斥锁
     bool initialized;
     bool loaded, recovery_error;
+    const char *load_error;
     int source;
     uint32_t next_instance;
     unsigned retired;
@@ -346,6 +355,8 @@ esp_err_t ts_rule_engine_init(void)
 
     memset(&s_rule_ctx.stats, 0, sizeof(s_rule_ctx.stats));
     s_rule_ctx.count = 0;
+    s_rule_ctx.loaded = s_rule_ctx.recovery_error = false;
+    s_rule_ctx.load_error = "config_loading";
     s_rule_ctx.initialized = true;
 
     // 延迟加载规则（等待 SD 卡挂载，避免栈溢出）
@@ -385,8 +396,21 @@ void ts_rule_deferred_load_task(void *arg)
     }
     
     ESP_LOGI(TAG, "Deferred rule loading started");
-    ts_rules_load();
-    ESP_LOGI(TAG, "Deferred rule loading complete: %d rules", s_rule_ctx.count);
+    esp_err_t previous = ESP_OK;
+    while (s_rule_ctx.initialized) {
+        /* Readiness is explicit. The sampling interval is not evidence of ready. */
+        if (!ts_action_templates_ready()) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+        esp_err_t ret = ts_rules_load();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Deferred rule loading complete: %d rules", s_rule_ctx.count);
+            break;
+        }
+        if (ret != previous) ESP_LOGE(TAG, "Rule loading failed: %s", esp_err_to_name(ret));
+        previous = ret;
+        /* A later credential/time/material/dependency change can make loading possible.
+         * Do not publish a partial set or permanently abandon boot initialization. */
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
     
     vTaskDelete(NULL);
 }
@@ -395,7 +419,14 @@ esp_err_t ts_rule_engine_deinit(void)
 {
     if (!s_rule_ctx.initialized)
         return ESP_ERR_INVALID_STATE;
+    ts_ssh_binding_lock();
     xSemaphoreTakeRecursive(s_rule_ctx.transaction, portMAX_DELAY);
+    /* Deinit/init is an in-process reload, not the required device restart. */
+    if (s_rule_ctx.loaded && ts_rule_restart_pending()) {
+        xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+        ts_ssh_binding_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     bool busy = s_rule_ctx.retired != 0;
     for (int i = 0; i < s_rule_ctx.count; ++i)
@@ -404,6 +435,7 @@ esp_err_t ts_rule_engine_deinit(void)
     if (busy) {
         xSemaphoreGive(s_rule_ctx.mutex);
         xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+        ts_ssh_binding_unlock();
         return ESP_ERR_INVALID_STATE;
     }
     s_rule_ctx.initialized = false;
@@ -413,7 +445,9 @@ esp_err_t ts_rule_engine_deinit(void)
     free(s_rule_ctx.rules);
     s_rule_ctx.rules = NULL;
     s_rule_ctx.count = 0;
+    s_rule_ctx.loaded = false;
     xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+    ts_ssh_binding_unlock();
     /* Retain small mutexes for late rejected callers. */
     return ESP_OK;
 }
@@ -505,7 +539,12 @@ static bool protected_bindings(const ts_auto_rule_t *old, const ts_auto_rule_t *
     }
     return false;
 }
-esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t expected,
+static bool pending_id(const char *id, int active_index) {
+    ts_rule_saved_info_t info = {0};
+    return ts_rule_store_set_available() && ts_rule_store_set_info(id, &info) == ESP_OK &&
+           (active_index < 0 || info.revision != s_rule_ctx.rules[active_index].revision);
+}
+static esp_err_t rule_commit_impl(const ts_auto_rule_t *input, const char *id, uint32_t expected,
                          ts_rule_commit_result_t *result) {
     ts_rule_commit_result_t local = {.error_code = "invalid_argument"};
     if (!result)
@@ -542,15 +581,18 @@ esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t e
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     int i = find_rule_index(id);
     esp_err_t ret = ESP_OK;
-    if (!s_rule_ctx.loaded || s_rule_ctx.recovery_error) {
+    if (!s_rule_ctx.initialized || !s_rule_ctx.loaded || s_rule_ctx.recovery_error) {
         ret = ESP_ERR_INVALID_STATE;
         result->error_code = "recovery_required";
+    } else if (pending_id(id, i)) {
+        ret = ESP_ERR_INVALID_STATE;
+        result->error_code = "restart_pending";
     } else if ((i < 0 && expected != 0) || (i >= 0 && expected != s_rule_ctx.rules[i].revision)) {
         ret = ESP_ERR_INVALID_STATE;
         result->error_code = "revision_conflict";
     } else if (i < 0 && !input) {
         ret = ESP_ERR_NOT_FOUND;
-    } else if (i < 0 && s_rule_ctx.count == s_rule_ctx.capacity) {
+    } else if (i < 0 && (ts_rule_store_set_available() ? ts_rule_store_set_count() : s_rule_ctx.count) == s_rule_ctx.capacity) {
         ret = ESP_ERR_NO_MEM;
         result->error_code = "capacity";
     } else if (i >= 0 && s_rule_ctx.meta[i].readonly) {
@@ -586,9 +628,7 @@ esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t e
     }
     candidate.revision = i >= 0 ? s_rule_ctx.rules[i].revision + 1 : 1;
     xSemaphoreGive(s_rule_ctx.mutex);
-    ts_ssh_binding_lock();
     if (i >= 0 && protected_bindings(&s_rule_ctx.rules[i], input ? &candidate : NULL)) {
-        ts_ssh_binding_unlock();
         xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
         s_rule_ctx.meta[i].committing = false;
         xSemaphoreGive(s_rule_ctx.mutex);
@@ -603,7 +643,6 @@ esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t e
                                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
                                     : NULL;
     if (s_rule_ctx.count && !persisted) {
-        ts_ssh_binding_unlock();
         xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
         if (i >= 0)
             s_rule_ctx.meta[i].committing = false;
@@ -617,8 +656,12 @@ esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t e
         memcpy(persisted, s_rule_ctx.rules, s_rule_ctx.count * sizeof(*persisted));
     xSemaphoreGive(s_rule_ctx.mutex);
     ts_rule_commit_t stored;
-    ret = ts_rule_store_commit(persisted, s_rule_ctx.count, input ? &candidate : NULL, id,
-                               s_rule_ctx.source, &stored);
+    if (ts_rule_store_set_present())
+        ret = ts_rule_store_set_commit(input ? &candidate : NULL, id, expected,
+            ts_rule_store_set_generation(), NULL, 0, NULL, &stored);
+    else
+        ret = ts_rule_store_commit(persisted, s_rule_ctx.count, input ? &candidate : NULL, id,
+                                   s_rule_ctx.source, &stored);
     free(persisted);
     result->applied = stored.applied;
     result->durable = stored.durable;
@@ -661,10 +704,16 @@ esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t e
         s_rule_ctx.meta[i].committing = false;
     xSemaphoreGive(s_rule_ctx.mutex);
     payload_free(old);
-    ts_ssh_binding_unlock();
 done:
     xSemaphoreGiveRecursive(s_rule_ctx.transaction);
     payload_free(candidate.lease);
+    return ret;
+}
+esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t expected,
+                         ts_rule_commit_result_t *result) {
+    ts_ssh_binding_lock();
+    esp_err_t ret = rule_commit_impl(input, id, expected, result);
+    ts_ssh_binding_unlock();
     return ret;
 }
 esp_err_t ts_rule_register(const ts_auto_rule_t *r) {
@@ -1793,11 +1842,45 @@ static esp_err_t decode_text(const char *text, ts_auto_rule_t *r) {
     return e;
 }
 static esp_err_t load_one(const char *path, ts_auto_rule_t *r, bool *encrypted) {
+    char pack_path[192];
+    size_t n = strlen(path);
+    if (n < 5 || n - 5 + 7 > sizeof pack_path) return ESP_ERR_INVALID_ARG;
+    memcpy(pack_path, path, n - 5); strcpy(pack_path + n - 5, ".tscfg");
+    struct stat st;
+    if (stat(pack_path, &st) == 0) {
+        if (st.st_size <= 0 || st.st_size > CONFIG_TS_CONFIG_PACK_MAX_SIZE) return ESP_ERR_INVALID_SIZE;
+        FILE *f = fopen(pack_path, "rb"); if (!f) return ESP_FAIL;
+        char *bytes = heap_caps_malloc(st.st_size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        bool ok = bytes && fread(bytes, 1, st.st_size, f) == (size_t)st.st_size && !ferror(f);
+        if (fclose(f)) ok = false;
+        if (!ok) { free(bytes); return ESP_FAIL; }
+        bytes[st.st_size] = 0;
+        ts_config_pack_t *pack = NULL;
+        ts_config_pack_acceptance_t accepted = {0};
+        ts_config_pack_result_t got = ts_config_pack_load_verified_mem(bytes, st.st_size, NULL,
+            &pack, &accepted, NULL);
+        free(bytes);
+        if (got != TS_CONFIG_PACK_OK) { s_rule_ctx.load_error=ts_rule_pack_error(got); return ESP_ERR_INVALID_STATE; }
+        esp_err_t e = ts_rule_pack_decode(pack->content, pack->content_len, r);
+        ts_config_pack_free(pack);
+        if (e == ESP_OK) {
+            *encrypted = true;
+            e = ts_rule_store_set_seed(r, pack_path, true, &accepted);
+            if (e != ESP_OK) ts_rule_dispose(r);
+        }
+        return e;
+    }
+    if (errno != ENOENT) return ESP_FAIL;
     char *text = NULL;
     size_t len = 0;
     esp_err_t e = ts_config_pack_load_with_priority(path, &text, &len, encrypted);
-    if (e == ESP_OK)
+    if (e == ESP_OK) {
         e = decode_text(text, r);
+        if (e == ESP_OK) {
+            e = ts_rule_store_set_seed(r, path, false, NULL);
+            if (e != ESP_OK) ts_rule_dispose(r);
+        }
+    }
     free(text);
     return e;
 }
@@ -1919,6 +2002,10 @@ static esp_err_t load_rules(const char *file) {
     if (!s_rule_ctx.initialized)
         return ESP_ERR_INVALID_STATE;
     xSemaphoreTakeRecursive(s_rule_ctx.transaction, portMAX_DELAY);
+    if (s_rule_ctx.loaded && ts_rule_restart_pending()) {
+        xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+        return ESP_ERR_INVALID_STATE;
+    }
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     bool busy = s_rule_ctx.retired != 0;
     for (int i = 0; i < s_rule_ctx.count; ++i)
@@ -1930,6 +2017,7 @@ static esp_err_t load_rules(const char *file) {
         return ESP_ERR_INVALID_STATE;
     }
     s_rule_ctx.loaded = false;
+    s_rule_ctx.load_error="recovery_required";
     xSemaphoreGive(s_rule_ctx.mutex);
     ts_auto_rule_t *rules =
         heap_caps_calloc(s_rule_ctx.capacity, sizeof(*rules), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1937,9 +2025,16 @@ static esp_err_t load_rules(const char *file) {
     int count = 0, source = TS_RULE_SOURCE_NVS;
     esp_err_t e = rules ? ESP_OK : ESP_ERR_NO_MEM;
     bool staging = false, require_sd = false;
-    if (e == ESP_OK)
+    bool managed = false;
+    if (e == ESP_OK && !file) {
+        e = ts_rule_store_set_load(ts_storage_sd_mounted(), rules, readonly, s_rule_ctx.capacity, &count);
+        managed = e == ESP_OK;
+        if(e!=ESP_OK&&e!=ESP_ERR_NOT_FOUND)s_rule_ctx.load_error=ts_rule_store_set_error();
+        if (e == ESP_ERR_NOT_FOUND) e = ESP_OK;
+    } else if (e == ESP_OK) ts_rule_store_set_reset();
+    if (e == ESP_OK && !managed)
         e = ts_rule_store_recover(ts_storage_sd_mounted(), &staging, &require_sd);
-    if (e == ESP_OK) {
+    if (e == ESP_OK && !managed) {
         if (file) {
             source = TS_RULE_SOURCE_READONLY;
             e = load_legacy_file(file, rules, &count);
@@ -1970,6 +2065,19 @@ static esp_err_t load_rules(const char *file) {
             }
         }
     }
+    if (e == ESP_OK && !managed)
+        e = ts_rule_store_set_adopt(rules, count, source, readonly);
+    if (e == ESP_OK) {
+        ts_ssh_binding_lock();
+        for (int i = 0; i < count && e == ESP_OK; ++i) {
+            const char *reason = NULL;
+            e = ts_rule_pack_dependencies(&rules[i], &reason, NULL);
+            if(e!=ESP_OK)s_rule_ctx.load_error=reason;
+        }
+        ts_ssh_binding_unlock();
+    }
+    if (e == ESP_OK && !managed)
+        e = ts_rule_store_set_migrate();
     if (e == ESP_OK)
         for (int i = 0; i < count; ++i) {
             for (int k = 0; k < i; ++k)
@@ -1999,6 +2107,7 @@ static esp_err_t load_rules(const char *file) {
         for (int i = 0; i < count; ++i)
             s_rule_ctx.meta[i].readonly = readonly[i];
         s_rule_ctx.loaded = true;
+        s_rule_ctx.load_error="ok";
         s_rule_ctx.recovery_error = false;
         xSemaphoreGive(s_rule_ctx.mutex);
         for (int i = 0; i < oldcount; ++i)
@@ -2018,19 +2127,25 @@ static esp_err_t load_rules(const char *file) {
     xSemaphoreGiveRecursive(s_rule_ctx.transaction);
     return e;
 }
-esp_err_t ts_rules_load(void) { return load_rules(NULL); }
-esp_err_t ts_rules_load_from_file(const char *path) {
-    return path ? load_rules(path) : ESP_ERR_INVALID_ARG;
+esp_err_t ts_rules_load(void) {
+    ts_ssh_binding_lock(); esp_err_t ret = load_rules(NULL); ts_ssh_binding_unlock(); return ret;
 }
-/* Mutations persist through ts_rule_commit; reads/loads never rewrite all rules. */
+esp_err_t ts_rules_load_from_file(const char *path) {
+    if (!path) return ESP_ERR_INVALID_ARG;
+    ts_ssh_binding_lock(); esp_err_t ret = load_rules(path); ts_ssh_binding_unlock(); return ret;
+}
+/* Ordinary mutations persist through ts_rule_commit; boot may migrate legacy authority. */
 esp_err_t ts_rules_save(void) {
     return s_rule_ctx.loaded && !s_rule_ctx.recovery_error ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 bool ts_rule_edit_begin(void) {
-    return s_rule_ctx.initialized && xSemaphoreTakeRecursive(s_rule_ctx.transaction, 0) == pdTRUE;
+    if (!s_rule_ctx.initialized) return false;
+    ts_ssh_binding_lock();
+    if (xSemaphoreTakeRecursive(s_rule_ctx.transaction, 0) == pdTRUE) return true;
+    ts_ssh_binding_unlock(); return false;
 }
-void ts_rule_edit_end(void) { xSemaphoreGiveRecursive(s_rule_ctx.transaction); }
+void ts_rule_edit_end(void) { xSemaphoreGiveRecursive(s_rule_ctx.transaction); ts_ssh_binding_unlock(); }
 void ts_rule_config_status(bool *loaded, bool *recovery) {
     if (!s_rule_ctx.initialized) {
         *loaded = false;
@@ -2041,4 +2156,247 @@ void ts_rule_config_status(bool *loaded, bool *recovery) {
     *loaded = s_rule_ctx.loaded;
     *recovery = s_rule_ctx.recovery_error;
     xSemaphoreGive(s_rule_ctx.mutex);
+}
+
+bool ts_rule_restart_pending(void) {
+    if (!s_rule_ctx.initialized || !s_rule_ctx.loaded) return false;
+    xSemaphoreTakeRecursive(s_rule_ctx.transaction, portMAX_DELAY);
+    bool pending = false;
+    for (int i=0; i<ts_rule_store_set_count() && !pending; ++i) {
+        ts_rule_saved_info_t info={0};
+        if (ts_rule_store_set_info_at(i,&info)!=ESP_OK) { pending=true; break; }
+        xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+        int active=find_rule_index(info.id);
+        pending=active<0 || s_rule_ctx.rules[active].revision!=info.revision;
+        xSemaphoreGive(s_rule_ctx.mutex);
+    }
+    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+    return pending;
+}
+const char *ts_rule_load_error(void){return s_rule_ctx.load_error?s_rule_ctx.load_error:"config_loading";}
+esp_err_t ts_rule_refresh_saved(void) {
+    if(!s_rule_ctx.initialized||!s_rule_ctx.loaded)return ESP_ERR_INVALID_STATE;
+    ts_ssh_binding_lock();xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
+    esp_err_t ret=ESP_OK;
+    if(s_rule_ctx.recovery_error){
+        ret=ts_rule_store_set_refresh(ts_storage_sd_mounted());
+        if(ret==ESP_OK){s_rule_ctx.recovery_error=false;s_rule_ctx.load_error="ok";}
+        else s_rule_ctx.load_error=ts_rule_store_set_error();
+    }
+    xSemaphoreGiveRecursive(s_rule_ctx.transaction);ts_ssh_binding_unlock();return ret;
+}
+void ts_rule_saved_status(const char *id,cJSON *object) {
+    if (!s_rule_ctx.initialized) return;
+    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
+    ts_rule_saved_info_t info={0};
+    if(ts_rule_store_set_info(id,&info)==ESP_OK){
+        xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+        int i=find_rule_index(id);uint32_t active=i<0?0:s_rule_ctx.rules[i].revision;
+        bool readonly=info.readonly||(i>=0&&s_rule_ctx.meta[i].readonly);
+        xSemaphoreGive(s_rule_ctx.mutex);
+        cJSON_AddNumberToObject(object,"saved_revision",info.revision);
+        cJSON_AddNumberToObject(object,"saved_generation",info.generation);
+        cJSON_AddNumberToObject(object,"active_revision",active);
+        cJSON_AddBoolToObject(object,"runtime_active",i>=0);
+        cJSON_AddBoolToObject(object,"restart_required",active!=info.revision);
+        cJSON_AddBoolToObject(object,"readonly",readonly);
+        cJSON_AddStringToObject(object,"saved_source",info.source==TS_RULE_SET_SD_PACK?"encrypted_pack":info.source==TS_RULE_SET_SD_JSON?"sd_json":"nvs_json");
+        cJSON_AddStringToObject(object,"package_digest",info.digest);
+    }
+    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+}
+cJSON *ts_rule_pending_list(void) {
+    cJSON *array=cJSON_CreateArray();
+    if(!array || !s_rule_ctx.initialized) return array;
+    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
+    for(int i=0;i<ts_rule_store_set_count();++i){
+        ts_rule_saved_info_t info={0};
+        if(ts_rule_store_set_info_at(i,&info)!=ESP_OK){cJSON_Delete(array);array=NULL;break;}
+        xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+        bool absent=find_rule_index(info.id)<0;
+        xSemaphoreGive(s_rule_ctx.mutex);
+        if(absent){
+            cJSON *item=cJSON_CreateObject();
+            cJSON_AddStringToObject(item,"id",info.id);cJSON_AddStringToObject(item,"name",info.name);
+            cJSON_AddStringToObject(item,"icon",info.icon);cJSON_AddBoolToObject(item,"saved_enabled",info.enabled);
+            cJSON_AddBoolToObject(item,"enabled",false);cJSON_AddNumberToObject(item,"revision",0);
+            cJSON_AddNumberToObject(item,"conditions_count",info.conditions_count);
+            cJSON_AddNumberToObject(item,"actions_count",info.actions_count);
+            ts_rule_saved_status(info.id,item);
+            if(!item || !cJSON_AddItemToArray(array,item)){cJSON_Delete(item);cJSON_Delete(array);array=NULL;break;}
+        }
+    }
+    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+    return array;
+}
+static const char *pack_reason(ts_config_pack_result_t reason) {
+    return ts_rule_pack_error(reason);
+}
+esp_err_t ts_rule_import_pack(const char *bytes,size_t length,bool preview,bool overwrite,
+    uint32_t expected_revision,uint32_t expected_generation,uint32_t expected_credential,
+    const char *expected_digest,cJSON **data,const char **reason) {
+    *data=NULL;*reason="invalid_pack";
+    if(!s_rule_ctx.initialized)return ESP_ERR_INVALID_STATE;
+    if(!ts_storage_sd_mounted()){*reason="source_unavailable";return ESP_ERR_INVALID_STATE;}
+    ts_config_pack_t *pack=NULL;
+    ts_config_pack_acceptance_t acceptance={0},known={0};uint32_t credential=0;
+    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
+    bool previously_accepted=ts_rule_store_set_acceptance(bytes,length,&known)==ESP_OK;
+    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+    ts_config_pack_result_t validated=ts_config_pack_load_verified_mem(bytes,length,
+        previously_accepted?&known:NULL,&pack,&acceptance,&credential);
+    if(validated!=TS_CONFIG_PACK_OK){*reason=pack_reason(validated);return ESP_ERR_INVALID_ARG;}
+    if(!preview&&(credential!=expected_credential||!expected_digest||
+        strcmp(expected_digest,acceptance.package_sha256))) {
+        ts_config_pack_free(pack);*reason="credential_changed";return ESP_ERR_INVALID_STATE;
+    }
+    ts_auto_rule_t rule={0};
+    esp_err_t ret=ts_rule_pack_decode(pack->content,pack->content_len,&rule);
+    ts_config_pack_free(pack);
+    if(ret!=ESP_OK){*reason="invalid_rule_pack";return ret;}
+    ts_ssh_binding_lock();
+    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
+    cJSON *warnings=NULL;
+    ret=ts_rule_pack_dependencies(&rule,reason,&warnings);
+    if(ret!=ESP_OK)goto done;
+    if(!s_rule_ctx.initialized||!s_rule_ctx.loaded||s_rule_ctx.recovery_error){
+        *reason="recovery_required";ret=ESP_ERR_INVALID_STATE;goto done;
+    }
+    if(!ts_rule_store_set_available()){*reason="source_read_only";ret=ESP_ERR_INVALID_STATE;goto done;}
+    ts_rule_saved_info_t old={0};
+    bool exists=ts_rule_store_set_info(rule.id,&old)==ESP_OK;
+    if(!exists&&ts_rule_store_set_count()>=s_rule_ctx.capacity){*reason="capacity";ret=ESP_ERR_NO_MEM;goto done;}
+    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+    int active=find_rule_index(rule.id);
+    xSemaphoreGive(s_rule_ctx.mutex);
+    if(active>=0&&protected_bindings(&s_rule_ctx.rules[active],&rule)){
+        *reason="service_busy";ret=ESP_ERR_INVALID_STATE;goto done;
+    }
+    uint32_t saved_generation=ts_rule_store_set_generation();
+    *data=cJSON_CreateObject();
+    if(!*data){*reason="no_memory";ret=ESP_ERR_NO_MEM;goto done;}
+    cJSON *rule_json=ts_rule_encode(&rule);
+    bool reply_ok=rule_json&&cJSON_AddStringToObject(*data,"id",rule.id)&&cJSON_AddStringToObject(*data,"name",rule.name)&&
+        cJSON_AddStringToObject(*data,"type","automation_rule")&&cJSON_AddBoolToObject(*data,"valid",true)&&
+        cJSON_AddBoolToObject(*data,"trusted",true)&&cJSON_AddBoolToObject(*data,"target_matches",true)&&
+        cJSON_AddBoolToObject(*data,"exists",exists)&&cJSON_AddBoolToObject(*data,"official",true)&&
+        cJSON_AddStringToObject(*data,"signer",acceptance.signer_sha256)&&
+        cJSON_AddStringToObject(*data,"package_digest",acceptance.package_sha256)&&
+        cJSON_AddNumberToObject(*data,"expected_revision",exists?old.revision:0)&&
+        cJSON_AddNumberToObject(*data,"expected_generation",saved_generation)&&
+        cJSON_AddNumberToObject(*data,"credential_generation",credential)&&cJSON_AddItemToObject(*data,"rule",rule_json);
+    if(reply_ok)rule_json=NULL;
+    cJSON_Delete(rule_json);
+    if(reply_ok&&warnings){reply_ok=cJSON_AddItemToObject(*data,"warnings",warnings);if(reply_ok)warnings=NULL;}
+    if(!reply_ok){cJSON_Delete(*data);*data=NULL;*reason="no_memory";ret=ESP_ERR_NO_MEM;goto done;}
+    if(exists){
+        /* Old saved identity is distinct from the selected package's digest.
+         * Never emit duplicate JSON keys: C and browser parsers choose differently. */
+        cJSON_AddStringToObject(*data,"current_saved_digest",old.digest);
+        cJSON_AddStringToObject(*data,"saved_source",old.source==TS_RULE_SET_SD_PACK?"encrypted_pack":old.source==TS_RULE_SET_SD_JSON?"sd_json":"nvs_json");
+        cJSON_AddBoolToObject(*data,"saved_readonly",old.readonly);
+    }
+    cJSON_AddNumberToObject(*data,"active_revision",active<0?0:s_rule_ctx.rules[active].revision);
+    cJSON_AddBoolToObject(*data,"runtime_active",active>=0);
+    if(preview){*reason="ok";goto done;}
+    bool identical=exists&&old.source==TS_RULE_SET_SD_PACK&&!strcmp(old.digest,acceptance.package_sha256);
+    if(exists&&!overwrite&&!identical){*reason="overwrite_required";ret=ESP_ERR_INVALID_STATE;goto done;}
+    if(!identical&&(expected_revision!=(exists?old.revision:0)||expected_generation!=saved_generation)){
+        *reason="revision_conflict";ret=ESP_ERR_INVALID_STATE;goto done;
+    }
+    if(!ts_cert_material_begin(credential)){*reason="credential_changed";ret=ESP_ERR_INVALID_STATE;goto done;}
+    ts_rule_commit_t commit;
+    ret=ts_rule_store_set_commit(&rule,rule.id,identical?old.revision:expected_revision,
+                                identical?saved_generation:expected_generation,
+                                bytes,length,&acceptance,&commit);
+    ts_cert_material_end();
+    *reason=commit.error_code;
+    if(commit.applied<0){s_rule_ctx.recovery_error=true;cJSON_AddBoolToObject(*data,"result_unknown",true);}
+    if(ret==ESP_OK){
+        cJSON_AddBoolToObject(*data,"imported",true);cJSON_AddBoolToObject(*data,"saved",true);
+        cJSON_AddBoolToObject(*data,"durable",true);cJSON_AddBoolToObject(*data,"runtime_applied",false);
+        cJSON_AddBoolToObject(*data,"restart_required",active<0||s_rule_ctx.rules[active].revision!=commit.revision);
+        cJSON_AddNumberToObject(*data,"saved_revision",commit.revision);
+        cJSON_AddNumberToObject(*data,"saved_generation",ts_rule_store_set_generation());
+        cJSON_AddBoolToObject(*data,"cleanup_pending",!commit.mirror_synced);
+    }
+done:
+    cJSON_Delete(warnings);ts_rule_dispose(&rule);
+    xSemaphoreGiveRecursive(s_rule_ctx.transaction);ts_ssh_binding_unlock();
+    return ret;
+}
+
+static esp_err_t dependency_change_rule(const ts_auto_rule_t *rule,ts_rule_dependency_t kind,
+                                        const char *id,const void *next) {
+    for(unsigned i=0;i<rule->action_count;++i){
+        const ts_auto_action_t *a=&rule->actions[i];
+        ts_action_template_t *tpl=NULL;
+        if(a->template_id[0]){
+            if(kind==TS_RULE_DEP_TEMPLATE&&(!id||!strcmp(id,a->template_id))){
+                if(!next)return ESP_ERR_INVALID_STATE;
+                const ts_action_template_t *proposed=next;
+                if(rule->enabled&&!proposed->enabled)return ESP_ERR_INVALID_STATE;
+                ts_auto_rule_t check=*rule;check.actions=(ts_auto_action_t *)&proposed->action;check.action_count=1;
+                const char *reason=NULL;
+                esp_err_t e=ts_rule_pack_dependencies(&check,&reason,NULL);
+                if(e!=ESP_OK)return e;
+            }
+            tpl=heap_caps_calloc(1,sizeof(*tpl),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+            if(!tpl)return ESP_ERR_NO_MEM;
+            if(ts_action_template_get(a->template_id,tpl)!=ESP_OK){free(tpl);return ESP_ERR_INVALID_STATE;}
+            a=&tpl->action;
+        }
+        if(a->type==TS_AUTO_ACT_SSH_CMD_REF){
+            if(kind==TS_RULE_DEP_COMMAND&&(!id||!strcmp(id,a->ssh_ref.cmd_id))){
+                if(!next){free(tpl);return ESP_ERR_INVALID_STATE;}
+                const ts_ssh_command_config_t *cmd=next;ts_action_ssh_host_t host;
+                if(ts_action_get_ssh_host(cmd->host_id,&host)!=ESP_OK ||
+                    !host.host[0]||!host.username[0]||!host.port ||
+                    (rule->enabled&&!cmd->enabled)){free(tpl);return ESP_ERR_INVALID_STATE;}
+            }
+            if(kind==TS_RULE_DEP_HOST||kind==TS_RULE_DEP_ACTION_HOST){
+                ts_ssh_command_config_t *cmd=heap_caps_calloc(1,sizeof(*cmd),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+                if(!cmd){free(tpl);return ESP_ERR_NO_MEM;}
+                esp_err_t got=ts_ssh_commands_config_get(a->ssh_ref.cmd_id,cmd);
+                bool matches=got==ESP_OK&&(!id||!strcmp(cmd->host_id,id));
+                if(got!=ESP_OK){free(cmd);free(tpl);return got;}
+                if(matches){
+                    ts_action_ssh_host_t actual;bool internal=false;
+                    got=ts_action_get_ssh_host_ex(cmd->host_id,&actual,&internal);
+                    if(got!=ESP_OK){free(cmd);free(tpl);return got;}
+                    if(kind==TS_RULE_DEP_HOST&&!internal){
+                        const ts_ssh_host_config_t *proposed=next;
+                        if(!proposed||!proposed->host[0]||!proposed->username[0]||!proposed->port){free(cmd);free(tpl);return ESP_ERR_INVALID_STATE;}
+                    }else if(kind==TS_RULE_DEP_ACTION_HOST){
+                        const ts_action_ssh_host_t *proposed=next;
+                        ts_ssh_host_config_t fallback;
+                        if((proposed&&(!proposed->host[0]||!proposed->username[0]||!proposed->port)) ||
+                            (!proposed&&ts_ssh_hosts_config_get(cmd->host_id,&fallback)!=ESP_OK)){
+                            free(cmd);free(tpl);return ESP_ERR_INVALID_STATE;
+                        }
+                    }
+                }
+                free(cmd);
+            }
+        }
+        free(tpl);
+    }
+    return ESP_OK;
+}
+esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind,const char *id,const void *next) {
+    if(!s_rule_ctx.initialized||!s_rule_ctx.loaded)return ESP_OK;
+    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
+    esp_err_t ret=ESP_OK;
+    if(s_rule_ctx.recovery_error)ret=ESP_ERR_INVALID_STATE;
+    for(int i=0;i<s_rule_ctx.count&&ret==ESP_OK;++i){
+        ts_auto_rule_t rule={0};ret=ts_rule_get_by_index(i,&rule);
+        if(ret==ESP_OK){ret=dependency_change_rule(&rule,kind,id,next);ts_rule_release(&rule);}
+    }
+    for(int i=0;i<ts_rule_store_set_count()&&ret==ESP_OK;++i){
+        ts_auto_rule_t rule={0};ts_rule_saved_info_t info={0};
+        ret=ts_rule_store_set_get(i,&rule,&info);
+        if(ret==ESP_OK){ret=dependency_change_rule(&rule,kind,id,next);ts_rule_dispose(&rule);}
+    }
+    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
+    return ret;
 }
