@@ -1623,8 +1623,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         ledTextFailed: 'Failed to display text',
         ledTextStopFailed: 'Failed to stop text',
         allLedsOff: 'All LEDs turned off',
-        selectAnimation: 'Please select an animation first',
-        enterImagePath: 'Please enter image path',
+        selectAnimation: 'Please select an animation',
+        enterImagePath: 'Please enter the image path',
         imageDisplayed: 'Image displayed',
         enterTextToEncode: 'Please enter text to encode',
         qrGenerated: 'QR code generated',
@@ -1632,7 +1632,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         textDisplayed: 'Text displayed',
         textScrollStopped: 'Text scroll stopped',
         filterStopped: 'Filter stopped',
-        selectFilter: 'Please select a filter first',
+        selectFilter: 'Please select a filter',
         ledBrightnessSet: '{device} brightness: {value}',
         ledBrightnessFailed: 'Failed to set {device} brightness',
         ledTurnedOff: '{device} turned off',
@@ -1645,7 +1645,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         ledConfigSaved: '{device} config saved',
         ledConfigSavedWithAnim: '{device} config saved: {anim}',
         ledConfigSaveFailed: 'Failed to save config',
-        enterQrContent: 'Please enter QR code content',
+        enterQrContent: 'Please enter the QR code content',
         // PKI/Certificates
         configPackImported: 'Config pack imported successfully',
         keypairGenerated: 'Key pair generated successfully',
@@ -1728,16 +1728,17 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         selectFile: 'Please select a file first',
         configImported: 'Config imported, takes effect after restart',
         // Form validation
-        fillActionId: 'Please fill in action ID',
+        fillActionId: 'Please enter an action ID',
         selectActionType: 'Please select action type',
-        fillCommand: 'Please fill in command',
-        selectSshCommand: 'Please select SSH command',
-        selectLedDevice: 'Please select LED device',
-        enterText: 'Please enter text content',
+        fillCommand: 'Please enter a command line',
+        selectSshCommand: 'Please select an SSH command',
+        selectLedDevice: 'Please select an LED device',
+        enterText: 'Please enter the text to show',
         selectFilter: 'Please select filter',
-        fillLogMessage: 'Please fill in log message',
-        fillVarNameValue: 'Please fill in variable name and value',
-        fillWebhookUrl: 'Please fill in Webhook URL',
+        fillLogMessage: 'Please enter a log message',
+        fillVarName: 'Enter a variable name',
+        fillVarValue: 'Enter a value for the variable',
+        fillWebhookUrl: 'Please enter the webhook URL',
         actionCreated: 'Action template {id} created successfully',
         actionCreateFailed: 'Creation failed',
         // LED config save
@@ -4137,15 +4138,42 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         formatUnknown: '{action}. {hint}',
         details: {
             show: 'Details', hide: 'Hide', close: 'Close',
-            code: 'Reason code', api: 'API', device: 'Device text', stage: 'Stage', time: 'Time',
+            code: 'Reason code', api: 'API', device: 'Original text', stage: 'Stage', page: 'Page error', time: 'Time',
             line: '{label}: {value}'
         },
         ops: {
             generic: { failed: 'The operation failed', unknown: 'The result of the operation is unconfirmed' },
+            // -- Automation --
+            engine: {
+                start: { failed: 'Failed to start the automation engine', unknown: 'The result of starting the automation engine is unconfirmed', done: 'Automation engine started' },
+                stop: { failed: 'Failed to stop the automation engine', unknown: 'The result of stopping the automation engine is unconfirmed', done: 'Automation engine stopped' },
+                pause: { failed: 'Failed to pause the automation engine', unknown: 'The result of pausing the automation engine is unconfirmed', done: 'Automation engine paused' },
+                reload: { failed: 'Failed to reload the automation configuration', unknown: 'The result of reloading the automation configuration is unconfirmed', done: 'Automation configuration reloaded' },
+                status: { failed: 'Failed to read the automation engine status' }
+            },
             rule: {
                 enable: { failed: 'Failed to enable rule “{name}”', unknown: 'The result of enabling rule “{name}” is unconfirmed', done: 'Rule “{name}” enabled', doneMirror: 'Rule “{name}” enabled, but the backup copy is not synced; do not remove the SD card.' },
                 disable: { failed: 'Failed to disable rule “{name}”', unknown: 'The result of disabling rule “{name}” is unconfirmed', done: 'Rule “{name}” disabled', doneMirror: 'Rule “{name}” disabled, but the backup copy is not synced; do not remove the SD card.' },
-                save: { failed: 'Failed to save rule “{name}”', unknown: 'The result of saving rule “{name}” is unconfirmed', done: 'Rule “{name}” saved', doneMirror: 'Rule “{name}” saved, but the backup copy is not synced; do not remove the SD card.' }
+                save: { failed: 'Failed to save rule “{name}”', unknown: 'The result of saving rule “{name}” is unconfirmed', done: 'Rule “{name}” saved', doneMirror: 'Rule “{name}” saved, but the backup copy is not synced; do not remove the SD card.' },
+                trigger: { failed: 'Failed to trigger rule “{name}”', unknown: 'The result of triggering rule “{name}” is unconfirmed', done: 'Rule “{name}” triggered' },
+                delete: { failed: 'Failed to delete rule “{name}”', unknown: 'The result of deleting rule “{name}” is unconfirmed', done: 'Rule “{name}” deleted' },
+                load: { failed: 'Failed to read rule “{name}”' },
+                list: { failed: 'Failed to read the rule list' },
+                addAction: { blocked: 'Can\'t add an action' }
+            },
+            action: {
+                save: { failed: 'Failed to save action template “{name}”', unknown: 'The result of saving action template “{name}” is unconfirmed', done: 'Action template “{name}” saved' },
+                test: { failed: 'Failed to test action template “{name}”', unknown: 'The result of testing action template “{name}” is unconfirmed', wait: 'Running action template “{name}”…', done: 'Action template “{name}” ran successfully' },
+                load: { failed: 'Failed to read action template “{name}”' },
+                delete: { failed: 'Failed to delete action template “{name}”', unknown: 'The result of deleting action template “{name}” is unconfirmed', done: 'Action template “{name}” deleted' },
+                list: { failed: 'Failed to read the action template list' }
+            },
+            source: {
+                enable: { failed: 'Failed to enable data source “{name}”', unknown: 'The result of enabling data source “{name}” is unconfirmed', done: 'Data source “{name}” enabled' },
+                disable: { failed: 'Failed to disable data source “{name}”', unknown: 'The result of disabling data source “{name}” is unconfirmed', done: 'Data source “{name}” disabled' },
+                delete: { failed: 'Failed to delete data source “{name}”', unknown: 'The result of deleting data source “{name}” is unconfirmed', done: 'Data source “{name}” deleted' },
+                add: { failed: 'Failed to create data source “{name}”', unknown: 'The result of creating data source “{name}” is unconfirmed', done: 'Data source “{name}” created' },
+                list: { failed: 'Failed to read the data source list' }
             },
             quick: {
                 start: { blocked: 'Can\'t start “{name}”', failed: 'Failed to start “{name}”', unknown: 'The result of starting “{name}” is unconfirmed' },
@@ -4172,8 +4200,23 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             invalid_response: { why: 'the device\'s response could not be read', hint: 'Refresh the page and try again.' },
             storage_failed: { why: 'writing to the device storage failed', hint: 'If you use an SD card, make sure it is inserted; see Terminal → System Logs.' },
             no_detail: { why: 'the device did not return a specific reason', hint: 'Open Terminal → System Logs to see the details of this operation.' },
+            page_error: { why: 'the page ran into a problem while handling this', hint: 'Refresh the page and try again. If it keeps happening, report the details to the developers.' },
             result_unknown: { hint: 'Refresh and check the current state before repeating the operation.' },
             commit_unknown: { hint: 'Reload and check the current state before submitting again.' },
+            // -- Automation: editing a rule --
+            no_action_template: { why: 'there are no action templates yet', hint: 'Create one in the “Action templates” area of the page first, then come back and choose it.' },
+            // -- Automation: engine, action templates, data sources --
+            engine_unavailable: { why: 'the automation engine is stopping, still busy with actions, or not initialized yet', hint: 'Wait a few seconds and try again.' },
+            engine_paused: { why: 'the automation engine is paused', hint: 'To resume it, click Stop first, then Start.' },
+            engine_not_running: { why: 'the automation engine is not running', hint: 'Click Start first.' },
+            engine_stop_timeout: { why: 'some actions are still running, so the engine cannot stop yet', hint: 'Wait for them to finish, then stop it.' },
+            config_file_invalid: { why: 'the engine configuration file (automation.json) is empty, too large, or not valid', hint: 'Fix or delete this file, then click Reload.' },
+            template_capacity: { why: 'the limit for action templates has been reached', hint: 'Delete action templates you no longer need.' },
+            template_exists: { why: 'an action template with the same ID already exists', hint: 'Use a different ID, or edit the existing one.' },
+            led_filter_invalid: { why: 'the filter parameters are not valid', hint: 'Check the filter parameters, then save again.' },
+            source_capacity: { why: 'the limit for data sources has been reached', hint: 'Delete data sources you no longer need.' },
+            action_failed: { why: 'the action did not run successfully', hint: 'Click Details to see what the device returned.' },
+            action_timeout: { why: 'the action timed out', hint: 'Check that what the action targets (such as the host or command) is available.' },
             // -- Automation: enable / disable / save a rule --
             execution_busy: { why: 'it is running right now', hint: 'Wait for it to finish, then try again.' },
             revision_conflict: { why: 'it was just changed by another operation', hint: 'Refresh, check the latest content, then try again.' },
@@ -4185,6 +4228,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             invalid_configuration: { why: 'the rule is incomplete or invalid', hint: 'Check the conditions and actions, fix them, then save again.' },
             configuration_busy: { why: 'the configuration is being changed by another operation', hint: 'Try again in a moment.' },
             service_state_unconfirmed: { why: 'the state of its service cannot be confirmed', hint: 'Verify the service state first.' },
+            service_delete_protected: { why: 'its service is not confirmed to be stopped, or an operation is using it', hint: 'Verify or stop the service first, then try again once the operation has finished.' },
             revision_exhausted: { why: 'this rule\'s revision counter is exhausted' },
             // -- Quick actions: starting from a card --
             rule_disabled: { why: 'the rule is disabled', hint: 'Enable it on the Automation page first.' },

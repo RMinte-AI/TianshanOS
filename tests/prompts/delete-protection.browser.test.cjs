@@ -38,7 +38,8 @@ for(const entry of ['action','command'])for(const state of ['stopped','ready'])t
   assert.equal(deletes.length,state==='stopped'?1:0);
   const verify=calls.find(c=>c.endpoint==='automation/services/status'&&c.method==='POST');assert.equal(verify.params.verify,true);assert.equal(verify.params.command_id,'model');
   assert(!calls.some(c=>c.endpoint==='automation/services/stop'||c.endpoint==='ssh/services/start'));
-  if(state==='ready')assert((await page.locator('#toast').textContent()).includes('尚未确认停止'));
+  // the action template delete explains it with the failure catalogue; the SSH command delete still uses the older sentence
+  if(state==='ready')assert((await page.locator('#toast').textContent()).includes(entry==='action'?'还没有确认已停止':'尚未确认停止'));
  }finally{await context.close();}
 });
 for(const entry of ['action','command'])test(`${entry}: delayed verification cannot overwrite a newer real start`,async()=>{

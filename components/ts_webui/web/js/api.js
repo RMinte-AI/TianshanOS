@@ -117,10 +117,14 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     const known = tok => !!tok && /^[a-z][a-z0-9_]*$/.test(tok) &&
         (exists(`failure.reasons.${tok}.why`) || exists(`failure.reasons.${tok}.hint`)) &&
         part(`failure.reasons.${tok}.why`) && part(`failure.reasons.${tok}.hint`);
+    // Every failed request is an ApiOperationError; any other exception comes from the page's own code.
+    const pageError = !!error && error.name !== 'ApiOperationError';
     let tok = token;
-    if (!tok && error?.kind) tok = error.uncertain ? 'result_unknown' : ({network: 'network_lost', timeout: 'timeout', format: 'invalid_response'})[error.kind];
+    // (a request the page sends as GET can still change something: the caller says so with `write`)
+    if (!tok && error?.kind) tok = (error.uncertain || write) ? 'result_unknown' : ({network: 'network_lost', timeout: 'timeout', format: 'invalid_response'})[error.kind];
     // A write that ended in an exception without an answer from the device may or may not have happened.
     if (!tok && write && error && !(typeof error.code === 'number' && error.code !== 0)) tok = 'result_unknown';
+    if (!tok && pageError) tok = 'page_error';
     if (!tok && known(raw)) tok = raw;
     if (!tok && known(FAILURE_LEGACY_TEXT[raw])) tok = FAILURE_LEGACY_TEXT[raw];
     if (!tok) tok = FAILURE_CODE_TOKEN[numeric] || 'no_detail';
@@ -142,9 +146,10 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     const detail = device || (typeof result?.data?.detail === 'string' ? result.data.detail : '');
     const stage = typeof result?.data?.stage === 'string' ? result.data.stage : '';
     const api = endpoint || error?.operation || '';
+    const page = pageError && typeof error.message === 'string' ? error.message : '';
     // Details are for whoever has to look into it: a reason the page worked out by itself (nothing was sent) has none.
-    const lines = !ready || !(api || detail || stage) ? [] : [
-        line('code', tok), line('api', api), line('device', detail), line('stage', stage),
+    const lines = !ready || !(api || detail || stage || page) ? [] : [
+        line('code', tok), line('api', api), line('device', detail), line('stage', stage), line('page', page),
         line('time', new Date().toLocaleTimeString([], {hour12: false}))
     ].filter(Boolean);
     return {message, details: lines.join('\n'), token: tok, uncertain: unconfirmed, raw};

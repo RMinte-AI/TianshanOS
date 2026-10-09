@@ -9,8 +9,8 @@ for (const lang of ['zh-CN', 'en-US']) vm.runInNewContext(read(`js/lang/${lang}.
 const failure = lang => langs[lang].failure;
 const slots = text => [...new Set([...text.matchAll(/(?<!\$)\{(\w+)\}/g)].map(m => m[1]))].sort();
 const CJK = /[㐀-鿿＀-￯　-〿]/;
-// "automation" is the service name exactly as the System page's service list shows it, so the text must name it the same way
-const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation']);
+// "automation" is the service name exactly as the System page's service list shows it; "json" is in a file name; "ID" is the field's label
+const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID']);
 const flat = (object, prefix = '') => Object.entries(object).flatMap(([k, v]) => typeof v === 'string' ? [[prefix + k, v]] : flat(v, prefix + k + '.'));
 
 test('both languages have the same reasons, the same parts of each reason and the same placeholders', () => {
@@ -51,24 +51,64 @@ test('every message follows the writing standard in both languages', () => {
     assert.deepEqual(problems, []);
 });
 
-test('the operations the page reports through describeFailure exist, with the texts that call needs', () => {
-    const app = read('js/app.js');
-    const used = new Map();   // op -> phases
-    for (const m of app.matchAll(/describeFailure\(|reportFailure\(\s*\{([^}]*)\}/g)) {
-        const body = m[1] || '';
-        for (const op of body.matchAll(/op(?::\s*|\s*=\s*)'([a-z]+\.[a-z]+)'/g)) used.set(op[1], new Set([...(used.get(op[1]) || []), (body.match(/phase:\s*'(\w+)'/) || [, 'failed'])[1]]));
+// The operations the page reports through describeFailure / reportFailure / failureNote. Every call site needs the texts it
+// can ask for: `failed` (or `blocked` when it passes phase: 'blocked'), and `unknown` when it passes `write` (a write may
+// end without an answer). Operations chosen at run time cannot be read from the call sites: they are listed here and
+// exercised by the page-level tests.
+const DYNAMIC_OPS = ['engine.start', 'engine.stop', 'engine.pause', 'engine.reload'];   // automationControl: `engine.${action}`
+function enclosingObject(source, index) {   // the {...} literal around `index`
+    let depth = 0, from = -1;
+    for (let i = index; i >= 0; i--) {
+        if (source[i] === '}') depth++;
+        else if (source[i] === '{') { if (depth === 0) { from = i; break; } depth--; }
     }
-    for (const m of app.matchAll(/const op = enable \? '([a-z.]+)' : '([a-z.]+)'/g)) for (const op of [m[1], m[2]]) used.set(op, new Set(['failed']));
-    assert(used.size >= 5, [...used.keys()].join());
+    depth = 0;
+    for (let i = from; i < source.length; i++) {
+        if (source[i] === '{') depth++;
+        else if (source[i] === '}' && --depth === 0) return source.slice(from, i + 1);
+    }
+    return '';
+}
+function usedOperations(app) {
+    const used = new Map();   // 'group.name' -> {phases:Set, write:boolean}
+    const entryOf = op => used.get(op) || used.set(op, {phases: new Set(), write: false}).get(op);
+    for (const m of app.matchAll(/\bop:\s*'([a-z]+\.[a-z]+)'/g)) {
+        const object = enclosingObject(app, m.index), entry = entryOf(m[1]);
+        entry.phases.add((object.match(/\bphase:\s*'(\w+)'/) || [, 'failed'])[1]);
+        if (/\bwrite\b/.test(object.replace(/\bwrite:\s*false\b/g, ''))) entry.write = true;
+    }
+    // const op = enable ? 'rule.enable' : 'rule.disable'   (these are writes)
+    for (const m of app.matchAll(/const op = ([^;\n]*);/g)) for (const lit of m[1].matchAll(/'([a-z]+\.[a-z]+)'/g)) { const entry = entryOf(lit[1]); entry.phases.add('failed'); entry.write = true; }
+    for (const op of DYNAMIC_OPS) { const entry = entryOf(op); entry.phases.add('failed'); entry.write = true; }
+    return used;
+}
+
+test('the operations the page reports through describeFailure exist, with the texts that call needs', () => {
+    const used = usedOperations(read('js/app.js'));
+    assert(used.size >= 20, [...used.keys()].join());
     for (const lang of ['zh-CN', 'en-US']) {
         const ops = failure(lang).ops;
-        for (const [op, phases] of used) {
+        for (const [op, {phases, write}] of used) {
             const [group, name] = op.split('.');
             assert(ops[group]?.[name], `${lang}: no texts for ${op}`);
             for (const phase of phases) assert.equal(typeof ops[group][name][phase], 'string', `${lang}: ${op}.${phase}`);
-            assert.equal(typeof ops[group][name].unknown, 'string', `${lang}: ${op}.unknown (a write may end unconfirmed)`);
+            if (write) assert.equal(typeof ops[group][name].unknown, 'string', `${lang}: ${op}.unknown (a write may end unconfirmed)`);
         }
     }
+});
+
+test('every operation in the catalogue is used by the page (a text nobody can reach is a trap for the next edit)', () => {
+    const app = read('js/app.js');
+    const used = usedOperations(app);
+    const dead = [];
+    for (const [group, entries] of Object.entries(failure('zh-CN').ops)) {
+        if (group === 'generic') continue;
+        for (const name of Object.keys(entries)) {
+            const op = `${group}.${name}`;
+            if (!used.has(op) && !app.includes(`failure.ops.${op}`) && !app.includes(`'${op}'`)) dead.push(op);
+        }
+    }
+    assert.deepEqual(dead, []);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -89,11 +129,16 @@ test('every reason token the firmware can send has a message in both languages',
     const ssh = component('ts_api/src/ts_api_ssh.c');
     const tokens = new Set([
         ...returned(functionBody(automation, 'trigger_reject_token')),
+        ...returned(functionBody(automation, 'engine_refusal_token')),
         ...returned(functionBody(ssh, 'ssh_connect_reason')),
         // rule save / enable / disable: the engine, the store and the API layer
         ...[component('ts_automation/src/ts_rule_engine.c'), component('ts_automation/src/ts_rule_store.c'), automation]
             .flatMap(source => [...source.matchAll(/error_code\s*=\s*"([a-z][a-z0-9_]*)"/g)].map(m => m[1])),
         ...[...automation.matchAll(/ts_api_result_error\(result, TS_API_ERR_\w+, "([a-z][a-z0-9_]*)"\)/g)].map(m => m[1]),
+        // fail_with(result, CODE, "token", detail): the helper the automation handlers use for a reason the page can state
+        ...[...automation.matchAll(/fail_with\(result, TS_API_ERR_\w+, "([a-z][a-z0-9_]*)"/g)].map(m => m[1]),
+        // the replies the handlers' tails delegate to
+        ...[...automation.matchAll(/message = strdup\([^;]*?"(action_failed|action_timeout)"/g)].map(m => m[1]),
     ]);
     assert(tokens.size > 20, [...tokens].join());
     for (const lang of ['zh-CN', 'en-US']) {

@@ -12407,6 +12407,13 @@ function reportFailure(spec, {type = null, attempt = null} = {}) {
     return failure;
 }
 
+// The same sentence written into the page (a list that could not be loaded, a status line, a result box) instead of a
+// toast. Returns HTML-safe markup; the technical details become the tooltip.
+function failureNote(spec) {
+    const failure = describeFailure(spec);
+    return `<span${failure.details ? ` title="${escapeHtml(failure.details)}"` : ''}>${escapeHtml(failure.message)}</span>`;
+}
+
 // =========================================================================
 //                         终端页面
 // =========================================================================
@@ -14494,12 +14501,11 @@ async function refreshAutomationStatus() {
                 cell(d.rule_triggers || 0, 'automationPage.triggerCountLabel') +
                 cell(formatUptimeSec(Math.floor((d.uptime_ms || 0) / 1000)), 'automationPage.runtimeLabel');
         } else {
-            container.innerHTML = '<div class="t-note" style="grid-column:1/-1">' + (result.message || (typeof t === 'function' ? t('automationPage.getStatusFailed') : '获取状态失败')) + '</div>';
+            container.innerHTML = '<div class="t-note" style="grid-column:1/-1">' + failureNote({ op: 'engine.status', result, endpoint: 'automation.status' }) + '</div>';
         }
     } catch (error) {
         if (!pageCurrent()) return;
-        const isNetworkError = error.message.includes('fetch') || error.message.includes('network');
-        container.innerHTML = '<div class="t-note" style="grid-column:1/-1">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</div>';
+        container.innerHTML = '<div class="t-note" style="grid-column:1/-1">' + failureNote({ op: 'engine.status', error, endpoint: 'automation.status' }) + '</div>';
     }
 }
 
@@ -14516,15 +14522,16 @@ function formatUptimeSec(seconds) {
  * 自动化引擎控制
  */
 async function automationControl(action) {
+    const op = `engine.${action}`;   // start | stop | pause | reload
+    const endpoint = `automation.${action}`;
     try {
-        const result = await api.call(`automation.${action}`);
-        showToast(typeof t === 'function' ? t('toast.actionResult', { action, msg: result.message || 'OK' }) : `${action}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
-        if (result.code === 0) {
-            await refreshAutomationStatus();
-        }
+        const result = await api.call(endpoint);
+        if (result.code === 0) showToast(t(`failure.ops.${op}.done`), 'success');
+        else reportFailure({ op, result, endpoint });
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.actionFailedMsg', { action, msg: error.message }) : `${action} 失败: ${error.message}`, 'error');
+        reportFailure({ op, error, endpoint, write: true });
     }
+    await refreshAutomationStatus();   // whatever happened, show the engine's real state
 }
 
 /**
@@ -14567,12 +14574,11 @@ async function refreshRules() {
                 }).join('')}
             `;
         } else {
-            container.innerHTML = '<div class="empty"><p class="t-note">' + (result.message || (typeof t === 'function' ? t('automationPage.getRulesFailed') : '获取规则失败')) + '</p></div>';
+            container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'rule.list', result, endpoint: 'automation.rules.list' }) + '</p></div>';
         }
     } catch (error) {
         if (!pageCurrent()) return;
-        const isNetworkError = error.message.includes('fetch') || error.message.includes('network');
-        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</p></div>';
+        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'rule.list', error, endpoint: 'automation.rules.list' }) + '</p></div>';
     }
 }
 
@@ -14580,6 +14586,8 @@ async function refreshRules() {
  * 切换规则启用状态
  */
 const ruleNames = new Map();   // rule id -> display name (filled by refreshRules) so messages can name the rule
+const actionNames = new Map();   // action template id -> display name (filled by refreshActions)
+const sourceNames = new Map();   // data source id -> display name (filled by refreshSources)
 
 async function toggleRule(id, enable) {
     const op = enable ? 'rule.enable' : 'rule.disable';
@@ -14605,11 +14613,14 @@ async function toggleRule(id, enable) {
  * 手动触发规则
  */
 async function triggerRule(id) {
+    const params = { name: ruleNames.get(id) || id };
+    const endpoint = 'automation.rules.trigger';
     try {
-        const result = await api.call('automation.rules.trigger', { id });
-        showToast(typeof t === 'function' ? t('toast.ruleTriggered', { id }) + ': ' + (result.message || 'OK') : `触发规则 ${id}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
+        const result = await api.call(endpoint, { id });
+        if (result.code === 0) showToast(t('failure.ops.rule.trigger.done', params), 'success');
+        else reportFailure({ op: 'rule.trigger', params, result, endpoint });
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.triggerRuleFailed') + ': ' + error.message : `触发规则失败: ${error.message}`, 'error');
+        reportFailure({ op: 'rule.trigger', params, error, endpoint, write: true });
     }
 }
 
@@ -14626,6 +14637,8 @@ async function refreshSources() {
         if (!pageCurrent()) return;
         if (result.code === 0 && result.data && result.data.sources) {
             const sources = result.data.sources;
+            sourceNames.clear();
+            for (const s of sources) sourceNames.set(s.id, s.label || s.id);
             if (sources.length === 0) {
                 container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noSources') + '</p></div>';
                 return;
@@ -14650,12 +14663,11 @@ async function refreshSources() {
                 }).join('')}
             `;
         } else {
-            container.innerHTML = '<div class="empty"><p class="t-note">' + (result.message || (typeof t === 'function' ? t('automationPage.getSourcesFailed') : '获取数据源失败')) + '</p></div>';
+            container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'source.list', result, endpoint: 'automation.sources.list' }) + '</p></div>';
         }
     } catch (error) {
         if (!pageCurrent()) return;
-        const isNetworkError = error.message.includes('fetch') || error.message.includes('network');
-        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + (isNetworkError && typeof t === 'function' ? t('automationPage.networkFailed') : error.message) + '</p></div>';
+        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'source.list', error, endpoint: 'automation.sources.list' }) + '</p></div>';
     }
 }
 
@@ -14734,8 +14746,14 @@ async function refreshActions() {
     try {
         const result = await api.call('automation.actions.list', {});
         if (!pageCurrent()) return;
+        if (result.code !== 0) {
+            container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'action.list', result, endpoint: 'automation.actions.list' }) + '</p></div>';
+            return;
+        }
         const actions = result.data?.templates || [];
-        
+        actionNames.clear();
+        for (const a of actions) actionNames.set(a.id, a.name || a.id);
+
         if (actions.length === 0) {
             container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noActions') + '</p></div>';
         } else {
@@ -14758,7 +14776,7 @@ async function refreshActions() {
         }
     } catch (error) {
         if (!pageCurrent()) return;
-        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + t('filePage.loadFailed') + ': ' + error.message + '</p></div>';
+        container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'action.list', error, endpoint: 'automation.actions.list' }) + '</p></div>';
     }
 }
 
@@ -14902,11 +14920,11 @@ async function submitAction(originalId = null) {
     const async = document.getElementById('action-async')?.checked || false;
     
     if (!id) {
-        showToast(typeof t === 'function' ? t('toast.fillActionId') : '请填写动作 ID', 'error');
+        fieldError('action-id', t('toast.fillActionId'));
         return;
     }
     if (!type) {
-        showToast(typeof t === 'function' ? t('automation.pleaseSelectActionType') : '请选择动作类型', 'error');
+        showToast(t('automation.pleaseSelectActionType'), 'warning');
         return;
     }
     
@@ -14922,7 +14940,7 @@ async function submitAction(originalId = null) {
         case 'cli':
             const cliCmd = document.getElementById('action-cli-command')?.value?.trim();
             if (!cliCmd) {
-                showToast(typeof t === 'function' ? t('toast.fillCommand') : '请填写命令行', 'error');
+                fieldError('action-cli-command', t('toast.fillCommand'));
                 return;
             }
             data.cli = {
@@ -14934,7 +14952,7 @@ async function submitAction(originalId = null) {
         case 'ssh_cmd_ref':
             const cmdId = document.getElementById('action-ssh-cmd-id')?.value;
             if (!cmdId) {
-                showToast(typeof t === 'function' ? t('toast.selectSshCommand') : '请选择 SSH 命令', 'error');
+                fieldError('action-ssh-cmd-id', t('toast.selectSshCommand'));
                 return;
             }
             data.ssh_ref = { cmd_id: cmdId };
@@ -14942,7 +14960,7 @@ async function submitAction(originalId = null) {
         case 'led':
             const ledDevice = document.getElementById('action-led-device')?.value;
             if (!ledDevice) {
-                showToast(typeof t === 'function' ? t('toast.selectLedDevice') : '请选择 LED 设备', 'error');
+                fieldError('action-led-device', t('toast.selectLedDevice'));
                 return;
             }
             const isMatrix = ledDevice === 'matrix';
@@ -14968,7 +14986,7 @@ async function submitAction(originalId = null) {
                     data.led.speed = readNumericInput('action-led-speed', true);
                     data.led.color = document.getElementById('action-led-color')?.value || '#FF0000';
                     if (!data.led.effect) {
-                        showToast(typeof t === 'function' ? t('toast.selectAnimation') : '请选择动画', 'error');
+                        fieldError('action-led-effect', t('toast.selectAnimation'));
                         return;
                     }
                     break;
@@ -14981,7 +14999,7 @@ async function submitAction(originalId = null) {
                 case 'text':
                     data.led.text = document.getElementById('action-led-text')?.value?.trim();
                     if (!data.led.text) {
-                        showToast(typeof t === 'function' ? t('toast.enterText') : '请输入文本内容', 'error');
+                        fieldError('action-led-text', t('toast.enterText'));
                         return;
                     }
                     data.led.font = document.getElementById('action-led-font')?.value || '';
@@ -14997,7 +15015,7 @@ async function submitAction(originalId = null) {
                 case 'image':
                     data.led.image_path = document.getElementById('action-led-image-path')?.value?.trim();
                     if (!data.led.image_path) {
-                        showToast((typeof t === 'function' ? t('toast.enterImagePath') : '请输入图像路径'), 'error');
+                        fieldError('action-led-image-path', t('toast.enterImagePath'));
                         return;
                     }
                     data.led.center = document.getElementById('action-led-center')?.checked || false;
@@ -15005,7 +15023,7 @@ async function submitAction(originalId = null) {
                 case 'qrcode':
                     data.led.qr_text = document.getElementById('action-led-qr-text')?.value?.trim();
                     if (!data.led.qr_text) {
-                        showToast(typeof t === 'function' ? t('toast.enterQrContent') : '请输入QR码内容', 'error');
+                        fieldError('action-led-qr-text', t('toast.enterQrContent'));
                         return;
                     }
                     data.led.qr_ecc = document.getElementById('action-led-qr-ecc')?.value || 'M';
@@ -15015,7 +15033,7 @@ async function submitAction(originalId = null) {
                 case 'filter':
                     data.led.filter = document.getElementById('action-led-filter')?.value;
                     if (!data.led.filter) {
-                        showToast(typeof t === 'function' ? t('toast.selectFilter') : '请选择滤镜', 'error');
+                        fieldError('action-led-filter', t('toast.selectFilter'));
                         return;
                     }
                     // 根据滤镜类型收集对应参数
@@ -15041,7 +15059,7 @@ async function submitAction(originalId = null) {
         case 'log':
             const logMsg = document.getElementById('action-log-message')?.value?.trim();
             if (!logMsg) {
-                showToast(typeof t === 'function' ? t('toast.fillLogMessage') : '请填写日志消息', 'error');
+                fieldError('action-log-message', t('toast.fillLogMessage'));
                 return;
             }
             data.log = {
@@ -15053,7 +15071,9 @@ async function submitAction(originalId = null) {
             const varName = document.getElementById('action-var-name')?.value?.trim();
             const varValue = document.getElementById('action-var-value')?.value?.trim();
             if (!varName || !varValue) {
-                showToast(typeof t === 'function' ? t('toast.fillVarNameValue') : '请填写变量名和值', 'error');
+                // point at the one that is empty
+                if (!varName) fieldError('action-var-name', t('toast.fillVarName'));
+                else fieldError('action-var-value', t('toast.fillVarValue'));
                 return;
             }
             data.set_var = {
@@ -15064,7 +15084,7 @@ async function submitAction(originalId = null) {
         case 'webhook':
             const webhookUrl = document.getElementById('action-webhook-url')?.value?.trim();
             if (!webhookUrl) {
-                showToast(typeof t === 'function' ? t('toast.fillWebhookUrl') : '请填写 Webhook URL', 'error');
+                fieldError('action-webhook-url', t('toast.fillWebhookUrl'));
                 return;
             }
             data.webhook = {
@@ -15077,17 +15097,19 @@ async function submitAction(originalId = null) {
     
     } catch (_) { return; }
 
+    const endpoint = originalId ? 'automation.actions.update' : 'automation.actions.add';
+    const params = { name: data.name };
     try {
-        const result = await api.call(originalId ? 'automation.actions.update' : 'automation.actions.add', data);
+        const result = await api.call(endpoint, data);
         if (result.code === 0) {
-            showToast(originalId ? t('toast.saved') : t('toast.actionCreated', { id }), 'success');
+            showToast(t('failure.ops.action.save.done', params), 'success');
             closeModal('action-modal');
             await refreshActions();
         } else {
-            showToast(typeof t === 'function' ? t('toast.actionCreateFailed') + ': ' + result.message : `创建失败: ${result.message}`, 'error');
+            reportFailure({ op: 'action.save', params, result, endpoint });
         }
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.actionCreateFailed') + ': ' + error.message : `创建失败: ${error.message}`, 'error');
+        reportFailure({ op: 'action.save', params, error, endpoint, write: true });
     }
 }
 
@@ -15691,23 +15713,25 @@ function updateActionFilterParams() {
  * 测试动作
  */
 async function testAction(id) {
+    const params = { name: actionNames.get(id) || id };
+    const endpoint = 'automation.actions.execute';
     try {
-        showToast(typeof t === 'function' ? t('toast.actionExecuting', { id }) : `正在执行动作: ${id}...`, 'info');
-        const result = await api.call('automation.actions.execute', { id });
+        showToast(t('failure.ops.action.test.wait', params), 'info');
+        const result = await api.call(endpoint, { id });
         console.log('Action execute result:', result);
-        
+
         if (result.code === 0) {
-            let msg = t('toast.actionSuccess');
+            let msg = t('failure.ops.action.test.done', params);
             if (result.data?.output) {
                 msg += '\n' + t('promptRepair.outputPreview', {output: result.data.output.substring(0, 100)});
             }
             showToast(msg, 'success');
         } else {
-            showToast(typeof t === 'function' ? t('toast.actionFailed', { id }) + ': ' + (result.message || t('common.unknown')) : `动作 ${id} 失败: ${result.message || '未知错误'}`, 'error');
+            reportFailure({ op: 'action.test', params, result, endpoint });
         }
     } catch (error) {
         console.error('Action execute error:', error);
-        showToast(typeof t === 'function' ? t('toast.actionExecuteFailed') + ': ' + error.message : `动作执行失败: ${error.message}`, 'error');
+        reportFailure({ op: 'action.test', params, error, endpoint, write: true });
     }
 }
 
@@ -15715,10 +15739,11 @@ async function testAction(id) {
  * 编辑动作
  */
 async function editAction(id) {
+    const params = { name: actionNames.get(id) || id };
     try {
         const result = await api.call('automation.actions.get', { id });
         if (result.code !== 0) {
-            showToast(typeof t === 'function' ? t('toast.getActionFailed') + ': ' + result.message : `获取动作详情失败: ${result.message}`, 'error');
+            reportFailure({ op: 'action.load', params, result, endpoint: 'automation.actions.get' });
             return;
         }
         
@@ -15957,7 +15982,7 @@ async function editAction(id) {
         }
         
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.editActionFailed') + ': ' + error.message : `编辑动作失败: ${error.message}`, 'error');
+        reportFailure({ op: 'action.load', params, error, endpoint: 'automation.actions.get' });
     }
 }
 
@@ -15976,6 +16001,8 @@ async function deleteAction(id) {
     if (configurationDeletesInFlight.has(key)) return;
     configurationDeletesInFlight.add(key);
     const pageCurrent = capturePageValidity();
+    const params = { name: actionNames.get(id) || id };
+    let step = 'automation.actions.get';   // which request is in flight, so a failure names the right one
     try {
         if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteAction', { id }) : `确定要删除动作模板 "${id}" 吗？`, { primary: t('common.delete'), tone: 'danger' }) || !pageCurrent()) return;
         showToast(t('toast.processing'), 'info');
@@ -15984,12 +16011,18 @@ async function deleteAction(id) {
         if (template?.type === 'ssh_cmd_ref' && template.ssh_ref?.cmd_id &&
             !await verifyStoppedServiceForDelete(template.ssh_ref.cmd_id, pageCurrent)) return;
         if (!pageCurrent()) return;
-        const result = await api.call('automation.actions.delete', { id });
+        step = 'automation.actions.delete';
+        const result = await api.call(step, { id });
         if (!pageCurrent()) return;
-        showToast(typeof t === 'function' ? t('toast.deleteActionResult', { id }) + ': ' + (result.message || 'OK') : `删除动作 ${id}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
-        if (result.code === 0) await refreshActions();
+        if (result.code === 0) {
+            showToast(t('failure.ops.action.delete.done', params), 'success');
+            await refreshActions();
+        } else {
+            reportFailure({ op: 'action.delete', params, result, endpoint: step });
+        }
     } catch (error) {
-        if (pageCurrent()) showToast(typeof t === 'function' ? t('toast.deleteFailedMsg', { msg: error.message }) : `删除失败: ${error.message}`, 'error');
+        // reading the template first changed nothing: only a failed delete request can leave the result unknown
+        if (pageCurrent()) reportFailure({ op: 'action.delete', params, error, endpoint: step, write: step === 'automation.actions.delete' });
     } finally {
         configurationDeletesInFlight.delete(key);
     }
@@ -15999,15 +16032,23 @@ async function deleteAction(id) {
  * 切换数据源启用状态
  */
 async function toggleSource(id, enable) {
+    const op = enable ? 'source.enable' : 'source.disable';
+    const endpoint = enable ? 'automation.sources.enable' : 'automation.sources.disable';
+    const params = { name: sourceNames.get(id) || id };
     try {
-        const action = enable ? 'automation.sources.enable' : 'automation.sources.disable';
-        const result = await ruleWriteWithRevision(action, id);
-        showToast(typeof t === 'function' ? t('toast.sourceToggled', { id, state: enable ? t('status.enabled') : t('status.disabled') }) + ': ' + (result.message || 'OK') : `数据源 ${id} ${enable ? '启用' : '禁用'}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
+        // A data source has no revision to check (that is for rules): ask the device directly.
+        // (Until now this went through ruleWriteWithRevision, which first looked for a *rule* with the source's id.)
+        const result = await api.call(endpoint, { id });
         if (result.code === 0) {
+            showToast(t(`failure.ops.${op}.done`, params), 'success');
             await refreshSources();
+        } else {
+            const failure = reportFailure({ op, params, result, endpoint });
+            // the switch the user flipped is stale: show the real state
+            if (['not_found', 'result_unknown'].includes(failure.token)) await refreshSources();
         }
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.toggleSourceFailed') + ': ' + error.message : `切换数据源状态失败: ${error.message}`, 'error');
+        reportFailure({ op, params, error, endpoint, write: true });
     }
 }
 
@@ -16018,15 +16059,18 @@ async function deleteSource(id) {
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteSource', { id }) : `确定要删除数据源 "${id}" 吗？此操作不可撤销。`, { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
-    
+
+    const params = { name: sourceNames.get(id) || id };
     try {
         const result = await api.call('automation.sources.delete', { id });
-        showToast(typeof t === 'function' ? t('toast.deleteSourceResult', { id }) + ': ' + (result.message || 'OK') : `删除数据源 ${id}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
         if (result.code === 0) {
+            showToast(t('failure.ops.source.delete.done', params), 'success');
             await Promise.all([refreshSources(), refreshAutomationStatus()]);
+        } else {
+            reportFailure({ op: 'source.delete', params, result, endpoint: 'automation.sources.delete' });
         }
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.deleteSourceFailed') + ': ' + error.message : `删除数据源失败: ${error.message}`, 'error');
+        reportFailure({ op: 'source.delete', params, error, endpoint: 'automation.sources.delete', write: true });
     }
 }
 
@@ -16205,14 +16249,20 @@ async function deleteRule(id) {
         return;
     }
     
+    const params = { name: ruleNames.get(id) || id };
+    const endpoint = 'automation.rules.delete';
     try {
-        const result = await ruleWriteWithRevision('automation.rules.delete', id);
-        showToast(typeof t === 'function' ? t('toast.deleteRuleResult', { id }) + ': ' + (result.message || 'OK') : `删除规则 ${id}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
+        const result = await ruleWriteWithRevision(endpoint, id);
         if (result.code === 0) {
+            showToast(t('failure.ops.rule.delete.done', params), 'success');
             await Promise.all([refreshRules(), refreshAutomationStatus()]);
+        } else {
+            const failure = reportFailure({ op: 'rule.delete', params, result, endpoint: result.endpoint || endpoint });
+            // the list the user acted on is stale: show the real state
+            if (['revision_conflict', 'rule_not_found', 'commit_unknown'].includes(failure.token)) await refreshRules();
         }
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.deleteRuleFailed') + ': ' + error.message : `删除规则失败: ${error.message}`, 'error');
+        reportFailure({ op: 'rule.delete', params, error, endpoint, write: true });
     }
 }
 
@@ -16220,18 +16270,19 @@ async function deleteRule(id) {
  * 编辑规则
  */
 async function editRule(id) {
+    const params = { name: ruleNames.get(id) || id };
     try {
         // 获取规则详情
         const result = await api.call('automation.rules.get', { id });
         if (result.code !== 0 || !result.data) {
-            showToast(typeof t === 'function' ? t('toast.getRuleDetailFailed') + ': ' + (result.message || t('common.unknown')) : `获取规则详情失败: ${result.message || '未知错误'}`, 'error');
+            reportFailure({ op: 'rule.load', params, result, endpoint: 'automation.rules.get' });
             return;
         }
-        
+
         // 打开编辑模态框
         showAddRuleModal(result.data);
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.getRuleDetailFailed') + ': ' + error.message : `获取规则详情失败: ${error.message}`, 'error');
+        reportFailure({ op: 'rule.load', params, error, endpoint: 'automation.rules.get' });
     }
 }
 
@@ -16932,17 +16983,18 @@ async function submitAddSource() {
         params.poll_interval_ms = (parseInt(document.getElementById('source-var-interval').value) || 60) * 1000;
     }
     
+    const messageParams = { name: label };
     try {
         const result = await api.call('automation.sources.add', params);
         if (result.code === 0) {
-            showToast(typeof t === 'function' ? t('toast.sourceCreated', { id }) : `数据源 ${id} 创建成功`, 'success');
+            showToast(t('failure.ops.source.add.done', messageParams), 'success');
             closeModal('add-source-modal');
             await Promise.all([refreshSources(), refreshAutomationStatus()]);
         } else {
-            showToast(typeof t === 'function' ? t('toast.sourceCreateFailed') + ': ' + result.message : `创建数据源失败: ${result.message}`, 'error');
+            reportFailure({ op: 'source.add', params: messageParams, result, endpoint: 'automation.sources.add' });
         }
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.sourceCreateFailed') + ': ' + error.message : `创建数据源失败: ${error.message}`, 'error');
+        reportFailure({ op: 'source.add', params: messageParams, error, endpoint: 'automation.sources.add', write: true });
     }
 }
 
@@ -17345,15 +17397,19 @@ let cachedActionTemplates = [];
 /**
  * 加载动作模板列表
  */
+// Returns null when the list was read, otherwise what describeFailure needs to explain why not.
 async function loadActionTemplatesForRule() {
     try {
         const result = await api.call('automation.actions.list', {});
         if (result.code === 0 && result.data?.templates) {
             cachedActionTemplates = result.data.templates;
+            return null;
         }
+        return { op: 'action.list', result, endpoint: 'automation.actions.list' };
     } catch (e) {
         console.error('加载动作模板失败:', e);
         cachedActionTemplates = [];
+        return { op: 'action.list', error: e, endpoint: 'automation.actions.list' };
     }
 }
 
@@ -17377,10 +17433,12 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
         return;
     }
     // 先加载模板列表
-    await loadActionTemplatesForRule();
-    
+    const loadFailure = await loadActionTemplatesForRule();
+
     if (cachedActionTemplates.length === 0 && !original) {
-        showToast(typeof t === 'function' ? t('toast.createActionFirst') : '请先创建动作模板', 'warning');
+        // an empty list is a different problem from a list that could not be read
+        if (loadFailure) reportFailure(loadFailure);
+        else reportFailure({ op: 'rule.addAction', phase: 'blocked', token: 'no_action_template' }, { type: 'warning' });
         return;
     }
     

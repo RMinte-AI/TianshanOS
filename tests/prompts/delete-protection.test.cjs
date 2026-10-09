@@ -44,7 +44,9 @@ for(const entry of ['action','command']){
  for(const state of ['running','ready','unknown'])test(`${entry}: ${state} never leads to delete or stop`,async()=>{
   const h=await deleteFixture(),calls=responses(h,{state});await invoke(h);
   assert(!calls.some(c=>c.name.endsWith('.delete')||c.name.endsWith('.remove')||c.name.endsWith('.stop')));
-  assert(h.el('toast').textContent.includes(h.ctx.t('promptRepair.serviceDeleteProtected')));
+  // a migrated delete explains it with the failure catalogue (the sentence lives in the rich toast's .toast-msg); the SSH command delete still uses the older sentence
+  const toast=h.el('toast'),shown=toast.children.find(c=>c.className==='toast-msg')?.textContent??toast.textContent;
+  assert(shown.includes(h.ctx.t(entry==='action'?'failure.reasons.service_delete_protected.why':'promptRepair.serviceDeleteProtected')),shown);
  });
  test(`${entry}: failed verification never deletes`,async()=>{
   const h=await deleteFixture(),calls=responses(h,{phase:'failed'});await invoke(h);

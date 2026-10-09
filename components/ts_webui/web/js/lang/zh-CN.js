@@ -1662,7 +1662,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         enterText: '请输入文本内容',
         selectFilter: '请选择滤镜',
         fillLogMessage: '请填写日志消息',
-        fillVarNameValue: '请填写变量名和值',
+        fillVarName: '请填写变量名',
+        fillVarValue: '请填写变量的值',
         fillWebhookUrl: '请填写 Webhook URL',
         actionCreated: '动作模板 {id} 创建成功',
         actionCreateFailed: '创建失败',
@@ -4100,15 +4101,42 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         formatUnknown: '{action}。{hint}',
         details: {
             show: '详情', hide: '收起', close: '关闭',
-            code: '原因代号', api: '接口', device: '设备原文', stage: '阶段', time: '时间',
+            code: '原因代号', api: '接口', device: '原始信息', stage: '阶段', page: '页面错误', time: '时间',
             line: '{label}：{value}'
         },
         ops: {
             generic: { failed: '操作失败', unknown: '操作结果未确认' },
+            // —— 自动化 ——
+            engine: {
+                start: { failed: '启动自动化引擎失败', unknown: '启动自动化引擎的结果未确认', done: '已启动自动化引擎' },
+                stop: { failed: '停止自动化引擎失败', unknown: '停止自动化引擎的结果未确认', done: '已停止自动化引擎' },
+                pause: { failed: '暂停自动化引擎失败', unknown: '暂停自动化引擎的结果未确认', done: '已暂停自动化引擎' },
+                reload: { failed: '重新加载自动化配置失败', unknown: '重新加载自动化配置的结果未确认', done: '已重新加载自动化配置' },
+                status: { failed: '读取自动化引擎状态失败' }
+            },
             rule: {
                 enable: { failed: '启用规则“{name}”失败', unknown: '启用规则“{name}”的结果未确认', done: '已启用规则“{name}”', doneMirror: '已启用规则“{name}”，但备用副本未同步；请勿移除 SD 卡。' },
                 disable: { failed: '禁用规则“{name}”失败', unknown: '禁用规则“{name}”的结果未确认', done: '已禁用规则“{name}”', doneMirror: '已禁用规则“{name}”，但备用副本未同步；请勿移除 SD 卡。' },
-                save: { failed: '保存规则“{name}”失败', unknown: '保存规则“{name}”的结果未确认', done: '已保存规则“{name}”', doneMirror: '已保存规则“{name}”，但备用副本未同步；请勿移除 SD 卡。' }
+                save: { failed: '保存规则“{name}”失败', unknown: '保存规则“{name}”的结果未确认', done: '已保存规则“{name}”', doneMirror: '已保存规则“{name}”，但备用副本未同步；请勿移除 SD 卡。' },
+                trigger: { failed: '触发规则“{name}”失败', unknown: '触发规则“{name}”的结果未确认', done: '已触发规则“{name}”' },
+                delete: { failed: '删除规则“{name}”失败', unknown: '删除规则“{name}”的结果未确认', done: '已删除规则“{name}”' },
+                load: { failed: '读取规则“{name}”的内容失败' },
+                list: { failed: '读取规则列表失败' },
+                addAction: { blocked: '无法添加动作' }
+            },
+            action: {
+                save: { failed: '保存动作模板“{name}”失败', unknown: '保存动作模板“{name}”的结果未确认', done: '已保存动作模板“{name}”' },
+                test: { failed: '测试动作模板“{name}”失败', unknown: '测试动作模板“{name}”的结果未确认', wait: '正在执行动作模板“{name}”…', done: '动作模板“{name}”执行成功' },
+                load: { failed: '读取动作模板“{name}”的内容失败' },
+                delete: { failed: '删除动作模板“{name}”失败', unknown: '删除动作模板“{name}”的结果未确认', done: '已删除动作模板“{name}”' },
+                list: { failed: '读取动作模板列表失败' }
+            },
+            source: {
+                enable: { failed: '启用数据源“{name}”失败', unknown: '启用数据源“{name}”的结果未确认', done: '已启用数据源“{name}”' },
+                disable: { failed: '禁用数据源“{name}”失败', unknown: '禁用数据源“{name}”的结果未确认', done: '已禁用数据源“{name}”' },
+                delete: { failed: '删除数据源“{name}”失败', unknown: '删除数据源“{name}”的结果未确认', done: '已删除数据源“{name}”' },
+                add: { failed: '创建数据源“{name}”失败', unknown: '创建数据源“{name}”的结果未确认', done: '已创建数据源“{name}”' },
+                list: { failed: '读取数据源列表失败' }
             },
             quick: {
                 start: { blocked: '无法启动“{name}”', failed: '启动“{name}”失败', unknown: '启动“{name}”的结果未确认' },
@@ -4135,8 +4163,23 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             invalid_response: { why: '设备返回的内容无法识别', hint: '请刷新页面后再试。' },
             storage_failed: { why: '写入设备存储失败', hint: '若在用 SD 卡，请确认卡已插好；详情见「终端」→「系统日志」。' },
             no_detail: { why: '设备没有返回具体原因', hint: '可在「终端」页打开「系统日志」查看这次操作的详细记录。' },
+            page_error: { why: '页面处理这次操作时出了问题', hint: '请刷新页面后再试；如果仍然如此，请把「详情」里的内容反馈给开发者。' },
             result_unknown: { hint: '请先刷新核对当前状态，不要重复提交。' },
             commit_unknown: { hint: '请重新读取并核对当前状态，不要重复提交。' },
+            // —— 自动化：规则编辑 ——
+            no_action_template: { why: '还没有任何动作模板', hint: '请先到页面里的“动作模板”区域创建一个，再回来选择。' },
+            // —— 自动化：引擎、动作模板、数据源 ——
+            engine_unavailable: { why: '自动化引擎正在停止、仍有操作在执行，或还没有完成初始化', hint: '请稍等几秒再试。' },
+            engine_paused: { why: '自动化引擎处于暂停状态', hint: '如要恢复运行，请先点“停止”，再点“启动”。' },
+            engine_not_running: { why: '自动化引擎当前没有在运行', hint: '请先点“启动”。' },
+            engine_stop_timeout: { why: '还有正在执行的操作没有结束，引擎暂时无法停止', hint: '请等它们结束后再停止。' },
+            config_file_invalid: { why: '自动化引擎的配置文件（automation.json）是空的、太大，或格式不对', hint: '请修正或删除这个文件，再点“重载”。' },
+            template_capacity: { why: '动作模板数量已达上限', hint: '请先删除不用的动作模板。' },
+            template_exists: { why: '已经有相同 ID 的动作模板', hint: '请换一个 ID，或直接编辑已有的那个。' },
+            led_filter_invalid: { why: '滤镜参数不合法', hint: '请检查滤镜参数后再保存。' },
+            source_capacity: { why: '数据源数量已达上限', hint: '请先删除不用的数据源。' },
+            action_failed: { why: '动作执行时没有成功', hint: '点“详情”可以看到设备返回的内容。' },
+            action_timeout: { why: '动作执行超时', hint: '请检查动作的目标（如主机、命令）是否可用。' },
             // —— 自动化：规则启用 / 禁用 / 保存 ——
             execution_busy: { why: '它正在执行中', hint: '等执行完成后再试。' },
             revision_conflict: { why: '它刚被其他操作修改过', hint: '请刷新后确认最新内容，再重新操作。' },
@@ -4148,6 +4191,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             invalid_configuration: { why: '规则内容不完整或不合法', hint: '请检查触发条件和动作，修正后再保存。' },
             configuration_busy: { why: '配置正在被其他操作修改', hint: '请稍后再试。' },
             service_state_unconfirmed: { why: '无法确认它的服务当前状态', hint: '请先核验服务状态。' },
+            service_delete_protected: { why: '它绑定的服务还没有确认已停止，或有操作正在使用它', hint: '请先核验或停止服务，待操作完成后再试。' },
             revision_exhausted: { why: '这条规则的版本号已用尽' },
             // —— 快捷操作：点击卡片启动 ——
             rule_disabled: { why: '这条规则已禁用', hint: '请先到「自动化」页启用它。' },
