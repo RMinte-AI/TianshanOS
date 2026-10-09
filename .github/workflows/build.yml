@@ -107,10 +107,13 @@ jobs:
         with:
           path: |
             ~/esp/esp-idf
-            ~/.espressif
-          key: esp-idf-${{ env.IDF_VERSION }}-${{ runner.os }}-python3.11
+            ~/.espressif/tools
+            ~/.espressif/dist
+          # Python virtual environments embed runner/interpreter paths. Cache
+          # reusable tools only; create the active Python environment per run.
+          key: esp-idf-tools-${{ env.IDF_VERSION }}-${{ runner.os }}-v1
           restore-keys: |
-            esp-idf-${{ env.IDF_VERSION }}-
+            esp-idf-tools-${{ env.IDF_VERSION }}-${{ runner.os }}-
 
       - name: Install ESP-IDF tools and matching Python environment
         run: |
