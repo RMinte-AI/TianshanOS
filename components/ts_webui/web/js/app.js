@@ -7653,7 +7653,7 @@ async function verifyStoppedServiceForDelete(commandId, pageCurrent) {
 }
 
 async function deleteSshCommandFromBackend(cmdId) {
-    requireApiSuccess(await api.call('ssh.commands.remove', { id: cmdId }), 'call');
+    requireApiSuccess(await api.call('ssh.commands.remove', { id: cmdId }), 'ssh.commands.remove');
 }
 
 /**
@@ -7824,6 +7824,10 @@ async function loadHostSelector() {
     try {
         const result = await api.call('ssh.hosts.list', {});
         if (!pageCurrent()) return;
+        if (result.code !== 0) {   // an error is not an empty list
+            container.innerHTML = `<p class="t-note" style="color:var(--bad)">${failureNote({ op: 'host.list', result, endpoint: 'ssh.hosts.list', write: false })}</p>`;
+            return;
+        }
         const hosts = result.data?.hosts || [];
         
         if (hosts.length === 0) {
@@ -7872,7 +7876,7 @@ async function loadHostSelector() {
         
     } catch (e) {
         if (!pageCurrent()) return;
-        container.innerHTML = `<p class="t-note" style="color:var(--bad)">${t('common.loadFailed')}: ${escapeHtml(e.message)}</p>`;
+        container.innerHTML = `<p class="t-note" style="color:var(--bad)">${failureNote({ op: 'host.list', error: e, endpoint: 'ssh.hosts.list', write: false })}</p>`;
     }
 }
 
@@ -8329,7 +8333,8 @@ async function saveCommand() {
     const readyInterval = parseInt(document.getElementById('cmd-ready-interval')?.value) || 5000;
     
     if (!name || !command) {
-        showToast((typeof t === 'function' ? t('toast.fillCommandNameAndCmd') : '请填写指令名称和命令'), 'warning');
+        if (!name) fieldError('cmd-name', t('toast.fillCommandName'));
+        else fieldError('cmd-command', t('toast.fillCommandText'));
         return;
     }
     
@@ -8353,23 +8358,21 @@ async function saveCommand() {
     
     /* ID 验证（必填） */
     if (!cmdId) {
-        showToast((typeof t === 'function' ? t('toast.fillCommandId') : '请填写指令 ID'), 'warning');
-        document.getElementById('cmd-edit-id').focus();
+        fieldError('cmd-edit-id', t('toast.fillCommandId'));
         return;
     }
     if (!validateCommandId(document.getElementById('cmd-edit-id'))) {
-        showToast((typeof t === 'function' ? t('toast.commandIdInvalid') : '指令 ID 格式不正确'), 'warning');
-        document.getElementById('cmd-edit-id').focus();
+        fieldError('cmd-edit-id', t('toast.commandIdInvalid'));
         return;
     }
     
     // 服务模式验证
     if (nohup && serviceMode && !readyPattern) {
-        showToast((typeof t === 'function' ? t('toast.serviceModeRequiresPattern') : '启用服务模式时必须设置就绪匹配模式'), 'warning');
+        fieldError('cmd-ready-pattern', t('toast.serviceModeRequiresPattern'));
         return;
     }
     if (nohup && serviceMode && !varName) {
-        showToast((typeof t === 'function' ? t('toast.serviceModeRequiresVar') : '启用服务模式时必须设置变量名'), 'warning');
+        fieldError('cmd-var-name', t('toast.serviceModeRequiresVar'));
         return;
     }
     
@@ -8396,6 +8399,7 @@ async function saveCommand() {
         ...(nohup && serviceMode && readyInterval !== 5000 && { readyInterval })
     };
     
+    const params = { name };
     try {
         /* 
          * ID 由用户在前端输入，直接传给后端
@@ -8410,11 +8414,11 @@ async function saveCommand() {
             if (existingIdx >= 0) {
                 sshCommands[selectedHostId][existingIdx] = cmdData;
             }
-            showToast((typeof t === 'function' ? t('toast.commandUpdated') : '指令已更新'), 'success');
+            showToast(t('failure.ops.command.save.done', params), 'success');
         } else {
             // 新建模式：添加到本地缓存
             sshCommands[selectedHostId].push(cmdData);
-            showToast((typeof t === 'function' ? t('toast.commandCreated') : '指令已创建'), 'success');
+            showToast(t('failure.ops.command.save.done', params), 'success');
         }
         
         closeCommandModal();
@@ -8422,7 +8426,7 @@ async function saveCommand() {
         
     } catch (e) {
         console.error('Failed to save command:', e);
-        showToast((typeof t === 'function' ? t('toast.saveCommandFailedMsg', { msg: e.message }) : '保存指令失败: ' + e.message), 'error');
+        reportFailure({ op: 'command.save', params, error: e, endpoint: 'ssh.commands.add', write: true });
     }
 }
 
@@ -8579,8 +8583,7 @@ async function doExportSshCommandFromModal(cmdId) {
         resultBox.textContent = (typeof t === 'function' ? t('toast.exportSuccess') : '导出成功！');
         setTimeout(() => hideExportSshCommandModal(), 1000);
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.export', params: { kind: t('failure.kinds.sshCommand'), name: cmdId, file: '' }, error: e, endpoint: 'ssh.commands.export', write: false });
     } finally {
         exportBtn.disabled = false;
     }
@@ -8603,14 +8606,10 @@ async function doExportSshCommand(cmdId, recipientCert, includeHost) {
     
     const result = await api.call('ssh.commands.export', params);
     
-    if (result.code !== 0) {
-        throw new Error(result.message || (typeof t === 'function' ? t('toast.exportFailed') : '导出失败'));
-    }
+    if (result.code !== 0) throw new ApiOperationError(result, 'ssh.commands.export');
     
     const data = result.data;
-    if (!data?.tscfg) {
-        throw new Error(typeof t === 'function' ? t('toast.invalidResponse') : '无效的响应数据');
-    }
+    if (!data?.tscfg) throw new ApiOperationError({}, 'ssh.commands.export', {kind: 'format'});
     
     // 下载文件
     const blob = new Blob([data.tscfg], { type: 'application/json' });
@@ -8709,12 +8708,10 @@ async function previewSshCommandImport() {
             resultBox.textContent = (typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过');
             importBtn.disabled = false;
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('ssh.cannotVerifyPack') : '无法验证配置包'));
+            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshCommand'), file: file.name }, result, endpoint: 'ssh.commands.import', write: false });
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshCommand'), file: file.name }, error: e, endpoint: 'ssh.commands.import', write: false });
     }
 }
 
@@ -8731,6 +8728,7 @@ async function confirmSshCommandImport() {
         return;
     }
     
+    const packParams = { kind: t('failure.kinds.sshCommand'), file: window._importSshCmdFilename || '' };
     resultBox.classList.remove('hidden', 'success', 'error', 'warning');
     resultBox.textContent = (typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...');
     importBtn.disabled = true;
@@ -8753,18 +8751,16 @@ async function confirmSshCommandImport() {
             } else {
                 resultBox.className = 'result-box success';
                 resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : '已保存配置'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('ssh.restartToTakeEffect') : '重启系统后生效'}</small>`;
-                showToast((typeof t === 'function' ? t('toast.importedRestartRequired') : '已导入配置，重启后生效'), 'success');
+                showToast(t('failure.ops.pack.import.done', packParams), 'success');
                 // 不刷新列表，因为还没加载
                 setTimeout(() => hideImportSshCommandModal(), 2000);
             }
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('toast.importFailed') : '导入失败'));
+            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'ssh.commands.import' });
             importBtn.disabled = false;
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'ssh.commands.import', write: true });
         importBtn.disabled = false;
     }
 }
@@ -8777,11 +8773,14 @@ async function deleteCommand(idx) {
     if (configurationDeletesInFlight.has(key)) return;
     configurationDeletesInFlight.add(key);
     const pageCurrent = capturePageValidity();
+    const params = { name: cmd.name || cmd.id };
+    let removing = false;   // once the remove request is on its way, no answer means "unknown"
     try {
         if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteCmd', { name: cmd.name }) : `确定要删除指令「${cmd.name}」吗？`, { primary: t('common.delete'), tone: 'danger' }) || !pageCurrent()) return;
         if (cmd.id) {
             showToast(t('toast.processing'), 'info');
             if (!await verifyStoppedServiceForDelete(cmd.id, pageCurrent) || !pageCurrent()) return;
+            removing = true;
             await deleteSshCommandFromBackend(cmd.id);
         }
         if (!pageCurrent()) return;
@@ -8789,9 +8788,9 @@ async function deleteCommand(idx) {
         const currentIndex = commands?.findIndex(item => item === cmd || (cmd.id && item.id === cmd.id));
         if (currentIndex >= 0) commands.splice(currentIndex, 1);
         if (selectedHostId === hostId) refreshCommandsList();
-        showToast((typeof t === 'function' ? t('toast.commandDeleted') : '指令已删除'), 'success');
+        showToast(t('failure.ops.command.delete.done', params), 'success');
     } catch (e) {
-        if (pageCurrent()) showToast((typeof t === 'function' ? t('toast.deleteCommandFailedMsg', { msg: e.message }) : '删除指令失败: ' + e.message), 'error');
+        if (pageCurrent()) reportFailure({ op: 'command.delete', params, error: e, endpoint: removing ? 'ssh.commands.remove' : (e.operation || 'ssh.commands.get'), write: removing });
     } finally {
         configurationDeletesInFlight.delete(key);
     }
@@ -8996,7 +8995,7 @@ async function nohupStopProcess() {
 async function executeNohupHelperCommand(command, info = currentNohupInfo) {
     const host = window._cmdHostsList?.find(h => h.id === info.hostId);
     if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
+        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
         return;
     }
     
@@ -9016,6 +9015,11 @@ async function executeNohupHelperCommand(command, info = currentNohupInfo) {
         
         // ssh.exec 返回 stdout 和 stderr，不是 output
         if (!ownsExecDisplay(owner)) return;
+        if (result.code !== 0) {
+            resultPre.textContent += '\n' + failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, result, endpoint: 'ssh.exec', write: false });
+            resultPre.scrollTop = resultPre.scrollHeight;
+            return owner;
+        }
         const stdout = result.data?.stdout || '';
         const stderr = result.data?.stderr || '';
         if (stdout || stderr) {
@@ -9026,7 +9030,7 @@ async function executeNohupHelperCommand(command, info = currentNohupInfo) {
         }
     } catch (e) {
         if (!ownsExecDisplay(owner)) return;
-        resultPre.textContent += t('promptRepair.executionFailed', {message: e.message});
+        resultPre.textContent += '\n' + failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, error: e, endpoint: 'ssh.exec', write: false });
     }
     
     // 滚动到底部
@@ -9042,13 +9046,13 @@ async function executeNohupHelperCommand(command, info = currentNohupInfo) {
 async function viewServiceLog(idx, safeName) {
     const cmd = sshCommands[selectedHostId]?.[idx];
     if (!cmd) {
-        showToast((typeof t === 'function' ? t('sshPage.cmdNotFound') : '命令不存在'), 'error');
+        reportFailure({ op: 'command.lookup', phase: 'blocked', token: 'list_stale' });
         return;
     }
     
     const host = window._cmdHostsList?.find(h => h.id === selectedHostId);
     if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
+        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
         return;
     }
     
@@ -9076,6 +9080,10 @@ async function viewServiceLog(idx, safeName) {
         });
         
         if (!ownsExecDisplay(owner)) return;
+        if (result.code !== 0) {
+            resultPre.textContent += failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, result, endpoint: 'ssh.exec', write: false });
+            return;
+        }
         const stdout = result.data?.stdout || '';
         const stderr = result.data?.stderr || '';
         
@@ -9088,7 +9096,7 @@ async function viewServiceLog(idx, safeName) {
         }
     } catch (e) {
         if (!ownsExecDisplay(owner)) return;
-        resultPre.textContent += typeof t === 'function' ? t('sshPage.getLogFailedMsg', { msg: e.message }) : `获取日志失败: ${e.message}`;
+        resultPre.textContent += failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, error: e, endpoint: 'ssh.exec', write: false });
     }
     
     resultPre.scrollTop = resultPre.scrollHeight;
@@ -9125,7 +9133,7 @@ async function executeManagedService(cmd, resultPre) {
         resultPre.textContent += runtimeText('launch_accepted');
     } catch (e) {
         if (ownsExecDisplay(owner))
-            resultPre.textContent += e.uncertain || e.kind === 'timeout' || e.code === 5 ? runtimeText('outcomeUnknown') : e.message;
+            resultPre.textContent += e.uncertain || e.kind === 'timeout' || e.code === 5 ? runtimeText('outcomeUnknown') : failureText({ op: 'service.start', params: { name: cmd.name }, error: e, endpoint: 'ssh.services.start', write: true });
     } finally {
         advanceServiceState(cmd.id);
         serviceStartInFlight.delete(cmd.id);
@@ -9139,13 +9147,13 @@ async function executeCommand(idx) {
     
     const host = window._cmdHostsList?.find(h => h.id === selectedHostId);
     if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
+        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
         return;
     }
     
     // 检查是否有正在运行的命令（nohup 模式不需要检查）
     if (currentExecSessionId && !cmd.nohup) {
-        showToast((typeof t === 'function' ? t('toast.commandRunning') : '有命令正在执行中，请先取消或等待完成'), 'warning');
+        reportFailure({ op: 'ssh.run', phase: 'blocked', token: 'ssh_exec_busy', params: { name: cmd.name } }, { type: 'warning' });
         return;
     }
     
@@ -9172,6 +9180,7 @@ async function executeCommand(idx) {
     }
 
     const owner = claimExecDisplay('ssh', resultPre);
+    owner.target = { host: `${host.username}@${host.host}:${host.port}`, name: cmd.name, user: host.username, port: host.port };
 
     // 对于 nohup 命令，包装命令以实现后台执行，并记录日志和 PID
     let actualCommand = cmd.command;
@@ -9269,8 +9278,9 @@ async function executeCommand(idx) {
             cancelBtn.style.display = 'none';
             return;
         }
-        resultPre.textContent = typeof t === 'function' ? t('sshPage.startExecFailedDetail', { msg: e.message }) : `启动执行失败\n\n${e.message}`;
-        showToast((typeof t === 'function' ? t('toast.startExecFailedMsg', { msg: e.message }) : '启动执行失败: ' + e.message), 'error');
+        const failure = describeFailure({ op: 'ssh.run', params: { host: `${host.username}@${host.host}:${host.port}`, name: cmd.name, user: host.username, port: host.port }, error: e, endpoint: 'ssh.exec_stream', write: true });
+        resultPre.textContent = failure.message;
+        showFailureToast(failure.message, failure.details, { type: failure.uncertain ? 'warning' : 'error' });
         cancelBtn.style.display = 'none';
         currentExecSessionId = null;
     }
@@ -9289,12 +9299,12 @@ async function cancelExecution() {
     cancelBtn.textContent = typeof t === 'function' ? t('ui.cancelling') : '取消中...';
     
     try {
-        requireApiSuccess(await api.call('ssh.cancel', { session_id: sessionId }), 'call');
+        requireApiSuccess(await api.call('ssh.cancel', { session_id: sessionId }), 'ssh.cancel');
         if (!ownsExecDisplay(owner)) return;
         showToast((typeof t === 'function' ? t('toast.cancelSent') : '取消请求已发送'), 'info');
     } catch (e) {
         if (!ownsExecDisplay(owner)) return;
-        showToast((typeof t === 'function' ? t('toast.cancelFailedMsg', { msg: e.message }) : '取消失败: ' + e.message), 'error');
+        reportFailure({ op: 'ssh.cancel', error: e, endpoint: 'ssh.cancel', write: true });
         cancelBtn.disabled = false;
         cancelBtn.innerHTML = '<svg class="i"><use href="#ri-stop-line"/></svg> ' + (typeof t === 'function' ? t('sshPage.cancelEsc') : '取消 (Esc)');
     }
@@ -9440,12 +9450,14 @@ function handleSshExecMessage(msg) {
             
         case 'ssh_exec_error':
             if (msg.session_id === owner.sessionId) {
-                resultPre.textContent += t('promptRepair.sshError', {message: apiErrorMessage({error: msg.error})});
+                // the device reports a reason token (and the connection stage / its own text); the page says it in words
+                const failure = describeFailure({ op: 'ssh.run', params: owner.target || {}, result: { code: 10, error: msg.error, data: { stage: msg.stage, detail: msg.detail } }, endpoint: 'ssh.exec_stream', write: false });
+                resultPre.textContent += '\n' + failure.message + '\n';
                 if (cancelBtn) {
                     cancelBtn.style.display = 'none';
                 }
                 currentExecSessionId = null;
-                showToast((typeof t === 'function' ? t('toast.execErrorMsg', { msg: msg.error }) : '执行出错: ' + msg.error), 'error');
+                showFailureToast(failure.message, failure.details, { type: 'error' });
             }
             break;
             
@@ -10115,20 +10127,23 @@ async function loadSshHostsData() {
         if (!pageCurrent()) return false;
         if (version !== sshHostsLoadVersion) return null; // Superseded, leave the newer list alone.
         const hosts = result.data?.hosts;
-        if (!Array.isArray(hosts)) throw new Error(t('promptRepair.invalidResponse'));
+        if (!Array.isArray(hosts)) throw new ApiOperationError({}, 'ssh.hosts.list', {kind: 'format'});
         const data = {};
         hosts.forEach(h => { data[h.id] = h; });
         window._sshHostsData = data;
+        sshHostsLoadError = null;
         console.log('loadSshHostsData: loaded', Object.keys(window._sshHostsData).length, 'hosts');
         return true;
     } catch (e) {
         if (!pageCurrent()) return false;
         if (version !== sshHostsLoadVersion) return null;
         console.error('loadSshHostsData error:', e);
+        sshHostsLoadError = e;   // the list says why it is empty
         return false;
     }
 }
 
+let sshHostsLoadError = null;
 async function refreshSshHostsList() {
     const pageCurrent = capturePageValidity();
     // 首先加载 SSH hosts 数据（无需 DOM）
@@ -10139,7 +10154,7 @@ async function refreshSshHostsList() {
     if (!tbody) return loaded;  // DOM 渲染部分可选
     
     try {
-        if (!loaded) throw new Error(t('common.loadFailed'));
+        if (!loaded) throw sshHostsLoadError || new ApiOperationError({}, 'ssh.hosts.list', {kind: 'network'});
         const hosts = Object.values(window._sshHostsData || {});
         window._sshHostsList = hosts;
         
@@ -10168,7 +10183,7 @@ async function refreshSshHostsList() {
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Refresh SSH hosts error:', e);
-        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('common.loadFailed')}</span></div>`;
+        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'host.list', error: e, endpoint: 'ssh.hosts.list', write: false })}</span></div>`;
         return false;
     }
 }
@@ -10184,6 +10199,10 @@ async function refreshKnownHostsList() {
     try {
         const result = await api.call('hosts.list', {});
         if (!pageCurrent()) return;
+        if (result.code !== 0) {
+            tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'knownHost.list', result, endpoint: 'hosts.list', write: false })}</span></div>`;
+            return;
+        }
         const hosts = result.data?.hosts || [];
         
         if (hosts.length === 0) {
@@ -10210,7 +10229,7 @@ async function refreshKnownHostsList() {
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Refresh known hosts error:', e);
-        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${t('common.loadFailed')}</span></div>`;
+        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'knownHost.list', error: e, endpoint: 'hosts.list', write: false })}</span></div>`;
     }
 }
 
@@ -10240,7 +10259,7 @@ async function copyFingerprintInfo() {
         await navigator.clipboard.writeText(text);
         showToast(t('toast.copied'), 'success');
     } catch (e) {
-        showToast(t('toast.copyFailedMsg', { msg: e.message }), 'error');
+        reportCopyFailure(e);
     }
 }
 
@@ -10253,16 +10272,17 @@ async function removeKnownHost(index) {
     
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteFingerprint', { host: host.host, port: host.port }) : `确定要删除主机 ${host.host}:${host.port} 的指纹记录吗？\n\n删除后下次连接将重新验证服务器指纹。`, { primary: t('common.delete'), tone: 'danger' })) return;
     
+    const params = { host: `${host.host}:${host.port}` };
     try {
         const result = await api.call('hosts.remove', { host: host.host, port: host.port });
         if (result.code === 0) {
-            showToast((typeof t === 'function' ? t('toast.hostFingerprintDeleted') : '已删除主机指纹'), 'success');
+            showToast(t('failure.ops.knownHost.remove.done', params), 'success');
             await refreshKnownHostsList();
         } else {
-            showToast((typeof t === 'function' ? t('toast.deleteFailedMsg', { msg: result.message || t('common.unknown') }) : '删除失败: ' + (result.message || '未知错误')), 'error');
+            reportFailure({ op: 'knownHost.remove', params, result, endpoint: 'hosts.remove' });
         }
     } catch (e) {
-        showToast((typeof t === 'function' ? t('toast.deleteFailedMsg', { msg: e.message }) : '删除失败: ' + e.message), 'error');
+        reportFailure({ op: 'knownHost.remove', params, error: e, endpoint: 'hosts.remove', write: true });
     }
 }
 
@@ -10272,7 +10292,7 @@ async function removeKnownHost(index) {
 async function testSshHostByIndex(index) {
     const host = window._sshHostsList?.[index];
     if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
+        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
         return;
     }
     
@@ -10399,8 +10419,7 @@ async function doExportSshHostFromModal(hostId) {
         resultBox.textContent = typeof t === 'function' ? t('toast.exportSuccess') : 'Export successful!';
         setTimeout(() => hideExportSshHostModal(), 1000);
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.export', params: { kind: t('failure.kinds.sshHost'), name: hostId, file: '' }, error: e, endpoint: 'ssh.hosts.export', write: false });
     } finally {
         exportBtn.disabled = false;
     }
@@ -10419,14 +10438,10 @@ async function doExportSshHost(hostId, recipientCert) {
     
     const result = await api.call('ssh.hosts.export', params);
     
-    if (result.code !== 0) {
-        throw new Error(result.message || t('toast.exportFailed'));
-    }
+    if (result.code !== 0) throw new ApiOperationError(result, 'ssh.hosts.export');
     
     const data = result.data;
-    if (!data?.tscfg) {
-        throw new Error(t('toast.invalidResponse'));
-    }
+    if (!data?.tscfg) throw new ApiOperationError({}, 'ssh.hosts.export', {kind: 'format'});
     
     // 下载文件
     const blob = new Blob([data.tscfg], { type: 'application/json' });
@@ -10511,12 +10526,10 @@ async function previewSshHostImport() {
             resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
             importBtn.disabled = false;
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('ssh.cannotVerifyPack') : '无法验证配置包'));
+            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshHost'), file: file.name }, result, endpoint: 'ssh.hosts.import', write: false });
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshHost'), file: file.name }, error: e, endpoint: 'ssh.hosts.import', write: false });
     }
 }
 
@@ -10533,6 +10546,7 @@ async function confirmSshHostImport() {
         return;
     }
     
+    const packParams = { kind: t('failure.kinds.sshHost'), file: window._importSshHostFilename || '' };
     resultBox.classList.remove('hidden', 'success', 'error', 'warning');
     resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
     importBtn.disabled = true;
@@ -10553,18 +10567,16 @@ async function confirmSshHostImport() {
             } else {
                 resultBox.className = 'result-box success';
                 resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(typeof t === 'function' ? t('toast.importedRestartRequired') : 'Imported, restart to apply', 'success');
+                showToast(t('failure.ops.pack.import.done', packParams), 'success');
                 // 不刷新列表，因为还没加载
                 setTimeout(() => hideImportSshHostModal(), 2000);
             }
         } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('toast.importFailed') : 'Import failed'));
+            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'ssh.hosts.import' });
             importBtn.disabled = false;
         }
     } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'ssh.hosts.import', write: true });
         importBtn.disabled = false;
     }
 }
@@ -10575,22 +10587,23 @@ async function confirmSshHostImport() {
 async function removeHostByIndex(index) {
     const host = window._sshHostsList?.[index];
     if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
+        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
         return;
     }
     
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRemoveHostLocal', { id: host.id }) : `确定要从列表中移除主机 "${host.id}" 吗？\n\n注意：这只会移除本地记录，不会删除已部署到服务器上的公钥。如需撤销公钥，请点击「撤销」按钮。`, { primary: t('securityPage.remove'), tone: 'danger' })) return;
     
+    const params = { name: host.id };
     try {
         const result = await api.call('ssh.hosts.remove', { id: host.id });
         if (result.code === 0) {
-            showToast(typeof t === 'function' ? t('toast.sshHostRemoved', { id: host.id }) : `SSH 主机 ${host.id} 已从列表移除`, 'success');
+            showToast(t('failure.ops.host.remove.done', params), 'success');
             await loadSshHostsData();
         } else {
-            showToast((typeof t === 'function' ? t('toast.removeFailedMsg', { msg: result.message || t('common.unknown') }) : '移除失败: ' + (result.message || '未知错误')), 'error');
+            reportFailure({ op: 'host.remove', params, result, endpoint: 'ssh.hosts.remove' });
         }
     } catch (e) {
-        showToast((typeof t === 'function' ? t('toast.removeFailedMsg', { msg: e.message }) : '移除失败: ' + e.message), 'error');
+        reportFailure({ op: 'host.remove', params, error: e, endpoint: 'ssh.hosts.remove', write: true });
     }
 }
 
@@ -10600,7 +10613,7 @@ async function removeHostByIndex(index) {
 function revokeKeyFromHost(index) {
     const host = window._sshHostsList?.[index];
     if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotFound') : '主机信息不存在'), 'error');
+        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
         return;
     }
     
@@ -10634,9 +10647,10 @@ async function doRevokeFromHost(index) {
     
     const password = document.getElementById('revoke-host-password').value;
     if (!password) {
-        showToast(typeof t === 'function' ? t('securityPage.enterPassword') : 'Please enter password', 'error');
+        fieldError('revoke-host-password', t('securityPage.enterPassword'));
         return;
     }
+    const params = { host: `${host.username}@${host.host}:${host.port}`, key: host.keyid || 'default', name: host.id, user: host.username, port: host.port };
     
     const resultBox = document.getElementById('revoke-host-result');
     const revokeBtn = document.getElementById('revoke-host-btn');
@@ -10653,8 +10667,13 @@ async function doRevokeFromHost(index) {
             resultBox.classList.add('success');
             
             // 自动移除本地记录
-            requireApiSuccess(await api.call('ssh.hosts.remove', { id: host.id }), 'call');
-            showToast(typeof t === 'function' ? t('securityPage.revokedAndRemoved') : 'Revoked public key and removed host record', 'success');
+            const removed = await api.call('ssh.hosts.remove', { id: host.id });
+            if (removed.code !== 0) {
+                // the key is gone from the server; only the record here is left
+                packBox(resultBox, { op: 'host.removeAfterRevoke', params, result: removed, endpoint: 'ssh.hosts.remove' });
+                return;
+            }
+            showToast(t('securityPage.revokedAndRemoved'), 'success');
             
             setTimeout(() => {
                 hideRevokeHostModal();
@@ -10667,19 +10686,24 @@ async function doRevokeFromHost(index) {
             // 提供移除本地记录的选项
             revokeBtn.innerHTML = '<svg class="i"><use href="#ri-delete-bin-line"/></svg> ' + (typeof t === 'function' ? t('securityPage.removeLocalRecord') : 'Remove Local Record Only');
             revokeBtn.onclick = async () => {
-                requireApiSuccess(await api.call('ssh.hosts.remove', { id: host.id }), 'call');
-                showToast(typeof t === 'function' ? t('securityPage.removedLocalRecord') : 'Removed local host record', 'success');
+                try {
+                    const removed = await api.call('ssh.hosts.remove', { id: host.id });
+                    if (removed.code !== 0) { packBox(resultBox, { op: 'host.remove', params, result: removed, endpoint: 'ssh.hosts.remove' }); return; }
+                } catch (e) {
+                    packBox(resultBox, { op: 'host.remove', params, error: e, endpoint: 'ssh.hosts.remove', write: true });
+                    return;
+                }
+                showToast(t('securityPage.removedLocalRecord'), 'success');
                 hideRevokeHostModal();
                 refreshSshHostsList();
             };
             revokeBtn.disabled = false;
             return;  // 不进入 finally
         } else {
-            throw new Error(result.message || (typeof t === 'function' ? t('securityPage.revokeFailed') : 'Revoke failed'));
+            packBox(resultBox, { op: 'key.revoke', params, result, endpoint: 'ssh.revoke' });
         }
     } catch (e) {
-        resultBox.textContent = (typeof t === 'function' ? t('securityPage.revokeFailed') : 'Revoke failed') + ': ' + e.message;
-        resultBox.classList.add('error');
+        packBox(resultBox, { op: 'key.revoke', params, error: e, endpoint: 'ssh.revoke', write: true });
     } finally {
         revokeBtn.disabled = false;
     }
@@ -10687,12 +10711,13 @@ async function doRevokeFromHost(index) {
 
 async function deleteKey(id) {
     if (await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteKey', { id }) : `确定要删除密钥 "${id}" 吗？此操作不可撤销！`, { primary: t('common.delete'), tone: 'danger' })) {
+        const params = { name: id };
         try {
-            requireApiSuccess(await api.keyDelete(id), 'keyDelete');
-            showToast((typeof t === 'function' ? t('toast.keyDeleted') : '密钥已删除'), 'success');
+            requireApiSuccess(await api.keyDelete(id), 'key.delete');
+            showToast(t('failure.ops.key.delete.done', params), 'success');
             await refreshSecurityPage();
         } catch (e) {
-            showToast((typeof t === 'function' ? t('toast.deleteFailedMsg', { msg: e.message }) : '删除失败: ' + e.message), 'error');
+            reportFailure({ op: 'key.delete', params, error: e, endpoint: 'key.delete', write: true });
         }
     }
 }
@@ -10704,10 +10729,10 @@ async function exportKey(id) {
             // 显示公钥弹窗
             showPubkeyModal(id, result.data.public_key, result.data.type, result.data.comment);
         } else {
-            showToast((typeof t === 'function' ? t('toast.cannotGetPublicKey') : '无法获取公钥'), 'error');
+            reportFailure({ op: 'key.exportPublic', params: { name: id }, result, token: result.code === 0 ? 'invalid_response' : undefined, endpoint: 'key.export', write: false });
         }
     } catch (e) {
-        showToast((typeof t === 'function' ? t('toast.exportFailedMsg', { msg: e.message }) : '导出失败: ' + e.message), 'error');
+        reportFailure({ op: 'key.exportPublic', params: { name: id }, error: e, endpoint: 'key.export', write: false });
     }
 }
 
@@ -10722,10 +10747,10 @@ async function exportPrivateKey(id) {
         if (result.data?.private_key) {
             showPrivkeyModal(id, result.data.private_key, result.data.type, result.data.comment);
         } else {
-            showToast((typeof t === 'function' ? t('toast.cannotGetPrivateKey') : '无法获取私钥'), 'error');
+            reportFailure({ op: 'key.exportPrivate', params: { name: id }, result, token: result.code === 0 ? 'invalid_response' : undefined, endpoint: 'key.exportPrivate', write: false });
         }
     } catch (e) {
-        showToast((typeof t === 'function' ? t('toast.exportFailedMsg', { msg: e.message }) : '导出失败: ' + e.message), 'error');
+        reportFailure({ op: 'key.exportPrivate', params: { name: id }, error: e, endpoint: 'key.exportPrivate', write: false });
     }
 }
 
@@ -10866,7 +10891,9 @@ async function deployKey() {
     const password = document.getElementById('deploy-password').value;
     
     if (!host || !user || !password) {
-        showToast((typeof t === 'function' ? t('toast.fillServerInfo') : '请填写完整的服务器信息'), 'error');
+        if (!host) fieldError('deploy-host', t('toast.fillServerHost'));
+        else if (!user) fieldError('deploy-user', t('toast.fillServerUser'));
+        else fieldError('deploy-password', t('toast.fillServerPassword'));
         return;
     }
     
@@ -10916,8 +10943,7 @@ async function deployKey() {
         showToast(resultBox.textContent, tone, 6000);
     } catch (e) {
         if (!pageCurrent()) return;
-        resultBox.textContent = (typeof t === 'function' ? t('pkiPage.deployFailedMsg', { msg: e.message }) : '部署失败: ' + e.message);
-        resultBox.classList.add('error');
+        packBox(resultBox, { op: 'key.deploy', params: { host: `${user}@${host}:${port}`, key: keyId, user, port }, error: e, endpoint: 'ssh.copyid', write: true });
     } finally {
         deployBtn.disabled = false;
     }
@@ -10955,7 +10981,9 @@ async function revokeKey() {
     const password = document.getElementById('revoke-password').value;
     
     if (!host || !user || !password) {
-        showToast((typeof t === 'function' ? t('toast.fillServerInfo') : '请填写完整的服务器信息'), 'error');
+        if (!host) fieldError('revoke-host', t('toast.fillServerHost'));
+        else if (!user) fieldError('revoke-user', t('toast.fillServerUser'));
+        else fieldError('revoke-password', t('toast.fillServerPassword'));
         return;
     }
     
@@ -10968,7 +10996,8 @@ async function revokeKey() {
     
     try {
         // 调用 ssh.revoke API（与 CLI 逻辑一致）
-        const result = requireApiSuccess(await api.sshRevoke(host, user, password, currentRevokeKeyId, port), 'ssh.revoke');
+        const revokeKeyId = currentRevokeKeyId;
+        const result = requireApiSuccess(await api.sshRevoke(host, user, password, revokeKeyId, port), 'ssh.revoke');
         
         if (result.data?.revoked === true) {
             resultBox.textContent = typeof t === 'function' ? t('sshPage.revokeSuccess', { target: `${user}@${host}`, count: result.data.removed_count || 1 }) : `撤销成功！已从 ${user}@${host} 移除 ${result.data.removed_count || 1} 个匹配的公钥`;
@@ -10979,11 +11008,10 @@ async function revokeKey() {
             resultBox.classList.add('warning');
             showToast((typeof t === 'function' ? t('toast.publicKeyNotFound') : '公钥未找到'), 'warning');
         } else {
-            throw new Error(t('securityPage.revokeFailed'));
+            packBox(resultBox, { op: 'key.revoke', params: { host: `${user}@${host}:${port}`, key: revokeKeyId, user, port }, token: 'invalid_response', endpoint: 'ssh.revoke' });
         }
     } catch (e) {
-        resultBox.textContent = (typeof t === 'function' ? t('pkiPage.revokeFailedMsg', { msg: e.message }) : '撤销失败: ' + e.message);
-        resultBox.classList.add('error');
+        packBox(resultBox, { op: 'key.revoke', params: { host: `${user}@${host}:${port}`, key: currentRevokeKeyId, user, port }, error: e, endpoint: 'ssh.revoke', write: true });
     } finally {
         revokeBtn.disabled = false;
     }
@@ -12408,15 +12436,41 @@ function reportFailure(spec, {type = null, attempt = null} = {}) {
 }
 
 // The same sentence written into the page (a list that could not be loaded, a status line, a result box) instead of a
-// toast. Returns HTML-safe markup; the technical details become the tooltip.
-// A failure inside the result box of a dialog (config pack export / verification / import): the sentence in the box, the
-// technical details as its tooltip.
+// toast. Returns HTML-safe markup: the sentence, and when there are technical details a "Details" link that opens them.
+function failureHtml(failure) {
+    const more = failure.details
+        ? ` <a href="#" class="note-more" role="button" aria-expanded="false" onclick="return toggleNoteDetails(this)">${escapeHtml(t('failure.details.show'))}</a><span class="note-detail" hidden>${escapeHtml(failure.details)}</span>`
+        : '';
+    return `<span class="note-msg">${escapeHtml(failure.message)}</span>${more}`;
+}
+function failureNote(spec) {
+    return failureHtml(describeFailure(spec));
+}
+// The sentence only, for a plain text pane (command output): no markup, no details.
+function failureText(spec) {
+    return describeFailure(spec).message;
+}
+function toggleNoteDetails(link) {
+    const detail = link.nextElementSibling;
+    if (!detail) return false;
+    detail.hidden = !detail.hidden;
+    link.setAttribute('aria-expanded', String(!detail.hidden));
+    link.textContent = t(detail.hidden ? 'failure.details.show' : 'failure.details.hide');
+    return false;   // the link is only a button
+}
+
+// A failure inside the result box of a dialog (config pack export / verification / import, deploying a key ...).
 function packBox(box, spec) {
     const failure = describeFailure(spec);
-    box.className = 'result-box error';
-    box.textContent = failure.message;
-    box.title = failure.details || '';
+    box.classList.remove('hidden', 'success', 'warning', 'error');
+    box.classList.add('result-box', 'error');
+    box.innerHTML = failureHtml(failure);
     return failure;
+}
+
+// The browser refused to write to the clipboard (not the device's doing).
+function reportCopyFailure(error) {
+    return reportFailure({ op: 'clipboard.copy', token: 'clipboard_denied', error, write: false });
 }
 
 // An address in a sentence: long ones are cut so the sentence stays readable.

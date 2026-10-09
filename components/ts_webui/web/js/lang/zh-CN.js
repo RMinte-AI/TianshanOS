@@ -1477,6 +1477,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         saveCommandFailedMsg: '保存指令失败: {msg}',
         deleteCommandFailedMsg: '删除指令失败: {msg}',
         fillServerInfo: '请填写完整的服务器信息',
+        fillServerHost: '请填写服务器地址',
+        fillServerUser: '请填写用户名',
+        fillServerPassword: '请填写密码',
         publicKeyNotFound: '公钥未找到',
         oldHostKeyRemoved: '旧主机密钥已移除，请重新连接以信任新密钥',
         allHostsCleared: '已清除所有已知主机',
@@ -1745,8 +1748,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         // SSH 页面
         selectHostFirst: '请先选择一个主机',
         fillCommandNameAndCmd: '请填写指令名称和命令',
+        fillCommandName: '请填写指令名称',
+        fillCommandText: '请填写要执行的命令',
         fillCommandId: '请填写指令 ID',
-        commandIdInvalid: '指令 ID 格式不正确',
+        commandIdInvalid: '指令 ID 只能包含字母、数字、下划线和短横线，不能以下划线或短横线开头或结尾，最长 31 个字符',
         serviceModeRequiresPattern: '启用服务模式时必须设置就绪匹配模式',
         serviceModeRequiresVar: '启用服务模式时必须设置变量名',
         commandUpdated: '指令已更新',
@@ -4109,10 +4114,34 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             // —— 通用的列表读取（各页都会用到）——
             image: { list: { failed: '读取图片列表失败' } },
             variable: { list: { failed: '读取变量列表失败' } },
-            host: { list: { failed: '读取主机列表失败' } },
+            host: {
+                list: { failed: '读取主机列表失败' },
+                lookup: { blocked: '找不到这台主机的记录' },
+                remove: { failed: '移除主机“{name}”失败', unknown: '移除主机“{name}”的结果未确认', done: '已移除主机“{name}”' },
+                removeAfterRevoke: { failed: '公钥已经从服务器上撤销，但没能移除本机上的主机记录“{name}”', unknown: '公钥已经从服务器上撤销，但移除本机上的主机记录“{name}”的结果未确认' }
+            },
+            knownHost: {
+                list: { failed: '读取已知主机指纹列表失败' },
+                remove: { failed: '删除“{host}”的指纹记录失败', unknown: '删除“{host}”的指纹记录的结果未确认', done: '已删除“{host}”的指纹记录' }
+            },
+            key: {
+                delete: { failed: '删除密钥“{name}”失败', unknown: '删除密钥“{name}”的结果未确认', done: '已删除密钥“{name}”' },
+                exportPublic: { failed: '导出密钥“{name}”的公钥失败' },
+                exportPrivate: { failed: '导出密钥“{name}”的私钥失败' },
+                deploy: { failed: '向“{host}”部署密钥“{key}”失败', unknown: '向“{host}”部署密钥“{key}”的结果未确认' },
+                revoke: { failed: '从“{host}”撤销密钥“{key}”失败', unknown: '从“{host}”撤销密钥“{key}”的结果未确认' }
+            },
+            clipboard: { copy: { failed: '复制到剪贴板失败' } },
+            // —— SSH 指令 ——
+            service: { start: { failed: '启动服务“{name}”失败', unknown: '启动服务“{name}”的结果未确认' } },
+            command: {
+                lookup: { blocked: '找不到这条指令' },
+                save: { failed: '保存指令“{name}”失败', unknown: '保存指令“{name}”的结果未确认', done: '已保存指令“{name}”' },
+                delete: { failed: '删除指令“{name}”失败', unknown: '删除指令“{name}”的结果未确认', done: '已删除指令“{name}”' }
+            },
             // —— 配置包（.tscfg）的导出 / 验证 / 导入 ——
             pack: {
-                export: { failed: '导出{kind}“{name}”失败', done: '已导出{kind}“{name}”：{file}' },
+                export: { failed: '导出“{name}”（{kind}）失败', done: '已导出“{name}”（{kind}）：{file}' },
                 verify: { failed: '验证配置包“{file}”失败' },
                 import: { failed: '导入配置包“{file}”失败', unknown: '导入配置包“{file}”的结果未确认', done: '已导入配置包“{file}”，重启后生效' }
             },
@@ -4156,7 +4185,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
                 wait: '刚刚触发过其他快捷操作，请等几秒再试。'
             },
             ssh: {
-                connect: { failed: '连接 {host} 失败', unknown: '连接 {host} 的结果未确认', cancelled: '已取消：没有信任 {host} 的指纹，未连接。' }
+                connect: { failed: '连接 {host} 失败', unknown: '连接 {host} 的结果未确认', cancelled: '已取消：没有信任 {host} 的指纹，未连接。' },
+                run: { blocked: '无法执行命令“{name}”', failed: '在“{host}”上执行命令“{name}”失败', unknown: '在“{host}”上执行命令“{name}”的结果未确认' },
+                helper: { failed: '在“{host}”上执行辅助命令失败' },
+                cancel: { failed: '取消命令失败', unknown: '取消命令的结果未确认' }
             }
         },
         // 句子里怎么称呼一类对象（{kind}）
@@ -4184,6 +4216,28 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             commit_unknown: { hint: '请重新读取并核对当前状态，不要重复提交。' },
             // —— 自动化：规则编辑 ——
             no_action_template: { why: '还没有任何动作模板', hint: '请先到页面里的“动作模板”区域创建一个，再回来选择。' },
+            // —— SSH：主机、密钥、指令、执行 ——
+            list_stale: { why: '页面上的列表已经过期', hint: '请刷新列表后再试。' },
+            clipboard_denied: { why: '浏览器不允许这个页面写入剪贴板', hint: '请手动选中文字复制；用 HTTP 地址访问时，部分浏览器会禁用剪贴板。' },
+            known_host_failed: { why: '设备没能核对或保存这台主机的指纹', hint: '若在用 SD 卡，请确认卡已插好；详情见「终端」→「系统日志」。' },
+            ssh_host_key_unknown: { why: '这是第一次连接这台主机，它的指纹还没有登记', hint: '请先到「安全」页的 SSH 主机里点“测试”，核对并信任它的指纹。' },
+            ssh_host_key_changed: { why: '这台主机的指纹和之前登记的不一样', hint: '可能是服务器重装了，也可能有人在冒充它；请先到「安全」页核对指纹。' },
+            ssh_config_invalid: { why: '登录信息不完整（缺少用户名，或密码和密钥都没有）', hint: '请到「安全」页补全这台主机的用户名，以及密码或密钥。' },
+            ssh_exec_failed: { why: '命令没有执行成功', hint: '点“详情”可以看到设备返回的信息。' },
+            ssh_exec_busy: { why: '另一条 SSH 命令正在执行', hint: '请等它结束，或先取消它。' },
+            ssh_start_failed: { why: '没能开始执行这条 SSH 命令', hint: '请稍后再试；点“详情”可以看到设备返回的信息。' },
+            ssh_no_session: { why: '没有正在执行的命令', hint: '它可能已经结束了。' },
+            ssh_cancel_failed: { why: '取消请求没能送达', hint: '请到「终端」页的系统日志里确认命令是否还在执行。' },
+            key_not_found: { why: '设备的密钥库里没有这把密钥', hint: '请刷新密钥列表，或重新生成密钥。' },
+            pubkey_invalid: { why: '这把公钥的格式不对，无法使用', hint: '请换一把密钥，或重新生成。' },
+            ssh_deploy_failed: { why: '服务器没有接受部署公钥的命令', hint: '点“详情”可以看到服务器返回的信息；请确认这个账户有权限修改自己的 SSH 授权文件。' },
+            ssh_revoke_check_failed: { why: '没能检查服务器上是否有这把公钥', hint: '请确认能正常登录这台服务器、网络畅通，再试一次。' },
+            ssh_revoke_failed: { why: '服务器上的公钥没能删除', hint: '请稍后重试，或登录那台服务器手动删除。' },
+            key_exists: { why: '已经有同名的密钥', hint: '请换一个名称。' },
+            host_capacity: { why: '主机记录数量已达上限', hint: '请先删除不用的主机。' },
+            command_capacity: { why: '指令数量已达上限', hint: '请先删除不用的指令。' },
+            ssh_output_incomplete: { why: '命令的输出没能完整送到页面，远端的执行结果未确认', hint: '请到那台主机上确认命令是否已经执行完，不要直接重复执行。' },
+            ssh_result_unknown: { why: '命令的结果没能送到页面，是否成功未知', hint: '请到那台主机上确认命令是否已经执行完，不要直接重复执行。' },
             // —— 配置包 ——
             pack_parse_failed: { why: '这个文件不是有效的配置包（内容无法解析）', hint: '请确认选的是从天山 OS 导出的 .tscfg 文件，并且没有被改动过。' },
             pack_version_unsupported: { why: '配置包的版本这台设备不支持', hint: '请换用匹配的固件版本重新导出，或把这台设备升级到较新的版本。' },

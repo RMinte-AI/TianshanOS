@@ -1555,6 +1555,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         saveCommandFailedMsg: 'Failed to save command: {msg}',
         deleteCommandFailedMsg: 'Failed to delete command: {msg}',
         fillServerInfo: 'Please fill in complete server information',
+        fillServerHost: 'Please enter the server address',
+        fillServerUser: 'Please enter the user name',
+        fillServerPassword: 'Please enter the password',
         publicKeyNotFound: 'Public key not found',
         oldHostKeyRemoved: 'Old host key removed, reconnect to trust new key',
         allHostsCleared: 'All known hosts cleared',
@@ -1786,8 +1789,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         // SSH page
         selectHostFirst: 'Please select a host first',
         fillCommandNameAndCmd: 'Please fill in command name and command',
-        fillCommandId: 'Please fill in command ID',
-        commandIdInvalid: 'Command ID format invalid',
+        fillCommandName: 'Please enter a name for the command',
+        fillCommandText: 'Please enter the command to run',
+        fillCommandId: 'Please enter a command ID',
+        commandIdInvalid: 'The command ID may only contain letters, numbers, underscores and hyphens, cannot start or end with an underscore or hyphen, and can be at most 31 characters long',
         serviceModeRequiresPattern: 'Ready pattern is required when service mode is enabled',
         serviceModeRequiresVar: 'Variable name is required when service mode is enabled',
         commandUpdated: 'Command updated',
@@ -2766,7 +2771,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         savedConfig: 'Saved config',
         restartToApply: 'Restart to apply',
         // Revoke host modal
-        enterPassword: 'Please enter password',
+        enterPassword: 'Please enter the password',
         revokingKey: 'Revoking public key...',
         revokeSuccess: 'Revoked! Removed {count} matching public key(s)',
         revokedAndRemoved: 'Revoked public key and removed host record',
@@ -4146,10 +4151,34 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             // -- Lists read by several pages --
             image: { list: { failed: 'Failed to read the image list' } },
             variable: { list: { failed: 'Failed to read the variable list' } },
-            host: { list: { failed: 'Failed to read the host list' } },
+            host: {
+                list: { failed: 'Failed to read the host list' },
+                lookup: { blocked: 'Can\'t find the record of this host' },
+                remove: { failed: 'Failed to remove host “{name}”', unknown: 'The result of removing host “{name}” is unconfirmed', done: 'Host “{name}” removed' },
+                removeAfterRevoke: { failed: 'The public key was revoked on the server, but the host record “{name}” on this device could not be removed', unknown: 'The public key was revoked on the server, but the result of removing the host record “{name}” on this device is unconfirmed' }
+            },
+            knownHost: {
+                list: { failed: 'Failed to read the known host fingerprint list' },
+                remove: { failed: 'Failed to delete the fingerprint record of “{host}”', unknown: 'The result of deleting the fingerprint record of “{host}” is unconfirmed', done: 'Fingerprint record of “{host}” deleted' }
+            },
+            key: {
+                delete: { failed: 'Failed to delete key “{name}”', unknown: 'The result of deleting key “{name}” is unconfirmed', done: 'Key “{name}” deleted' },
+                exportPublic: { failed: 'Failed to export the public key of “{name}”' },
+                exportPrivate: { failed: 'Failed to export the private key of “{name}”' },
+                deploy: { failed: 'Failed to deploy key “{key}” to “{host}”', unknown: 'The result of deploying key “{key}” to “{host}” is unconfirmed' },
+                revoke: { failed: 'Failed to revoke key “{key}” from “{host}”', unknown: 'The result of revoking key “{key}” from “{host}” is unconfirmed' }
+            },
+            clipboard: { copy: { failed: 'Failed to copy to the clipboard' } },
+            // -- SSH commands --
+            service: { start: { failed: 'Failed to start service “{name}”', unknown: 'The result of starting service “{name}” is unconfirmed' } },
+            command: {
+                lookup: { blocked: 'Can\'t find this command' },
+                save: { failed: 'Failed to save command “{name}”', unknown: 'The result of saving command “{name}” is unconfirmed', done: 'Command “{name}” saved' },
+                delete: { failed: 'Failed to delete command “{name}”', unknown: 'The result of deleting command “{name}” is unconfirmed', done: 'Command “{name}” deleted' }
+            },
             // -- Config packs (.tscfg): export / verify / import --
             pack: {
-                export: { failed: 'Failed to export the {kind} “{name}”', done: 'Exported the {kind} “{name}”: {file}' },
+                export: { failed: 'Failed to export “{name}” ({kind})', done: 'Exported “{name}” ({kind}): {file}' },
                 verify: { failed: 'Failed to verify the config pack “{file}”' },
                 import: { failed: 'Failed to import the config pack “{file}”', unknown: 'The result of importing the config pack “{file}” is unconfirmed', done: 'Imported the config pack “{file}”. It takes effect after a restart.' }
             },
@@ -4193,7 +4222,10 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
                 wait: 'Another quick action was just triggered. Wait a few seconds, then try again.'
             },
             ssh: {
-                connect: { failed: 'Failed to connect to {host}', unknown: 'The result of connecting to {host} is unconfirmed', cancelled: 'Cancelled: the fingerprint of {host} was not trusted, so no connection was made.' }
+                connect: { failed: 'Failed to connect to {host}', unknown: 'The result of connecting to {host} is unconfirmed', cancelled: 'Cancelled: the fingerprint of {host} was not trusted, so no connection was made.' },
+                run: { blocked: 'Can\'t run command “{name}”', failed: 'Failed to run command “{name}” on “{host}”', unknown: 'The result of running command “{name}” on “{host}” is unconfirmed' },
+                helper: { failed: 'Failed to run the helper command on “{host}”' },
+                cancel: { failed: 'Failed to cancel the command', unknown: 'The result of cancelling the command is unconfirmed' }
             }
         },
         // what a kind of object is called inside a sentence ({kind})
@@ -4221,6 +4253,28 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             commit_unknown: { hint: 'Reload and check the current state before submitting again.' },
             // -- Automation: editing a rule --
             no_action_template: { why: 'there are no action templates yet', hint: 'Create one in the “Action templates” area of the page first, then come back and choose it.' },
+            // -- SSH: hosts, keys, commands, running --
+            list_stale: { why: 'the list on this page is out of date', hint: 'Refresh the list and try again.' },
+            clipboard_denied: { why: 'the browser does not let this page write to the clipboard', hint: 'Select the text and copy it by hand. Some browsers disable the clipboard on pages opened over HTTP.' },
+            known_host_failed: { why: 'the device could not check or save the fingerprint of this host', hint: 'If you use an SD card, make sure it is inserted; see Terminal → System Logs.' },
+            ssh_host_key_unknown: { why: 'this is the first connection to this host and its fingerprint is not registered yet', hint: 'On the Security page, click Test on the SSH host first, then check and trust its fingerprint.' },
+            ssh_host_key_changed: { why: 'the fingerprint of this host differs from the one registered before', hint: 'The server may have been reinstalled, or someone may be impersonating it. Check the fingerprint on the Security page first.' },
+            ssh_config_invalid: { why: 'the login details are incomplete (no user name, or neither a password nor a key)', hint: 'Complete the user name and the password or key of this host on the Security page.' },
+            ssh_exec_failed: { why: 'the command did not run successfully', hint: 'Click Details to see what the device returned.' },
+            ssh_exec_busy: { why: 'another SSH command is running', hint: 'Wait for it to finish, or cancel it first.' },
+            ssh_start_failed: { why: 'the SSH command could not be started', hint: 'Try again later; click Details to see what the device returned.' },
+            ssh_no_session: { why: 'there is no command running', hint: 'It may have finished already.' },
+            ssh_cancel_failed: { why: 'the cancel request could not be delivered', hint: 'Check in Terminal → System Logs whether the command is still running.' },
+            key_not_found: { why: 'the device’s keystore has no such key', hint: 'Refresh the key list, or generate the key again.' },
+            pubkey_invalid: { why: 'the format of this public key is wrong, so it cannot be used', hint: 'Use another key, or generate it again.' },
+            ssh_deploy_failed: { why: 'the server did not accept the command that installs the public key', hint: 'Click Details to see what the server returned, and make sure this account may change its own SSH authorization file.' },
+            ssh_revoke_check_failed: { why: 'the device could not check whether the server has this public key', hint: 'Make sure you can log in to the server and the network is fine, then try once more.' },
+            ssh_revoke_failed: { why: 'the public key could not be removed from the server', hint: 'Try again later, or log in to that server and remove it by hand.' },
+            key_exists: { why: 'a key with this name already exists', hint: 'Use another name.' },
+            host_capacity: { why: 'the limit for host records has been reached', hint: 'Delete hosts you no longer need.' },
+            command_capacity: { why: 'the limit for commands has been reached', hint: 'Delete commands you no longer need.' },
+            ssh_output_incomplete: { why: 'the output of the command did not reach this page completely, so the result on the host is unconfirmed', hint: 'Check on that host whether the command has finished, and do not simply run it again.' },
+            ssh_result_unknown: { why: 'the result of the command did not reach this page, so it is not known whether it succeeded', hint: 'Check on that host whether the command has finished, and do not simply run it again.' },
             // -- Config packs --
             pack_parse_failed: { why: 'this file is not a valid config pack (its content cannot be parsed)', hint: 'Make sure you picked a .tscfg file exported from TianshanOS and that it has not been modified.' },
             pack_version_unsupported: { why: 'this device does not support the version of the config pack', hint: 'Export it again with a matching firmware version, or update this device.' },

@@ -50,7 +50,13 @@ async function observeToast(page) {
 async function observeInline(page, selector) {
     const element = page.locator(selector);
     await element.waitFor();
-    return element.evaluate(node => ({type: 'inline', text: node.textContent.trim(), details: node.querySelector('[title]')?.getAttribute('title')?.replace(/\d{1,2}:\d{2}:\d{2}/, '<time>') ?? null}));
+    return element.evaluate(node => ({type: 'inline', text: (node.querySelector('.note-msg') ?? node).textContent.trim(), details: node.querySelector('.note-detail')?.textContent.replace(/\d{1,2}:\d{2}:\d{2}/, '<time>') ?? null}));
+}
+// a text pane that keeps appending (command output): the last line is the latest message
+async function observeLastLine(page, selector) {
+    const element = page.locator(selector);
+    await element.waitFor();
+    return element.evaluate(node => ({type: 'line', text: node.textContent.split('\n').map(line => line.trim()).filter(Boolean).at(-1) ?? '', details: null}));
 }
 async function observeField(page, id) {
     const message = page.locator(`#${id}`).locator('xpath=ancestor::*[contains(@class,"row") or contains(@class,"fl")][1]').locator('.fe-msg');
@@ -90,7 +96,7 @@ function scenarioTests(file, scenarios) {
                     await scenario.setup?.(page, names);
                     await scenario.act(page, names);
                     const show = scenario.show ?? 'toast';
-                    const seen = show === 'toast' ? await observeToast(page) : show.inline ? await observeInline(page, show.inline) : await observeField(page, show.field);
+                    const seen = show === 'toast' ? await observeToast(page) : show.inline ? await observeInline(page, show.inline) : show.last ? await observeLastLine(page, show.last) : await observeField(page, show.field);
                     checkSentence(language, seen.text, scenario.id);
                     // the folded details are for whoever looks into it: they carry the machine words the sentence must not
                     if (seen.details) assert(/(原因代号|Reason code)[:：]/.test(seen.details), `${scenario.id}: details without the reason code`);
@@ -291,6 +297,134 @@ scenarioTests('automation', [
      device: {'automation/proxy/socketio_test': '{"code":5,"message":"sio_event_timeout","data":{"connected":true,"sid":"abcdef123456"}}'}, show: {inline: '#sio-test-result .test-status'}},
     {id: 'source.test-sio.connect-timeout', setup: p => p.evaluate(() => { showAddSourceModal(); switchSourceType('socketio'); document.getElementById('source-sio-url').value = 'http://192.0.2.9:3000'; }), act: p => p.evaluate(() => testSioConnection()),
      device: {'automation/proxy/socketio_test': '{"code":7,"message":"ws_connect_timeout","data":{"connected":false,"error":"WebSocket connection failed"}}'}, show: {inline: '#sio-test-result .test-status'}},
+]);
+
+// ---------------------------------------------------------------------------------------------------------------------
+// SSH: hosts, fingerprints and keys on the Security page
+const wireSsh = name => fs.readFileSync(path.resolve(__dirname, '../fixtures/ssh-fingerprint', name), 'utf8');
+const sshHost = {id: 'root@192.0.2.8', host: '192.0.2.8', port: 22, username: 'root', keyid: 'lab-key'};
+const security = (overrides = {}) => ({
+    'key/list': ok({keys: [{id: 'lab-key', type: 'rsa2048', bits: 2048}]}),
+    'ssh/hosts/list': ok({hosts: [sshHost]}),
+    'hosts/list': ok({hosts: [{host: '192.0.2.8', port: 22, type: 'ssh-ed25519', fingerprint: 'SHA256:abcdefghijklmnopqrstuvwxyz0123456789', added: 1700000000}]}),
+    ...overrides
+});
+const onSecurity = p => p.evaluate(async () => { await loadSecurityPage(); });
+const onSecurityConfirmed = async p => { await onSecurity(p); await page.sureToDelete(p); };
+const fillDeploy = (p, fields = {}) => p.evaluate(f => { showDeployKeyModal('lab-key'); document.getElementById('deploy-host').value = f.host ?? '192.0.2.8'; document.getElementById('deploy-user').value = f.user ?? 'root'; document.getElementById('deploy-password').value = f.password ?? 'secret'; }, fields);
+const fillRevoke = (p, fields = {}) => p.evaluate(f => { showRevokeKeyModal('lab-key'); document.getElementById('revoke-host').value = f.host ?? '192.0.2.8'; document.getElementById('revoke-user').value = f.user ?? 'root'; document.getElementById('revoke-password').value = f.password ?? 'secret'; }, fields);
+
+scenarioTests('ssh', [
+    // ---- the two lists
+    {id: 'host.list.no-answer', setup: onSecurity, act: p => p.evaluate(() => refreshSshHostsList()), device: security({'ssh/hosts/list': DROP}), show: {inline: '#ssh-hosts-table-body'}},
+    {id: 'host.list.refused', setup: onSecurity, act: p => p.evaluate(() => refreshSshHostsList()), device: security({'ssh/hosts/list': '{"code":7,"message":"Failed to list hosts"}'}), show: {inline: '#ssh-hosts-table-body'}},
+    {id: 'known-host.list.refused', setup: onSecurity, act: p => p.evaluate(() => refreshKnownHostsList()), device: security({'hosts/list': '{"code":7,"message":"Failed to list hosts"}'}), show: {inline: '#known-hosts-table-body'}},
+    {id: 'known-host.list.no-answer', setup: onSecurity, act: p => p.evaluate(() => refreshKnownHostsList()), device: security({'hosts/list': DROP}), show: {inline: '#known-hosts-table-body'}},
+    // ---- fingerprint records
+    {id: 'known-host.remove.ok', setup: onSecurityConfirmed, act: p => p.evaluate(() => removeKnownHost(0)), device: security({'hosts/remove': '{"code":0,"message":"Host removed"}'})},
+    {id: 'known-host.remove.not-found', setup: onSecurityConfirmed, act: p => p.evaluate(() => removeKnownHost(0)), device: security({'hosts/remove': '{"code":2,"message":"Host not found"}'})},
+    {id: 'known-host.remove.no-answer', setup: onSecurityConfirmed, act: p => p.evaluate(() => removeKnownHost(0)), device: security({'hosts/remove': DROP})},
+    // ---- host records
+    {id: 'host.remove.ok', setup: onSecurityConfirmed, act: p => p.evaluate(() => removeHostByIndex(0)), device: security({'ssh/hosts/remove': '{"code":0,"message":"Host removed"}'})},
+    {id: 'host.remove.failed', setup: onSecurityConfirmed, act: p => p.evaluate(() => removeHostByIndex(0)), device: security({'ssh/hosts/remove': '{"code":7,"message":"Failed to remove host"}'})},
+    {id: 'host.remove.no-answer', setup: onSecurityConfirmed, act: p => p.evaluate(() => removeHostByIndex(0)), device: security({'ssh/hosts/remove': DROP})},
+    {id: 'host.remove.list-stale', setup: onSecurityConfirmed, act: p => p.evaluate(() => removeHostByIndex(7)), device: security()},
+    // ---- revoke a key from a host (asks for the server's password)
+    {id: 'host.revoke.wrong-password', setup: async p => { await onSecurity(p); await p.evaluate(() => { revokeKeyFromHost(0); document.getElementById('revoke-host-password').value = 'wrong'; }); },
+     act: p => p.evaluate(() => doRevokeFromHost(0)), device: security({'ssh/revoke': wireSsh('wire-ssh-auth-failed.json')}), show: {inline: '#revoke-host-result'}},
+    {id: 'host.revoke.key-changed', setup: async p => { await onSecurity(p); await p.evaluate(() => { revokeKeyFromHost(0); document.getElementById('revoke-host-password').value = 'secret'; }); },
+     act: p => p.evaluate(() => doRevokeFromHost(0)), device: security({'ssh/revoke': wireSsh('wire-changed-host.json')}), show: {inline: '#revoke-host-result'}},
+    {id: 'host.revoke.no-answer', setup: async p => { await onSecurity(p); await p.evaluate(() => { revokeKeyFromHost(0); document.getElementById('revoke-host-password').value = 'secret'; }); },
+     act: p => p.evaluate(() => doRevokeFromHost(0)), device: security({'ssh/revoke': DROP}), show: {inline: '#revoke-host-result'}},
+    {id: 'host.revoke.record-not-removed', setup: async p => { await onSecurity(p); await p.evaluate(() => { revokeKeyFromHost(0); document.getElementById('revoke-host-password').value = 'secret'; }); },
+     act: p => p.evaluate(() => doRevokeFromHost(0)),
+     device: security({'ssh/revoke': '{"code":0,"data":{"revoked":true,"removed_count":1}}', 'ssh/hosts/remove': '{"code":7,"message":"Failed to remove host"}'}), show: {inline: '#revoke-host-result'}},
+    {id: 'host.revoke.missing-password', setup: async p => { await onSecurity(p); await p.evaluate(() => revokeKeyFromHost(0)); }, act: p => p.evaluate(() => doRevokeFromHost(0)), device: security(), show: {field: 'revoke-host-password'}},
+    // ---- keys
+    {id: 'key.delete.ok', setup: onSecurityConfirmed, act: p => p.evaluate(() => deleteKey('lab-key')), device: security({'key/delete': '{"code":0,"message":"Key deleted"}'})},
+    {id: 'key.delete.not-found', setup: onSecurityConfirmed, act: p => p.evaluate(() => deleteKey('lab-key')), device: security({'key/delete': '{"code":2,"message":"key_not_found"}'})},
+    {id: 'key.delete.no-answer', setup: onSecurityConfirmed, act: p => p.evaluate(() => deleteKey('lab-key')), device: security({'key/delete': DROP})},
+    {id: 'key.export-public.not-found', setup: onSecurity, act: p => p.evaluate(() => exportKey('lab-key')), device: security({'key/export': '{"code":2,"message":"key_not_found"}'})},
+    {id: 'key.export-public.invalid-answer', setup: onSecurity, act: p => p.evaluate(() => exportKey('lab-key')), device: security({'key/export': '{"code":0,"data":{}}'})},
+    {id: 'key.export-private.no-answer', setup: onSecurityConfirmed, act: p => p.evaluate(() => exportPrivateKey('lab-key')), device: security({'key/exportPrivate': DROP})},
+    // ---- deploy a key to a server
+    {id: 'key.deploy.wrong-password', setup: async p => { await onSecurity(p); await fillDeploy(p); }, act: p => p.evaluate(() => deployKey()), device: security({'ssh/copyid': wireSsh('wire-ssh-auth-failed.json')}), show: {inline: '#deploy-result'}},
+    {id: 'key.deploy.timeout', setup: async p => { await onSecurity(p); await fillDeploy(p); }, act: p => p.evaluate(() => deployKey()), device: security({'ssh/copyid': wireSsh('wire-ssh-timeout.json')}), show: {inline: '#deploy-result'}},
+    {id: 'key.deploy.host-key-changed', setup: async p => { await onSecurity(p); await fillDeploy(p); }, act: p => p.evaluate(() => deployKey()), device: security({'ssh/copyid': wireSsh('wire-changed-host.json')}), show: {inline: '#deploy-result'}},
+    {id: 'key.deploy.server-refused', setup: async p => { await onSecurity(p); await fillDeploy(p); }, act: p => p.evaluate(() => deployKey()),
+     device: security({'ssh/copyid': '{"code":7,"message":"ssh_deploy_failed","data":{"detail":"sh: 1: cannot create /root/.ssh/authorized_keys: Permission denied"}}'}), show: {inline: '#deploy-result'}},
+    {id: 'key.deploy.no-answer', setup: async p => { await onSecurity(p); await fillDeploy(p); }, act: p => p.evaluate(() => deployKey()), device: security({'ssh/copyid': DROP}), show: {inline: '#deploy-result'}},
+    {id: 'key.deploy.missing-host', setup: async p => { await onSecurity(p); await fillDeploy(p, {host: ''}); }, act: p => p.evaluate(() => deployKey()), device: security(), show: {field: 'deploy-host'}},
+    {id: 'key.deploy.missing-password', setup: async p => { await onSecurity(p); await fillDeploy(p, {password: ''}); }, act: p => p.evaluate(() => deployKey()), device: security(), show: {field: 'deploy-password'}},
+    // ---- revoke a key from a server
+    {id: 'key.revoke.wrong-password', setup: async p => { await onSecurity(p); await fillRevoke(p); }, act: p => p.evaluate(() => revokeKey()), device: security({'ssh/revoke': wireSsh('wire-ssh-auth-failed.json')}), show: {inline: '#revoke-result'}},
+    {id: 'key.revoke.server-failed', setup: async p => { await onSecurity(p); await fillRevoke(p); }, act: p => p.evaluate(() => revokeKey()),
+     device: security({'ssh/revoke': '{"code":7,"message":"ssh_revoke_failed","data":{"detail":"exit status 1"}}'}), show: {inline: '#revoke-result'}},
+    {id: 'key.revoke.no-answer', setup: async p => { await onSecurity(p); await fillRevoke(p); }, act: p => p.evaluate(() => revokeKey()), device: security({'ssh/revoke': DROP}), show: {inline: '#revoke-result'}},
+    {id: 'key.revoke.missing-user', setup: async p => { await onSecurity(p); await fillRevoke(p, {user: ''}); }, act: p => p.evaluate(() => revokeKey()), device: security(), show: {field: 'revoke-user'}},
+    // ---- the browser's clipboard
+    {id: 'clipboard.denied', setup: async p => { await onSecurity(p); await p.evaluate(() => { showFullFingerprint(0); Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {writeText: () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError'))}}); }); },
+     act: p => p.evaluate(() => copyFingerprintInfo()), device: security()},
+]);
+
+// ---------------------------------------------------------------------------------------------------------------------
+// SSH commands page: save / delete / run / cancel
+const commandsDevice = (overrides = {}) => ({
+    'ssh/hosts/list': ok({hosts: [sshHost]}),
+    'ssh/commands/list': ok({commands: [{id: 'restart', host_id: sshHost.id, name: 'Restart AGX', command: 'reboot'}]}),
+    ...overrides
+});
+const onCommands = async p => { await p.evaluate(async hostId => { await loadCommandsPage(); await selectHost(hostId); }, sshHost.id); };
+const openNewCommand = async (p, fields = {}) => {
+    await onCommands(p);
+    await p.evaluate(f => { showAddCommandModal(); document.getElementById('cmd-name').value = f.name ?? 'Restart AGX'; document.getElementById('cmd-command').value = f.command ?? 'reboot'; document.getElementById('cmd-edit-id').value = f.id ?? 'restart2'; }, fields);
+};
+const startedCommand = commandsDevice({'ssh/exec_stream': '{"code":0,"data":{"session_id":5}}'});
+
+scenarioTests('ssh-commands', [
+    // ---- save
+    {id: 'command.save.ok', setup: openNewCommand, act: p => p.evaluate(() => saveCommand()), device: commandsDevice({'ssh/commands/add': '{"code":0,"data":{"id":"restart2"}}'})},
+    {id: 'command.save.capacity', setup: openNewCommand, act: p => p.evaluate(() => saveCommand()), device: commandsDevice({'ssh/commands/add': '{"code":7,"message":"command_capacity"}'})},
+    {id: 'command.save.no-answer', setup: openNewCommand, act: p => p.evaluate(() => saveCommand()), device: commandsDevice({'ssh/commands/add': DROP})},
+    {id: 'command.save.missing-name', setup: (p) => openNewCommand(p, {name: ''}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-name'}},
+    {id: 'command.save.missing-command', setup: (p) => openNewCommand(p, {command: ''}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-command'}},
+    {id: 'command.save.missing-id', setup: (p) => openNewCommand(p, {id: ''}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-edit-id'}},
+    {id: 'command.save.bad-id', setup: (p) => openNewCommand(p, {id: '-bad id-'}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-edit-id'}},
+    // ---- delete
+    {id: 'command.delete.ok', setup: async p => { await onCommands(p); await page.sureToDelete(p); }, act: p => p.evaluate(() => deleteCommand(0)), device: commandsDevice({'ssh/commands/remove': '{"code":0,"message":"Command removed"}'})},
+    {id: 'command.delete.service-running', setup: async p => { await onCommands(p); await page.sureToDelete(p); }, act: p => p.evaluate(() => deleteCommand(0)), device: commandsDevice({'ssh/commands/remove': '{"code":4,"message":"service_delete_protected"}'})},
+    {id: 'command.delete.no-answer', setup: async p => { await onCommands(p); await page.sureToDelete(p); }, act: p => p.evaluate(() => deleteCommand(0)), device: commandsDevice({'ssh/commands/remove': DROP})},
+    // ---- run
+    {id: 'command.run.busy', setup: onCommands, act: p => p.evaluate(() => executeCommand(0)), device: commandsDevice({'ssh/exec_stream': '{"code":4,"message":"ssh_exec_busy"}'})},
+    {id: 'command.run.wrong-password', setup: onCommands, act: p => p.evaluate(() => executeCommand(0)), device: commandsDevice({'ssh/exec_stream': wireSsh('wire-ssh-auth-failed.json')})},
+    {id: 'command.run.start-failed', setup: onCommands, act: p => p.evaluate(() => executeCommand(0)), device: commandsDevice({'ssh/exec_stream': '{"code":7,"message":"ssh_start_failed","data":{"detail":"ESP_ERR_NO_MEM"}}'})},
+    {id: 'command.run.error-while-running', setup: onCommands, act: async p => { await p.evaluate(() => executeCommand(0)); await p.evaluate(() => handleSshExecMessage({type: 'ssh_exec_error', session_id: 5, error: 'ssh_connect_timeout', stage: 'timeout', detail: 'SSH connection failed (code=263)'})); },
+     device: startedCommand},
+    {id: 'command.run.output-incomplete', setup: onCommands, act: async p => { await p.evaluate(() => executeCommand(0)); await p.evaluate(() => handleSshExecMessage({type: 'ssh_exec_error', session_id: 5, error: 'ssh_output_incomplete'})); },
+     device: startedCommand},
+    {id: 'command.run.error-text-from-old-firmware', setup: onCommands, act: async p => { await p.evaluate(() => executeCommand(0)); await p.evaluate(() => handleSshExecMessage({type: 'ssh_exec_error', session_id: 5, error: 'SSH connection failed (code=259)'})); },
+     device: startedCommand},
+    // ---- cancel
+    {id: 'command.cancel.no-session', setup: async p => { await onCommands(p); await p.evaluate(() => { document.getElementById('exec-result-section').style.display = ''; claimExecDisplay('ssh', document.getElementById('exec-result')); currentExecSessionId = 5; }); }, act: p => p.evaluate(() => cancelExecution()),
+     device: commandsDevice({'ssh/cancel': '{"code":2,"message":"ssh_no_session"}'})},
+    {id: 'command.cancel.no-answer', setup: async p => { await onCommands(p); await p.evaluate(() => { document.getElementById('exec-result-section').style.display = ''; claimExecDisplay('ssh', document.getElementById('exec-result')); currentExecSessionId = 5; }); }, act: p => p.evaluate(() => cancelExecution()),
+     device: commandsDevice({'ssh/cancel': DROP})},
+    // ---- helper commands (log / process) write their problems into the output
+    {id: 'command.helper.wrong-password', setup: async p => { await onCommands(p); await p.evaluate(hostId => { document.getElementById('exec-result-section').style.display = ''; window._cmdHostsList = window._cmdHostsList || []; currentNohupInfo = {logFile: '/tmp/x.log', pidFile: '/tmp/x.pid', hostId}; document.getElementById('exec-result').textContent = ''; }, sshHost.id); },
+     act: p => p.evaluate(() => executeNohupHelperCommand('echo hi')), device: commandsDevice({'ssh/exec': wireSsh('wire-ssh-auth-failed.json')}), show: {last: '#exec-result'}},
+    {id: 'command.helper.host-key-unknown', setup: async p => { await onCommands(p); await p.evaluate(hostId => { document.getElementById('exec-result-section').style.display = ''; currentNohupInfo = {logFile: '/tmp/x.log', pidFile: '/tmp/x.pid', hostId}; document.getElementById('exec-result').textContent = ''; }, sshHost.id); },
+     act: p => p.evaluate(() => executeNohupHelperCommand('echo hi')), device: commandsDevice({'ssh/exec': wireSsh('wire-new-host.json')}), show: {last: '#exec-result'}},
+    {id: 'command.helper.no-answer', setup: async p => { await onCommands(p); await p.evaluate(hostId => { document.getElementById('exec-result-section').style.display = ''; currentNohupInfo = {logFile: '/tmp/x.log', pidFile: '/tmp/x.pid', hostId}; document.getElementById('exec-result').textContent = ''; }, sshHost.id); },
+     act: p => p.evaluate(() => executeNohupHelperCommand('echo hi')), device: commandsDevice({'ssh/exec': DROP}), show: {last: '#exec-result'}},
+    // ---- the host list
+    {id: 'host.list.commands-page-refused', act: p => p.evaluate(() => { document.body.insertAdjacentHTML('beforeend', '<div id="host-selector"></div>'); return loadHostSelector(); }), device: {'ssh/hosts/list': '{"code":7,"message":"Failed to list hosts"}'}, show: {inline: '#host-selector'}},
+    // ---- packs of commands and hosts
+    {id: 'pack.export-command.not-allowed', setup: async p => { await onCommands(p); await p.evaluate(() => showExportSshCommandModal('restart')); }, act: p => p.evaluate(() => doExportSshCommandFromModal('restart')),
+     device: commandsDevice({'ssh/commands/export': wire('wire-pack-not-allowed.json')}), show: {inline: '#export-ssh-cmd-result'}},
+    {id: 'pack.export-host.cert-unavailable', setup: async p => { await onSecurity(p); await p.evaluate(() => showExportSshHostModal('root@192.0.2.8')); }, act: p => p.evaluate(() => doExportSshHostFromModal('root@192.0.2.8')),
+     device: security({'ssh/hosts/export': '{"code":7,"message":"device_cert_unavailable","data":{"detail":"ESP_FAIL"}}'}), show: {inline: '#export-ssh-host-result'}},
+    {id: 'pack.import-host.storage-failed', setup: async p => { await onSecurity(p); await p.evaluate(() => { showImportSshHostModal(); window._importSshHostTscfg = '{}'; window._importSshHostFilename = 'lab.tscfg'; }); }, act: p => p.evaluate(() => confirmSshHostImport()),
+     device: security({'ssh/hosts/import': '{"code":7,"message":"storage_failed","data":{"detail":"No such file or directory"}}'}), show: {inline: '#import-ssh-host-result'}},
 ]);
 
 // ---------------------------------------------------------------------------------------------------------------------
