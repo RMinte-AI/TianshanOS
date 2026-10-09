@@ -200,6 +200,15 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 .toast-success::before{background:var(--ok-dot)}
 .toast-warning::before{background:var(--warn-dot)}
 .toast-error::before{background:var(--bad-dot)}
+.toast.rich.show{pointer-events:auto;flex-wrap:wrap;align-items:flex-start;row-gap:8px}
+.toast.rich::before{margin-top:7px}
+.toast .toast-msg{flex:1 1 220px;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.toast .toast-more,.toast .toast-close{flex:none;border:0;background:none;padding:0 4px;font:inherit;color:var(--ink-2);cursor:pointer;border-radius:6px}
+.toast .toast-more{color:var(--accent-text);text-decoration:underline;text-underline-offset:2px}
+.toast .toast-close{font-size:18px;line-height:20px}
+.toast .toast-more:hover,.toast .toast-close:hover{color:var(--ink)}
+.toast .toast-more:focus-visible,.toast .toast-close:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(0,122,255,.38)}
+.toast .toast-detail{flex-basis:100%;margin:0;padding:8px 10px;border-radius:10px;background:rgba(0,0,0,.05);font:12px/18px var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
 .sheet{border-radius:32px;padding:24px}
 .sheet .sh{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .sheet .st{font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.3px}

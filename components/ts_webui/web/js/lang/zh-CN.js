@@ -4090,5 +4090,90 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         exportDesc: '导出动作模板 <strong>{id}</strong> 的配置为加密配置包',
         importTitle: '导入动作模板',
         importDesc: '选择 .tscfg 配置包文件以导入动作模板'
+    },
+
+    // 失败提示的统一目录。一条失败提示 = {action}（每个按钮自己的）+ {why}（原因）+ {hint}（下一步）。
+    // why 不带句号，hint 是完整的一句；没有 hint 的原因只写 why。写法规范见 docs/ 的提示语规范。
+    failure: {
+        format: '{action}：{why}。{hint}',
+        formatNoHint: '{action}：{why}。',
+        formatUnknown: '{action}。{hint}',
+        details: {
+            show: '详情', hide: '收起', close: '关闭',
+            code: '原因代号', api: '接口', device: '设备原文', stage: '阶段', time: '时间',
+            line: '{label}：{value}'
+        },
+        ops: {
+            generic: { failed: '操作失败', unknown: '操作结果未确认' },
+            rule: {
+                enable: { failed: '启用规则“{name}”失败', unknown: '启用规则“{name}”的结果未确认', done: '已启用规则“{name}”', doneMirror: '已启用规则“{name}”，但备用副本未同步；请勿移除 SD 卡。' },
+                disable: { failed: '禁用规则“{name}”失败', unknown: '禁用规则“{name}”的结果未确认', done: '已禁用规则“{name}”', doneMirror: '已禁用规则“{name}”，但备用副本未同步；请勿移除 SD 卡。' },
+                save: { failed: '保存规则“{name}”失败', unknown: '保存规则“{name}”的结果未确认', done: '已保存规则“{name}”', doneMirror: '已保存规则“{name}”，但备用副本未同步；请勿移除 SD 卡。' }
+            },
+            quick: {
+                start: { blocked: '无法启动“{name}”', failed: '启动“{name}”失败', unknown: '启动“{name}”的结果未确认' },
+                wait: '刚刚触发过其他快捷操作，请等几秒再试。'
+            },
+            ssh: {
+                connect: { failed: '连接 {host} 失败', unknown: '连接 {host} 的结果未确认', cancelled: '已取消：没有信任 {host} 的指纹，未连接。' }
+            }
+        },
+        reasons: {
+            // —— 通用（设备没给出可识别的原因时，按错误类别给一个诚实的说法）——
+            busy: { why: '设备正在处理另一项操作', hint: '等它完成后再试。' },
+            no_memory: { why: '设备可用内存不足', hint: '请稍后再试；仍然失败请重启设备。' },
+            not_found: { why: '设备上找不到它', hint: '它可能已被删除，请刷新列表。' },
+            no_permission: { why: '当前账户没有权限', hint: '请换用有权限的账户登录。' },
+            timeout: { why: '设备没有及时响应', hint: '请检查网络连接，并先确认当前状态，再决定是否重试。' },
+            invalid_request: { why: '设备认为这次提交的内容不合要求', hint: '请检查填写的内容后再试。' },
+            invalid_argument: { why: '提交的内容无效', hint: '请检查后再试。' },
+            not_supported: { why: '这台设备不支持这个操作' },
+            hardware_failed: { why: '设备没能完成硬件操作', hint: '请检查相关硬件的连接和状态。' },
+            target_unreachable: { why: '无法连接到目标', hint: '请检查网络连接和目标的地址。' },
+            auth_required: { why: '登录已失效', hint: '请重新登录。' },
+            network_lost: { why: '无法连接到设备', hint: '请检查这台电脑与设备之间的网络连接。' },
+            invalid_response: { why: '设备返回的内容无法识别', hint: '请刷新页面后再试。' },
+            storage_failed: { why: '写入设备存储失败', hint: '若在用 SD 卡，请确认卡已插好；详情见「终端」→「系统日志」。' },
+            no_detail: { why: '设备没有返回具体原因', hint: '可在「终端」页打开「系统日志」查看这次操作的详细记录。' },
+            result_unknown: { hint: '请先刷新核对当前状态，不要重复提交。' },
+            commit_unknown: { hint: '请重新读取并核对当前状态，不要重复提交。' },
+            // —— 自动化：规则启用 / 禁用 / 保存 ——
+            execution_busy: { why: '它正在执行中', hint: '等执行完成后再试。' },
+            revision_conflict: { why: '它刚被其他操作修改过', hint: '请刷新后确认最新内容，再重新操作。' },
+            service_busy: { why: '它绑定的服务正在运行，或状态还没有确认', hint: '请先核实并停止该服务。' },
+            source_read_only: { why: '它来自只读的配置来源，不能修改', hint: '原文件没有被改动；如需修改，请编辑它的配置来源。' },
+            recovery_required: { why: '自动化配置需要先做恢复核对，自动执行已暂停', hint: '请重新读取配置并核对后再继续。' },
+            busy_retired_config: { why: '旧配置仍在被使用', hint: '请稍后再试。' },
+            capacity: { why: '规则数量已达上限', hint: '请先删除不用的规则。' },
+            invalid_configuration: { why: '规则内容不完整或不合法', hint: '请检查触发条件和动作，修正后再保存。' },
+            configuration_busy: { why: '配置正在被其他操作修改', hint: '请稍后再试。' },
+            service_state_unconfirmed: { why: '无法确认它的服务当前状态', hint: '请先核验服务状态。' },
+            revision_exhausted: { why: '这条规则的版本号已用尽' },
+            // —— 快捷操作：点击卡片启动 ——
+            rule_disabled: { why: '这条规则已禁用', hint: '请先到「自动化」页启用它。' },
+            manual_not_allowed: { why: '这条规则没有开启“允许手动执行”', hint: '请在规则设置里打开“允许手动执行”。' },
+            reference_unresolved: { why: '它引用的内容（如 SSH 指令）还没有解析到', hint: '请刷新页面；仍然如此请编辑规则重新选择。' },
+            rule_details_unavailable: { why: '没能读取到这条规则的详细内容', hint: '请刷新页面后再试。' },
+            rule_not_found: { why: '设备上找不到这条规则', hint: '它可能已被删除，请刷新页面。' },
+            rule_changed: { why: '这条规则刚被修改过', hint: '请刷新后再试。' },
+            config_loading: { why: '配置还在加载', hint: '请稍后刷新页面再试。' },
+            engine_not_accepting: { why: '自动化引擎暂时没有接收执行请求（可能正在重载配置，或已停止）', hint: '请稍等几秒再试。一直不行，请到「系统」页的服务列表里重启“automation”服务。' },
+            service_running: { why: '它的服务已经在运行', hint: '无需再次启动。' },
+            service_starting: { why: '它正在启动', hint: '请稍候，可在服务状态里查看结果。' },
+            service_stopping: { why: '它正在停止', hint: '请等它停止后再启动。' },
+            service_checking: { why: '正在核验它的服务状态', hint: '请等核验完成后再启动。' },
+            service_not_confirmed_stopped: { why: '还没有确认它的服务已停止', hint: '请先点「核验远端状态」，确认后再启动。' },
+            service_not_admissible: { why: '它的服务当前的状态不允许启动（正在运行、正在启动，或状态未确认）', hint: '请先核验服务状态。' },
+            // —— SSH：测试连接 ——
+            ssh_dns_failed: { why: '无法解析这个主机名', hint: '请检查主机地址的拼写，以及设备的 DNS 设置。' },
+            ssh_host_unreachable: { why: '无法到达这台主机', hint: '请检查主机是否开机、网络是否连通。' },
+            ssh_port_refused: { why: '对方拒绝了连接（端口 {port}）', hint: '请确认目标主机上的 SSH 服务已启动、端口号正确。' },
+            ssh_connect_timeout: { why: '连接超时', hint: '请确认主机已开机、网络可达，且没有防火墙拦截。' },
+            ssh_handshake_failed: { why: '无法建立 SSH 加密连接', hint: '请确认这个端口运行的是 SSH 服务。' },
+            ssh_auth_failed: { why: '主机拒绝了用户“{user}”的登录', hint: '请检查用户名，以及密码或密钥是否正确。' },
+            ssh_connect_failed: { why: '无法建立 SSH 连接', hint: '可在「终端」页打开「系统日志」查看这次操作的详细记录。' },
+            ssh_fingerprint_unavailable: { why: '设备没有提供它的指纹，无法在这里确认', hint: '请把固件和 WebUI 一起升级到同一版本。' },
+            ssh_fingerprint_mismatch: { why: '它出示的指纹和你刚才确认的不一样', hint: '为安全起见没有信任它；请核实后重新测试。' }
+        }
     }
 });

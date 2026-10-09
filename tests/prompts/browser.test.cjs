@@ -163,9 +163,11 @@ for(const language of ['zh-CN','en-US']){
     assert.equal(await card.evaluate(el=>el.style.pointerEvents),'');
     assert.equal(await card.getAttribute('data-state'),state==='stopped'?'starting':state);
     if(state!=='stopped'){
-     await page.waitForFunction(()=>document.getElementById('toast')?.textContent===runtimeText('startBlocked'));
+     // not stopped (or not confirmed stopped): the card says which, by name; nothing is sent
+     const blocked=await page.evaluate(token=>describeFailure({op:'quick.start',phase:'blocked',params:{name:'Model'},token}).message,state==='running'?'service_running':'service_not_confirmed_stopped');
+     await page.waitForFunction(text=>document.querySelector('#toast .toast-msg')?.textContent===text,blocked);
      assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
-     assert.equal(await page.locator('#toast').textContent(),await page.evaluate(()=>runtimeText('startBlocked')));
+     assert.equal(await page.locator('#toast .toast-msg').textContent(),blocked);
     }
    }
    const verify=calls.filter(c=>c.endpoint==='automation/services/status'&&c.params.verify);

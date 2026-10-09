@@ -4,9 +4,20 @@ function fn(name){const m=new RegExp('^(?:async )?function '+name+'\\(','m').exe
 const languages={};for(const lang of ['zh-CN','en-US'])vm.runInNewContext(fs.readFileSync(`components/ts_webui/web/js/lang/${lang}.js`,'utf8'),{i18n:{registerLanguage:(id,data)=>languages[id]=data}});
 let locale='zh-CN',writes=[],reject=false,response={code:0,data:{mirror_synced:true}},conditions=[],actions=[];
 const nodes=new Map();function el(id){if(!nodes.has(id))nodes.set(id,{value:'',checked:false,disabled:false,dataset:{},style:{},classList:{add(){},remove(){}}});return nodes.get(id);}
-const toast=[];const ctx=vm.createContext({console,structuredClone,TextEncoder,fieldError:(id,message)=>{throw Error(message)},setTimeout(){},document:{getElementById:el,querySelectorAll:q=>q.includes('condition-row')?conditions:q.includes('action-row')?actions:[],hidden:false},window:{},t:key=>key.split('.').reduce((v,k)=>v?.[k],languages[locale])??key,showToast:(m,k)=>toast.push(m),alert:m=>{throw Error(m)},closeModal(){},refreshRules:async()=>{},refreshAutomationStatus:async()=>{},api:{call:async(method,params)=>{if(method.endsWith('.get'))return {code:0,data:{revision:8}};writes.push({method,params});if(reject)throw Error('synthetic lost reply');return response;}}});
+const toast=[],failures=[];
+const lookup=key=>key.split('.').reduce((v,k)=>v?.[k],languages[locale]);
+const slots=v=>[...v.matchAll(/(?<!\$)\{(\w+)\}/g)].map(m=>m[1]);
+const complete=(key,params)=>{const v=lookup(key);return typeof v==='string'&&!slots(v).some(p=>!params||params[p]===undefined||params[p]===null);};
+const translate=(key,params={})=>{const v=lookup(key);return typeof v==='string'?v.replace(/(?<!\$)\{(\w+)\}/g,(m,p)=>String(params[p])):key;};
+const ctx=vm.createContext({console,structuredClone,TextEncoder,Date,Proxy,fieldError:(id,message)=>{throw Error(message)},setTimeout(){},document:{getElementById:el,querySelectorAll:q=>q.includes('condition-row')?conditions:q.includes('action-row')?actions:[],hidden:false},window:{},t:translate,i18n:{complete},showToast:(m,k)=>toast.push(m),showFailureToast:(message,details,options)=>failures.push({message,details,...options}),alert:m=>{throw Error(m)},closeModal(){},refreshRules:async()=>{},refreshAutomationStatus:async()=>{},api:{call:async(method,params)=>{if(method.endsWith('.get'))return {code:0,data:{revision:8}};writes.push({method,params});if(reject)throw Object.assign(Error('synthetic lost reply'),{kind:'network',uncertain:true,rawMessage:''});return response;}}});
 vm.runInContext(source.match(/^const CONDITION_OPERATORS = .*;$/m)[0],ctx);
-for(const name of ['conditionEditorFields','readConditionEditor','runtimeText','runtimeSaveError','ruleWriteWithRevision','submitAddRule','toggleManualOnly','quickActionRefreshLog','checkRuleHasNohupSsh'])vm.runInContext(fn(name),ctx);
+for(const name of ['conditionEditorFields','readConditionEditor','runtimeText','reportFailure','ruleWriteWithRevision','submitAddRule','toggleManualOnly','quickActionRefreshLog','checkRuleHasNohupSsh'])vm.runInContext(fn(name),ctx);
+// the failure text builder lives in api.js
+const apiSource=fs.readFileSync('components/ts_webui/web/js/api.js','utf8');
+function apiFn(name){const m=new RegExp('^function '+name+'\\(','m').exec(apiSource);assert(m,name);const text=apiSource.slice(m.index);return text.slice(0,text.indexOf('\n}')+2);}
+vm.runInContext(apiFn('apiErrorReason'),ctx);
+vm.runInContext(apiSource.slice(apiSource.indexOf('const FAILURE_LEGACY_TEXT'),apiSource.indexOf('function describeFailure')),ctx);
+vm.runInContext(apiFn('describeFailure'),ctx);
 function row(fields,extra={}){return {...extra,querySelector:s=>fields[s]||null};}
 (async()=>{
  for(locale of ['zh-CN','en-US']){
@@ -16,8 +27,14 @@ function row(fields,extra={}){return {...extra,querySelector:s=>fields[s]||null}
   conditions=[row({'.cond-variable':{value:'upstream.status'},'.cond-operator':{value:'eq'},'.cond-value':{value:'"123"'}},{_originalCondition:{value:'123',value_type:4}})];
   actions=[row({'.action-template-id':{value:'template'},'.action-delay':{value:'12'},'.action-repeat-mode':{value:'count'},'.action-repeat-count':{value:'3'},'.action-repeat-interval':{value:'0'},'.action-has-condition':{checked:false}},{dataset:{},_originalAction:{template_id:'template',type:'cli',command:'synthetic --arg',async:true}})];
   writes=[];await ctx.submitAddRule('model');assert.equal(writes.length,1);const req=writes[0];assert.equal(req.method,'automation.rules.update');assert.equal(req.params.expected_revision,7);assert.equal(req.params.conditions[0].value,'123');assert.equal(req.params.conditions[0].value_type,4);assert.equal(req.params.actions[0].command,'synthetic --arg');assert.equal(req.params.actions[0].async,true);assert.equal(req.params.actions[0].repeat_interval_ms,0);assert.equal(req.params.show_on_dashboard,false);
-  response={code:1,message:'revision_conflict'};writes=[];await ctx.submitAddRule('model');assert.equal(writes.length,1);assert.equal(el('rule-name').value,'Model');
-  reject=true;writes=[];await ctx.submitAddRule('model');assert.equal(writes.length,1);assert.equal(el('rule-revision').value,'7');assert.equal(el('rule-revision').dataset.observedRevision,8);assert.equal(el('add-rule-modal').dataset.saving,'false');reject=false;response={code:0,data:{mirror_synced:true}};
+  assert.equal(toast.at(-1),locale==='zh-CN'?'已保存规则“Model”':'Rule “Model” saved');
+  response={code:1,message:'revision_conflict'};writes=[];failures.length=0;await ctx.submitAddRule('model');assert.equal(writes.length,1);assert.equal(el('rule-name').value,'Model');
+  assert.equal(failures.length,1);assert.equal(failures[0].type,'error');   // a refusal is an error; an unconfirmed result below is a warning
+  assert.equal(failures[0].message,locale==='zh-CN'?'保存规则“Model”失败：它刚被其他操作修改过。请刷新后确认最新内容，再重新操作。':'Failed to save rule “Model”: it was just changed by another operation. Refresh, check the latest content, then try again.');
+  assert(failures[0].details.includes('revision_conflict')&&failures[0].details.includes('automation.rules.update'));
+  reject=true;writes=[];failures.length=0;await ctx.submitAddRule('model');assert.equal(writes.length,1);
+  assert.equal(failures.length,1);assert.equal(failures[0].type,'warning');
+  assert.equal(failures[0].message,locale==='zh-CN'?'保存规则“Model”的结果未确认。请先刷新核对当前状态，不要重复提交。':'The result of saving rule “Model” is unconfirmed. Refresh and check the current state before repeating the operation.');assert.equal(el('rule-revision').value,'7');assert.equal(el('rule-revision').dataset.observedRevision,8);assert.equal(el('add-rule-modal').dataset.saving,'false');reject=false;response={code:0,data:{mirror_synced:true}};
   el('rule-show-dashboard').dataset.present='false';writes=[];await ctx.submitAddRule('model');assert(!Object.hasOwn(writes[0].params,'show_on_dashboard'));el('rule-show-dashboard').dataset.dirty='true';writes=[];await ctx.submitAddRule('model');assert.equal(writes[0].params.show_on_dashboard,false);
  }
  const log=el('quick-log-content');log.isConnected=true;log.dataset={};ctx.window._sshHostsData={host:{host:'192.0.2.8',username:'test'}};vm.runInContext("let quickActionLastContent=''; let sshCommands={host:[{id:'new',name:'model',command:'true',nohup:true,serviceMode:true}]};",ctx);

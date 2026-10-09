@@ -72,6 +72,7 @@ async function withPage(language, respond, run) {
 }
 
 const sheet = page => page.locator('.confirm-sheet');
+const toastMessage = page => page.evaluate(() => { const toast = document.getElementById('toast'); return toast?.querySelector('.toast-msg')?.textContent ?? toast?.textContent ?? ''; });
 const toastKind = (page, kind) => page.waitForFunction(kind => document.getElementById('toast')?.classList.contains('toast-' + kind), kind);
 const settle = page => page.waitForTimeout(400);   // a background retry would show up as an extra request
 
@@ -125,10 +126,12 @@ for (const language of ['zh-CN', 'en-US']) {
                 await page.locator(TEST_BUTTON).click();
                 await sheet(page).waitFor({timeout: 5000});
                 await sheet(page).locator('button[data-r="0"]').click();
-                await toastKind(page, 'error');
+                await toastKind(page, 'warning');
                 await settle(page);
                 assert.equal(await sheet(page).count(), 0);
                 assert.equal(execRequests.length, 1);
+                // "cancelled, not trusted, not connected" - not an error, and no plain English leak
+                assert.equal(await page.locator('#toast').textContent(), await page.evaluate(h => t('failure.ops.ssh.connect.cancelled', {host: h}), host.host));
                 assert.equal(await page.evaluate(() => document.getElementById('toast').classList.contains('toast-success')), false);
             });
         });
@@ -165,6 +168,7 @@ for (const language of ['zh-CN', 'en-US']) {
                 assert.equal(execRequests.length, 2);
                 assert.equal(execRequests[1].confirmed_fingerprint, fingerprint);   // the old text, not the new key
                 assert.equal(await sheet(page).count(), 0);
+                assert.equal(await toastMessage(page), await page.evaluate(h => describeFailure({op: 'ssh.connect', params: {host: h}, token: 'ssh_fingerprint_mismatch'}).message, host.host));
                 assert.equal(await page.evaluate(() => document.getElementById('toast').classList.contains('toast-success')), false);
             });
         });
@@ -182,3 +186,68 @@ test(`the fixtures are real firmware output: failures carry data, plain failures
     assert.equal(JSON.parse(device('wire-exec-ok.json')).code, 0);
     assert.deepEqual(JSON.parse(device('wire-generic-failure.json')), {code: 1, error: "Missing 'command' parameter"});
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// "Test connection" when the connection itself fails: the sentence says where it stopped. Bytes: wire-ssh-*.json.
+for (const language of ['zh-CN', 'en-US']) {
+    const zh = language === 'zh-CN';
+    for (const [file, expectedZh, expectedEn, stage] of [
+        ['wire-ssh-auth-failed.json', '连接 192.0.2.8 失败：主机拒绝了用户“test”的登录。请检查用户名，以及密码或密钥是否正确。',
+            'Failed to connect to 192.0.2.8: the host rejected the login for user “test”. Check the username and that the password or key is correct.', 'auth'],
+        ['wire-ssh-port-refused.json', '连接 192.0.2.8 失败：对方拒绝了连接（端口 22）。请确认目标主机上的 SSH 服务已启动、端口号正确。',
+            'Failed to connect to 192.0.2.8: the connection was refused (port 22). Make sure SSH is running on the host and the port number is right.', 'refused'],
+        ['wire-ssh-dns-failed.json', '连接 192.0.2.8 失败：无法解析这个主机名。请检查主机地址的拼写，以及设备的 DNS 设置。',
+            'Failed to connect to 192.0.2.8: the host name cannot be resolved. Check the spelling of the host address and the device\'s DNS settings.', 'dns'],
+        ['wire-ssh-unreachable.json', '连接 192.0.2.8 失败：无法到达这台主机。请检查主机是否开机、网络是否连通。',
+            'Failed to connect to 192.0.2.8: the host cannot be reached. Check that the host is on and the network is connected.', 'unreachable'],
+        ['wire-ssh-timeout.json', '连接 192.0.2.8 失败：连接超时。请确认主机已开机、网络可达，且没有防火墙拦截。',
+            'Failed to connect to 192.0.2.8: the connection timed out. Make sure the host is on, reachable, and not blocked by a firewall.', 'timeout'],
+        ['wire-ssh-handshake-failed.json', '连接 192.0.2.8 失败：无法建立 SSH 加密连接。请确认这个端口运行的是 SSH 服务。',
+            'Failed to connect to 192.0.2.8: an SSH session could not be set up. Make sure this port runs an SSH service.', 'handshake'],
+        ['wire-ssh-connect-failed.json', '连接 192.0.2.8 失败：无法建立 SSH 连接。可在「终端」页打开「系统日志」查看这次操作的详细记录。',
+            'Failed to connect to 192.0.2.8: the SSH connection could not be made. Open Terminal → System Logs to see the details of this operation.', 'connect'],
+    ]) {
+        test(`${language}: connection failure ${file.replace('wire-ssh-', '').replace('.json', '')}: the message says where it stopped, the details keep the device text`, async () => {
+            await withPage(language, () => device(file), async ({page, execRequests}) => {
+                await page.locator(TEST_BUTTON).click();
+                await toastKind(page, 'error');
+                await page.waitForFunction(text => document.querySelector('#toast .toast-msg')?.textContent === text, zh ? expectedZh : expectedEn);
+                assert.equal(await sheet(page).count(), 0);          // a failed connection is not a fingerprint question
+                assert.equal(execRequests.length, 1);
+                await page.locator('#toast .toast-more').click();
+                const details = await page.locator('#toast .toast-detail').textContent();
+                assert(details.includes('ssh.exec') && details.includes(stage) && details.includes('SSH connection failed (code='), details);
+                // the machine word and the English device text are only in the folded part
+                const shown = await toastMessage(page);
+                assert(!/ssh_[a-z_]+|SSH connection failed/.test(shown), shown);
+            });
+        });
+    }
+
+    test(`${language}: a device that sends no fingerprint (older firmware) is told apart from a failed connection`, async () => {
+        await withPage(language, () => '{"code":1002,"error":"New host requires confirmation"}', async ({page, execRequests}) => {
+            await page.locator(TEST_BUTTON).click();
+            await toastKind(page, 'error');
+            await page.waitForFunction(text => document.querySelector('#toast .toast-msg')?.textContent === text,
+                zh ? '连接 192.0.2.8 失败：设备没有提供它的指纹，无法在这里确认。请把固件和 WebUI 一起升级到同一版本。'
+                   : 'Failed to connect to 192.0.2.8: the device did not provide its fingerprint, so it cannot be confirmed here. Upgrade the firmware and the WebUI to the same version.');
+            assert.equal(await sheet(page).count(), 0);
+            assert.equal(execRequests.length, 1);
+        });
+    });
+
+    test(`${language}: confirming a different key later reports it in plain words`, async () => {
+        const first = JSON.parse(device('wire-new-host.json'));
+        const other = JSON.parse(device('wire-new-host.json'));
+        other.data.fingerprint = 'SHA256:SYNTHETICanotherKEY000000000000000000000000000000';
+        await withPage(language, (_, n) => JSON.stringify(n === 1 ? first : other), async ({page}) => {
+            await page.locator(TEST_BUTTON).click();
+            await sheet(page).waitFor({timeout: 5000});
+            await sheet(page).locator('button[data-r="1"]').click();
+            await toastKind(page, 'error');
+            await page.waitForFunction(text => document.querySelector('#toast .toast-msg')?.textContent === text,
+                zh ? '连接 192.0.2.8 失败：它出示的指纹和你刚才确认的不一样。为安全起见没有信任它；请核实后重新测试。'
+                   : 'Failed to connect to 192.0.2.8: it presented a different fingerprint from the one you just confirmed. For safety it was not trusted; check it and test again.');
+        });
+    });
+}

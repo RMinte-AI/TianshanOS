@@ -1,0 +1,114 @@
+// The failure catalogue (failure.reasons / failure.ops in the language packs) against the writing standard,
+// and against the reason tokens the firmware can send: a token without a message is a test failure.
+const {test} = require('node:test'), assert = require('node:assert/strict'), vm = require('node:vm');
+const fs = require('node:fs'), path = require('node:path');
+const {read} = require('./harness.cjs');
+
+const langs = {};
+for (const lang of ['zh-CN', 'en-US']) vm.runInNewContext(read(`js/lang/${lang}.js`), {i18n: {registerLanguage: (k, v) => langs[k] = v}});
+const failure = lang => langs[lang].failure;
+const slots = text => [...new Set([...text.matchAll(/(?<!\$)\{(\w+)\}/g)].map(m => m[1]))].sort();
+const CJK = /[㐀-鿿＀-￯　-〿]/;
+// "automation" is the service name exactly as the System page's service list shows it, so the text must name it the same way
+const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation']);
+const flat = (object, prefix = '') => Object.entries(object).flatMap(([k, v]) => typeof v === 'string' ? [[prefix + k, v]] : flat(v, prefix + k + '.'));
+
+test('both languages have the same reasons, the same parts of each reason and the same placeholders', () => {
+    const zh = failure('zh-CN'), en = failure('en-US');
+    assert.deepEqual(Object.keys(zh.reasons).sort(), Object.keys(en.reasons).sort());
+    for (const token of Object.keys(zh.reasons)) {
+        assert.deepEqual(Object.keys(zh.reasons[token]).sort(), Object.keys(en.reasons[token]).sort(), token);
+        for (const part of Object.keys(zh.reasons[token])) assert.deepEqual(slots(zh.reasons[token][part]), slots(en.reasons[token][part]), `${token}.${part}`);
+        assert(zh.reasons[token].why || zh.reasons[token].hint, `${token} says nothing`);
+    }
+    assert.deepEqual(flat(zh.ops).map(([k]) => k).sort(), flat(en.ops).map(([k]) => k).sort());
+    for (const [k, v] of flat(zh.ops)) assert.deepEqual(slots(v), slots(Object.fromEntries(flat(en.ops))[k]), `ops.${k}`);
+    assert.deepEqual(flat(zh.details).map(([k]) => k).sort(), flat(en.details).map(([k]) => k).sort());
+});
+
+test('every message follows the writing standard in both languages', () => {
+    const problems = [];
+    for (const lang of ['zh-CN', 'en-US']) {
+        const zh = lang === 'zh-CN';
+        const texts = [...flat(failure(lang).reasons, 'reasons.'), ...flat(failure(lang).ops, 'ops.')];
+        for (const [key, text] of texts) {
+            const where = `${lang} ${key}`;
+            if (text !== text.trim()) problems.push(`${where}: surrounding whitespace`);
+            if (/[a-z]+_[a-z0-9_]+/.test(text)) problems.push(`${where}: machine word`);
+            if (/undefined|null|NaN|\[object|TODO|FIXME|code=|ESP_|errno/i.test(text)) problems.push(`${where}: internal word`);
+            if (/未知错误|unknown error/i.test(text)) problems.push(`${where}: "unknown error" explains nothing`);
+            if (key.endsWith('.hint') && (zh ? /^请(稍后)?(再)?重试。$/ : /^(please )?(try again|retry)( later)?\.$/i).test(text)) problems.push(`${where}: a bare "retry" is not a next step`);
+            if (zh) {
+                if (!CJK.test(text)) problems.push(`${where}: no Chinese`);
+                for (const word of text.replace(/\{\w+\}/g, '').match(/[A-Za-z]{2,}/g) || []) if (!ALLOWED_LATIN.has(word)) problems.push(`${where}: English word "${word}" in the Chinese text`);
+            } else if (CJK.test(text.replace(/[“”’]/g, ''))) problems.push(`${where}: Chinese in the English text`);
+            if (key.startsWith('reasons.') && key.endsWith('.why') && /[。.!?！？：:;；]$/.test(text)) problems.push(`${where}: a reason has no final punctuation (the sentence adds it)`);
+            if (key.startsWith('reasons.') && key.endsWith('.hint') && !(zh ? /。$/ : /\.$/).test(text)) problems.push(`${where}: a next step is a full sentence`);
+            if (key.startsWith('reasons.') && key.endsWith('.why') && /^(请|please)/i.test(text)) problems.push(`${where}: a reason is not an instruction`);
+            if (!zh && key.endsWith('.hint') && !/^[A-Z“]/.test(text)) problems.push(`${where}: sentence should start with a capital`);
+        }
+    }
+    assert.deepEqual(problems, []);
+});
+
+test('the operations the page reports through describeFailure exist, with the texts that call needs', () => {
+    const app = read('js/app.js');
+    const used = new Map();   // op -> phases
+    for (const m of app.matchAll(/describeFailure\(|reportFailure\(\s*\{([^}]*)\}/g)) {
+        const body = m[1] || '';
+        for (const op of body.matchAll(/op(?::\s*|\s*=\s*)'([a-z]+\.[a-z]+)'/g)) used.set(op[1], new Set([...(used.get(op[1]) || []), (body.match(/phase:\s*'(\w+)'/) || [, 'failed'])[1]]));
+    }
+    for (const m of app.matchAll(/const op = enable \? '([a-z.]+)' : '([a-z.]+)'/g)) for (const op of [m[1], m[2]]) used.set(op, new Set(['failed']));
+    assert(used.size >= 5, [...used.keys()].join());
+    for (const lang of ['zh-CN', 'en-US']) {
+        const ops = failure(lang).ops;
+        for (const [op, phases] of used) {
+            const [group, name] = op.split('.');
+            assert(ops[group]?.[name], `${lang}: no texts for ${op}`);
+            for (const phase of phases) assert.equal(typeof ops[group][name][phase], 'string', `${lang}: ${op}.${phase}`);
+            assert.equal(typeof ops[group][name].unknown, 'string', `${lang}: ${op}.unknown (a write may end unconfirmed)`);
+        }
+    }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Tokens the firmware sends must have a message. They are read from the C sources, so a new error code in firmware
+// fails here until its sentence is written.
+const component = file => fs.readFileSync(path.resolve(__dirname, '../../components', file), 'utf8');
+const functionBody = (source, name) => {
+    const m = new RegExp('^(?:static )?[^\\n;]+\\b' + name + '\\([^;]+?\\)\\s*\\{', 'm').exec(source);
+    assert(m, name);
+    return source.slice(m.index, source.indexOf('\n}', m.index));
+};
+const returned = body => [...body.matchAll(/return "([a-z][a-z0-9_]*)";/g)].map(m => m[1]);
+// words in these places are statuses, not failures
+const NOT_FAILURES = new Set(['ok', 'no_change', 'mirror_failed', 'recovery_cleanup_pending']);
+
+test('every reason token the firmware can send has a message in both languages', () => {
+    const automation = component('ts_api/src/ts_api_automation.c');
+    const ssh = component('ts_api/src/ts_api_ssh.c');
+    const tokens = new Set([
+        ...returned(functionBody(automation, 'trigger_reject_token')),
+        ...returned(functionBody(ssh, 'ssh_connect_reason')),
+        // rule save / enable / disable: the engine, the store and the API layer
+        ...[component('ts_automation/src/ts_rule_engine.c'), component('ts_automation/src/ts_rule_store.c'), automation]
+            .flatMap(source => [...source.matchAll(/error_code\s*=\s*"([a-z][a-z0-9_]*)"/g)].map(m => m[1])),
+        ...[...automation.matchAll(/ts_api_result_error\(result, TS_API_ERR_\w+, "([a-z][a-z0-9_]*)"\)/g)].map(m => m[1]),
+    ]);
+    assert(tokens.size > 20, [...tokens].join());
+    for (const lang of ['zh-CN', 'en-US']) {
+        const reasons = failure(lang).reasons;
+        const missing = [...tokens].filter(token => !NOT_FAILURES.has(token) && !reasons[token]);
+        assert.deepEqual(missing, [], `${lang}: reason tokens the firmware sends but the page has no sentence for`);
+    }
+});
+
+test('the catalogue has no reason that nothing can produce (a sentence nobody can reach is a trap for the next edit)', () => {
+    const sources = [component('ts_api/src/ts_api_automation.c'), component('ts_api/src/ts_api_ssh.c'), component('ts_automation/src/ts_rule_engine.c'),
+        component('ts_automation/src/ts_rule_store.c'), read('js/app.js'), read('js/api.js')].join('\n');
+    // reasons the page produces from the error class, from a transport state, or from the API envelope of other modules
+    const GENERIC = new Set(['busy', 'no_memory', 'not_found', 'no_permission', 'timeout', 'invalid_request', 'invalid_argument', 'not_supported', 'hardware_failed',
+        'target_unreachable', 'auth_required', 'network_lost', 'invalid_response', 'no_detail', 'result_unknown', 'storage_failed']);
+    const unreachable = Object.keys(failure('zh-CN').reasons).filter(token => !GENERIC.has(token) && !new RegExp('["\']' + token + '["\']').test(sources));
+    assert.deepEqual(unreachable, []);
+});

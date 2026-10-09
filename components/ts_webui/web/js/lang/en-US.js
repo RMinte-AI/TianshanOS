@@ -4127,5 +4127,90 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         exportDesc: 'Export action template <strong>{id}</strong> configuration as encrypted config package',
         importTitle: 'Import Action Template',
         importDesc: 'Select .tscfg config package file to import action template'
+    },
+
+    // Unified catalogue of failure messages. A failure message = {action} (per button) + {why} (reason) + {hint} (next step).
+    // `why` has no final period; `hint` is a full sentence; reasons without a useful next step only have `why`.
+    failure: {
+        format: '{action}: {why}. {hint}',
+        formatNoHint: '{action}: {why}.',
+        formatUnknown: '{action}. {hint}',
+        details: {
+            show: 'Details', hide: 'Hide', close: 'Close',
+            code: 'Reason code', api: 'API', device: 'Device text', stage: 'Stage', time: 'Time',
+            line: '{label}: {value}'
+        },
+        ops: {
+            generic: { failed: 'The operation failed', unknown: 'The result of the operation is unconfirmed' },
+            rule: {
+                enable: { failed: 'Failed to enable rule “{name}”', unknown: 'The result of enabling rule “{name}” is unconfirmed', done: 'Rule “{name}” enabled', doneMirror: 'Rule “{name}” enabled, but the backup copy is not synced; do not remove the SD card.' },
+                disable: { failed: 'Failed to disable rule “{name}”', unknown: 'The result of disabling rule “{name}” is unconfirmed', done: 'Rule “{name}” disabled', doneMirror: 'Rule “{name}” disabled, but the backup copy is not synced; do not remove the SD card.' },
+                save: { failed: 'Failed to save rule “{name}”', unknown: 'The result of saving rule “{name}” is unconfirmed', done: 'Rule “{name}” saved', doneMirror: 'Rule “{name}” saved, but the backup copy is not synced; do not remove the SD card.' }
+            },
+            quick: {
+                start: { blocked: 'Can\'t start “{name}”', failed: 'Failed to start “{name}”', unknown: 'The result of starting “{name}” is unconfirmed' },
+                wait: 'Another quick action was just triggered. Wait a few seconds, then try again.'
+            },
+            ssh: {
+                connect: { failed: 'Failed to connect to {host}', unknown: 'The result of connecting to {host} is unconfirmed', cancelled: 'Cancelled: the fingerprint of {host} was not trusted, so no connection was made.' }
+            }
+        },
+        reasons: {
+            // -- Generic (when the device gave no recognisable reason: an honest statement by error class) --
+            busy: { why: 'the device is busy with another operation', hint: 'Wait for it to finish, then try again.' },
+            no_memory: { why: 'the device is low on memory', hint: 'Try again later; restart the device if it keeps failing.' },
+            not_found: { why: 'it was not found on the device', hint: 'It may have been deleted; refresh the list.' },
+            no_permission: { why: 'your account does not have permission', hint: 'Sign in with an account that has permission.' },
+            timeout: { why: 'the device did not respond in time', hint: 'Check the network connection and confirm the current state before trying again.' },
+            invalid_request: { why: 'the device rejected the request as invalid', hint: 'Check what you entered and try again.' },
+            invalid_argument: { why: 'the submitted content is invalid', hint: 'Check it and try again.' },
+            not_supported: { why: 'this device does not support this operation' },
+            hardware_failed: { why: 'the device could not complete the hardware operation', hint: 'Check the connection and state of the hardware involved.' },
+            target_unreachable: { why: 'the target could not be reached', hint: 'Check the network connection and the target address.' },
+            auth_required: { why: 'your session is no longer valid', hint: 'Sign in again.' },
+            network_lost: { why: 'the device cannot be reached', hint: 'Check the network connection between this computer and the device.' },
+            invalid_response: { why: 'the device\'s response could not be read', hint: 'Refresh the page and try again.' },
+            storage_failed: { why: 'writing to the device storage failed', hint: 'If you use an SD card, make sure it is inserted; see Terminal → System Logs.' },
+            no_detail: { why: 'the device did not return a specific reason', hint: 'Open Terminal → System Logs to see the details of this operation.' },
+            result_unknown: { hint: 'Refresh and check the current state before repeating the operation.' },
+            commit_unknown: { hint: 'Reload and check the current state before submitting again.' },
+            // -- Automation: enable / disable / save a rule --
+            execution_busy: { why: 'it is running right now', hint: 'Wait for it to finish, then try again.' },
+            revision_conflict: { why: 'it was just changed by another operation', hint: 'Refresh, check the latest content, then try again.' },
+            service_busy: { why: 'its bound service is running or its state is unconfirmed', hint: 'Verify the service state and stop it first.' },
+            source_read_only: { why: 'it comes from a read-only configuration source and cannot be changed', hint: 'The original file was not changed; edit its configuration source if you need a change.' },
+            recovery_required: { why: 'the automation configuration needs a recovery check, and automatic runs are paused', hint: 'Reload and check the configuration before continuing.' },
+            busy_retired_config: { why: 'the previous configuration is still in use', hint: 'Try again in a moment.' },
+            capacity: { why: 'the rule limit has been reached', hint: 'Delete unused rules first.' },
+            invalid_configuration: { why: 'the rule is incomplete or invalid', hint: 'Check the conditions and actions, fix them, then save again.' },
+            configuration_busy: { why: 'the configuration is being changed by another operation', hint: 'Try again in a moment.' },
+            service_state_unconfirmed: { why: 'the state of its service cannot be confirmed', hint: 'Verify the service state first.' },
+            revision_exhausted: { why: 'this rule\'s revision counter is exhausted' },
+            // -- Quick actions: starting from a card --
+            rule_disabled: { why: 'the rule is disabled', hint: 'Enable it on the Automation page first.' },
+            manual_not_allowed: { why: 'the rule does not allow manual execution', hint: 'Turn on “Allow manual execution” in the rule settings.' },
+            reference_unresolved: { why: 'what it refers to (such as an SSH command) cannot be resolved yet', hint: 'Refresh the page; if it persists, edit the rule and select it again.' },
+            rule_details_unavailable: { why: 'the rule\'s details could not be read', hint: 'Refresh the page and try again.' },
+            rule_not_found: { why: 'the rule was not found on the device', hint: 'It may have been deleted; refresh the page.' },
+            rule_changed: { why: 'the rule was just changed', hint: 'Refresh and try again.' },
+            config_loading: { why: 'the configuration is still loading', hint: 'Refresh the page in a moment and try again.' },
+            engine_not_accepting: { why: 'the automation engine is not accepting runs right now (it may be reloading its configuration, or stopped)', hint: 'Wait a few seconds and try again. If it keeps happening, restart the “automation” service in the service list on the System page.' },
+            service_running: { why: 'its service is already running', hint: 'There is no need to start it again.' },
+            service_starting: { why: 'it is starting', hint: 'Please wait; the result shows in the service status.' },
+            service_stopping: { why: 'it is stopping', hint: 'Wait for it to stop, then start it.' },
+            service_checking: { why: 'its service state is being verified', hint: 'Wait for the verification to finish, then start it.' },
+            service_not_confirmed_stopped: { why: 'its service is not confirmed to be stopped', hint: 'Use “Verify remote state” first, then start it.' },
+            service_not_admissible: { why: 'its service cannot be started in its current state (running, starting, or state unconfirmed)', hint: 'Verify the service state first.' },
+            // -- SSH: test connection --
+            ssh_dns_failed: { why: 'the host name cannot be resolved', hint: 'Check the spelling of the host address and the device\'s DNS settings.' },
+            ssh_host_unreachable: { why: 'the host cannot be reached', hint: 'Check that the host is on and the network is connected.' },
+            ssh_port_refused: { why: 'the connection was refused (port {port})', hint: 'Make sure SSH is running on the host and the port number is right.' },
+            ssh_connect_timeout: { why: 'the connection timed out', hint: 'Make sure the host is on, reachable, and not blocked by a firewall.' },
+            ssh_handshake_failed: { why: 'an SSH session could not be set up', hint: 'Make sure this port runs an SSH service.' },
+            ssh_auth_failed: { why: 'the host rejected the login for user “{user}”', hint: 'Check the username and that the password or key is correct.' },
+            ssh_connect_failed: { why: 'the SSH connection could not be made', hint: 'Open Terminal → System Logs to see the details of this operation.' },
+            ssh_fingerprint_unavailable: { why: 'the device did not provide its fingerprint, so it cannot be confirmed here', hint: 'Upgrade the firmware and the WebUI to the same version.' },
+            ssh_fingerprint_mismatch: { why: 'it presented a different fingerprint from the one you just confirmed', hint: 'For safety it was not trusted; check it and test again.' }
+        }
     }
 });

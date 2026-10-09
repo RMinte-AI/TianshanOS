@@ -87,6 +87,69 @@ function requireApiSuccess(result, operation = '') {
     return result;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// User-facing failure text:  "<what failed>: <why>. <what to do next>"
+//   op      key under failure.ops, e.g. 'rule.enable' (.failed, or .unknown when the outcome is not confirmed)
+//   params  values for the {name} / {host} ... placeholders of the operation and reason texts
+//   result  API envelope {code, error | rawMessage, data};  error  an ApiOperationError;  token  a reason the UI detected itself
+//   write   true for an operation that changes something: an exception without an answer is then "unconfirmed"
+// The device reports the reason as a stable token in `error` (e.g. 'execution_busy'); the texts live in the language packs
+// (failure.reasons.<token>.{why,hint}). A device text the catalogue does not know never reaches the user: it falls back to an
+// honest generic reason chosen by the error class, and the original text is kept in the folded details.
+// ---------------------------------------------------------------------------------------------------------------------
+const FAILURE_LEGACY_TEXT = {   // English texts the device sends without a reason token
+    'Memory allocation failed': 'no_memory', 'Rule not found': 'rule_not_found', 'Request timeout': 'timeout', 'Failed to fetch': 'network_lost'
+};
+const FAILURE_CODE_TOKEN = {1: 'invalid_request', 2: 'not_found', 3: 'no_permission', 4: 'busy', 5: 'timeout', 6: 'no_memory',
+    7: 'no_detail', 8: 'not_supported', 9: 'hardware_failed', 10: 'target_unreachable', 11: 'auth_required'};
+const FAILURE_CODE_NAME = {INVALID_ARG: 1, NOT_FOUND: 2, NO_PERMISSION: 3, BUSY: 4, TIMEOUT: 5, NO_MEM: 6, INTERNAL: 7,
+    NOT_SUPPORTED: 8, HARDWARE: 9, CONNECTION: 10, AUTH: 11};
+const FAILURE_UNCONFIRMED = new Set(['result_unknown', 'commit_unknown']);
+function describeFailure({op, phase = 'failed', params = {}, result = null, error = null, token = null, endpoint = '', write = false} = {}) {
+    const ready = typeof i18n !== 'undefined' && typeof t === 'function';
+    const has = (key, values = params) => ready && i18n.complete(key, values);
+    const anything = new Proxy({}, {get: () => 'x'});
+    const exists = key => ready && i18n.complete(key, anything);   // the text exists, whatever its placeholders need
+    const raw = String((error ? error.rawMessage : apiErrorReason(result || {})) || '').trim();
+    const rawCode = error ? error.code : result?.code;
+    const numeric = typeof rawCode === 'number' ? rawCode : FAILURE_CODE_NAME[rawCode];
+    const part = key => !exists(key) || has(key);              // a part that exists must also be fillable from `params`
+    const known = tok => !!tok && /^[a-z][a-z0-9_]*$/.test(tok) &&
+        (exists(`failure.reasons.${tok}.why`) || exists(`failure.reasons.${tok}.hint`)) &&
+        part(`failure.reasons.${tok}.why`) && part(`failure.reasons.${tok}.hint`);
+    let tok = token;
+    if (!tok && error?.kind) tok = error.uncertain ? 'result_unknown' : ({network: 'network_lost', timeout: 'timeout', format: 'invalid_response'})[error.kind];
+    // A write that ended in an exception without an answer from the device may or may not have happened.
+    if (!tok && write && error && !(typeof error.code === 'number' && error.code !== 0)) tok = 'result_unknown';
+    if (!tok && known(raw)) tok = raw;
+    if (!tok && known(FAILURE_LEGACY_TEXT[raw])) tok = FAILURE_LEGACY_TEXT[raw];
+    if (!tok) tok = FAILURE_CODE_TOKEN[numeric] || 'no_detail';
+    if (!known(tok)) tok = 'no_detail';                          // e.g. a reason text whose placeholders the caller could not fill
+    const unconfirmed = FAILURE_UNCONFIRMED.has(tok);
+    const kind = unconfirmed ? 'unknown' : phase;   // phase: 'failed', or 'blocked' when nothing was sent
+    const actionKey = [`failure.ops.${op}.${kind}`, `failure.ops.${op}.failed`, `failure.ops.generic.${unconfirmed ? 'unknown' : 'failed'}`].find(key => has(key));
+    const action = actionKey ? t(actionKey, params) : '';
+    const why = !unconfirmed && has(`failure.reasons.${tok}.why`) ? t(`failure.reasons.${tok}.why`, params) : '';
+    const hint = has(`failure.reasons.${tok}.hint`) ? t(`failure.reasons.${tok}.hint`, params) : '';
+    let message = '';
+    if (action) {
+        message = why ? (hint ? t('failure.format', {action, why, hint}) : t('failure.formatNoHint', {action, why}))
+            : (hint ? t('failure.formatUnknown', {action, hint}) : action);
+    }
+    if (!message) message = ready ? apiErrorMessage({...(result || {}), rawMessage: raw, code: rawCode}, endpoint) : raw || 'Operation failed';   // language pack not usable
+    const line = (label, value) => value ? t('failure.details.line', {label: t(`failure.details.${label}`), value}) : '';
+    const device = raw && raw !== tok ? raw : '';
+    const detail = device || (typeof result?.data?.detail === 'string' ? result.data.detail : '');
+    const stage = typeof result?.data?.stage === 'string' ? result.data.stage : '';
+    const api = endpoint || error?.operation || '';
+    // Details are for whoever has to look into it: a reason the page worked out by itself (nothing was sent) has none.
+    const lines = !ready || !(api || detail || stage) ? [] : [
+        line('code', tok), line('api', api), line('device', detail), line('stage', stage),
+        line('time', new Date().toLocaleTimeString([], {hour12: false}))
+    ].filter(Boolean);
+    return {message, details: lines.join('\n'), token: tok, uncertain: unconfirmed, raw};
+}
+
 class TianShanAPI {
     constructor() {
         // 从 localStorage 恢复 token（注意 key 是 ts_token）

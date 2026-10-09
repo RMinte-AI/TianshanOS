@@ -3,14 +3,10 @@ function runtimeText(key) {
     const translated = typeof t === 'function' ? t('runtimeRepair.' + key) : '';
     return translated && translated !== 'runtimeRepair.' + key ? translated : key;
 }
-function runtimeSaveError(result) {
-    const code = result.data?.error_code || result.rawMessage || result.error || result.message;
-    const known = ['revision_conflict', 'source_read_only', 'recovery_required', 'commit_unknown', 'execution_busy', 'service_busy', 'busy_retired_config'];
-    return known.includes(code) ? runtimeText(code) : (typeof code === 'string' ? code : runtimeText('saveFailed'));
-}
 async function ruleWriteWithRevision(method, id) {
     const current = await api.call('automation.rules.get', { id });
-    if (current.code !== 0 || !Number.isInteger(current.data?.revision)) return current;
+    if (current.code !== 0) return {...current, endpoint: 'automation.rules.get'};   // the read failed, not the write
+    if (!Number.isInteger(current.data?.revision)) return current;
     return api.call(method, { id, expected_revision: current.data.revision });
 }
 /**
@@ -3852,6 +3848,7 @@ async function refreshQuickActions() {
                              id="quick-action-${escapeHtml(rule.id)}"
                              data-rule-id="${escapeHtml(rule.id)}"
                              data-allowed="${rule.enabled && rule.allow_manual_trigger && !rule.reference_unresolved && !nohupInfo?.unresolved}"
+                             data-block="${!rule.enabled ? 'rule_disabled' : !rule.allow_manual_trigger ? 'manual_not_allowed' : rule.reference_unresolved ? 'reference_unresolved' : nohupInfo?.unresolved ? 'rule_details_unavailable' : ''}"
                              data-service="${nohupInfo?.serviceMode ? escapeHtml(nohupInfo.commandId) : ''}"
                              data-state="${nohupInfo?.serviceMode ? 'unknown' : 'stopped'}"
                              onclick="${cardOnClick}" 
@@ -4051,6 +4048,13 @@ window.stopSystemPageTimers = function() {
  * 触发快捷操作
  * @param {string} ruleId - 规则 ID
  */
+// Why a quick-action card cannot be started right now ('' when it can): the card knows its rule's state and its service's state.
+function quickActionBlockReason(card) {
+    if (card.dataset.allowed !== 'true') return card.dataset.block || 'rule_details_unavailable';
+    if (!card.dataset.service) return '';
+    return ({stopped: '', running: 'service_running', ready: 'service_running', starting: 'service_starting',
+        checking: 'service_checking', stopping: 'service_stopping'})[card.dataset.state] ?? 'service_not_confirmed_stopped';
+}
 async function triggerQuickAction(ruleId) {
     const card = document.getElementById(`quick-action-${ruleId}`);
     if (!card) {
@@ -4066,10 +4070,11 @@ async function triggerQuickAction(ruleId) {
     
     const now = Date.now();
     if (now < _quickActionTriggerCooldownUntil && ruleId !== _quickActionLastTriggeredId) {
-        showToast((typeof t === 'function' ? t('toast.waitBeforeTrigger') : '请等待几秒后再触发其他模型'), 'warning');
+        showToast(t('failure.ops.quick.wait'), 'warning');
         return;
     }
     
+    const name = card.querySelector('.quick-action-name')?.textContent.trim() || ruleId;
     try {
         // Keep verification and triggering within the same in-flight operation.
         if (card.dataset.service) advanceServiceState(card.dataset.service);
@@ -4085,8 +4090,10 @@ async function triggerQuickAction(ruleId) {
                 card.dataset.state = checked.state || 'unknown';
             } catch (_) { card.dataset.state = 'unknown'; }
         }
-        if (card.dataset.allowed !== 'true' || (card.dataset.service && card.dataset.state !== 'stopped')) {
-            showToast(runtimeText('startBlocked'), 'warning'); return;
+        const blocked = quickActionBlockReason(card);
+        if (blocked) {
+            reportFailure({ op: 'quick.start', phase: 'blocked', params: { name }, token: blocked }, { type: 'warning' });
+            return;
         }
 
         if (card.dataset.service) card.dataset.state = 'starting';
@@ -4107,7 +4114,7 @@ async function triggerQuickAction(ruleId) {
             card.classList.add('is-running');
             setTimeout(() => refreshQuickActions(), 2500);
         } else {
-            showToast((result.message || (typeof t === 'function' ? t('toast.execFailed') : '执行失败')), 'error');
+            reportFailure({ op: 'quick.start', params: { name }, result, endpoint: 'automation.rules.trigger' });
             // 恢复原始图标
             if (iconEl && originalIcon) {
                 iconEl.innerHTML = originalIcon;
@@ -4116,7 +4123,7 @@ async function triggerQuickAction(ruleId) {
         
     } catch (e) {
         console.error('triggerQuickAction error:', e);
-        showToast(runtimeText('outcomeUnknown'), 'error');
+        reportFailure({ op: 'quick.start', params: { name }, error: e, endpoint: 'automation.rules.trigger', write: true });
         if (card?.dataset.service) card.dataset.state = 'unknown';
     } finally {
         if (card.dataset.service) advanceServiceState(card.dataset.service);
@@ -10271,6 +10278,7 @@ async function testSshHostByIndex(index) {
     
     showToast(typeof t === 'function' ? t('toast.testingConnection', { host: host.id }) : `正在测试连接 ${host.id}...`, 'info');
     
+    const messageParams = { host: host.host, port: host.port, user: host.username };
     try {
         const params = {
             host: host.host,
@@ -10296,22 +10304,32 @@ async function testSshHostByIndex(index) {
                 bodyHtml: `${escapeHtml(runtimeText('confirmFingerprint'))}${mono(`${host.host}:${host.port}\n${fingerprint}`)}`,
                 primary: t('ui.trustConnect')
             };
-            if (fingerprint && await confirmSheet(sheetOptions)) {
-                params.confirmed_fingerprint = fingerprint;
-                params.trust_new = execResult.code === 1002;
-                params.accept_changed = execResult.code === 1001;
-                execResult = await api.call('ssh.exec', params);
+            if (!fingerprint) {   // firmware older than this page: nothing to show for confirmation
+                reportFailure({ op: 'ssh.connect', params: messageParams, result: execResult, token: 'ssh_fingerprint_unavailable', endpoint: 'ssh.exec' });
+                return;
+            }
+            if (!await confirmSheet(sheetOptions)) {
+                showToast(t('failure.ops.ssh.connect.cancelled', messageParams), 'warning');
+                return;
+            }
+            params.confirmed_fingerprint = fingerprint;
+            params.trust_new = execResult.code === 1002;
+            params.accept_changed = execResult.code === 1001;
+            execResult = await api.call('ssh.exec', params);
+            if ([1001, 1002].includes(execResult.code)) {   // a different key now: never trust it silently
+                reportFailure({ op: 'ssh.connect', params: messageParams, result: execResult, token: 'ssh_fingerprint_mismatch', endpoint: 'ssh.exec' });
+                return;
             }
         }
         
         if (execResult.code === 0) {
             showToast(typeof t === 'function' ? t('toast.connectionSuccess', { host: host.id }) : `连接 ${host.id} 成功！`, 'success');
         } else {
-            showToast(typeof t === 'function' ? t('toast.connectFailedMsg', { msg: execResult.message || t('common.unknown') }) : `连接失败: ${execResult.message || '未知错误'}`, 'error');
+            reportFailure({ op: 'ssh.connect', params: messageParams, result: execResult, endpoint: 'ssh.exec' });
         }
     } catch (e) {
         console.error('Test SSH connection error:', e);
-        showToast(typeof t === 'function' ? t('toast.testConnectionFailed') + ': ' + e.message : `测试失败: ${e.message}`, 'error');
+        reportFailure({ op: 'ssh.connect', params: messageParams, error: e, endpoint: 'ssh.exec' });
     }
 }
 
@@ -12310,6 +12328,7 @@ function showToast(message, type = 'info', duration = 3000, attempt = null) {
     // A routine success must not erase an active long warning.
     if (!attempt && Date.now() < toastDeadline && toastPriority > priority && toastDeadline - Date.now() > duration) return;
     clearTimeout(toastTimer);
+    toast.onmouseenter = toast.onmouseleave = toast.onfocusin = toast.onfocusout = null;   // left over from a failure toast
     toast.textContent = String(message ?? '');
     toast.style.whiteSpace = 'pre-wrap';
     toast.setAttribute('role', priority ? 'alert' : 'status');
@@ -12317,6 +12336,75 @@ function showToast(message, type = 'info', duration = 3000, attempt = null) {
     toastPriority = priority;
     toastDeadline = Date.now() + duration;
     toastTimer = setTimeout(() => { toast.classList.remove('show'); toastDeadline = 0; }, duration);
+}
+
+// A failure that needs explaining: stays 8 s (paused while the pointer or focus is on it), can show the technical details on
+// demand and can be dismissed. Used for messages built by describeFailure(); routine messages keep using showToast().
+function showFailureToast(message, details = '', {type = 'error', duration = 8000, attempt = null} = {}) {
+    if (attempt && !attempt.isCurrent()) return;
+    let toast = document.getElementById('toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'toast';
+        document.body.appendChild(toast);
+    }
+    const priority = type === 'error' ? 2 : 1;
+    if (!attempt && Date.now() < toastDeadline && toastPriority > priority && toastDeadline - Date.now() > duration) return;
+    clearTimeout(toastTimer);
+    const ui = (key, fallback) => (typeof i18n !== 'undefined' && i18n.complete(key, {}) ? t(key) : fallback);
+    toast.textContent = '';
+    const text = document.createElement('span');
+    text.className = 'toast-msg';
+    text.textContent = String(message ?? '');
+    toast.appendChild(text);
+    let inside = false, expanded = false, held = false, remaining = duration, armedAt = 0, detailBox = null;
+    const hide = () => { clearTimeout(toastTimer); toast.classList.remove('show'); toastDeadline = 0; };
+    const arm = ms => { clearTimeout(toastTimer); armedAt = Date.now(); remaining = ms; toastDeadline = armedAt + ms; toastTimer = setTimeout(hide, ms); };
+    const hold = () => { if (held) return; held = true; remaining = Math.max(2000, remaining - (Date.now() - armedAt)); clearTimeout(toastTimer); toastDeadline = Infinity; };
+    const sync = () => { if (inside || expanded) hold(); else if (held) { held = false; arm(remaining); } };
+    if (details) {
+        const more = document.createElement('button');
+        const pre = document.createElement('pre');
+        more.type = 'button';
+        more.className = 'toast-more';
+        more.setAttribute('aria-expanded', 'false');
+        more.textContent = ui('failure.details.show', 'Details');
+        pre.className = 'toast-detail';
+        pre.hidden = true;
+        pre.textContent = details;
+        more.onclick = () => {
+            expanded = !expanded;
+            pre.hidden = !expanded;
+            more.setAttribute('aria-expanded', String(expanded));
+            more.textContent = expanded ? ui('failure.details.hide', 'Hide') : ui('failure.details.show', 'Details');
+            sync();
+        };
+        toast.appendChild(more);
+        detailBox = pre;
+    }
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', ui('failure.details.close', 'Close'));
+    close.onclick = hide;
+    toast.appendChild(close);
+    if (detailBox) toast.appendChild(detailBox);   // the details take their own row under the buttons
+    toast.onmouseenter = toast.onfocusin = () => { inside = true; sync(); };
+    toast.onmouseleave = toast.onfocusout = () => { inside = false; sync(); };
+    toast.style.whiteSpace = '';
+    toast.setAttribute('role', 'alert');
+    toast.className = `toast toast-${type} show rich`;
+    toastPriority = priority;
+    arm(duration);
+}
+
+// Describe a failed operation (see describeFailure in api.js) and show it. A result the device could not confirm is a
+// warning, not an error: the operation may or may not have happened.
+function reportFailure(spec, {type = null, attempt = null} = {}) {
+    const failure = describeFailure(spec);
+    showFailureToast(failure.message, failure.details, {type: type || (failure.uncertain ? 'warning' : 'error'), attempt});
+    return failure;
 }
 
 // =========================================================================
@@ -14452,6 +14540,8 @@ async function refreshRules() {
         if (!pageCurrent()) return;
         if (result.code === 0 && result.data && result.data.rules) {
             const rules = result.data.rules;
+            ruleNames.clear();
+            for (const r of rules) ruleNames.set(r.id, r.name || r.id);
             if (rules.length === 0) {
                 container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noRules') + '</p></div>';
                 return;
@@ -14489,16 +14579,25 @@ async function refreshRules() {
 /**
  * 切换规则启用状态
  */
+const ruleNames = new Map();   // rule id -> display name (filled by refreshRules) so messages can name the rule
+
 async function toggleRule(id, enable) {
+    const op = enable ? 'rule.enable' : 'rule.disable';
+    const endpoint = enable ? 'automation.rules.enable' : 'automation.rules.disable';
+    const params = { name: ruleNames.get(id) || id };
     try {
-        const action = enable ? 'automation.rules.enable' : 'automation.rules.disable';
-        const result = await ruleWriteWithRevision(action, id);
-        showToast(typeof t === 'function' ? t('toast.ruleToggled', { id, state: enable ? t('status.enabled') : t('status.disabled') }) + ': ' + (result.message || 'OK') : `规则 ${id} ${enable ? '启用' : '禁用'}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
+        const result = await ruleWriteWithRevision(endpoint, id);
         if (result.code === 0) {
+            const mirror = result.data?.mirror_synced === false;
+            showToast(t(`failure.ops.${op}.done${mirror ? 'Mirror' : ''}`, params), mirror ? 'warning' : 'success');
             await refreshRules();
+            return;
         }
+        const failure = reportFailure({ op, params, result, endpoint: result.endpoint || endpoint });
+        // The list the user acted on is stale: show the real state.
+        if (['revision_conflict', 'rule_not_found', 'commit_unknown'].includes(failure.token)) await refreshRules();
     } catch (error) {
-        showToast(typeof t === 'function' ? t('toast.toggleRuleFailed') + ': ' + error.message : `切换规则状态失败: ${error.message}`, 'error');
+        reportFailure({ op, params, error, endpoint, write: true });
     }
 }
 
@@ -17575,17 +17674,20 @@ async function submitAddRule(originalId = null) {
         }
     }
     modal.dataset.saving = 'true';
+    const endpoint = isEdit ? 'automation.rules.update' : 'automation.rules.add';
+    const messageParams = { name: name || id };
     try {
-        const result = await api.call(isEdit ? 'automation.rules.update' : 'automation.rules.add', params);
+        const result = await api.call(endpoint, params);
         if (result.code === 0) {
-            showToast(runtimeText(result.data?.mirror_synced === false ? 'mirrorWarning' : 'saved'), result.data?.mirror_synced === false ? 'warning' : 'success');
+            const mirror = result.data?.mirror_synced === false;
+            showToast(t(mirror ? 'failure.ops.rule.save.doneMirror' : 'failure.ops.rule.save.done', messageParams), mirror ? 'warning' : 'success');
             closeModal('add-rule-modal');
             await Promise.all([refreshRules(), refreshAutomationStatus()]);
         } else {
-            showToast(runtimeSaveError(result), 'error');
+            reportFailure({ op: 'rule.save', params: messageParams, result, endpoint });
         }
     } catch (error) {
-        showToast(runtimeText('saveUnknown'), 'warning');
+        reportFailure({ op: 'rule.save', params: messageParams, error, endpoint, write: true });
         // Re-read once, never replay the write. Keep the editor and its draft.
         try {
             const current = await api.call('automation.rules.get', { id });

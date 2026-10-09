@@ -12,6 +12,9 @@ for(const f of ['index.html','js/app.js','js/terminal.js'])for(const m of read(f
 for(const m of read('js/app.js').matchAll(/(?:labelKey|descKey): '([^']+)'/g))calls.push({f:'dynamic widget option',key:m[1]});
 // Explicit finite dynamic families; unknown names use neutral runtime fallbacks.
 for(const family of ['promptRepair','runtimeRepair'])for(const key of Object.keys(langs['zh-CN'][family]))calls.push({f:'dynamic '+family,key:family+'.'+key,dynamic:true});
+// the failure catalogue is looked up by token / operation name: every leaf must exist in both languages with the same placeholders
+const leaves=(o,p)=>Object.entries(o).flatMap(([k,v])=>typeof v==='string'?[p+k]:leaves(v,p+k+'.'));
+for(const key of leaves(langs['zh-CN'].failure,'failure.'))calls.push({f:'dynamic failure catalogue',key,dynamic:true});
 test('actual UI literal/conditional and finite dynamic keys exist in both languages with matching contracts',()=>{
  let failures=[];
  for(const c of calls){const a=lookup('zh-CN',c.key),b=lookup('en-US',c.key);
