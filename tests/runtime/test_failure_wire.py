@@ -31,7 +31,9 @@ CAPTURES = ['wire-rule-ok.json', 'wire-rule-ok-mirror.json', 'wire-rule-executio
             'wire-action-save-capacity.json', 'wire-action-save-exists.json', 'wire-action-save-protected.json',
             'wire-action-save-not-found.json', 'wire-action-save-generic.json',
             'wire-action-run-failed.json', 'wire-action-run-failed-no-output.json', 'wire-action-run-timeout.json', 'wire-action-run-not-found.json',
-            'wire-source-add-ok.json', 'wire-source-add-capacity.json', 'wire-source-add-unavailable.json']
+            'wire-source-add-ok.json', 'wire-source-add-capacity.json', 'wire-source-add-unavailable.json',
+            'wire-proxy-connect-failed.json', 'wire-proxy-http-error.json',
+            'wire-pack-wrong-device.json', 'wire-pack-signature.json', 'wire-pack-parse.json', 'wire-pack-not-allowed.json']
 
 
 def extract(path, name):
@@ -49,6 +51,7 @@ code = r'''
 #include "ts_automation.h"
 #include "ts_action_manager.h"
 #include "ts_source_manager.h"
+#include "ts_config_pack.h"
 #define ESP_LOGI(...) ((void)0)
 #define TS_MALLOC_PSRAM malloc
 #define TS_STRDUP_PSRAM strdup
@@ -70,10 +73,16 @@ esp_err_t ts_automation_get_status(ts_automation_status_t *s) {memset(s,0,sizeof
 '''
 for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error']:
     code += extract('components/ts_api/src/ts_api.c', name)
-for name in ['fail_with', 'automation_state', 'engine_refusal_token', 'api_automation_start', 'api_automation_stop', 'api_automation_pause',
+for name in ['fail_with', 'pack_failure', 'proxy_http_error', 'automation_state', 'engine_refusal_token', 'api_automation_start', 'api_automation_stop', 'api_automation_pause',
              'api_automation_reload', 'action_template_write_reply', 'action_execute_failure', 'source_register_reply',
              'rule_commit_reply', 'trigger_reject_token', 'trigger_reject_code', 'api_automation_rules_trigger']:
     code += extract('components/ts_api/src/ts_api_automation.c', name)
+pack_source = Path('components/ts_config_pack/src/ts_config_pack.c').read_text()
+table = re.search(r'static const char \*s_error_messages\[\] = \{.*?\n\};\n', pack_source, re.S)
+assert table
+code += table.group(0)
+for name in ['ts_config_pack_strerror', 'ts_config_pack_reason']:
+    code += extract('components/ts_config_pack/src/ts_config_pack.c', name)
 web_source = Path('components/ts_webui/src/ts_webui_api.c').read_text()
 start = web_source.index('    if (ret == ESP_OK || result.code == TS_API_OK) {')
 end = web_source.index('\n}\n\nstatic esp_err_t login_handler', start)
@@ -177,6 +186,26 @@ int main(void) {
     {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_ERR_NO_MEM,&src);sent_with_detail(r,"wire-source-add-capacity.json",TS_API_ERR_INTERNAL,"source_capacity",NULL);}
     {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_ERR_INVALID_STATE,&src);sent_with_detail(r,"wire-source-add-unavailable.json",TS_API_ERR_BUSY,"engine_unavailable",NULL);}
     {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_FAIL,&src);assert(!strcmp(r.message,"Failed to create source"));ts_api_result_free(&r);}
+    /* testing a data source's address: the reason for the page, the status as a number, the start of the body as detail */
+    {ts_api_result_t r={0};fail_with(&r,TS_API_ERR_CONNECTION,"proxy_connect_failed","ESP_ERR_TIMEOUT");sent_with_detail(r,"wire-proxy-connect-failed.json",TS_API_ERR_CONNECTION,"proxy_connect_failed","ESP_ERR_TIMEOUT");}
+    {ts_api_result_t r={0};proxy_http_error(&r,401,"Unauthorized");cJSON *w=sent(r,"wire-proxy-http-error.json",TS_API_ERR_INTERNAL,"proxy_http_error");
+     cJSON *d=cJSON_GetObjectItem(w,"data");assert(cJSON_GetObjectItem(d,"status")->valueint==401&&!strcmp(str(d,"detail"),"Unauthorized"));cJSON_Delete(w);}
+    {char body[400];memset(body,'x',sizeof body);body[399]=0;ts_api_result_t r={0};proxy_http_error(&r,500,body);
+     cJSON *d=cJSON_GetObjectItem(r.data,"data");(void)d;assert(strlen(cJSON_GetObjectItem(r.data,"detail")->valuestring)==160&&cJSON_GetObjectItem(r.data,"status")->valueint==500);ts_api_result_free(&r);}
+    {ts_api_result_t r={0};proxy_http_error(&r,404,NULL);assert(cJSON_GetObjectItem(r.data,"status")->valueint==404&&!cJSON_GetObjectItem(r.data,"detail"));ts_api_result_free(&r);}
+    /* config packs: every result has a reason token of its own, the library's English text goes to the details */
+    {ts_api_result_t r={0};pack_failure(&r,TS_CONFIG_PACK_ERR_RECIPIENT);sent_with_detail(r,"wire-pack-wrong-device.json",TS_API_ERR_INVALID_ARG,"pack_wrong_device","Not intended for this device");}
+    {ts_api_result_t r={0};pack_failure(&r,TS_CONFIG_PACK_ERR_SIGNATURE);sent_with_detail(r,"wire-pack-signature.json",TS_API_ERR_INVALID_ARG,"pack_signature_invalid","Signature verification failed");}
+    {ts_api_result_t r={0};pack_failure(&r,TS_CONFIG_PACK_ERR_PARSE);sent_with_detail(r,"wire-pack-parse.json",TS_API_ERR_INVALID_ARG,"pack_parse_failed","JSON parse error");}
+    {ts_api_result_t r={0};pack_failure(&r,TS_CONFIG_PACK_ERR_PERMISSION);sent_with_detail(r,"wire-pack-not-allowed.json",TS_API_ERR_NO_PERMISSION,"pack_not_allowed","Permission denied (not a developer device)");}
+    {ts_api_result_t r={0};pack_failure(&r,TS_CONFIG_PACK_ERR_NO_MEM);assert(r.code==TS_API_ERR_NO_MEM&&!strcmp(r.message,"no_memory"));ts_api_result_free(&r);}
+    {ts_api_result_t r={0};pack_failure(&r,TS_CONFIG_PACK_ERR_IO);assert(r.code==TS_API_ERR_INTERNAL&&!strcmp(r.message,"pack_io_failed"));ts_api_result_free(&r);}
+    for(int pr=TS_CONFIG_PACK_ERR_PARSE;pr<=TS_CONFIG_PACK_ERR_NOT_INIT;pr++) {
+        const char *token=ts_config_pack_reason((ts_config_pack_result_t)pr);
+        assert(token&&token[0]&&strcmp(token,"pack_verify_failed"));    /* every real failure has its own token */
+        for(const char *c=token;*c;c++) assert((*c>='a'&&*c<='z')||(*c>='0'&&*c<='9')||*c=='_');
+    }
+    assert(!strcmp(ts_config_pack_reason((ts_config_pack_result_t)99),"pack_verify_failed"));
     /* every refusal state of the engine has a token, and the token depends only on the state and on start / pause */
     assert(!strcmp(engine_refusal_token(TS_AUTO_STATE_PAUSED,false),"engine_paused")&&!strcmp(engine_refusal_token(TS_AUTO_STATE_PAUSED,true),"engine_paused"));
     assert(!strcmp(engine_refusal_token(TS_AUTO_STATE_RUNNING,true),"engine_unavailable"));   /* running but stopping */
@@ -214,7 +243,7 @@ int main(void) {
 }
 '''
 includes = ['tests/runtime/stubs', 'tests/certificate/stubs', 'components/ts_automation/include', 'components/ts_security/include',
-            'components/ts_api/include', str(idf / 'components/json/cJSON')]
+            'components/ts_config_pack/include', 'components/ts_api/include', str(idf / 'components/json/cJSON')]
 env = {**os.environ, 'DEVELOPER_DIR': '/Library/Developer/CommandLineTools', 'WIRE_DIR': str(wire_dir)}
 for stale in wire_dir.glob('*.json'):
     stale.unlink()

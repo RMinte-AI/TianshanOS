@@ -37,6 +37,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
@@ -136,6 +137,27 @@ static esp_err_t api_automation_status(const cJSON *params, ts_api_result_t *res
 /*===========================================================================*/
 /*                           Control API                                      */
 /*===========================================================================*/
+
+/** A config pack operation failed: the reason token for the page, the library's own English text for the folded details. */
+static void pack_failure(ts_api_result_t *result, ts_config_pack_result_t pack_result)
+{
+    ts_api_result_code_t code = pack_result == TS_CONFIG_PACK_ERR_NO_MEM ? TS_API_ERR_NO_MEM
+        : pack_result == TS_CONFIG_PACK_ERR_PERMISSION ? TS_API_ERR_NO_PERMISSION
+        : (pack_result == TS_CONFIG_PACK_ERR_IO || pack_result == TS_CONFIG_PACK_ERR_NOT_INIT) ? TS_API_ERR_INTERNAL
+        : TS_API_ERR_INVALID_ARG;
+    fail_with(result, code, ts_config_pack_reason(pack_result), ts_config_pack_strerror(pack_result));
+}
+
+/** The remote server answered the proxied request with an error status: the page gets the status as a number and the start
+ * of the body (a few lines at most) as detail for the folded details. */
+static void proxy_http_error(ts_api_result_t *result, int status, const char *body)
+{
+    char detail[161] = {0};
+    if (body) snprintf(detail, sizeof(detail), "%.160s", body);
+    fail_with(result, TS_API_ERR_INTERNAL, "proxy_http_error", detail);
+    if (!result->data) result->data = cJSON_CreateObject();
+    if (result->data) cJSON_AddNumberToObject(result->data, "status", status);
+}
 
 static ts_automation_state_t automation_state(void)
 {
@@ -2684,8 +2706,7 @@ static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to init HTTP client");
+        fail_with(result, TS_API_ERR_INTERNAL, "proxy_init_failed", NULL);
         return ESP_OK;
     }
     
@@ -2703,10 +2724,7 @@ static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         esp_http_client_cleanup(client);
-        result->code = TS_API_ERR_INTERNAL;
-        char msg[128];
-        snprintf(msg, sizeof(msg), "HTTP connection failed: %s", esp_err_to_name(err));
-        result->message = strdup(msg);
+        fail_with(result, TS_API_ERR_CONNECTION, "proxy_connect_failed", esp_err_to_name(err));
         return ESP_OK;
     }
     
@@ -2751,10 +2769,7 @@ static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t
         result->message = strdup("Request successful");
         result->data = data;
     } else {
-        result->code = TS_API_ERR_INTERNAL;
-        char msg[256];
-        snprintf(msg, sizeof(msg), "HTTP %d: %s", status_code, body ? body : "(empty)");
-        result->message = strdup(msg);
+        proxy_http_error(result, status_code, body);
     }
     
     if (body) free(body);
@@ -2953,7 +2968,7 @@ static void ws_test_handler(void *handler_args, esp_event_base_t base, int32_t e
             
         case WEBSOCKET_EVENT_ERROR:
             TS_LOGE(TAG, "WS test: error");
-            ctx->error = strdup("WebSocket error occurred");
+            ctx->error = strdup("ws_connect_failed");
             // 释放所有信号量
             if (ctx->connect_sem) xSemaphoreGive(ctx->connect_sem);
             if (ctx->data_sem) xSemaphoreGive(ctx->data_sem);
@@ -3012,8 +3027,8 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
     if (!ctx.connect_sem || !ctx.data_sem) {
         if (ctx.connect_sem) vSemaphoreDelete(ctx.connect_sem);
         if (ctx.data_sem) vSemaphoreDelete(ctx.data_sem);
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to create semaphores");
+        result->code = TS_API_ERR_NO_MEM;
+        result->message = strdup("no_memory");
         return ESP_OK;
     }
     
@@ -3030,7 +3045,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         vSemaphoreDelete(ctx.connect_sem);
         vSemaphoreDelete(ctx.data_sem);
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to init WebSocket client");
+        result->message = strdup("proxy_init_failed");
         return ESP_OK;
     }
     
@@ -3042,10 +3057,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         esp_websocket_client_destroy(client);
         vSemaphoreDelete(ctx.connect_sem);
         vSemaphoreDelete(ctx.data_sem);
-        result->code = TS_API_ERR_INTERNAL;
-        char msg[128];
-        snprintf(msg, sizeof(msg), "WebSocket start failed: %s", esp_err_to_name(err));
-        result->message = strdup(msg);
+        fail_with(result, TS_API_ERR_CONNECTION, "ws_start_failed", esp_err_to_name(err));
         return ESP_OK;
     }
     
@@ -3062,7 +3074,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
             result->message = ctx.error;
             ctx.error = NULL;
         } else {
-            result->message = strdup("WebSocket connection timeout");
+            result->message = strdup("ws_connect_timeout");
         }
         cJSON_AddStringToObject(data, "error", result->message);
         result->data = data;
@@ -3117,7 +3129,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
     } else {
         // 未收到数据
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("WebSocket connected but no data received");
+        result->message = strdup("ws_no_data");
         cJSON_AddStringToObject(data, "error", "No data received within timeout");
     }
     
@@ -3432,8 +3444,8 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
         if (ctx.connect_sem) vSemaphoreDelete(ctx.connect_sem);
         if (ctx.upgrade_sem) vSemaphoreDelete(ctx.upgrade_sem);
         if (ctx.data_sem) vSemaphoreDelete(ctx.data_sem);
-        result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to create semaphores");
+        result->code = TS_API_ERR_NO_MEM;
+        result->message = strdup("no_memory");
         return ESP_OK;
     }
     
@@ -3453,7 +3465,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
     esp_http_client_handle_t http_client = esp_http_client_init(&http_config);
     if (!http_client) {
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to init HTTP client");
+        result->message = strdup("proxy_init_failed");
         goto cleanup;
     }
     
@@ -3461,7 +3473,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
     if (err != ESP_OK) {
         esp_http_client_cleanup(http_client);
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Socket.IO polling request failed");
+        result->message = strdup("proxy_connect_failed");
         cJSON_AddBoolToObject(result_data, "connected", false);
         cJSON_AddStringToObject(result_data, "error", "HTTP polling failed");
         result->data = result_data;
@@ -3503,7 +3515,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
     
     if (!ctx.sid) {
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to get Socket.IO session");
+        result->message = strdup("sio_no_session");
         cJSON_AddBoolToObject(result_data, "connected", false);
         cJSON_AddStringToObject(result_data, "error", "No session ID received");
         result->data = result_data;
@@ -3536,7 +3548,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
     esp_websocket_client_handle_t ws_client = esp_websocket_client_init(&ws_cfg);
     if (!ws_client) {
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to init WebSocket client");
+        result->message = strdup("proxy_init_failed");
         cJSON_AddBoolToObject(result_data, "connected", false);
         result->data = result_data;
         goto cleanup;
@@ -3548,7 +3560,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
     if (err != ESP_OK) {
         esp_websocket_client_destroy(ws_client);
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("WebSocket start failed");
+        result->message = strdup("ws_start_failed");
         cJSON_AddBoolToObject(result_data, "connected", false);
         result->data = result_data;
         goto cleanup;
@@ -3561,7 +3573,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
         esp_websocket_client_stop(ws_client);
         esp_websocket_client_destroy(ws_client);
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("WebSocket connection timeout");
+        result->message = strdup("ws_connect_timeout");
         cJSON_AddBoolToObject(result_data, "connected", false);
         cJSON_AddStringToObject(result_data, "error", "WebSocket connection failed");
         result->data = result_data;
@@ -3641,7 +3653,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
         result->message = strdup("Socket.IO test successful");
     } else {
         result->code = TS_API_ERR_TIMEOUT;
-        result->message = strdup("Socket.IO event timeout");
+        result->message = strdup("sio_event_timeout");
         cJSON_AddStringToObject(result_data, "error", 
             target_event ? "Target event not received" : "No event received");
     }
@@ -3758,8 +3770,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
     }
     
     if (!ts_config_pack_can_export()) {
-        ts_api_result_error(result, TS_API_ERR_NO_PERMISSION, 
-            "This device is not authorized to export config packs");
+        fail_with(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
     
@@ -3781,7 +3792,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
     char *json_str = cJSON_PrintUnformatted(export_json);
     cJSON_Delete(export_json);
     if (!json_str) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize config");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");   /* the serialized text could not be built */
         return ESP_OK;
     }
     
@@ -3798,7 +3809,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
         cert_pem = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
         if (!cert_pem) {
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Out of memory");
+            ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
             return ESP_OK;
         }
         cert_len = 4096;
@@ -3806,7 +3817,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get device certificate");
+            fail_with(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
         free_cert = true;
@@ -3828,7 +3839,7 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
     if (free_cert) free(cert_pem);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config pack");
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -3872,13 +3883,7 @@ static esp_err_t api_automation_sources_import(const cJSON *params, ts_api_resul
         tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        const char *err_msg = "Failed to verify config pack";
-        if (pack_result == TS_CONFIG_PACK_ERR_RECIPIENT) {
-            err_msg = "This config pack is not for this device";
-        } else if (pack_result == TS_CONFIG_PACK_ERR_SIGNATURE) {
-            err_msg = "Invalid signature";
-        }
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, err_msg);
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -3944,7 +3949,7 @@ static esp_err_t api_automation_sources_import(const cJSON *params, ts_api_resul
     snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", SOURCES_SDCARD_DIR, config_id);
     FILE *f = fopen(filepath, "w");
     if (!f) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config file");
+        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
         return ESP_OK;
     }
     
@@ -3953,7 +3958,7 @@ static esp_err_t api_automation_sources_import(const cJSON *params, ts_api_resul
     
     if (written != strlen(tscfg->valuestring)) {
         unlink(filepath);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to write config file");
+        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
         return ESP_OK;
     }
     
@@ -4001,8 +4006,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
     }
     
     if (!ts_config_pack_can_export()) {
-        ts_api_result_error(result, TS_API_ERR_NO_PERMISSION, 
-            "This device is not authorized to export config packs");
+        fail_with(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
 
@@ -4029,7 +4033,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
     char *json_str = cJSON_PrintUnformatted(export_json);
     cJSON_Delete(export_json);
     if (!json_str) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize config");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");   /* the serialized text could not be built */
         return ESP_OK;
     }
     
@@ -4046,7 +4050,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
         cert_pem = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
         if (!cert_pem) {
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Out of memory");
+            ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
             return ESP_OK;
         }
         cert_len = 4096;
@@ -4054,7 +4058,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get device certificate");
+            fail_with(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
         free_cert = true;
@@ -4076,7 +4080,7 @@ static esp_err_t api_automation_rules_export(const cJSON *params, ts_api_result_
     if (free_cert) free(cert_pem);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config pack");
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -4120,13 +4124,7 @@ static esp_err_t api_automation_rules_import(const cJSON *params, ts_api_result_
         tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        const char *err_msg = "Failed to verify config pack";
-        if (pack_result == TS_CONFIG_PACK_ERR_RECIPIENT) {
-            err_msg = "This config pack is not for this device";
-        } else if (pack_result == TS_CONFIG_PACK_ERR_SIGNATURE) {
-            err_msg = "Invalid signature";
-        }
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, err_msg);
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -4182,8 +4180,8 @@ static esp_err_t api_automation_rules_import(const cJSON *params, ts_api_result_
         return ESP_OK;
     }
 
-    ts_api_result_error(result, TS_API_ERR_INVALID_ARG,
-                        "source_read_only: encrypted rule import requires a recoverable writer");
+    /* a rule pack can be verified and previewed, but the rule store has no recoverable writer for an encrypted pack yet */
+    fail_with(result, TS_API_ERR_NOT_SUPPORTED, "rule_import_unavailable", "encrypted rule import requires a recoverable writer");
     return ESP_OK;
 }
 
@@ -4303,8 +4301,7 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
     }
     
     if (!ts_config_pack_can_export()) {
-        ts_api_result_error(result, TS_API_ERR_NO_PERMISSION, 
-            "This device is not authorized to export config packs");
+        fail_with(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
     
@@ -4328,7 +4325,7 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
     char *json_str = cJSON_PrintUnformatted(export_json);
     cJSON_Delete(export_json);
     if (!json_str) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize config");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");   /* the serialized text could not be built */
         return ESP_OK;
     }
     
@@ -4345,7 +4342,7 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
         cert_pem = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
         if (!cert_pem) {
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Out of memory");
+            ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
             return ESP_OK;
         }
         cert_len = 4096;
@@ -4353,7 +4350,7 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get device certificate");
+            fail_with(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
         free_cert = true;
@@ -4375,7 +4372,7 @@ static esp_err_t api_automation_actions_export(const cJSON *params, ts_api_resul
     if (free_cert) free(cert_pem);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config pack");
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -4419,13 +4416,7 @@ static esp_err_t api_automation_actions_import(const cJSON *params, ts_api_resul
         tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        const char *err_msg = "Failed to verify config pack";
-        if (pack_result == TS_CONFIG_PACK_ERR_RECIPIENT) {
-            err_msg = "This config pack is not for this device";
-        } else if (pack_result == TS_CONFIG_PACK_ERR_SIGNATURE) {
-            err_msg = "Invalid signature";
-        }
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, err_msg);
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -4490,7 +4481,7 @@ static esp_err_t api_automation_actions_import(const cJSON *params, ts_api_resul
     snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", ACTIONS_SDCARD_DIR, config_id);
     FILE *f = fopen(filepath, "w");
     if (!f) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config file");
+        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
         return ESP_OK;
     }
     
@@ -4499,7 +4490,7 @@ static esp_err_t api_automation_actions_import(const cJSON *params, ts_api_resul
     
     if (written != strlen(tscfg->valuestring)) {
         unlink(filepath);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to write config file");
+        fail_with(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
         return ESP_OK;
     }
     

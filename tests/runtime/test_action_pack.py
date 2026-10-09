@@ -24,6 +24,7 @@ static int ts_config_pack_load(const char *path,ts_config_pack_t **out){
  *out=calloc(1,sizeof(**out));(*out)->content=calloc(size+1,1);assert(fread((*out)->content,1,size,f)==(size_t)size);fclose(f);(*out)->content_len=size;return TS_CONFIG_PACK_OK;
 }
 static void ts_config_pack_free(ts_config_pack_t *p){free(p->content);free(p);}
+static void pack_failure(ts_api_result_t *r,ts_config_pack_result_t pr){(void)pr;ts_api_result_error(r,TS_API_ERR_INTERNAL,"pack_failed");}   /* the real one is tested with the HTTP chain */
 '''
 code+=extract('components/ts_api/src/ts_api_automation.c','api_automation_actions_export')
 code+=extract('components/ts_config_pack/src/ts_config_pack.c','ts_config_pack_load_with_priority')

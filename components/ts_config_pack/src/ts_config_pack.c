@@ -136,6 +136,27 @@ const char *ts_config_pack_strerror(ts_config_pack_result_t result)
     return s_error_messages[result];
 }
 
+/** The reason token the Web UI translates (the page keeps ts_config_pack_strerror()'s English only for its folded details). */
+const char *ts_config_pack_reason(ts_config_pack_result_t result)
+{
+    switch (result) {
+        case TS_CONFIG_PACK_ERR_PARSE:       return "pack_parse_failed";
+        case TS_CONFIG_PACK_ERR_VERSION:     return "pack_version_unsupported";
+        case TS_CONFIG_PACK_ERR_RECIPIENT:   return "pack_wrong_device";
+        case TS_CONFIG_PACK_ERR_CERT_CHAIN:  return "pack_cert_invalid";
+        case TS_CONFIG_PACK_ERR_SIGNATURE:   return "pack_signature_invalid";
+        case TS_CONFIG_PACK_ERR_DECRYPT:     return "pack_decrypt_failed";
+        case TS_CONFIG_PACK_ERR_INTEGRITY:   return "pack_corrupted";
+        case TS_CONFIG_PACK_ERR_EXPIRED:     return "pack_expired";
+        case TS_CONFIG_PACK_ERR_NO_MEM:      return "no_memory";
+        case TS_CONFIG_PACK_ERR_IO:          return "pack_io_failed";
+        case TS_CONFIG_PACK_ERR_PERMISSION:  return "pack_not_allowed";
+        case TS_CONFIG_PACK_ERR_NOT_INIT:    return "pack_not_ready";
+        case TS_CONFIG_PACK_ERR_INVALID_ARG: return "invalid_argument";
+        default:                             return "pack_verify_failed";
+    }
+}
+
 /*===========================================================================*/
 /*                          Initialization                                    */
 /*===========================================================================*/
