@@ -1,0 +1,1 @@
+{"code":10,"error":"ssh_auth_failed","data":{"stage":"auth","detail":"SSH connection failed (code=259)"}}

@@ -51,6 +51,7 @@ struct ts_ssh_session_s {
     char *password_copy;      /**< 密码副本 */
     atomic_bool abort_flag;
     int64_t deadline_us; /**< 中止标志 */
+    ts_ssh_fail_t fail;       /**< where the last connect attempt failed */
 };
 
 /** 全局初始化标志 */
@@ -237,6 +238,23 @@ esp_err_t ts_ssh_session_destroy(ts_ssh_session_t session) {
 
 esp_err_t ts_ssh_connect(ts_ssh_session_t s) { return ts_ssh_connect_with_verifier(s, NULL, NULL); }
 
+/* Which stage a failed TCP connect belongs to, from the socket error. */
+static ts_ssh_fail_t connect_failure(int err) {
+    switch (err) {
+    case ECONNREFUSED:
+        return TS_SSH_FAIL_REFUSED;
+    case EHOSTUNREACH:
+    case ENETUNREACH:
+    case EHOSTDOWN:
+    case ENETDOWN:
+        return TS_SSH_FAIL_UNREACHABLE;
+    case ETIMEDOUT:
+        return TS_SSH_FAIL_TIMEOUT;
+    default:
+        return TS_SSH_FAIL_CONNECT;
+    }
+}
+
 esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s, ts_ssh_verify_cb_t verify,
                                        void *context) {
     if (!s)
@@ -247,24 +265,31 @@ esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s, ts_ssh_verify_cb_t ve
         ts_ssh_disconnect(s);
     s->deadline_us = esp_timer_get_time() + (int64_t)s->config.timeout_ms * 1000;
     s->state = TS_SSH_STATE_CONNECTING;
+    s->fail = TS_SSH_FAIL_NONE;
     esp_err_t ret = ESP_FAIL;
     struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons(s->config.port)};
     if (inet_pton(AF_INET, s->config.host, &addr.sin_addr) != 1) {
         /* lwIP DNS is synchronous; cancellation is observed immediately after
          * its configured resolver timeout. No extra resolver task is created. */
         struct hostent *host = gethostbyname(s->config.host);
-        if (!host || host->h_length != sizeof(addr.sin_addr))
+        if (!host || host->h_length != sizeof(addr.sin_addr)) {
+            s->fail = TS_SSH_FAIL_DNS;
             goto failed;
+        }
         memcpy(&addr.sin_addr, host->h_addr, sizeof(addr.sin_addr));
     }
     if (operation_expired(s))
         goto timeout;
     s->sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (s->sock < 0 || fcntl(s->sock, F_SETFL, O_NONBLOCK) < 0)
+    if (s->sock < 0 || fcntl(s->sock, F_SETFL, O_NONBLOCK) < 0) {
+        s->fail = TS_SSH_FAIL_CONNECT;
         goto failed;
+    }
     int rc = connect(s->sock, (struct sockaddr *)&addr, sizeof(addr));
-    if (rc && errno != EINPROGRESS)
+    if (rc && errno != EINPROGRESS) {
+        s->fail = connect_failure(errno);
         goto failed;
+    }
     while (rc) {
         int ready = wait_socket(s);
         if (ready < 0)
@@ -273,8 +298,10 @@ esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s, ts_ssh_verify_cb_t ve
             continue;
         int error = 0;
         socklen_t size = sizeof(error);
-        if (getsockopt(s->sock, SOL_SOCKET, SO_ERROR, &error, &size) || error)
+        if (getsockopt(s->sock, SOL_SOCKET, SO_ERROR, &error, &size) || error) {
+            s->fail = connect_failure(error ? error : errno);
             goto failed;
+        }
         break;
     }
     s->session = libssh2_session_init();
@@ -286,8 +313,10 @@ esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s, ts_ssh_verify_cb_t ve
     while ((rc = libssh2_session_handshake(s->session, s->sock)) == LIBSSH2_ERROR_EAGAIN)
         if (wait_socket(s) < 0)
             goto timeout;
-    if (rc)
+    if (rc) {
+        s->fail = TS_SSH_FAIL_HANDSHAKE;
         goto failed;
+    }
     if (verify)
         ret = verify(s, context);
     else {
@@ -298,8 +327,10 @@ esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s, ts_ssh_verify_cb_t ve
                   : status == TS_HOST_VERIFY_MISMATCH ? TS_SSH_ERR_HOST_CHANGED
                                                       : ESP_FAIL;
     }
-    if (ret != ESP_OK)
+    if (ret != ESP_OK) {
+        s->fail = TS_SSH_FAIL_HOST_KEY;
         goto failed;
+    }
     if (operation_expired(s))
         goto timeout;
     s->state = TS_SSH_STATE_AUTHENTICATING;
@@ -328,6 +359,7 @@ esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s, ts_ssh_verify_cb_t ve
     } while (rc == LIBSSH2_ERROR_EAGAIN);
     if (rc) {
         ret = ESP_ERR_INVALID_STATE;
+        s->fail = TS_SSH_FAIL_AUTH;
         goto failed;
     }
     if (operation_expired(s))
@@ -336,14 +368,19 @@ esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s, ts_ssh_verify_cb_t ve
     return ESP_OK;
 timeout:
     ret = ESP_ERR_TIMEOUT;
+    s->fail = TS_SSH_FAIL_TIMEOUT;
 failed:
     if (ret == ESP_OK)
         ret = ESP_FAIL;
+    if (s->fail == TS_SSH_FAIL_NONE)
+        s->fail = TS_SSH_FAIL_OTHER;
     set_error(s, "SSH connection failed (code=%d)", ret);
     ts_ssh_disconnect(s);
     s->state = TS_SSH_STATE_ERROR;
     return ret;
 }
+
+ts_ssh_fail_t ts_ssh_get_fail_stage(ts_ssh_session_t s) { return s ? s->fail : TS_SSH_FAIL_NONE; }
 
 esp_err_t ts_ssh_disconnect(ts_ssh_session_t s) {
     if (!s)

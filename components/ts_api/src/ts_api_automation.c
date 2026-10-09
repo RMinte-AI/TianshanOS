@@ -674,6 +674,36 @@ static esp_err_t api_service_stop(const cJSON *params, ts_api_result_t *result) 
     return service_request(params, result, true);
 }
 
+/* Reason tokens for a refused manual trigger; the Web UI translates them (failure.reasons.*). */
+static const char *trigger_reject_token(ts_rule_reject_t why)
+{
+    switch (why) {
+    case TS_RULE_REJECT_NOT_ACCEPTING:      return "engine_not_accepting";
+    case TS_RULE_REJECT_DISABLED:           return "rule_disabled";
+    case TS_RULE_REJECT_MANUAL_NOT_ALLOWED: return "manual_not_allowed";
+    case TS_RULE_REJECT_NOT_LOADED:         return "config_loading";
+    case TS_RULE_REJECT_RECOVERY:           return "recovery_required";
+    case TS_RULE_REJECT_CONFIG_BUSY:        return "configuration_busy";
+    case TS_RULE_REJECT_RUNNING:            return "execution_busy";
+    case TS_RULE_REJECT_SERVICE_STATE:      return "service_not_admissible";
+    case TS_RULE_REJECT_CHANGED:            return "rule_changed";
+    default:                                return NULL;
+    }
+}
+
+/* "Try again later" refusals are BUSY, so an older Web UI still says so; the others carry no better class than INTERNAL. */
+static ts_api_result_code_t trigger_reject_code(ts_rule_reject_t why)
+{
+    switch (why) {
+    case TS_RULE_REJECT_NOT_ACCEPTING:
+    case TS_RULE_REJECT_NOT_LOADED:
+    case TS_RULE_REJECT_CONFIG_BUSY:
+    case TS_RULE_REJECT_RUNNING:
+    case TS_RULE_REJECT_CHANGED:            return TS_API_ERR_BUSY;
+    default:                                return TS_API_ERR_INTERNAL;
+    }
+}
+
 static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result_t *result)
 {
     cJSON *id_param = cJSON_GetObjectItem(params, "id");
@@ -684,8 +714,9 @@ static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result
     }
 
     ESP_LOGI("api_auto", "Calling ts_rule_trigger('%s')", id_param->valuestring);
-    esp_err_t ret = ts_rule_trigger(id_param->valuestring);
-    ESP_LOGI("api_auto", "ts_rule_trigger returned: %s", esp_err_to_name(ret));
+    ts_rule_reject_t why = TS_RULE_REJECT_NONE;
+    esp_err_t ret = ts_rule_trigger_ex(id_param->valuestring, &why);
+    ESP_LOGI("api_auto", "ts_rule_trigger returned: %s (refusal %d)", esp_err_to_name(ret), (int)why);
 
     if (ret == ESP_OK) {
         result->code = TS_API_OK;
@@ -693,6 +724,9 @@ static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result
     } else if (ret == ESP_ERR_NOT_FOUND) {
         result->code = TS_API_ERR_NOT_FOUND;
         result->message = strdup("Rule not found");
+    } else if (trigger_reject_token(why)) {
+        result->code = trigger_reject_code(why);
+        result->message = strdup(trigger_reject_token(why));
     } else {
         result->code = TS_API_ERR_INTERNAL;
         result->message = strdup("Failed to trigger rule");

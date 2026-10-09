@@ -802,8 +802,13 @@ bool ts_rule_eval_condition_group(const ts_auto_condition_group_t *group)
 /*                              规则评估                                      */
 /*===========================================================================*/
 
-static esp_err_t execute_rule(const char *id, bool manual, bool *triggered) {
-    if (!ts_action_manager_accepting()) return ESP_ERR_INVALID_STATE;
+static esp_err_t refuse(ts_rule_reject_t *why, ts_rule_reject_t reason) {
+    if (why) *why = reason;
+    return ESP_ERR_INVALID_STATE;
+}
+static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_rule_reject_t *why) {
+    if (why) *why = TS_RULE_REJECT_NONE;
+    if (!ts_action_manager_accepting()) return refuse(why, TS_RULE_REJECT_NOT_ACCEPTING);
     *triggered = false;
     ts_auto_rule_t r;
     esp_err_t ret = ts_rule_acquire(id, &r);
@@ -812,8 +817,9 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered) {
     if (manual && (r.reference_unresolved || r.presentation_fields != 3))
         ts_rule_resolve_presentation(&r);
     if (!r.enabled || (!manual && r.manual_trigger) || (manual && !r.allow_manual_trigger)) {
+        ts_rule_reject_t reason = !r.enabled ? TS_RULE_REJECT_DISABLED : TS_RULE_REJECT_MANUAL_NOT_ALLOWED;
         ts_rule_release(&r);
-        return manual ? ESP_ERR_INVALID_STATE : ESP_OK;
+        return manual ? refuse(why, reason) : ESP_OK;
     }
     if (!manual && !ts_rule_eval_condition_group(&r.conditions)) {
         ts_rule_release(&r);
@@ -821,21 +827,24 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered) {
     }
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     int preliminary = find_rule_index(id);
-    bool unavailable = preliminary < 0 || !s_rule_ctx.loaded || s_rule_ctx.recovery_error ||
-                       s_rule_ctx.meta[preliminary].committing ||
-                       s_rule_ctx.meta[preliminary].executing ||
+    ts_rule_reject_t busy = preliminary < 0 ? TS_RULE_REJECT_CHANGED
+                          : !s_rule_ctx.loaded ? TS_RULE_REJECT_NOT_LOADED
+                          : s_rule_ctx.recovery_error ? TS_RULE_REJECT_RECOVERY
+                          : s_rule_ctx.meta[preliminary].committing ? TS_RULE_REJECT_CONFIG_BUSY
+                          : s_rule_ctx.meta[preliminary].executing ? TS_RULE_REJECT_RUNNING : TS_RULE_REJECT_NONE;
+    bool unavailable = busy != TS_RULE_REJECT_NONE ||
                        (!manual && r.cooldown_ms && r.last_trigger_ms &&
                         esp_timer_get_time() / 1000 - r.last_trigger_ms < r.cooldown_ms);
     xSemaphoreGive(s_rule_ctx.mutex);
     if (unavailable) {
         ts_rule_release(&r);
-        return manual ? ESP_ERR_INVALID_STATE : ESP_OK;
+        return manual ? refuse(why, busy) : ESP_OK;
     }
     for (unsigned n = 0; n < r.action_count; n++) {
         if (r.actions[n].type == TS_AUTO_ACT_SSH_CMD_REF &&
             !ts_ssh_service_start_admissible(r.actions[n].ssh_ref.cmd_id)) {
             ts_rule_release(&r);
-            return manual ? ESP_ERR_INVALID_STATE : ESP_OK;
+            return manual ? refuse(why, TS_RULE_REJECT_SERVICE_STATE) : ESP_OK;
         }
     }
     /* Freeze all referenced actions/SSH bindings once at admission. No allocation
@@ -868,6 +877,12 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered) {
                  !s_rule_ctx.meta[i].committing && !s_rule_ctx.meta[i].executing &&
                  s_rule_ctx.rules[i].revision == r.revision &&
                  s_rule_ctx.rules[i].instance == r.instance;
+    ts_rule_reject_t late = valid ? TS_RULE_REJECT_NONE
+                          : i < 0 ? TS_RULE_REJECT_CHANGED
+                          : !s_rule_ctx.loaded ? TS_RULE_REJECT_NOT_LOADED
+                          : s_rule_ctx.recovery_error ? TS_RULE_REJECT_RECOVERY
+                          : s_rule_ctx.meta[i].committing ? TS_RULE_REJECT_CONFIG_BUSY
+                          : s_rule_ctx.meta[i].executing ? TS_RULE_REJECT_RUNNING : TS_RULE_REJECT_CHANGED;
     if (valid && !manual && r.cooldown_ms && s_rule_ctx.rules[i].last_trigger_ms &&
         now - s_rule_ctx.rules[i].last_trigger_ms < r.cooldown_ms)
         valid = false;
@@ -882,7 +897,7 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered) {
             ts_action_snapshot_release(&frozen[n]);
         free(frozen);
         ts_rule_release(&r);
-        return manual ? ESP_ERR_INVALID_STATE : ESP_OK;
+        return manual ? refuse(why, late) : ESP_OK;
     }
     int success = 0, failed = 0;
     ret = execute_actions_with_stats(frozen, r.action_count, &success, &failed);
@@ -908,7 +923,7 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered) {
 esp_err_t ts_rule_evaluate(const char *id, bool *triggered) {
     if (!triggered)
         return ESP_ERR_INVALID_ARG;
-    return execute_rule(id, false, triggered);
+    return execute_rule(id, false, triggered, NULL);
 }
 
 int ts_rule_evaluate_all(void)
@@ -951,9 +966,13 @@ int ts_rule_evaluate_all(void)
     return triggered;
 }
 
-esp_err_t ts_rule_trigger(const char *id) {
+esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why) {
     bool triggered;
-    return execute_rule(id, true, &triggered);
+    return execute_rule(id, true, &triggered, why);
+}
+
+esp_err_t ts_rule_trigger(const char *id) {
+    return ts_rule_trigger_ex(id, NULL);
 }
 
 /*===========================================================================*/

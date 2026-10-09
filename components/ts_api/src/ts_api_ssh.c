@@ -65,6 +65,40 @@ static void cleanup_key_buffer(ssh_request_key_t *key) {
 }
 
 /**
+ * @brief Reason token for a failed connection attempt; the Web UI turns it into a sentence (failure.reasons.ssh_*).
+ *
+ * The stage comes from the client (ts_ssh_get_fail_stage); the client's own error text stays available as `detail`.
+ */
+static const char *ssh_connect_reason(ts_ssh_session_t session, const char **stage)
+{
+    switch (ts_ssh_get_fail_stage(session)) {
+    case TS_SSH_FAIL_DNS:         *stage = "dns";         return "ssh_dns_failed";
+    case TS_SSH_FAIL_REFUSED:     *stage = "refused";     return "ssh_port_refused";
+    case TS_SSH_FAIL_UNREACHABLE: *stage = "unreachable"; return "ssh_host_unreachable";
+    case TS_SSH_FAIL_TIMEOUT:     *stage = "timeout";     return "ssh_connect_timeout";
+    case TS_SSH_FAIL_HANDSHAKE:   *stage = "handshake";   return "ssh_handshake_failed";
+    case TS_SSH_FAIL_AUTH:        *stage = "auth";        return "ssh_auth_failed";
+    default:                      *stage = "connect";     return "ssh_connect_failed";
+    }
+}
+
+/* Failure with the reason token as the error text and {stage, detail} as data (data is delivered with failures). */
+static void ssh_connect_error(ts_api_result_t *result, ts_ssh_session_t session)
+{
+    const char *stage = "connect";
+    const char *reason = ssh_connect_reason(session, &stage);
+    const char *detail = ts_ssh_get_error(session);
+    ts_api_result_error(result, TS_API_ERR_CONNECTION, reason);
+    cJSON *data = cJSON_CreateObject();
+    if (data && cJSON_AddStringToObject(data, "stage", stage) &&
+        (!detail || !detail[0] || cJSON_AddStringToObject(data, "detail", detail))) {
+        result->data = data;
+    } else {
+        cJSON_Delete(data);
+    }
+}
+
+/**
  * @brief 从参数中配置 SSH 会话
  */
 static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t *config,
@@ -332,9 +366,8 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
     /* 连接（TCP 层） */
     ret = connect_verified(session, params, result, false);
     if (ret != ESP_OK) {
-        const char *err = ts_ssh_get_error(session);
         if (result->code == TS_API_OK)
-            ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
+            ssh_connect_error(result, session);
         ts_ssh_session_destroy(session);
         cleanup_key_buffer(&request_key);
         return ret;
@@ -628,9 +661,13 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
             return ESP_OK;
         }
         const char *err = ts_ssh_get_error(session);
+        const char *stage = "connect";
+        const char *reason = ssh_connect_reason(session, &stage);
         cJSON *data = cJSON_CreateObject();
         cJSON_AddBoolToObject(data, "success", false);
         cJSON_AddStringToObject(data, "error", err ? err : "Connection failed");
+        cJSON_AddStringToObject(data, "reason", reason);   /* additive: older clients keep reading `error` */
+        cJSON_AddStringToObject(data, "stage", stage);
         ts_api_result_ok(result, data);
         ts_ssh_session_destroy(session);
         cleanup_key_buffer(&request_key);

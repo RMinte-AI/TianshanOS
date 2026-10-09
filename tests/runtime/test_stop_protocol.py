@@ -29,7 +29,7 @@ esp_err_t ts_action_manager_resume(void){if(async_pending)return ESP_ERR_INVALID
 esp_err_t ts_source_start_all(void){return ESP_OK;}
 void ts_source_stop_all(void){++source_stops;}
 int ts_source_poll_all(void){return 0;}
-int ts_rule_evaluate_all(void){bool triggered=false;execute_rule("rule",false,&triggered);return triggered;}
+int ts_rule_evaluate_all(void){bool triggered=false;execute_rule("rule",false,&triggered,NULL);return triggered;}
 static void vTaskDelay(unsigned ms){++delay_ticks;if(cut_delay)wait_accepting=false;struct timespec t={0,1000000};nanosleep(&t,NULL);}
 static void vTaskDelete(void *task){assert(!task);pthread_exit(NULL);}
 static int xTaskCreatePinnedToCore(void(*fn)(void*),const char*n,unsigned stack,void*arg,unsigned prio,void**handle,int core){*handle=(void*)1;return pdPASS;}

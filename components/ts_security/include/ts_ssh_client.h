@@ -209,6 +209,28 @@ void ts_ssh_exec_result_free(ts_ssh_exec_result_t *result);
  */
 const char *ts_ssh_get_error(ts_ssh_session_t session);
 
+/** Where the last failed ts_ssh_connect*() call stopped. The error text stays the same for all of them. */
+typedef enum {
+    TS_SSH_FAIL_NONE = 0,
+    TS_SSH_FAIL_DNS,          /**< the host name could not be resolved */
+    TS_SSH_FAIL_REFUSED,      /**< the host refused the TCP connection (nothing listens on the port) */
+    TS_SSH_FAIL_UNREACHABLE,  /**< no route to the host or network */
+    TS_SSH_FAIL_TIMEOUT,      /**< the deadline expired while connecting, in the handshake or while authenticating */
+    TS_SSH_FAIL_CONNECT,      /**< another socket failure while connecting */
+    TS_SSH_FAIL_HANDSHAKE,    /**< the SSH handshake failed (not an SSH server, no common algorithms, ...) */
+    TS_SSH_FAIL_HOST_KEY,     /**< the host key was rejected (unknown or changed) */
+    TS_SSH_FAIL_AUTH,         /**< the server rejected the credentials */
+    TS_SSH_FAIL_OTHER         /**< anything else (out of memory, invalid configuration, ...) */
+} ts_ssh_fail_t;
+
+/**
+ * @brief Get the stage at which the last connection attempt failed
+ *
+ * @param session Session handle
+ * @return TS_SSH_FAIL_NONE if the last attempt did not fail
+ */
+ts_ssh_fail_t ts_ssh_get_fail_stage(ts_ssh_session_t session);
+
 /**
  * @brief Get the remote host address
  * 

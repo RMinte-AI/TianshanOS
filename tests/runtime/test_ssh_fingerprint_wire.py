@@ -22,7 +22,9 @@ wire_dir.mkdir(exist_ok=True)
 idf = Path(os.environ.get('IDF_PATH', '/Users/massif/esp/v5.5.2/esp-idf'))
 fixtures = Path('tests/fixtures/ssh-fingerprint')
 update = os.environ.get('UPDATE_FIXTURES') == '1'
-CAPTURES = ['wire-new-host.json', 'wire-changed-host.json', 'wire-exec-ok.json', 'wire-generic-failure.json']
+CAPTURES = ['wire-new-host.json', 'wire-changed-host.json', 'wire-exec-ok.json', 'wire-generic-failure.json',
+            'wire-ssh-dns-failed.json', 'wire-ssh-port-refused.json', 'wire-ssh-unreachable.json', 'wire-ssh-timeout.json',
+            'wire-ssh-handshake-failed.json', 'wire-ssh-auth-failed.json', 'wire-ssh-connect-failed.json']
 
 
 def extract(path, name):
@@ -61,6 +63,7 @@ typedef struct {char *data;size_t len;} ssh_request_key_t;
 static ts_host_verify_result_t host_status = TS_HOST_VERIFY_OK;
 static char observed_fp[80] = "SHA256:SYNTHETICobservedFINGERPRINT0123456789abcdefghi";
 static int sessions, host_saves, auth_attempts, exec_calls;
+static ts_ssh_fail_t mock_fail = TS_SSH_FAIL_NONE;     /* where the next connection attempt fails */
 
 esp_err_t ts_keystore_load_private_key(const char *id,char **data,size_t *len) {
     *data=strdup("SYNTHETIC PRIVATE KEY");*len=strlen(*data);return ESP_OK;
@@ -70,7 +73,11 @@ esp_err_t ts_ssh_session_create(const ts_ssh_config_t *config,ts_ssh_session_t *
 }
 esp_err_t ts_ssh_session_destroy(ts_ssh_session_t s) {free(s);--sessions;return ESP_OK;}
 esp_err_t ts_ssh_disconnect(ts_ssh_session_t s) {return ESP_OK;}
-const char *ts_ssh_get_error(ts_ssh_session_t s) {return "SSH connection failed (code=259)";}
+const char *ts_ssh_get_error(ts_ssh_session_t s) {
+    /* the client's text carries only the ESP error number: 259 authentication, 263 timeout, -1 everything else */
+    return mock_fail==TS_SSH_FAIL_AUTH?"SSH connection failed (code=259)":mock_fail==TS_SSH_FAIL_TIMEOUT?"SSH connection failed (code=263)":"SSH connection failed (code=-1)";
+}
+ts_ssh_fail_t ts_ssh_get_fail_stage(ts_ssh_session_t s) {return mock_fail;}
 esp_err_t ts_known_hosts_verify(ts_ssh_session_t s,ts_host_verify_result_t *status,ts_known_host_t *info) {
     *status=host_status;
     if(info) {
@@ -84,9 +91,10 @@ esp_err_t ts_known_hosts_get(const char *host,uint16_t port,ts_known_host_t *inf
     strcpy(info->fingerprint,"SHA256:SYNTHETICstoredFINGERPRINT0123456789abcdefghijkl");return ESP_OK;
 }
 esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s,ts_ssh_verify_cb_t verify,void *context) {
-    /* Same order as production: the host key is judged before any credential is sent. */
+    /* Same order as production: the network and the handshake first, then the host key, only then the credentials. */
+    if(mock_fail>=TS_SSH_FAIL_DNS && mock_fail<=TS_SSH_FAIL_HANDSHAKE)return mock_fail==TS_SSH_FAIL_TIMEOUT?ESP_ERR_TIMEOUT:ESP_FAIL;
     esp_err_t ret=verify(s,context);if(ret!=ESP_OK)return ret;
-    ++auth_attempts;return ESP_OK;
+    ++auth_attempts;return mock_fail==TS_SSH_FAIL_AUTH?ESP_ERR_INVALID_STATE:ESP_OK;
 }
 esp_err_t ts_ssh_exec(ts_ssh_session_t s,const char *cmd,ts_ssh_exec_result_t *r) {
     ++exec_calls;memset(r,0,sizeof(*r));r->stdout_data=strdup("TianshanOS SSH Test OK\n");return ESP_OK;
@@ -101,7 +109,7 @@ code += extract('components/ts_api/src/ts_api_ssh.c', 'verify_host_fingerprint')
 source = Path('components/ts_api/src/ts_api_ssh.c').read_text()
 start = source.index('typedef struct {\n    const cJSON *params;')
 code += source[start:source.index('} verify_context_t;', start) + len('} verify_context_t;')] + '\n'
-for name in ['verify_before_auth', 'connect_verified', 'api_ssh_exec', 'api_ssh_test']:
+for name in ['ssh_connect_reason', 'ssh_connect_error', 'verify_before_auth', 'connect_verified', 'api_ssh_exec', 'api_ssh_test']:
     code += extract('components/ts_api/src/ts_api_ssh.c', name)
 
 # The production response chain (success / API-not-found / failure) of api_handler, taken from the source.
@@ -129,7 +137,7 @@ static void save(const char *name) {
     FILE *f=fopen(path,"w");assert(f);fputs(http_body,f);fclose(f);
 }
 static void reset(ts_host_verify_result_t status) {
-    host_status=status;host_saves=auth_attempts=exec_calls=0;
+    host_status=status;host_saves=auth_attempts=exec_calls=0;mock_fail=TS_SSH_FAIL_NONE;
     strcpy(observed_fp,"SHA256:SYNTHETICobservedFINGERPRINT0123456789abcdefghi");
 }
 /* Exactly what the Web UI sends for "test connection". */
@@ -241,6 +249,38 @@ static void ssh_test_endpoint(void) {
     assert(!strcmp(str(cJSON_GetObjectItem(wire,"data"),"fingerprint"),observed_fp));
     expect_no_progress();cJSON_Delete(wire);cJSON_Delete(p);
 }
+static void connection_failures(void) {
+    /* Each way a connection can fail reaches the client as its own reason; the client's text is kept as detail. */
+    static const struct {ts_ssh_fail_t stage;const char *token,*stage_name,*detail,*capture;} cases[]={
+        {TS_SSH_FAIL_DNS,"ssh_dns_failed","dns","SSH connection failed (code=-1)","wire-ssh-dns-failed.json"},
+        {TS_SSH_FAIL_REFUSED,"ssh_port_refused","refused","SSH connection failed (code=-1)","wire-ssh-port-refused.json"},
+        {TS_SSH_FAIL_UNREACHABLE,"ssh_host_unreachable","unreachable","SSH connection failed (code=-1)","wire-ssh-unreachable.json"},
+        {TS_SSH_FAIL_TIMEOUT,"ssh_connect_timeout","timeout","SSH connection failed (code=263)","wire-ssh-timeout.json"},
+        {TS_SSH_FAIL_HANDSHAKE,"ssh_handshake_failed","handshake","SSH connection failed (code=-1)","wire-ssh-handshake-failed.json"},
+        {TS_SSH_FAIL_AUTH,"ssh_auth_failed","auth","SSH connection failed (code=259)","wire-ssh-auth-failed.json"},
+        {TS_SSH_FAIL_CONNECT,"ssh_connect_failed","connect","SSH connection failed (code=-1)","wire-ssh-connect-failed.json"},
+    };
+    for(size_t i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+        reset(TS_HOST_VERIFY_OK);mock_fail=cases[i].stage;
+        esp_err_t ret;int code;cJSON *p=page_params();
+        cJSON *wire=wire_of(api_ssh_exec,p,cases[i].capture,&ret,&code);
+        assert(ret!=ESP_OK && code==TS_API_ERR_CONNECTION);
+        assert(!strcmp(str(wire,"error"),cases[i].token));
+        cJSON *data=cJSON_GetObjectItem(wire,"data");assert(cJSON_IsObject(data));
+        assert(!strcmp(str(data,"stage"),cases[i].stage_name) && !strcmp(str(data,"detail"),cases[i].detail));
+        assert(!exec_calls && !host_saves && sessions==0);
+        assert(cases[i].stage==TS_SSH_FAIL_AUTH ? auth_attempts==1 : auth_attempts==0);
+        cJSON_Delete(wire);cJSON_Delete(p);
+    }
+    /* ssh.test keeps its envelope (success code, data.success=false, the old `error` text) and gains reason + stage */
+    reset(TS_HOST_VERIFY_OK);mock_fail=TS_SSH_FAIL_AUTH;
+    esp_err_t ret;int code;cJSON *p=page_params();
+    cJSON *wire=wire_of(api_ssh_test,p,NULL,&ret,&code);
+    cJSON *data=cJSON_GetObjectItem(wire,"data");
+    assert(ret==ESP_OK && code==TS_API_OK && cJSON_IsFalse(cJSON_GetObjectItem(data,"success")));
+    assert(!strcmp(str(data,"error"),"SSH connection failed (code=259)") && !strcmp(str(data,"reason"),"ssh_auth_failed") && !strcmp(str(data,"stage"),"auth"));
+    cJSON_Delete(wire);cJSON_Delete(p);
+}
 static void failures_without_details_keep_their_exact_shape(void) {
     esp_err_t ret;int code;
     cJSON *p=cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"keyid\":\"k\"}");   /* no command */
@@ -295,6 +335,7 @@ int main(void) {
     new_host_other_key_on_confirm();
     changed_host();
     known_host();
+    connection_failures();
     ssh_test_endpoint();
     failures_without_details_keep_their_exact_shape();
     failure_branch_under_allocation_failure();
