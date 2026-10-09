@@ -14,6 +14,7 @@ python3 tests/runtime/test_expansion.py
 python3 tests/runtime/test_configuration_protocol.py
 python3 tests/runtime/test_ssh_hosts.py
 python3 tests/runtime/test_ssh_copyid.py
+python3 tests/runtime/test_ssh_fingerprint_wire.py
 python3 tests/runtime/test_copyid_quote.py
 python3 tests/runtime/test_lpmu_access.py
 python3 tests/runtime/test_input_repair.py
