@@ -76,9 +76,11 @@ const toastKind = (page, kind) => page.waitForFunction(kind => document.getEleme
 const settle = page => page.waitForTimeout(400);   // a background retry would show up as an extra request
 
 for (const language of ['zh-CN', 'en-US']) {
-    for (const [name, wire, shownKey, code, flags] of [
-        ['new host', NEW_HOST, 'fingerprint', 1002, {trust_new: true, accept_changed: false}],
-        ['changed fingerprint', CHANGED_HOST, 'current_fingerprint', 1001, {trust_new: false, accept_changed: true}],
+    for (const [name, wire, shownKey, code, flags, dialog] of [
+        ['new host', NEW_HOST, 'fingerprint', 1002, {trust_new: true, accept_changed: false},
+            {title: 'ui.fingerprintTitle', primary: 'ui.trustConnect', focus: '1'}],
+        ['changed fingerprint', CHANGED_HOST, 'current_fingerprint', 1001, {trust_new: false, accept_changed: true},
+            {title: 'securityPage.mismatchTitle', primary: 'securityPage.updateHostKey', focus: '0'}],
     ]) {
         const fingerprint = wire.data?.[shownKey];
         const needData = () => assert.equal(typeof fingerprint, 'string',
@@ -96,7 +98,24 @@ for (const language of ['zh-CN', 'en-US']) {
                 assert.equal(execRequests.length, 1);
                 assert.equal(execRequests[0].trust_new, false);          // nothing is trusted before the user decides
                 assert.equal('confirmed_fingerprint' in execRequests[0], false);
-                await sheet(page).locator('button[data-r="0"]').click();
+                // The sheet says what is happening and what the buttons do.
+                const text = await sheet(page).textContent();
+                const label = key => page.evaluate(key => t(key), key);
+                assert(text.includes(await label(dialog.title)), 'title');
+                assert(text.includes(await label(dialog.primary)), 'confirm button');
+                assert.equal(await page.evaluate(() => document.activeElement?.dataset?.r), dialog.focus);
+                if (code === 1001) {
+                    // A changed key is a security warning: both fingerprints are shown, the default button is Cancel,
+                    // and Enter (which activates the focused button) therefore cancels instead of accepting.
+                    assert(shown.includes(wire.data.stored_fingerprint), 'stored fingerprint');
+                    assert(text.includes(await label('securityPage.hostKeyChangedWarning')), 'warning');
+                    await page.keyboard.press('Enter');
+                    await sheet(page).waitFor({state: 'detached', timeout: 5000});
+                    await settle(page);
+                    assert.equal(execRequests.length, 1);
+                } else {
+                    await sheet(page).locator('button[data-r="0"]').click();
+                }
             });
         });
 

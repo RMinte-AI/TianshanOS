@@ -10994,11 +10994,21 @@ async function testSshHostByIndex(index) {
         };
         let execResult = await api.call('ssh.exec', params);
         if ([1001, 1002].includes(execResult.code)) {
+            const changed = execResult.code === 1001;
             const fingerprint = execResult.data?.fingerprint || execResult.data?.current_fingerprint;
-            if (fingerprint && await confirmSheet({
+            const mono = text => `<div class="mono" style="margin-top:10px;user-select:text;word-break:break-all;white-space:pre-wrap">${escapeHtml(text)}</div>`;
+            // A changed key can mean a man-in-the-middle attack: say so, show both fingerprints, default to Cancel.
+            const sheetOptions = changed ? {
+                title: t('securityPage.mismatchTitle'),
+                bodyHtml: `${escapeHtml(t('securityPage.hostKeyChangedWarning'))}<br>• ${escapeHtml(t('securityPage.mitmAttack'))}<br>• ${escapeHtml(t('securityPage.serverReinstalled'))}<br>• ${escapeHtml(t('securityPage.ipReassigned'))}`
+                    + mono(`${host.host}:${host.port}\n\n${t('securityPage.storedFingerprint')}\n${execResult.data?.stored_fingerprint || '-'}\n\n${t('securityPage.currentFingerprint')}\n${fingerprint}`),
+                primary: t('securityPage.updateHostKey'), tone: 'danger'
+            } : {
                 title: t('ui.fingerprintTitle'),
-                bodyHtml: `${escapeHtml(runtimeText('confirmFingerprint'))}<div class="mono" style="margin-top:10px;user-select:text;word-break:break-all;white-space:pre-wrap">${escapeHtml(host.host + ':' + host.port)}\n${escapeHtml(fingerprint)}</div>`,
-                primary: t('ui.trustConnect') })) {
+                bodyHtml: `${escapeHtml(runtimeText('confirmFingerprint'))}${mono(`${host.host}:${host.port}\n${fingerprint}`)}`,
+                primary: t('ui.trustConnect')
+            };
+            if (fingerprint && await confirmSheet(sheetOptions)) {
                 params.confirmed_fingerprint = fingerprint;
                 params.trust_new = execResult.code === 1002;
                 params.accept_changed = execResult.code === 1001;
