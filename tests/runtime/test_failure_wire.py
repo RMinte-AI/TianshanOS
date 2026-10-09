@@ -24,7 +24,14 @@ CAPTURES = ['wire-rule-ok.json', 'wire-rule-ok-mirror.json', 'wire-rule-executio
             'wire-rule-service-busy.json', 'wire-rule-commit-unknown.json', 'wire-rule-capacity.json',
             'wire-trigger-ok.json', 'wire-trigger-engine-not-accepting.json', 'wire-trigger-rule-disabled.json',
             'wire-trigger-manual-not-allowed.json', 'wire-trigger-execution-busy.json', 'wire-trigger-service-not-admissible.json',
-            'wire-trigger-not-found.json', 'wire-trigger-generic.json']
+            'wire-trigger-not-found.json', 'wire-trigger-generic.json',
+            'wire-engine-start-ok.json', 'wire-engine-start-paused.json', 'wire-engine-start-unavailable.json', 'wire-engine-start-nomem.json',
+            'wire-engine-stop-timeout.json', 'wire-engine-pause-not-running.json', 'wire-engine-pause-paused.json',
+            'wire-engine-reload-config-invalid.json', 'wire-engine-reload-unavailable.json',
+            'wire-action-save-capacity.json', 'wire-action-save-exists.json', 'wire-action-save-protected.json',
+            'wire-action-save-not-found.json', 'wire-action-save-generic.json',
+            'wire-action-run-failed.json', 'wire-action-run-failed-no-output.json', 'wire-action-run-timeout.json', 'wire-action-run-not-found.json',
+            'wire-source-add-ok.json', 'wire-source-add-capacity.json', 'wire-source-add-unavailable.json']
 
 
 def extract(path, name):
@@ -39,18 +46,33 @@ code = r'''
 #include "platform.h"
 #include "ts_api.h"
 #include "ts_rule_engine.h"
+#include "ts_automation.h"
+#include "ts_action_manager.h"
+#include "ts_source_manager.h"
 #define ESP_LOGI(...) ((void)0)
 #define TS_MALLOC_PSRAM malloc
 #define TS_STRDUP_PSRAM strdup
-static const char *error_name(esp_err_t e) {return e==ESP_OK?"ESP_OK":"ESP_FAIL";}
+static const char *error_name(esp_err_t e) {
+    switch(e){case ESP_OK:return "ESP_OK";case ESP_ERR_INVALID_SIZE:return "ESP_ERR_INVALID_SIZE";case ESP_ERR_INVALID_ARG:return "ESP_ERR_INVALID_ARG";
+              case ESP_ERR_TIMEOUT:return "ESP_ERR_TIMEOUT";default:return "ESP_FAIL";}
+}
 #define esp_err_to_name error_name
 static ts_rule_reject_t mock_why = TS_RULE_REJECT_NONE;
 static esp_err_t mock_ret = ESP_OK;
 esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why) {if(why)*why=mock_why;return mock_ret;}
+static esp_err_t mock_engine = ESP_OK;
+static ts_automation_state_t mock_state = TS_AUTO_STATE_RUNNING;
+esp_err_t ts_automation_start(void) {return mock_engine;}
+esp_err_t ts_automation_stop(void) {return mock_engine;}
+esp_err_t ts_automation_pause(void) {return mock_engine;}
+esp_err_t ts_automation_reload(void) {return mock_engine;}
+esp_err_t ts_automation_get_status(ts_automation_status_t *s) {memset(s,0,sizeof *s);s->state=mock_state;return ESP_OK;}
 '''
 for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error']:
     code += extract('components/ts_api/src/ts_api.c', name)
-for name in ['rule_commit_reply', 'trigger_reject_token', 'trigger_reject_code', 'api_automation_rules_trigger']:
+for name in ['fail_with', 'automation_state', 'engine_refusal_token', 'api_automation_start', 'api_automation_stop', 'api_automation_pause',
+             'api_automation_reload', 'action_template_write_reply', 'action_execute_failure', 'source_register_reply',
+             'rule_commit_reply', 'trigger_reject_token', 'trigger_reject_code', 'api_automation_rules_trigger']:
     code += extract('components/ts_api/src/ts_api_automation.c', name)
 web_source = Path('components/ts_webui/src/ts_webui_api.c').read_text()
 start = web_source.index('    if (ret == ESP_OK || result.code == TS_API_OK) {')
@@ -96,7 +118,69 @@ static void trigger(esp_err_t ret,ts_rule_reject_t why,const char *capture,int e
     assert(!strcmp(str(w,"message"),expect_message));
     save(capture);cJSON_Delete(w);cJSON_Delete(p);
 }
+/* what the production HTTP chain sends for a handler's result, and the checks every reply has to pass */
+static cJSON *sent(ts_api_result_t r,const char *capture,int code,const char *message) {
+    assert(r.code==code);
+    assert(send_result(ESP_OK,r)==ESP_OK);
+    cJSON *w=wire();assert(cJSON_GetObjectItem(w,"code")->valueint==code);
+    assert(!strcmp(str(w,"message"),message));
+    save(capture);
+    return w;
+}
+static void sent_with_detail(ts_api_result_t r,const char *capture,int code,const char *message,const char *detail) {
+    cJSON *w=sent(r,capture,code,message);
+    cJSON *data=cJSON_GetObjectItem(w,"data");
+    if(detail){assert(cJSON_IsObject(data));assert(!strcmp(str(data,"detail"),detail));}
+    cJSON_Delete(w);
+}
+static void engine(esp_err_t (*handler)(const cJSON *,ts_api_result_t *),esp_err_t ret,ts_automation_state_t state,const char *capture,int code,const char *message,const char *detail) {
+    mock_engine=ret;mock_state=state;
+    ts_api_result_t r={0};
+    assert(handler(NULL,&r)==ESP_OK);
+    sent_with_detail(r,capture,code,message,detail);
+}
 int main(void) {
+    /* the engine's own buttons: start / stop / pause / reload say exactly why they were refused */
+    engine(api_automation_start,ESP_OK,TS_AUTO_STATE_INITIALIZED,"wire-engine-start-ok.json",TS_API_OK,"Automation engine started",NULL);
+    engine(api_automation_start,ESP_ERR_INVALID_STATE,TS_AUTO_STATE_PAUSED,"wire-engine-start-paused.json",TS_API_ERR_BUSY,"engine_paused",NULL);
+    engine(api_automation_start,ESP_ERR_INVALID_STATE,TS_AUTO_STATE_INITIALIZED,"wire-engine-start-unavailable.json",TS_API_ERR_BUSY,"engine_unavailable",NULL);
+    engine(api_automation_start,ESP_ERR_NO_MEM,TS_AUTO_STATE_INITIALIZED,"wire-engine-start-nomem.json",TS_API_ERR_NO_MEM,"no_memory",NULL);
+    engine(api_automation_stop,ESP_ERR_TIMEOUT,TS_AUTO_STATE_RUNNING,"wire-engine-stop-timeout.json",TS_API_ERR_BUSY,"engine_stop_timeout",NULL);
+    engine(api_automation_pause,ESP_ERR_INVALID_STATE,TS_AUTO_STATE_INITIALIZED,"wire-engine-pause-not-running.json",TS_API_ERR_BUSY,"engine_not_running",NULL);
+    engine(api_automation_pause,ESP_ERR_INVALID_STATE,TS_AUTO_STATE_PAUSED,"wire-engine-pause-paused.json",TS_API_ERR_BUSY,"engine_paused",NULL);
+    engine(api_automation_reload,ESP_ERR_INVALID_SIZE,TS_AUTO_STATE_RUNNING,"wire-engine-reload-config-invalid.json",TS_API_ERR_INTERNAL,"config_file_invalid","ESP_ERR_INVALID_SIZE");
+    engine(api_automation_reload,ESP_ERR_INVALID_STATE,TS_AUTO_STATE_UNINITIALIZED,"wire-engine-reload-unavailable.json",TS_API_ERR_BUSY,"engine_unavailable",NULL);
+    /* anything else stays what it was: a class code and the old English text */
+    {ts_api_result_t r={0};mock_engine=ESP_FAIL;assert(api_automation_start(NULL,&r)==ESP_OK);assert(r.code==TS_API_ERR_INTERNAL&&!strcmp(r.message,"Failed to start automation engine"));ts_api_result_free(&r);}
+    {ts_api_result_t r={0};mock_engine=ESP_FAIL;assert(api_automation_stop(NULL,&r)==ESP_OK);assert(r.code==TS_API_ERR_INTERNAL&&!strcmp(r.message,"Failed to stop automation engine"));ts_api_result_free(&r);}
+    {ts_api_result_t r={0};mock_engine=ESP_FAIL;assert(api_automation_pause(NULL,&r)==ESP_OK);assert(r.code==TS_API_ERR_INTERNAL&&!strcmp(r.message,"Failed to pause automation engine"));ts_api_result_free(&r);}
+    {ts_api_result_t r={0};mock_engine=ESP_FAIL;assert(api_automation_reload(NULL,&r)==ESP_OK);assert(r.code==TS_API_ERR_INTERNAL&&!strcmp(r.message,"Failed to reload configuration"));ts_api_result_free(&r);}
+    /* saving an action template */
+    {ts_api_result_t r={0};action_template_write_reply(&r,ESP_ERR_NO_MEM,false);sent_with_detail(r,"wire-action-save-capacity.json",TS_API_ERR_INTERNAL,"template_capacity",NULL);}
+    {ts_api_result_t r={0};action_template_write_reply(&r,ESP_ERR_INVALID_STATE,false);sent_with_detail(r,"wire-action-save-exists.json",TS_API_ERR_INVALID_ARG,"template_exists",NULL);}
+    {ts_api_result_t r={0};action_template_write_reply(&r,ESP_ERR_INVALID_STATE,true);sent_with_detail(r,"wire-action-save-protected.json",TS_API_ERR_BUSY,"service_delete_protected",NULL);}
+    {ts_api_result_t r={0};action_template_write_reply(&r,ESP_ERR_NOT_FOUND,true);sent_with_detail(r,"wire-action-save-not-found.json",TS_API_ERR_NOT_FOUND,"Template not found",NULL);}
+    {ts_api_result_t r={0};action_template_write_reply(&r,ESP_FAIL,true);sent_with_detail(r,"wire-action-save-generic.json",TS_API_ERR_INTERNAL,"Failed to update template",NULL);}
+    {ts_api_result_t r={0};action_template_write_reply(&r,ESP_FAIL,false);assert(!strcmp(r.message,"Failed to create template"));ts_api_result_free(&r);}
+    /* running an action template: the reason for the page, what the action printed for the folded details */
+    {ts_action_result_t x={0};x.status=TS_ACTION_STATUS_FAILED;snprintf(x.output,sizeof x.output,"command exited with 3");
+     ts_api_result_t r={0};r.data=cJSON_CreateObject();action_execute_failure(&r,ESP_FAIL,&x);sent_with_detail(r,"wire-action-run-failed.json",TS_API_ERR_INTERNAL,"action_failed","command exited with 3");}
+    {ts_action_result_t x={0};x.status=TS_ACTION_STATUS_FAILED;
+     ts_api_result_t r={0};r.data=cJSON_CreateObject();action_execute_failure(&r,ESP_FAIL,&x);sent_with_detail(r,"wire-action-run-failed-no-output.json",TS_API_ERR_INTERNAL,"action_failed","Action failed: ESP_FAIL (status=3)");}
+    {ts_action_result_t x={0};x.status=TS_ACTION_STATUS_TIMEOUT;snprintf(x.output,sizeof x.output,"no answer");
+     ts_api_result_t r={0};r.data=cJSON_CreateObject();action_execute_failure(&r,ESP_ERR_TIMEOUT,&x);sent_with_detail(r,"wire-action-run-timeout.json",TS_API_ERR_INTERNAL,"action_timeout","no answer");}
+    {ts_action_result_t x={0};x.status=TS_ACTION_STATUS_FAILED;snprintf(x.output,sizeof x.output,"Template not found: demo");
+     ts_api_result_t r={0};r.data=cJSON_CreateObject();action_execute_failure(&r,ESP_ERR_NOT_FOUND,&x);sent_with_detail(r,"wire-action-run-not-found.json",TS_API_ERR_NOT_FOUND,"Template not found",NULL);}
+    /* creating a data source */
+    {ts_auto_source_t src={0};snprintf(src.id,sizeof src.id,"power");
+     ts_api_result_t r={0};source_register_reply(&r,ESP_OK,&src);cJSON *w=sent(r,"wire-source-add-ok.json",TS_API_OK,"Source created successfully");assert(!strcmp(str(cJSON_GetObjectItem(w,"data"),"id"),"power"));cJSON_Delete(w);}
+    {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_ERR_NO_MEM,&src);sent_with_detail(r,"wire-source-add-capacity.json",TS_API_ERR_INTERNAL,"source_capacity",NULL);}
+    {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_ERR_INVALID_STATE,&src);sent_with_detail(r,"wire-source-add-unavailable.json",TS_API_ERR_BUSY,"engine_unavailable",NULL);}
+    {ts_auto_source_t src={0};ts_api_result_t r={0};source_register_reply(&r,ESP_FAIL,&src);assert(!strcmp(r.message,"Failed to create source"));ts_api_result_free(&r);}
+    /* every refusal state of the engine has a token, and the token depends only on the state and on start / pause */
+    assert(!strcmp(engine_refusal_token(TS_AUTO_STATE_PAUSED,false),"engine_paused")&&!strcmp(engine_refusal_token(TS_AUTO_STATE_PAUSED,true),"engine_paused"));
+    assert(!strcmp(engine_refusal_token(TS_AUTO_STATE_RUNNING,true),"engine_unavailable"));   /* running but stopping */
+    assert(!strcmp(engine_refusal_token(TS_AUTO_STATE_ERROR,true),"engine_not_running")&&!strcmp(engine_refusal_token(TS_AUTO_STATE_UNINITIALIZED,false),"engine_unavailable"));
     /* success */
     rule_reply(ESP_OK,"ok",1,1,1,"wire-rule-ok.json",TS_API_OK);
     rule_reply(ESP_OK,"mirror_failed",1,1,0,"wire-rule-ok-mirror.json",TS_API_OK);

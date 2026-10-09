@@ -75,6 +75,7 @@ code += r'''
 esp_err_t ts_action_template_update(const char *id,const ts_action_template_t *t) { ++updates;return template_update_impl(id,t); }
 '''
 for name in ['action_type_from_string', 'action_type_to_string',
+             'fail_with', 'action_template_write_reply',
              'api_automation_actions_write', 'api_automation_actions_get',
              'action_template_to_export_json']:
     code += extract(api, name)
