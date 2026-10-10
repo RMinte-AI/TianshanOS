@@ -10,7 +10,7 @@ TAG = re.compile(r'v\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?')
 
 
 def changed_paths(base, head):
-    raw = subprocess.check_output(['git', 'diff', '--name-status', '-z', '-M', base, head, '--'])
+    raw = subprocess.check_output(['git', 'diff', '--name-status', '-z', '-M', '--merge-base', base, head, '--'])
     fields = raw.decode().split('\0')
     paths = []
     at = 0

@@ -2,6 +2,7 @@
 import gzip
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -53,6 +54,28 @@ class PolicyTests(unittest.TestCase):
             with patch.object(profile.subprocess,'check_output',side_effect=lambda args:original(args,cwd=folder)):
                 paths=profile.changed_paths(base,head)
             self.assertEqual(set(paths),{'code.c','docs/code.md','gone.c'})
+
+    def test_document_pr_ignores_changes_only_on_advanced_main(self):
+        with tempfile.TemporaryDirectory() as folder:
+            def git(*args):
+                return subprocess.check_output(['git','-C',folder,*args],text=True).strip()
+            git('init','-q','-b','main');git('config','user.email','fixture@example.invalid');git('config','user.name','Fixture')
+            root=Path(folder);(root/'README.md').write_text('Original documentation\n');(root/'main.c').write_text('int original;\n')
+            git('add','.');git('commit','-qm','A: common start');start=git('rev-parse','HEAD')
+            (root/'main.c').write_text('int main_only;\n')
+            git('commit','-qam','B: main code change');base=git('rev-parse','HEAD')
+            git('checkout','-qb','docs',start)
+            (root/'README.md').write_text('Updated documentation\n')
+            git('commit','-qam','C: documentation change');head=git('rev-parse','HEAD')
+            previous=Path.cwd()
+            try:
+                os.chdir(folder)
+                paths=profile.changed_paths(base,head)
+            finally:
+                os.chdir(previous)
+            self.assertEqual(paths,['README.md'])
+            self.assertEqual(profile.classify(profile.UPSTREAM,'pull_request','refs/pull/1/merge',{},paths),
+                             {'run_full':False,'publish_release':False})
 
     def needs(self,full=True):
         return {'changes':{'result':'success','outputs':{'run_full':str(full).lower(),'publish_release':'false'}},
