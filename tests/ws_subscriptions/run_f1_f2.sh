@@ -26,7 +26,7 @@ HASH
 fi
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
-"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -Wno-macro-redefined -I"$cjson" -I"$build" tests/ws_subscriptions/test_f1_f2.c "$cjson/cJSON.c" -o "$build/f1f2"
+"${CC:-cc}" -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -Wno-macro-redefined -I"$cjson" -I"$build" tests/ws_subscriptions/test_f1_f2.c "$cjson/cJSON.c" -lm -o "$build/f1f2"
 failed=0
 scenarios="f1 f2"
 if grep -q TS_WS_POWER_SLOTS components/ts_webui/include/ts_ws_transport.h; then scenarios="$scenarios late early identity exec continuous power_retry capacity retry_limit stop timeout class power_order fair"; fi
