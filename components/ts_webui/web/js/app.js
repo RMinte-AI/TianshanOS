@@ -18232,7 +18232,8 @@ async function previewRuleImport() {
             !data.rule || data.rule.id !== data.id || !Array.isArray(data.rule.actions) || !data.rule.actions.length ||
             !Number.isInteger(data.expected_revision) || !Number.isInteger(data.expected_generation) ||
             !Number.isInteger(data.credential_generation) || !/^[0-9a-f]{64}$/.test(data.package_digest || '')) {
-            packBox(box, { op: 'pack.verify', params: { kind: t('failure.kinds.rule'), file: file.name }, result, token: data?.error_code, endpoint: 'automation.rules.import', write: false }); return;
+            packBox(box, { op: 'pack.verify', params: { kind: t('failure.kinds.rule'), file: file.name }, result, endpoint: 'automation.rules.import', write: false,
+                token: data?.error_code || (result.code === 0 ? (data?.valid !== true ? 'invalid_pack' : data?.trusted !== true ? 'signer_untrusted' : data?.target_matches !== true ? 'wrong_device' : 'invalid_response') : undefined) }); return;
         }
         rulePackPreview = data;
         window._importRuleTscfg = bytes; window._importRuleFilename = file.name;

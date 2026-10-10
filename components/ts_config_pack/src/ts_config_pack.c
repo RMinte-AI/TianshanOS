@@ -205,6 +205,10 @@ const char *ts_config_pack_reason(ts_config_pack_result_t result)
         case TS_CONFIG_PACK_ERR_PERMISSION:  return "pack_not_allowed";
         case TS_CONFIG_PACK_ERR_NOT_INIT:    return "pack_not_ready";
         case TS_CONFIG_PACK_ERR_INVALID_ARG: return "invalid_argument";
+        case TS_CONFIG_PACK_ERR_TIME_UNVERIFIED:        return "time_unverified";
+        case TS_CONFIG_PACK_ERR_TRUST_NOT_CONFIGURED:   return "signing_trust_unconfigured";
+        case TS_CONFIG_PACK_ERR_SIGNER_ROLE:            return "signer_unauthorized";
+        case TS_CONFIG_PACK_ERR_CREDENTIAL_CHANGED:     return "credential_changed";
         default:                             return "pack_verify_failed";
     }
 }

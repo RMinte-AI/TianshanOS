@@ -4467,7 +4467,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             sio_event_timeout: { why: 'it connected, but no event arrived after waiting', hint: 'Check the event name, or leave it empty so the device discovers it.' },
             // -- Automation: enable / disable / save a rule --
             execution_busy: { why: 'it is running right now', hint: 'Wait for it to finish, then try again.' },
-            revision_conflict: { why: 'it was just changed by another operation', hint: 'Refresh, check the latest content, then try again.' },
+            revision_conflict: { why: 'the configuration on the device was just changed by another operation', hint: 'Refresh, check the latest content, then try again.' },
             service_busy: { why: 'its bound service is running or its state is unconfirmed', hint: 'Verify the service state and stop it first.' },
             source_read_only: { why: 'it comes from a read-only configuration source and cannot be changed', hint: 'The original file was not changed; edit its configuration source if you need a change.' },
             recovery_required: { why: 'the automation configuration needs a recovery check, and automatic runs are paused', hint: 'Reload and check the configuration before continuing.' },

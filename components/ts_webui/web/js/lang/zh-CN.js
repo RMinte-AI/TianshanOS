@@ -4430,7 +4430,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             sio_event_timeout: { why: '已经连上，但等了一会儿没有收到事件', hint: '请确认事件名是否正确，或者把事件名留空，让设备自动发现。' },
             // —— 自动化：规则启用 / 禁用 / 保存 ——
             execution_busy: { why: '它正在执行中', hint: '等执行完成后再试。' },
-            revision_conflict: { why: '它刚被其他操作修改过', hint: '请刷新后确认最新内容，再重新操作。' },
+            revision_conflict: { why: '设备上的这份配置刚被其他操作修改过', hint: '请刷新后确认最新内容，再重新操作。' },
             service_busy: { why: '它绑定的服务正在运行，或状态还没有确认', hint: '请先核实并停止该服务。' },
             source_read_only: { why: '它来自只读的配置来源，不能修改', hint: '原文件没有被改动；如需修改，请编辑它的配置来源。' },
             recovery_required: { why: '自动化配置需要先做恢复核对，自动执行已暂停', hint: '请重新读取配置并核对后再继续。' },
