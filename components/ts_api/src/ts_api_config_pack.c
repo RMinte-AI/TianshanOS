@@ -11,6 +11,7 @@
 
 #include "ts_api.h"
 #include "ts_config_pack.h"
+#include "ts_api_pack.h"
 #include "ts_cert.h"
 #include "ts_log.h"
 #include "ts_storage.h"
@@ -175,6 +176,7 @@ static esp_err_t api_config_pack_verify(const cJSON *params, ts_api_result_t *re
     cJSON_AddBoolToObject(data, "valid", pack_result == TS_CONFIG_PACK_OK);
     cJSON_AddNumberToObject(data, "result_code", pack_result);
     cJSON_AddStringToObject(data, "result_message", ts_config_pack_strerror(pack_result));
+    cJSON_AddStringToObject(data, "reason", ts_config_pack_reason(pack_result));
     
     if (pack_result == TS_CONFIG_PACK_OK || sig_info.signer_cn[0] != '\0') {
         cJSON *sig = cJSON_CreateObject();
@@ -232,6 +234,7 @@ static esp_err_t api_config_pack_import(const cJSON *params, ts_api_result_t *re
     cJSON_AddBoolToObject(data, "valid", pack_result == TS_CONFIG_PACK_OK);
     cJSON_AddNumberToObject(data, "result_code", pack_result);
     cJSON_AddStringToObject(data, "result_message", ts_config_pack_strerror(pack_result));
+    cJSON_AddStringToObject(data, "reason", ts_config_pack_reason(pack_result));
     cJSON_AddStringToObject(data, "path", path->valuestring);
     
     if (pack_result == TS_CONFIG_PACK_OK) {
@@ -297,6 +300,7 @@ static esp_err_t api_config_pack_apply(const cJSON *params, ts_api_result_t *res
     cJSON_AddBoolToObject(data, "success", pack_result == TS_CONFIG_PACK_OK);
     cJSON_AddNumberToObject(data, "result_code", pack_result);
     cJSON_AddStringToObject(data, "result_message", ts_config_pack_strerror(pack_result));
+    cJSON_AddStringToObject(data, "reason", ts_config_pack_reason(pack_result));
     cJSON_AddStringToObject(data, "path", path->valuestring);
     
     if (pack_result == TS_CONFIG_PACK_OK && applied_modules) {
@@ -398,8 +402,7 @@ static esp_err_t api_config_pack_export(const cJSON *params, ts_api_result_t *re
     free(json_content);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL,
-                           ts_config_pack_strerror(pack_result));
+        pack_failure(result, pack_result);
         return ESP_FAIL;
     }
     
@@ -576,8 +579,7 @@ static esp_err_t api_config_pack_content(const cJSON *params, ts_api_result_t *r
     );
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL,
-                           ts_config_pack_strerror(pack_result));
+        pack_failure(result, pack_result);
         return ESP_FAIL;
     }
     

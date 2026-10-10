@@ -632,6 +632,7 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
         cJSON_AddBoolToObject(validation, "valid", pack_result == TS_CONFIG_PACK_OK);
         cJSON_AddNumberToObject(validation, "result_code", pack_result);
         cJSON_AddStringToObject(validation, "result_message", ts_config_pack_strerror(pack_result));
+        cJSON_AddStringToObject(validation, "reason", ts_config_pack_reason(pack_result));
         
         if (pack_result == TS_CONFIG_PACK_OK || sig_info.signer_cn[0] != '\0') {
             cJSON *sig = cJSON_CreateObject();
@@ -652,6 +653,7 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
                                pack_result == TS_CONFIG_PACK_OK ? "success" : "error");
         cJSON_AddNumberToObject(ws_data, "result_code", pack_result);
         cJSON_AddStringToObject(ws_data, "result_message", ts_config_pack_strerror(pack_result));
+        cJSON_AddStringToObject(ws_data, "reason", ts_config_pack_reason(pack_result));
         
         if (pack_result == TS_CONFIG_PACK_OK || sig_info.signer_cn[0] != '\0') {
             cJSON *ws_sig = cJSON_CreateObject();
