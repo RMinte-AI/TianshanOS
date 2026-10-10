@@ -15,6 +15,8 @@ s=s.replace('strcpy(out->host,"192.0.2.8");','strcpy(out->host,configured_host);
 s=s.replace('out->port=22;return ESP_OK;}', 'out->port=22;if(interleave)host_interleave();return ESP_OK;}')
 s=s.replace('(*out)->config=*cfg;++ssh_live;', '(*out)->config=*cfg;strcpy(connected_host,cfg->host);++ssh_live;')
 s+='''
+#include "ts_rule_engine.h"
+esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind,const char *id,const void *next){return ESP_OK;}
 static esp_err_t host_add_impl(const ts_ssh_host_config_t *cfg,bool sync_sdcard) {strcpy(configured_host,cfg->host);return ESP_OK;}
 static esp_err_t command_add_impl(const ts_ssh_command_config_t *cfg,char*out,size_t len) {command=*cfg;return ESP_OK;}
 static int storage_fail;
@@ -51,5 +53,5 @@ int main(void) {
 '''
 (build/'configuration_protocol.c').write_text(s)
 env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
-subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined',*(['-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'] if sys.platform == 'darwin' else []),*[f'-I{x}' for x in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include']],str(build/'configuration_protocol.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c','-lpthread','-o',str(build/'configuration_protocol')],check=True,env=env)
+subprocess.run(['cc','-std=c11','-D_POSIX_C_SOURCE=200809L','-g','-fsanitize=address,undefined',*(['-isysroot','/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'] if sys.platform == 'darwin' else []),*[f'-I{x}' for x in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include']],str(build/'configuration_protocol.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c','-lpthread','-o',str(build/'configuration_protocol')],check=True,env=env)
 subprocess.run([str(build/'configuration_protocol')],check=True,env=env)

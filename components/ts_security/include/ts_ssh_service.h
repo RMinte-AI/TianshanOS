@@ -45,6 +45,8 @@ bool ts_ssh_service_launch_command(const ts_ssh_command_config_t *cmd, const cha
                                    char *out, size_t capacity);
 
 void ts_ssh_binding_lock(void);
+/* Nonblocking edit admission, same recursive gate as ordinary binding operations. */
+bool ts_ssh_binding_try_lock(void);
 void ts_ssh_binding_unlock(void);
 esp_err_t ts_ssh_service_pin(const ts_ssh_command_config_t *cmd, const char *host, uint16_t port, uint32_t *registration);
 void ts_ssh_service_unpin(const char *id, uint32_t registration);

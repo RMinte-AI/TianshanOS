@@ -1,0 +1,52 @@
+Executing action: all (aliases: build)
+Running ninja in directory /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection
+Executing "ninja all"...
+[1/7] Copying web assets to build directory
+[2/7] cd /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/esp-idf/esptool_py && /Users/massif/.espressif/python_env/idf5.5_py3.14_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/partition_table/partition-table.bin /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/TianShanOS.bin
+TianShanOS.bin binary size 0x21a0c0 bytes. Smallest app partition is 0x300000 bytes. 0xe5f40 bytes (30%) free.
+[3/7] Performing build step for 'bootloader'
+[1/1] cd /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/bootloader/esp-idf/esptool_py && /Users/massif/.espressif/python_env/idf5.5_py3.14_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/bootloader/bootloader.bin
+Bootloader binary size 0x57e0 bytes. 0x2820 bytes (31%) free.
+[4/7] No install step for 'bootloader'
+[5/7] Completed 'bootloader'
+[6/7] Minifying + gzipping web resources
+Minifying web resources in /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/esp-idf/ts_webui/web_optimized...
+  JS  js/terminal.js: 31,110 -> 20,056 (35.5% saved)
+  JS  js/router.js: 6,435 -> 3,860 (40.0% saved)
+  JS  js/dragSort.js: 11,460 -> 7,603 (33.7% saved)
+  JS  js/api.js: 38,400 -> 25,786 (32.8% saved)
+  JS  js/i18n.js: 7,208 -> 4,320 (40.1% saved)
+  JS  js/app.js: 940,003 -> 732,729 (22.1% saved)
+  JS  js/lang/en-US.js: 196,195 -> 158,799 (19.1% saved)
+  JS  js/lang/zh-CN.js: 188,643 -> 151,801 (19.5% saved)
+  CSS css/style.css: 42,660 -> 40,297 (5.5% saved)
+
+  Total saved: 316,863 bytes (309.4 KB)
+
+Gzipping web resources in /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/esp-idf/ts_webui/web_optimized...
+  GZ  js/terminal.js: 20,056 -> 5,558 (72.3% smaller)
+  GZ  js/router.js: 3,860 -> 1,346 (65.1% smaller)
+  GZ  js/dragSort.js: 7,603 -> 1,869 (75.4% smaller)
+  GZ  js/api.js: 25,786 -> 6,594 (74.4% smaller)
+  GZ  js/i18n.js: 4,320 -> 1,460 (66.2% smaller)
+  GZ  js/app.js: 732,729 -> 157,338 (78.5% smaller)
+  GZ  js/lang/en-US.js: 158,799 -> 47,941 (69.8% smaller)
+  GZ  js/lang/zh-CN.js: 151,801 -> 50,024 (67.0% smaller)
+  GZ  vendor/xterm/fit.min.js: 1,789 -> 822 (54.1% smaller)
+  GZ  vendor/xterm/xterm.min.js: 283,670 -> 65,684 (76.8% smaller)
+  GZ  css/style.css: 40,297 -> 9,018 (77.6% smaller)
+  GZ  vendor/xterm/xterm.css: 5,383 -> 2,037 (62.2% smaller)
+  GZ  index.html: 62,010 -> 18,969 (69.4% smaller)
+
+  Gzipped 13 files: 1,498,103 -> 368,660 (75.4% overall)
+Done.
+[7/7] cd /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/esp-idf/ts_webui && /Users/massif/.espressif/python_env/idf5.5_py3.14_env/bin/python /Users/massif/esp/v5.5.2/esp-idf/components/spiffs/spiffsgen.py 0x300000 /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/esp-idf/ts_webui/web_optimized /Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection/www.bin --page-size=256 --obj-name-len=32 --meta-len=4 --use-magic --use-magic-len
+
+Project build complete. To flash, run:
+ idf.py flash
+or
+ idf.py -p PORT flash
+or
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 build/delete-protection/bootloader/bootloader.bin 0x8000 build/delete-protection/partition_table/partition-table.bin 0x16000 build/delete-protection/ota_data_initial.bin 0x20000 build/delete-protection/TianShanOS.bin 0x6a0000 build/delete-protection/www.bin
+or from the "/Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS/build/delete-protection" directory
+ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash "@flash_args"

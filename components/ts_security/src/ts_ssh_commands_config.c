@@ -1,4 +1,6 @@
 #include "ts_ssh_service.h"
+#include "ts_rule_engine.h"
+#include <stdatomic.h>
 /**
  * @file ts_ssh_commands_config.c
  * @brief SSH Command Configuration Storage Implementation
@@ -221,24 +223,15 @@ static bool s_pending_export = false;
 /** 正在从 SD 卡加载中（禁止触发同步） */
 static bool s_loading_from_sdcard = false;
 static TaskHandle_t initial_loader;
+static atomic_int initial_load_result = ESP_ERR_INVALID_STATE;
 
 /**
  * @brief 延迟加载/导出任务 - 在独立任务中处理 SD 卡操作（避免 main 任务栈溢出）
  * 
  * 配置加载优先级：SD 卡 > NVS > 硬编码默认值
  */
-static void deferred_export_task(void *arg)
-{
-    (void)arg;
-    initial_loader = xTaskGetCurrentTaskHandle();
-    vTaskDelay(pdMS_TO_TICKS(2000));  /* 等待系统稳定、SD 卡挂载完成 */
-    
-    if (!s_state.initialized) {
-        initial_loader = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
-    
+static esp_err_t commands_load_once(void) {
+    esp_err_t outcome=ESP_OK;
     size_t nvs_count = ts_ssh_commands_config_count();
     
     /* 
@@ -272,12 +265,11 @@ static void deferred_export_task(void *arg)
         esp_err_t cleared = ts_ssh_commands_config_clear();
         if (cleared != ESP_OK) {
             s_loading_from_sdcard = false;
-            initial_loader = NULL;
-            vTaskDelete(NULL);
-            return;
+            return cleared;
         }
 
         esp_err_t import_ret = ts_ssh_commands_config_import_from_sdcard(false);
+        outcome=import_ret;
         size_t count = ts_ssh_commands_config_count();
         
         if (import_ret == ESP_OK) {
@@ -295,6 +287,26 @@ static void deferred_export_task(void *arg)
         }
     }
     
+    return outcome;
+}
+static void deferred_export_task(void *arg)
+{
+    (void)arg;
+    initial_loader = xTaskGetCurrentTaskHandle();
+    vTaskDelay(pdMS_TO_TICKS(2000));  /* 等待系统稳定、SD 卡挂载完成 */
+
+    if (!s_state.initialized) {
+        initial_loader = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while(s_state.initialized) {
+        esp_err_t result=commands_load_once();
+        atomic_store(&initial_load_result,result);
+        if(result==ESP_OK)break;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
     s_pending_export = false;
     initial_loader = NULL;
     vTaskDelete(NULL);
@@ -321,6 +333,7 @@ esp_err_t ts_ssh_commands_config_init(void)
         return ret;
     }
     
+    atomic_store(&initial_load_result,ESP_ERR_INVALID_STATE);
     s_state.initialized = true;
     
     /*
@@ -337,7 +350,11 @@ esp_err_t ts_ssh_commands_config_init(void)
     /* 创建延迟加载任务（在独立任务中处理 SD 卡操作，避免 main 任务栈溢出）
      * 必须使用 DRAM 栈，因为内部会调用 ts_ssh_commands_config_count() 访问 NVS */
     s_pending_export = true;  /* 标记需要处理 SD 卡 */
-    xTaskCreate(deferred_export_task, "ssh_cmd_load", 8192, NULL, 2, NULL);
+    if(xTaskCreate(deferred_export_task, "ssh_cmd_load", 8192, NULL, 2, NULL)!=pdPASS){
+        atomic_store(&initial_load_result,ESP_ERR_NO_MEM);
+        s_pending_export=false;
+        return ESP_ERR_NO_MEM;
+    }
     
     ESP_LOGI(TAG, "SSH commands config initialized (SD card loading deferred)");
     
@@ -1443,7 +1460,8 @@ esp_err_t ts_ssh_commands_config_add(const ts_ssh_command_config_t *cfg, char *o
                     old->nohup != cfg->nohup || old->service_mode != cfg->service_mode);
     bool busy = (changed || got == ESP_ERR_NOT_FOUND) && ts_ssh_service_command_protected(cfg->id);
     free(old);
-    esp_err_t ret = busy ? ESP_ERR_INVALID_STATE : command_add_impl(cfg, out, size);
+    esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_COMMAND,cfg->id,cfg);
+    if(ret==ESP_OK) ret = busy ? ESP_ERR_INVALID_STATE : command_add_impl(cfg, out, size);
     ts_ssh_binding_unlock();
     return ret;
 }
@@ -1452,8 +1470,9 @@ esp_err_t ts_ssh_commands_config_remove(const char *id) {
         return ESP_ERR_INVALID_ARG;
     ts_ssh_binding_lock();
     uint32_t credential = 0;
-    esp_err_t ret = ts_ssh_service_command_protected(id) ? ESP_ERR_INVALID_STATE
-                                                        : ts_ssh_service_delete_begin(id, &credential);
+    esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_COMMAND,id,NULL);
+    if(ret==ESP_OK) ret = ts_ssh_service_command_protected(id) ? ESP_ERR_INVALID_STATE
+                                                           : ts_ssh_service_delete_begin(id, &credential);
     if (ret == ESP_OK) {
         ret = command_remove_impl(id);
         ts_ssh_service_delete_finish(id, credential, ret == ESP_OK);
@@ -1463,6 +1482,9 @@ esp_err_t ts_ssh_commands_config_remove(const char *id) {
 }
 esp_err_t ts_ssh_commands_config_clear(void) {
     ts_ssh_binding_lock();
+    if (ts_rule_dependency_change(TS_RULE_DEP_COMMAND,NULL,NULL) != ESP_OK) {
+        ts_ssh_binding_unlock(); return ESP_ERR_INVALID_STATE;
+    }
     esp_err_t ret =
         (xTaskGetCurrentTaskHandle() == initial_loader ? ts_ssh_service_any_in_use()
                                                        : ts_ssh_service_host_protected(NULL))
@@ -1471,4 +1493,8 @@ esp_err_t ts_ssh_commands_config_clear(void) {
     if (ret == ESP_OK) ts_ssh_service_forget_stopped();
     ts_ssh_binding_unlock();
     return ret;
+}
+
+esp_err_t ts_ssh_commands_config_load_state(void) {
+    return s_state.initialized?atomic_load(&initial_load_result):ESP_ERR_INVALID_STATE;
 }

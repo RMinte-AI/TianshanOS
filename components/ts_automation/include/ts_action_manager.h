@@ -161,6 +161,8 @@ esp_err_t ts_action_manager_resume(void);
  * @return true if initialized
  */
 bool ts_action_manager_is_initialized(void);
+bool ts_action_templates_ready(void);
+esp_err_t ts_action_templates_load_state(void);
 
 /*===========================================================================*/
 /*                          SSH Host Management                               */
@@ -190,6 +192,7 @@ esp_err_t ts_action_unregister_ssh_host(const char *host_id);
  * @return ESP_OK if found
  */
 esp_err_t ts_action_get_ssh_host(const char *host_id, ts_action_ssh_host_t *host_out);
+esp_err_t ts_action_get_ssh_host_ex(const char *host_id, ts_action_ssh_host_t *host_out, bool *internal);
 
 /**
  * @brief Get number of registered SSH hosts
@@ -465,6 +468,18 @@ esp_err_t ts_action_template_add(const ts_action_template_t *tpl);
  * @param id Template ID to remove
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not exists
  */
+typedef struct {
+    char id[TS_AUTO_NAME_MAX_LEN];
+    char name[TS_AUTO_LABEL_MAX_LEN];
+} ts_action_template_reference_t;
+typedef struct {
+    const char *reason;
+    const char *check_reason;
+    bool references_confirmed;
+    size_t rule_count;
+    ts_action_template_reference_t *rules; /* Caller frees; NULL when details are unavailable. */
+} ts_action_template_delete_result_t;
+esp_err_t ts_action_template_remove_checked(const char *id, ts_action_template_delete_result_t *result);
 esp_err_t ts_action_template_remove(const char *id);
 
 /**

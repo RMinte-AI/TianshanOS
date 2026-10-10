@@ -1,4 +1,6 @@
 #include "ts_ssh_service.h"
+#include "ts_rule_engine.h"
+#include <stdatomic.h>
 /**
  * @file ts_ssh_hosts_config.c
  * @brief SSH Host Configuration Storage Implementation
@@ -87,24 +89,15 @@ static esp_err_t host_add_guarded(const ts_ssh_host_config_t *cfg, bool sync_sdc
 static bool s_hosts_pending_export = false;
 
 static TaskHandle_t initial_loader;
+static atomic_int initial_load_result = ESP_ERR_INVALID_STATE;
 
 /**
  * @brief 延迟加载/导出任务 - 在独立任务中处理 SD 卡操作（避免 main 任务栈溢出）
  * 
  * 配置加载优先级：SD 卡 > NVS > 硬编码默认值
  */
-static void hosts_deferred_export_task(void *arg)
-{
-    (void)arg;
-    initial_loader = xTaskGetCurrentTaskHandle();
-    vTaskDelay(pdMS_TO_TICKS(2500));  /* 等待系统稳定，错开 commands 加载 */
-    
-    if (!s_state.initialized) {
-        initial_loader = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
-    
+static esp_err_t hosts_load_once(void) {
+    esp_err_t outcome=ESP_OK;
     size_t nvs_count = ts_ssh_hosts_config_count();
     
     /* 
@@ -135,6 +128,7 @@ static void hosts_deferred_export_task(void *arg)
     if (sdcard_has_config) {
         ESP_LOGI(TAG, "SD card has config, merging into NVS...");
         esp_err_t import_ret = ts_ssh_hosts_config_import_from_sdcard(true);
+        outcome=import_ret;
         size_t count = ts_ssh_hosts_config_count();
         
         if (import_ret == ESP_OK) {
@@ -152,6 +146,26 @@ static void hosts_deferred_export_task(void *arg)
         }
     }
     
+    return outcome;
+}
+static void hosts_deferred_export_task(void *arg)
+{
+    (void)arg;
+    initial_loader = xTaskGetCurrentTaskHandle();
+    vTaskDelay(pdMS_TO_TICKS(2500));  /* 等待系统稳定，错开 commands 加载 */
+
+    if (!s_state.initialized) {
+        initial_loader = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while(s_state.initialized) {
+        esp_err_t result=hosts_load_once();
+        atomic_store(&initial_load_result,result);
+        if(result==ESP_OK)break;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
     s_hosts_pending_export = false;
     initial_loader = NULL;
     vTaskDelete(NULL);
@@ -185,6 +199,7 @@ esp_err_t ts_ssh_hosts_config_init(void)
         return ret;
     }
     
+    atomic_store(&initial_load_result,ESP_ERR_INVALID_STATE);
     s_state.initialized = true;
     
     /*
@@ -200,7 +215,11 @@ esp_err_t ts_ssh_hosts_config_init(void)
     /* 创建延迟加载任务
      * 必须使用 DRAM 栈，因为内部会访问 NVS */
     s_hosts_pending_export = true;
-    xTaskCreate(hosts_deferred_export_task, "ssh_host_load", 8192, NULL, 2, NULL);
+    if(xTaskCreate(hosts_deferred_export_task, "ssh_host_load", 8192, NULL, 2, NULL)!=pdPASS){
+        atomic_store(&initial_load_result,ESP_ERR_NO_MEM);
+        s_hosts_pending_export=false;
+        return ESP_ERR_NO_MEM;
+    }
     
     ESP_LOGI(TAG, "SSH hosts config initialized (SD card loading deferred)");
     return ESP_OK;
@@ -1129,7 +1148,8 @@ static esp_err_t host_add_guarded(const ts_ssh_host_config_t *cfg, bool sync_sdc
     bool protected = got == ESP_ERR_NOT_FOUND
                          ? ts_ssh_service_host_runtime_protected(cfg->id)
                          : changed && ts_ssh_service_host_protected(cfg->id);
-    esp_err_t ret = protected ? ESP_ERR_INVALID_STATE : host_add_impl(cfg, sync_sdcard);
+    esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_HOST,cfg->id,cfg);
+    if(ret==ESP_OK) ret = protected ? ESP_ERR_INVALID_STATE : host_add_impl(cfg, sync_sdcard);
     ts_ssh_binding_unlock();
     return ret;
 }
@@ -1140,13 +1160,16 @@ esp_err_t ts_ssh_hosts_config_remove(const char *id) {
     if (!id)
         return ESP_ERR_INVALID_ARG;
     ts_ssh_binding_lock();
-    esp_err_t ret =
-        ts_ssh_service_host_protected(id) ? ESP_ERR_INVALID_STATE : host_remove_impl(id);
+    esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_HOST,id,NULL);
+    if(ret==ESP_OK) ret = ts_ssh_service_host_protected(id) ? ESP_ERR_INVALID_STATE : host_remove_impl(id);
     ts_ssh_binding_unlock();
     return ret;
 }
 esp_err_t ts_ssh_hosts_config_clear(void) {
     ts_ssh_binding_lock();
+    if (ts_rule_dependency_change(TS_RULE_DEP_HOST,NULL,NULL) != ESP_OK) {
+        ts_ssh_binding_unlock(); return ESP_ERR_INVALID_STATE;
+    }
     esp_err_t ret =
         (xTaskGetCurrentTaskHandle() == initial_loader ? ts_ssh_service_any_in_use()
                                                        : ts_ssh_service_host_protected(NULL))
@@ -1154,4 +1177,8 @@ esp_err_t ts_ssh_hosts_config_clear(void) {
             : host_clear_impl();
     ts_ssh_binding_unlock();
     return ret;
+}
+
+esp_err_t ts_ssh_hosts_config_load_state(void) {
+    return s_state.initialized?atomic_load(&initial_load_result):ESP_ERR_INVALID_STATE;
 }

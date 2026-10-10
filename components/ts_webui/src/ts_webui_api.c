@@ -190,6 +190,9 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
     // }
     
     bool key_generation = strcmp(api_name, "key.generate") == 0;
+    bool rule_import = strcmp(api_name,"automation.rules.import")==0;
+    if(rule_import&&(!is_binary_upload_complete(req)||!req->body||httpd_req_get_url_query_len(req->req)>0))
+        return ts_http_send_error(req,400,"invalid_pack");
     int64_t key_started = key_generation ? esp_timer_get_time() : 0;
     char key_request_id[32] = "legacy";
     if (key_generation) TS_LOGI(TAG, "key.generate received");
@@ -267,7 +270,11 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
     
     // Add body data if present (POST/PUT requests - overrides query params)
     if (req->body && req->body_len > 0) {
-        cJSON *body = cJSON_Parse(req->body);
+        cJSON *body = rule_import ? ts_config_pack_parse_import_request(req->body,req->body_len) : cJSON_Parse(req->body);
+        if(rule_import&&!cJSON_IsObject(body)){
+            cJSON_Delete(body);cJSON_Delete(request);
+            return ts_http_send_error(req,400,"invalid_pack");
+        }
         if (body) {
             cJSON *item;
             cJSON_ArrayForEach(item, body) {
