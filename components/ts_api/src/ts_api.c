@@ -8,6 +8,7 @@
  */
 
 #include "ts_api.h"
+#include "ts_config_pack.h"
 #include "ts_core.h"  /* TS_STRDUP_PSRAM, TS_CALLOC_PSRAM */
 #include "ts_log.h"
 #include "freertos/FreeRTOS.h"
@@ -316,7 +317,8 @@ esp_err_t ts_api_call_str(const char *name, const char *params_json, ts_api_resu
     cJSON *params = NULL;
     
     if (params_json && strlen(params_json) > 0) {
-        params = cJSON_Parse(params_json);
+        params = name&&!strcmp(name,"automation.rules.import") ?
+            ts_config_pack_parse_import_request(params_json,strlen(params_json)) : cJSON_Parse(params_json);
         if (params == NULL) {
             if (result) {
                 ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid JSON");

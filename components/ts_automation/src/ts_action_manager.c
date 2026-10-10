@@ -16,6 +16,7 @@
  */
 
 #include "ts_action_manager.h"
+#include "ts_rule_engine.h"
 #include "ts_action_filter.h"
 #include "ts_action_store.h"
 #include "ts_api.h"
@@ -121,6 +122,8 @@ typedef struct {
     
     /* Initialization state */
     bool initialized;
+    atomic_bool templates_ready;
+    atomic_int templates_load_result;
 } action_manager_ctx_t;
 
 static action_manager_ctx_t *s_ctx = NULL;
@@ -288,6 +291,7 @@ esp_err_t ts_action_manager_init(void)
         goto cleanup;
     }
     
+    s_ctx->templates_load_result=ESP_ERR_INVALID_STATE;
     s_ctx->initialized = true;
     
     /* 延迟加载模板（等待 SD 卡挂载，避免栈溢出）*/
@@ -303,7 +307,7 @@ esp_err_t ts_action_manager_init(void)
     );
     if (task_ret != pdPASS) {
         ESP_LOGW(TAG, "Failed to create deferred load task, loading synchronously");
-        ts_action_templates_load();
+        s_ctx->templates_ready = ts_action_templates_load() == ESP_OK;
     }
     
     ESP_LOGI(TAG, "Action manager initialized (loading deferred)");
@@ -337,12 +341,24 @@ void ts_action_deferred_load_task(void *arg)
     
     ESP_LOGI(TAG, "Deferred action template loading started");
     esp_err_t ret = ts_action_templates_load();
+    s_ctx->templates_ready = ret == ESP_OK;
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "Deferred action template loading complete: %d templates",
                  s_ctx->template_count);
     } else ESP_LOGE(TAG, "Deferred action template loading failed: %s", esp_err_to_name(ret));
+    while (ret != ESP_OK && s_ctx && s_ctx->initialized) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!s_ctx || !s_ctx->initialized) break;
+        ret = ts_action_templates_load();
+        if (ret == ESP_OK) ESP_LOGI(TAG, "Action templates ready after retry");
+    }
     
     vTaskDelete(NULL);
+}
+
+bool ts_action_templates_ready(void) { return s_ctx && s_ctx->initialized && s_ctx->templates_ready; }
+esp_err_t ts_action_templates_load_state(void) {
+    return s_ctx&&s_ctx->initialized?atomic_load(&s_ctx->templates_load_result):ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t ts_action_manager_deinit(void)
@@ -391,7 +407,7 @@ bool ts_action_manager_is_initialized(void)
 /*                          SSH Host Management                               */
 /*===========================================================================*/
 
-esp_err_t ts_action_register_ssh_host(const ts_action_ssh_host_t *host)
+static esp_err_t register_ssh_host_impl(const ts_action_ssh_host_t *host)
 {
     if (!s_ctx || !host || !host->id[0]) {
         return ESP_ERR_INVALID_ARG;
@@ -426,7 +442,7 @@ esp_err_t ts_action_register_ssh_host(const ts_action_ssh_host_t *host)
     return ESP_OK;
 }
 
-esp_err_t ts_action_unregister_ssh_host(const char *host_id)
+static esp_err_t unregister_ssh_host_impl(const char *host_id)
 {
     if (!s_ctx || !host_id) {
         return ESP_ERR_INVALID_ARG;
@@ -453,8 +469,9 @@ esp_err_t ts_action_unregister_ssh_host(const char *host_id)
     return ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t ts_action_get_ssh_host(const char *host_id, ts_action_ssh_host_t *host_out)
+esp_err_t ts_action_get_ssh_host_ex(const char *host_id, ts_action_ssh_host_t *host_out, bool *internal)
 {
+    if (internal) *internal=false;
     if (!s_ctx || !host_id || !host_out) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -465,6 +482,7 @@ esp_err_t ts_action_get_ssh_host(const char *host_id, ts_action_ssh_host_t *host
     for (int i = 0; i < s_ctx->ssh_host_count; i++) {
         if (strcmp(s_ctx->ssh_hosts[i].id, host_id) == 0) {
             memcpy(host_out, &s_ctx->ssh_hosts[i], sizeof(ts_action_ssh_host_t));
+            if (internal) *internal=true;
             xSemaphoreGive(s_ctx->ssh_hosts_mutex);
             return ESP_OK;
         }
@@ -491,9 +509,28 @@ esp_err_t ts_action_get_ssh_host(const char *host_id, ts_action_ssh_host_t *host
         return ESP_OK;
     }
     
-    return ESP_ERR_NOT_FOUND;
+    return ret;
 }
 
+esp_err_t ts_action_get_ssh_host(const char *id,ts_action_ssh_host_t *out) {
+    return ts_action_get_ssh_host_ex(id,out,NULL);
+}
+esp_err_t ts_action_register_ssh_host(const ts_action_ssh_host_t *host) {
+    if(!host)return ESP_ERR_INVALID_ARG;
+    ts_ssh_binding_lock();
+    esp_err_t ret=ts_rule_dependency_change(TS_RULE_DEP_ACTION_HOST,host->id,host);
+    if(ret==ESP_OK&&ts_ssh_service_host_protected(host->id))ret=ESP_ERR_INVALID_STATE;
+    if(ret==ESP_OK)ret=register_ssh_host_impl(host);
+    ts_ssh_binding_unlock();return ret;
+}
+esp_err_t ts_action_unregister_ssh_host(const char *id) {
+    if(!id)return ESP_ERR_INVALID_ARG;
+    ts_ssh_binding_lock();
+    esp_err_t ret=ts_rule_dependency_change(TS_RULE_DEP_ACTION_HOST,id,NULL);
+    if(ret==ESP_OK&&ts_ssh_service_host_protected(id))ret=ESP_ERR_INVALID_STATE;
+    if(ret==ESP_OK)ret=unregister_ssh_host_impl(id);
+    ts_ssh_binding_unlock();return ret;
+}
 int ts_action_get_ssh_host_count(void)
 {
     if (!s_ctx) return 0;
@@ -3091,7 +3128,7 @@ esp_err_t ts_action_templates_save(void)
  * Priority: SD card directory > SD card single file > NVS > empty
  * 当从 NVS 加载后，自动导出到 SD 卡（如果 SD 卡已挂载）
  */
-esp_err_t ts_action_templates_load(void)
+static esp_err_t templates_load_impl(void)
 {
     if (!s_ctx) return ESP_ERR_INVALID_STATE;
     
@@ -3212,7 +3249,7 @@ save_to_nvs:
  * 
  * 支持 .tscfg 加密配置优先加载
  */
-esp_err_t ts_action_templates_load_from_file(const char *filepath)
+static esp_err_t templates_load_file_impl(const char *filepath)
 {
     if (!s_ctx || !filepath) return ESP_ERR_INVALID_ARG;
     
@@ -3293,6 +3330,31 @@ esp_err_t ts_action_templates_load_from_file(const char *filepath)
     return ESP_OK;
 }
 
+esp_err_t ts_action_templates_load(void) {
+    if (!s_ctx) return ESP_ERR_INVALID_STATE;
+    ts_ssh_binding_lock();
+    esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_TEMPLATE,NULL,NULL);
+    if (ret == ESP_OK) {
+        ret = templates_load_impl();
+        s_ctx->templates_load_result=ret;
+        s_ctx->templates_ready = ret == ESP_OK;
+    }
+    ts_ssh_binding_unlock();
+    return ret;
+}
+esp_err_t ts_action_templates_load_from_file(const char *path) {
+    if (!s_ctx || !path) return ESP_ERR_INVALID_ARG;
+    ts_ssh_binding_lock();
+    esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_TEMPLATE,NULL,NULL);
+    if (ret == ESP_OK) {
+        ret = templates_load_file_impl(path);
+        s_ctx->templates_load_result=ret;
+        s_ctx->templates_ready = ret == ESP_OK;
+    }
+    ts_ssh_binding_unlock();
+    return ret;
+}
+
 static bool template_binding_protected(const char *id, const ts_action_template_t *next) {
     ts_action_template_t *old = heap_caps_malloc(sizeof(*old), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!old)
@@ -3309,17 +3371,90 @@ esp_err_t ts_action_template_update(const char *id, const ts_action_template_t *
     if (!id || !next)
         return ESP_ERR_INVALID_ARG;
     ts_ssh_binding_lock();
-    esp_err_t ret = template_binding_protected(id, next) ? ESP_ERR_INVALID_STATE
-                                                         : template_update_impl(id, next);
+    esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_TEMPLATE,id,next);
+    if(ret==ESP_OK) ret = template_binding_protected(id, next) ? ESP_ERR_INVALID_STATE
+                                                            : template_update_impl(id, next);
     ts_ssh_binding_unlock();
     return ret;
 }
-esp_err_t ts_action_template_remove(const char *id) {
-    if (!id)
-        return ESP_ERR_INVALID_ARG;
+/* The edit gate holds binding before transaction: count/get/release cannot race a rule reload. */
+static esp_err_t template_references(const char *id, ts_action_template_delete_result_t *result) {
+    int total = ts_rule_count();
+    size_t matches = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        size_t at = 0;
+        for (int i = 0; i < total; ++i) {
+            ts_auto_rule_t rule;
+            esp_err_t ret = ts_rule_get_by_index(i, &rule);
+            if (ret != ESP_OK) {
+                result->reason = "action_reference_check_unavailable";
+                result->check_reason = "failed";
+                result->references_confirmed = false;
+                ESP_LOGE(TAG, "Rule reference check failed: %s", esp_err_to_name(ret));
+                return ret;
+            }
+            bool used = false;
+            for (unsigned n = 0; n < rule.action_count; ++n)
+                used |= !strcmp(rule.actions[n].template_id, id);
+            if (used) {
+                if (!pass) ++matches;
+                else {
+                    memcpy(result->rules[at].id, rule.id, sizeof(rule.id));
+                    memcpy(result->rules[at].name, rule.name, sizeof(rule.name));
+                    ++at;
+                }
+            }
+            ts_rule_release(&rule);
+        }
+        if (!pass) {
+            if (!matches) return ESP_OK;
+            result->references_confirmed = true;
+            result->rule_count = matches;
+            result->reason = "action_in_use";
+            result->rules = heap_caps_calloc(matches, sizeof(*result->rules),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!result->rules) return ESP_ERR_INVALID_STATE; /* Confirmed blocked, details optional. */
+        }
+    }
+    return ESP_ERR_INVALID_STATE;
+}
+esp_err_t ts_action_template_remove_checked(const char *id, ts_action_template_delete_result_t *result) {
+    if (!id || !id[0] || !result) return ESP_ERR_INVALID_ARG;
+    *result = (ts_action_template_delete_result_t){0};
+    bool loaded, recovery;
+    if (!ts_rule_edit_begin()) {
+        ts_rule_config_status(&loaded, &recovery);
+        result->reason = "action_reference_check_unavailable";
+        result->check_reason = recovery ? "recovery" : loaded ? "busy" : "loading";
+        return ESP_ERR_INVALID_STATE;
+    }
     ts_ssh_binding_lock();
-    esp_err_t ret =
-        template_binding_protected(id, NULL) ? ESP_ERR_INVALID_STATE : template_remove_impl(id);
+    ts_rule_config_status(&loaded, &recovery);
+    esp_err_t ret;
+    if (!loaded || recovery) {
+        result->reason = "action_reference_check_unavailable";
+        result->check_reason = recovery ? "recovery" : "loading";
+        ret = ESP_ERR_INVALID_STATE;
+    } else {
+        ret = template_references(id, result);
+        if (ret == ESP_OK) {
+            ret = ts_rule_dependency_change(TS_RULE_DEP_TEMPLATE,id,NULL);
+            if (ret != ESP_OK) {
+                result->reason = "action_reference_check_unavailable";
+                result->check_reason = "failed";
+            } else if (template_binding_protected(id, NULL)) {
+                result->reason = "service_delete_protected";
+                ret = ESP_ERR_INVALID_STATE;
+            } else ret = template_remove_impl(id);
+        }
+    }
     ts_ssh_binding_unlock();
+    ts_rule_edit_end();
+    return ret;
+}
+esp_err_t ts_action_template_remove(const char *id) {
+    ts_action_template_delete_result_t result = {0};
+    esp_err_t ret = ts_action_template_remove_checked(id, &result);
+    free(result.rules);
     return ret;
 }

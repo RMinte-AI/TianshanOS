@@ -45,7 +45,7 @@ esp_err_t ts_ssh_commands_config_update_exec_time(const char*id){return ESP_OK;}
 static ts_auto_value_t expansion_value;
 esp_err_t ts_variable_get(const char*name,ts_auto_value_t*out){if(strcmp(name,"value"))return ESP_ERR_NOT_FOUND;*out=expansion_value;return ESP_OK;}
 '''
-for name in ['ts_action_snapshot_release','snapshot_command','ts_action_get_ssh_host','action_finished','direct_service_admit','direct_service_finished','entry_finished','ts_action_manager_quiesce','ts_action_manager_resume','ts_action_service_control','ts_action_expand_variables','exec_ssh_ref_bound','execute_bound_ref']:
+for name in ['ts_action_snapshot_release','snapshot_command','ts_action_get_ssh_host_ex','ts_action_get_ssh_host','action_finished','direct_service_admit','direct_service_finished','entry_finished','ts_action_manager_quiesce','ts_action_manager_resume','ts_action_service_control','ts_action_expand_variables','exec_ssh_ref_bound','execute_bound_ref']:
  code+='\n'+fn(name)
 code+='\nstatic esp_err_t execute_action_internal(const ts_auto_action_t*a,ts_action_result_t*r){assert(a->type==TS_AUTO_ACT_SSH_CMD_REF);return execute_bound_ref(a,r);}\n'
 for name in ['execute_service_control','action_executor_task','ts_action_cancel_all']:code+='\n'+fn(name)
@@ -126,7 +126,7 @@ int main(void){
 '''
 build=Path('/tmp/tianshan-runtime-tests');build.mkdir(exist_ok=True);(build/'service_control.c').write_text(code)
 env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
-args=['cc','-std=c11','-g','-fsanitize=address,undefined','-ftrivial-auto-var-init=pattern','-Wno-deprecated-declarations']
+args=['cc','-std=c11','-D_POSIX_C_SOURCE=200809L','-g','-fsanitize=address,undefined','-ftrivial-auto-var-init=pattern','-Wno-deprecated-declarations']
 for path in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include','components/ts_api/include',str(sdk)]:args+=['-I'+path]
 args += [str(build/'service_control.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c',str(sdk/'cJSON.c'),'-lpthread','-o',str(build/'service_control')]
 subprocess.run(args,check=True,env=env);subprocess.run([str(build/'service_control')],check=True,env=env)

@@ -103,6 +103,7 @@ void ts_ssh_commands_config_deinit(void);
  * @brief 检查模块是否已初始化
  */
 bool ts_ssh_commands_config_is_initialized(void);
+esp_err_t ts_ssh_commands_config_load_state(void);
 
 /*===========================================================================*/
 /*                          CRUD Operations                                   */

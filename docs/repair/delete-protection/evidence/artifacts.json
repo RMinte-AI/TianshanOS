@@ -1,0 +1,27 @@
+[
+  {
+    "path": "build/delete-protection/TianShanOS.bin",
+    "bytes": 2203840,
+    "sha256": "88bdf5decf53a6b78ac1cfec6ca2945bc61804f856cbd0937b1c9377481e7b7a"
+  },
+  {
+    "path": "build/delete-protection/www.bin",
+    "bytes": 3145728,
+    "sha256": "a940b8126b63bf3bf2616908779fc96d7634715ea22e8230d290f5ede4e3feb2"
+  },
+  {
+    "path": "build/delete-protection/bootloader/bootloader.bin",
+    "bytes": 22496,
+    "sha256": "f1b82145e7489946f3a0e3de25dc82551acd05851453efa650f0f174e7baf510"
+  },
+  {
+    "path": "build/delete-protection/partition_table/partition-table.bin",
+    "bytes": 3072,
+    "sha256": "973dfb7f44bdd42d525e53fcc1eb06ac5745687dddc1c73223715df841d785e5"
+  },
+  {
+    "path": "build/delete-protection/ota_data_initial.bin",
+    "bytes": 8192,
+    "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+  }
+]

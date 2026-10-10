@@ -75,6 +75,7 @@ class ApiOperationError extends Error {
         this.name = 'ApiOperationError';
         this.code = result?.code;
         this.rawMessage = apiErrorReason(result);
+        this.data = result?.data;
         this.operation = operation;
         this.httpStatus = result?.httpStatus;
         Object.assign(this, metadata);
@@ -130,7 +131,8 @@ const FAILURE_UNCONFIRMED = new Set(['result_unknown', 'commit_unknown']);
 function describeFailure({op, phase = 'failed', params = {}, result = null, error = null, token = null, endpoint = '', write} = {}) {
     const ready = typeof i18n !== 'undefined' && typeof t === 'function';
     // numbers the device sends in `data` (e.g. an HTTP status) can fill the placeholders of the reason's text; the caller's params win
-    const sent = Object.fromEntries(Object.entries(result?.data && typeof result.data === 'object' ? result.data : {}).filter(([, value]) => typeof value === 'number'));
+    const body = result?.data ?? error?.data;   // an error made from an answer carries the answer's data
+    const sent = Object.fromEntries(Object.entries(body && typeof body === 'object' ? body : {}).filter(([, value]) => typeof value === 'number'));
     params = {...error?.failureParams, ...sent, ...params};
     const has = (key, values = params) => ready && i18n.complete(key, values);
     const anything = new Proxy({}, {get: () => 'x'});
@@ -170,8 +172,8 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     if (!message) message = ready ? apiErrorMessage({...(result || {}), rawMessage: raw, code: rawCode}, endpoint) : raw || 'Operation failed';   // language pack not usable
     const line = (label, value) => value ? t('failure.details.line', {label: t(`failure.details.${label}`), value}) : '';
     const device = raw && raw !== tok ? raw : '';
-    const detail = device || (typeof result?.data?.detail === 'string' ? result.data.detail : '');
-    const stage = typeof result?.data?.stage === 'string' ? result.data.stage : '';
+    const detail = device || (typeof body?.detail === 'string' ? body.detail : '');
+    const stage = typeof body?.stage === 'string' ? body.stage : '';
     const api = endpoint || error?.operation || '';
     const page = pageError && !error.failureToken && typeof error.message === 'string' ? error.message : '';
     // Details are for whoever has to look into it: a reason the page worked out by itself (nothing was sent) has none.

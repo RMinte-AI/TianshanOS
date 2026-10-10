@@ -1,0 +1,107 @@
+PASS actual log hook/parser: full 510..4096 output, bounded UTF-8 preview, ANSI, concurrent capture/drop, full own output, callback recursion, capture toggle
+PASS rule codec: nine action types, conditions/repeats/explicit false, allocation failures, unsupported operator; rule=256 action=1024
+PASS actual rule persistence: NVS and SD fault injection, recovery boundaries, read-only rejection
+PASS actual rule engine: revisions/no-op/allocation failures, stale-evaluation barrier, pinned old execution, retirement bound, enable/manual/allow matrix, recreate identity
+PASS actual SSH client: trust gate, command deadlines, partial stdin/EAGAIN/EOF, input cancellation/errors, exact secret bytes without command/log exposure
+PASS actual service registry + watcher: duplicate admission, task failure, immediate finish, stale handle, cooperative cancellation, late READY rejection, truthful remote stop/unknown
+PASS service protocol: queued/active launch stop guards, retained-rule READY stop, stale launch completion, stale credentials, cancellation cleanup, deletion barrier/failure/reuse, 70 replacements, missing config protection, physical identity, page-free recovery, 3-attempt budget, zero-I/O cached reads
+PASS production synchronous action completion: timeout then late result, success, queue rejection; semaphore lifetime balanced
+PASS production snapshot -> sequencer -> submission -> executor: delay once, immutable binding, sync/async, fast/late completion, failures, cancellation, repeat, legacy routing; 50 cycles balanced
+PASS production service API/executor/SSH/registry: zero-I/O admission, slow SSH with responsive cached API, engine-independent controls, literal vs expanded commands, overflow before I/O, retained-rule stop, 30s expiry, timeout evidence, JSON/entry/snapshot/queue/cancel cleanup, fast worker, 100 cycles
+delete API: protected services report BUSY, denied deletes preserve files, missing/internal errors stay distinct
+PASS production delete + rule commit + HTTP: H01-H14, leases, no side effects, historical multiplicity, committing cleared, 47/63-byte fields
+PASS exact HTTP byte fixtures: 8
+PASS typed conditions: 16 rule pairs, 1792 unchanged comparison results, real codec encode/decode
+PASS production expansion: 62/63 chars, exact fit, overflow rejects empty, unknown and Shell expressions preserved, long names, numeric values
+PASS actual configuration wrappers: host edit vs query, immutable target, failed delete preserves registration, successful delete then same-name replacement
+PASS production host NVS/import + service registry: orphan recovery, uninitialized/pinned/unknown guards, atomic admission, storage errors/full capacity, SD precedence/merge/failures, concurrent add backup, boot retains unrelated hosts, queued backup preserves SD input, list storage error propagation
+PASS production copyid first-use: automatic trust/save, API defaults, known host, changed-key rejection before auth, explicit opt-out, save/auth failures, other SSH operations retain exact confirmation
+PASS production ssh.copyid + HTTP serialization: actual deployment/verification/registration outcomes, default/custom IDs, busy/capacity/storage errors, partial data retained, no repeat or rollback
+PASS copyid + production known hosts: full SHA-256 save/readback, repeat deployment, host/port isolation, final-byte mismatch preserved, read/write/commit failure blocks authentication
+PASS copyid: API and CLI share actual builder; exact bytes, no command injection, bounded capacity, permissions
+PASS actual LPMU task/API: task-owned SD initialization, lock-free file I/O, 1 KiB POSIX reads, truncation/incomplete UTF-8/read/seek/write/close failures, replaced-run rejection, cleanup-before-terminal publication, password stdin/wipe, upload, host gate, split markers, zero-exit unconfirmed, 100 KiB exact reconstruction and PSRAM-only read allocation failure
+PASS input repair: real API/readback/export/import, NVS and SD reload, failed edit preservation, seven filter execution configurations, zero/units/legacy defaults, inline rule codec; filter params=28 LED action=784 action=1024 template=1232
+PASS production action store: 1264 save and 944 recovery I/O/crash boundaries, applied-rename errors, FAT refuses overwrites, JSON/pack/both/first-create, exact old-or-new recovery, multiple IDs, repeated saves, mirror preserves encrypted source, unrelated files retained
+PASS actual action pack: complete export envelope -> SDK encrypted/plain priority -> real boot load entry and directory parser; identity/type/enabled/async/partial-zero parameters, flat legacy JSON, 63-byte ASCII/UTF-8 IDs, interrupted save recovery before load, unresolved recovery blocks stale fallback, malformed envelope rejection (crypto/NVS backup mocked)
+PASS production template serializer: 258 serialization and 258 update allocation boundaries across six stored action types; complete JSON or failure, failed edits preserve active and stored versions
+/Users/massif/esp/v5.5.2/esp-idf/components/json/cJSON/cJSON.c:127:5: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead. [-Wdeprecated-declarations]
+  127 |     sprintf(version, "%i.%i.%i", CJSON_VERSION_MAJOR, CJSON_VERSION_MINOR, CJSON_VERSION_PATCH);
+      |     ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/_stdio.h:278:1: note: 'sprintf' has been explicitly marked deprecated here
+  278 | __deprecated_msg("This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead.")
+      | ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h:227:48: note: expanded from macro '__deprecated_msg'
+  227 |         #define __deprecated_msg(_msg) __attribute__((__deprecated__(_msg)))
+      |                                                       ^
+/Users/massif/esp/v5.5.2/esp-idf/components/json/cJSON/cJSON.c:609:18: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead. [-Wdeprecated-declarations]
+  609 |         length = sprintf((char*)number_buffer, "null");
+      |                  ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/_stdio.h:278:1: note: 'sprintf' has been explicitly marked deprecated here
+  278 | __deprecated_msg("This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead.")
+      | ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h:227:48: note: expanded from macro '__deprecated_msg'
+  227 |         #define __deprecated_msg(_msg) __attribute__((__deprecated__(_msg)))
+      |                                                       ^
+/Users/massif/esp/v5.5.2/esp-idf/components/json/cJSON/cJSON.c:613:18: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead. [-Wdeprecated-declarations]
+  613 |         length = sprintf((char*)number_buffer, "%d", item->valueint);
+      |                  ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/_stdio.h:278:1: note: 'sprintf' has been explicitly marked deprecated here
+  278 | __deprecated_msg("This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead.")
+      | ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h:227:48: note: expanded from macro '__deprecated_msg'
+  227 |         #define __deprecated_msg(_msg) __attribute__((__deprecated__(_msg)))
+      |                                                       ^
+/Users/massif/esp/v5.5.2/esp-idf/components/json/cJSON/cJSON.c:618:18: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead. [-Wdeprecated-declarations]
+  618 |         length = sprintf((char*)number_buffer, "%1.15g", d);
+      |                  ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/_stdio.h:278:1: note: 'sprintf' has been explicitly marked deprecated here
+  278 | __deprecated_msg("This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead.")
+      | ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h:227:48: note: expanded from macro '__deprecated_msg'
+  227 |         #define __deprecated_msg(_msg) __attribute__((__deprecated__(_msg)))
+      |                                                       ^
+/Users/massif/esp/v5.5.2/esp-idf/components/json/cJSON/cJSON.c:624:22: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead. [-Wdeprecated-declarations]
+  624 |             length = sprintf((char*)number_buffer, "%1.17g", d);
+      |                      ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/_stdio.h:278:1: note: 'sprintf' has been explicitly marked deprecated here
+  278 | __deprecated_msg("This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead.")
+      | ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h:227:48: note: expanded from macro '__deprecated_msg'
+  227 |         #define __deprecated_msg(_msg) __attribute__((__deprecated__(_msg)))
+      |                                                       ^
+/Users/massif/esp/v5.5.2/esp-idf/components/json/cJSON/cJSON.c:1058:21: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead. [-Wdeprecated-declarations]
+ 1058 |                     sprintf((char*)output_pointer, "u%04x", *input_pointer);
+      |                     ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/_stdio.h:278:1: note: 'sprintf' has been explicitly marked deprecated here
+  278 | __deprecated_msg("This function is provided for compatibility reasons only.  Due to security concerns inherent in the design of sprintf(3), it is highly recommended that you use snprintf(3) instead.")
+      | ^
+/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h:227:48: note: expanded from macro '__deprecated_msg'
+  227 |         #define __deprecated_msg(_msg) __attribute__((__deprecated__(_msg)))
+      |                                                       ^
+6 warnings generated.
+PASS actual CSR API: reject wrong types/overlong inputs before key access, organization-only/empty ID use default, exact 63-byte ID, no credential changes
+metadata PASS actual keystore regression
+
+index PASS actual keystore regression
+
+prefix PASS actual keystore regression
+
+matrix PASS actual keystore regression
+
+admission PASS actual keystore regression
+
+concurrency PASS actual keystore regression
+
+compatibility PASS actual keystore regression
+
+api PASS actual keystore regression
+
+allocations PASS actual keystore regression
+
+lifecycle PASS actual keystore regression
+
+PASS actual store -> current loader: normal/dot IDs, temporary files ignored, reload retains saved rule
+PASS actual automation stop + engine: blocked action returns normally, leases/executing clear, async work prevents restart, independent remote ownership retained
+PASS actual probe builder: quotes, spaces, leading dash, literal shell metacharacters, fail priority, exact tokens, overflow
+PASS actual UI functions: bilingual states, one revisioned update, manual conditions/types, inline fields/repeat preservation, explicit false vs omitted, conflict/draft/uncertain write
+PASS production bilingual SSH UI/API helpers: rendered ID/key, verification/registration partial outcomes, cache-preserving list errors, true empty list, old-firmware tuple confirmation, stale style/page cleanup, out-of-order list replies, no repeat deployment

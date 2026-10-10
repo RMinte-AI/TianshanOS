@@ -1,0 +1,32 @@
+[
+  {
+    "path": "components/ts_webui/web/js/app.js",
+    "raw_delta": 5834,
+    "gzip_delta": 1580
+  },
+  {
+    "path": "components/ts_webui/web/js/api.js",
+    "raw_delta": 34,
+    "gzip_delta": 7
+  },
+  {
+    "path": "components/ts_webui/web/js/lang/zh-CN.js",
+    "raw_delta": 2655,
+    "gzip_delta": 585
+  },
+  {
+    "path": "components/ts_webui/web/js/lang/en-US.js",
+    "raw_delta": 2904,
+    "gzip_delta": 606
+  },
+  {
+    "path": "components/ts_webui/web/css/style.css",
+    "raw_delta": 78,
+    "gzip_delta": 21
+  },
+  {
+    "path": "components/ts_webui/web/index.html",
+    "raw_delta": 40,
+    "gzip_delta": 8
+  }
+]

@@ -20,6 +20,15 @@ menu "TianShanOS Config Pack"
             Verify the signer's certificate chain against the root CA.
             Disabling this is insecure and should only be done for testing.
 
+    config TS_CONFIG_PACK_SIGNING_ROOT_SHA256
+        string "Explicit configuration signing root (DER SHA-256, lowercase hex)"
+        default ""
+        help
+            Select one configuration signing root from the device's installed CA
+            material. TLS trust alone does not authorize configuration signing.
+            An empty setting disables acceptance of new rule packs. The signer
+            also needs exact Developer OU and a compatible digital-signature usage.
+
     config TS_CONFIG_PACK_REQUIRE_OFFICIAL_SIG
         bool "Require official signature for sensitive configs"
         default n

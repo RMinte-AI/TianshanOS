@@ -196,6 +196,7 @@ esp_err_t ts_automation_deinit(void)
     if (s_ctx.state == TS_AUTO_STATE_UNINITIALIZED) {
         return ESP_OK;
     }
+    if (ts_rule_restart_pending()) return ESP_ERR_INVALID_STATE;
 
     ESP_LOGI(TAG, "Deinitializing automation engine");
 
@@ -485,6 +486,7 @@ static esp_err_t apply_default_config(void)
 
 esp_err_t ts_automation_reload(void)
 {
+    if (ts_rule_restart_pending()) return ESP_ERR_INVALID_STATE;
     if (s_ctx.state == TS_AUTO_STATE_UNINITIALIZED) {
         return ESP_ERR_INVALID_STATE;
     }

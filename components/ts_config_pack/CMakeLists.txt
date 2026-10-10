@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/ts_config_pack.c"
+        "src/ts_config_pack_trust.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -10,4 +11,5 @@ idf_component_register(
         json
     PRIV_REQUIRES
         ts_storage
+        mbedtls
 )
