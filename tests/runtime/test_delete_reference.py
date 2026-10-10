@@ -144,7 +144,8 @@ with tempfile.TemporaryDirectory(prefix='tianshan-delete-ref-') as tmp:
  d=Path(tmp);f=d/'test.c';f.write_text(code);wire=d/'wire';wire.mkdir()
  env={**os.environ,'DEVELOPER_DIR':os.environ.get('DEVELOPER_DIR','/Library/Developer/CommandLineTools')}
  includes=['tests/runtime/stubs','tests/certificate/stubs','components/ts_automation/include','components/ts_security/include','components/ts_api/include',str(idf/'components/json/cJSON')]
- subprocess.run(['cc','-std=c11','-g','-fsanitize=address,undefined','-Wno-deprecated-declarations',*[f'-I{x}' for x in includes],str(f),'components/ts_automation/src/ts_rule_codec.c','components/ts_automation/src/ts_action_filter.c',str(idf/'components/json/cJSON/cJSON.c'),'-lpthread','-lm','-o',str(d/'test')],check=True,env=env)
+ # The harness uses POSIX mutexes, strdup and nanosleep under strict C11 on Linux.
+ subprocess.run(['cc','-std=c11','-D_POSIX_C_SOURCE=200809L','-g','-fsanitize=address,undefined','-Wno-deprecated-declarations',*[f'-I{x}' for x in includes],str(f),'components/ts_automation/src/ts_rule_codec.c','components/ts_automation/src/ts_action_filter.c',str(idf/'components/json/cJSON/cJSON.c'),'-lpthread','-lm','-o',str(d/'test')],check=True,env=env)
  subprocess.run([str(d/'test'),str(wire)],check=True,env=env)
  fixtures=Path('tests/fixtures/delete-reference')
  if os.environ.get('UPDATE_FIXTURES')=='1':fixtures.mkdir(parents=True,exist_ok=True)

@@ -27,7 +27,7 @@
   "tests/runtime/extract_engine.py": "f7917c42055ae1301792c127f3eafe775cff03f457564e474110b2bf5e4e7daf",
   "tests/runtime/run_all.sh": "a227fb5b280e120ec795dd851dffe0b5725b97c9724ef48fc67f4cd65feebb90",
   "tests/runtime/test_delete_api.py": "e13035af2b482b2dbd27529d340bdf759ba575f8b2cd96ad9d523474a7e5b7f4",
-  "tests/runtime/test_delete_reference.py": "73ff90a36df5e17dcfff25944390e8d9421583f38cf600f107c5661cff8ea1d4",
+  "tests/runtime/test_delete_reference.py": "7aad0c8571393bd1b5e4709cc1da15a626612cc4a3f29caddfed7794a2ea6ad5",
   "tests/runtime/test_engine.c": "aea606273a6fc0442f07974afae4d25e5ee34fa07ede6f66e8fc4b35c0539b7c",
   "tests/prompts/static.test.cjs": "be2ea30d0e40ee116a19283add4973b7e4685faf65062f2ad903c6d37563ea94"
 }

@@ -1,0 +1,2 @@
+PASS production delete + rule commit + HTTP: H01-H14, leases, no side effects, historical multiplicity, committing cleared, 47/63-byte fields
+PASS exact HTTP byte fixtures: 8

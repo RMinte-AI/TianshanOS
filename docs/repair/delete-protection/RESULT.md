@@ -102,3 +102,14 @@
 [source-hashes.json](evidence/source-hashes.json)现对应本轮源码；[source-hashes-before-round3.json](evidence/source-hashes-before-round3.json)保留上一轮源码记录，旧工件哈希不变。复审可用[round3.patch](evidence/round3.patch)查看相对上一轮未提交实现的精确增量，而不只与 main 比较。补丁采用无上下文格式，避免空白上下文行被 Git 当作尾随空格；需要应用时使用 git apply --unidiff-zero。
 
 方案无实质偏差，没有需要用户另作决定的事项。固件、通用HTTP出口、锁顺序、committing及api.js/CSS等受保护文件与本轮开始时逐字相同；main源码未改。未提交、推送、开PR、合并或刷机，未修改其他分支/工作目录。
+
+
+## PR CI 补记：Linux 严格 C11 的 POSIX 接口声明
+
+PR #47 的运行 [37992607181](https://github.com/RMinte-AI/TianshanOS/actions/runs/37992607181) 中，WebUI 与固件构建通过，Runtime and fan regression tests 在新增主机测试的编译阶段失败，Release 跳过。
+
+失败原因：`test_delete_reference.py` 使用 `-std=c11`，但没有声明所需 POSIX 接口；Ubuntu/glibc 隐藏了 PTHREAD_MUTEX_RECURSIVE 以及 strdup、nanosleep 的声明。macOS 的头文件行为不同，先前本地通过未证明 Linux 兼容。
+
+修复仅在该主机测试编译参数中加入 `-D_POSIX_C_SOURCE=200809L`，覆盖它实际使用的 POSIX 接口，不修改固件、测试断言、响应夹具或发布工作流。
+
+本地执行 `IDF_PATH=/Users/massif/esp/v5.5.2/esp-idf python3 tests/runtime/test_delete_reference.py` 通过，原生产删除/提交场景和8份实际HTTP字节均通过；[ci-posix-local.log](evidence/ci-posix-local.log)。这里只证明本地主机回归，Linux结果以修复后的远端CI为准。当前源码哈希已同步；round3.patch仍是第三轮修订当时的历史增量，不包含本次CI修复。
