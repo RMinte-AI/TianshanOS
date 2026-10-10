@@ -5,7 +5,7 @@ build=$(mktemp -d /tmp/ts-ws-host.XXXXXX)
 trap 'rm -rf "$build"' EXIT
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 cjson="${IDF_PATH:-/Users/massif/esp/v5.5.2/esp-idf}/components/json/cJSON"
-cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" tests/ws_subscriptions/test_manager.c "$cjson/cJSON.c" -o "$build/manager"
+cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -I"$cjson" tests/ws_subscriptions/test_manager.c "$cjson/cJSON.c" -lm -o "$build/manager"
 "$build/manager"
 cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Icomponents/ts_core/ts_event/include -Itests/ws_subscriptions/stubs -Icomponents/ts_core/ts_event/src -I"$cjson" tests/ws_subscriptions/test_event.c -o "$build/event"
 "$build/event"
