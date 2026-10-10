@@ -5,20 +5,21 @@ const root=path.resolve(process.env.PROJECT_WEB_ROOT||'components/ts_webui/web')
 for(const language of ['en-US','zh-CN'])test(`${language}: cold offline real xterm and terminal lifecycle`,async()=>{
  const browser=await chromium.launch({channel:'chrome',headless:true});
  const context=await browser.newContext({serviceWorkers:'block',viewport:{width:1280,height:900}});
- const requests=[],errors=[];const origin='http://fixture.local';
+ const requests=[],errors=[],resourceFailures=[];const origin='http://fixture.local';
  try{
   await context.route('**/*',async route=>{const u=new URL(route.request().url());
-   if(u.origin!==origin){await route.abort();return;}
+   if(u.origin!==origin){resourceFailures.push({url:u.href,reason:'External request'});await route.abort();return;}
    if(u.pathname.startsWith('/api/')){await route.fulfill({json:{code:0,data:{}}});return;}
    const file=path.join(root,u.pathname==='/'?'index.html':u.pathname);
-   try{await route.fulfill({body:fs.readFileSync(file),contentType:({'.js':'application/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2'})[path.extname(file)]||'application/octet-stream'});}catch{await route.abort();}
+   try{await route.fulfill({body:fs.readFileSync(file),contentType:({'.js':'application/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2'})[path.extname(file)]||'application/octet-stream'});}catch(error){resourceFailures.push({url:u.href,reason:error.message});await route.abort();}
   });
   await context.addInitScript(language=>{
    localStorage.setItem('ts_language',language);window.sent=[];
    window.WebSocket=class{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;setTimeout(()=>{this.readyState=1;this.onopen?.();},0);}send(s){sent.push(JSON.parse(s));}close(){this.readyState=3;}};
   },language);
-  const page=await context.newPage();page.on('request',r=>requests.push({url:r.url(),origin:new URL(r.url()).origin}));page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(origin);await page.waitForFunction(()=>i18n.isReady());
+  const page=await context.newPage();page.on('request',r=>requests.push({url:r.url(),origin:new URL(r.url()).origin}));page.on('pageerror',e=>errors.push(e.message));page.on('requestfailed',r=>resourceFailures.push({url:r.url(),reason:r.failure()?.errorText}));
+  await page.goto(origin);await page.waitForFunction(()=>i18n.isReady());await page.waitForLoadState('networkidle');
+  assert.deepEqual(resourceFailures,[],'Unexpected resource failures');
   assert.equal(await page.evaluate(()=>typeof Terminal),'undefined');
   await page.evaluate(()=>{closeLoginModal();return loadTerminalPage();});
   await page.waitForFunction(()=>webTerminal?.ws?.readyState===1);
@@ -45,8 +46,9 @@ for(const language of ['en-US','zh-CN'])test(`${language}: cold offline real xte
   assert(await page.evaluate(()=>oldTerminal.destroyed&&oldTerminal.terminal===null));
   await page.evaluate(()=>loadTerminalPage());await page.waitForFunction(()=>webTerminal?.terminal&&webTerminal.ws?.readyState===1);
   assert.equal(requests.filter(r=>r.url.includes('/vendor/xterm/')).length,3);
-  assert(requests.every(r=>r.origin===origin));assert.deepEqual(errors,[]);
+  await page.waitForLoadState('networkidle');
+  assert(requests.every(r=>r.origin===origin));assert.deepEqual(errors,[]);assert.deepEqual(resourceFailures,[],'Unexpected resource failures');
   const out=process.env.OFFLINE_RESULTS||'docs/repair/xterm-local';fs.mkdirSync(out,{recursive:true});
-  fs.writeFileSync(path.join(out,`requests-${language}.json`),JSON.stringify({requests,errors,realXterm:true,externalRequests:0},null,2));
+  fs.writeFileSync(path.join(out,`requests-${language}.json`),JSON.stringify({requests,errors,resourceFailures,realXterm:true,externalRequests:0},null,2));
  }finally{await context.close();await browser.close();}
 });
