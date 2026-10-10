@@ -429,13 +429,35 @@ scenarioTests('ssh-commands', [
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Behaviour the sentences depend on (not text).
-test('a data source switch asks the device about the source itself, not about a rule with the same id', async () => {
-    await kit.withPage('zh-CN', call => call.endpoint === 'automation/sources/enable' ? '{"code":0,"message":"Source enabled"}' : undefined, async ({page, calls}) => {
-        await page.evaluate(() => toggleSource('temp', true));
-        assert.deepEqual(calls.filter(c => c.endpoint.startsWith('automation/')).map(c => [c.endpoint, c.params]).slice(0, 1), [['automation/sources/enable', {id: 'temp'}]]);
-        assert(!calls.some(c => c.endpoint === 'automation/rules/get'), 'a source must not be looked up as a rule');
+for (const language of ['zh-CN', 'en-US']) {
+    test(`${language}: a data source switch enables and disables without a same-id rule, then displays the device state`, async () => {
+        let enabled = false;
+        await kit.withPage(language, call => {
+            if (call.endpoint === 'automation/rules/get') return {code: 4, message: 'Rule not found'};
+            if (call.endpoint === 'automation/sources/list') return ok({sources: [{id: 'temp', label: 'Temperature', type: 'rest', enabled}]});
+            if (call.endpoint === 'automation/sources/enable' || call.endpoint === 'automation/sources/disable') {
+                enabled = call.endpoint.endsWith('/enable');
+                return ok();
+            }
+        }, async ({page, calls}) => {
+            await page.evaluate(async () => {
+                document.body.insertAdjacentHTML('beforeend', '<div id="sources-list"></div>');
+                await refreshSources();
+            });
+            for (const next of [true, false]) {
+                const count = calls.length;
+                await page.locator('#sources-list [role="switch"]').click();
+                await page.waitForFunction(next => document.querySelector('#sources-list [role="switch"]')?.getAttribute('aria-checked') === String(next), next);
+                assert.equal(enabled, next);
+                assert.deepEqual(calls.slice(count).filter(c => c.endpoint.startsWith('automation/')).map(c => [c.endpoint, c.params]), [
+                    [`automation/sources/${next ? 'enable' : 'disable'}`, {id: 'temp'}],
+                    ['automation/sources/list', {}],
+                ]);
+            }
+            assert(!calls.some(c => c.endpoint === 'automation/rules/get'), 'a source must not be looked up as a rule');
+        });
     });
-});
+}
 
 test('engine buttons: the engine status is read again whatever the answer was', async () => {
     for (const answer of [wire('wire-engine-start-ok.json'), wire('wire-engine-start-paused.json'), DROP]) {

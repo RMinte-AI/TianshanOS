@@ -1,8 +1,8 @@
 # 失败提示：统一目录与写法
 
 用户点按钮、做操作失败时看到的提示，按同一套方式生成：**动作＋对象 → 原因 → 下一步**。
-固件只返回一个固定的「原因代号」，网页按当前语言把它翻成句子。已接入三个样板间（规则启用/禁用/保存、
-首页快捷操作、SSH 测试连接），其余页面按计划逐页迁移。
+固件只返回一个固定的「原因代号」，网页按当前语言把它翻成句子。所有页面的操作失败提示都走这一套：
+自动化、SSH、系统与服务、账户登录与改密、文件、网络与 WiFi、风扇、LED、证书与密钥、配置包、OTA 升级。
 
 ```
 禁用规则“夜间关灯”失败：它正在执行中。等执行完成后再试。
@@ -46,6 +46,21 @@
 `tests/prompts/failure-catalog.test.cjs` 会检查：中英文条目一一对应、占位符一致、不带机器代号、
 中文里没有多余英文、英文里没有中文、原因无句末标点、下一步是完整句子；并且**从 C 源码读出固件会发出的每个原因代号**，
 没有对应说法就失败。反过来，目录里没有任何地方会产生的条目也会失败。
+
+## 页面里怎么用（`spec = { op, params, result | error, token, endpoint, write }`）
+
+| 场景 | 调用 |
+|---|---|
+| 提示条（8 秒，带「详情」） | `reportFailure(spec)`；结果未确认时 `reportFailure(spec, { type: 'warning' })` |
+| 一段内嵌文字（不带详情） | `failureText(spec)` |
+| 内嵌 HTML（鼠标悬停显示详情） | `failureNote(spec)` |
+| 弹窗里的结果框（带折叠详情） | `packBox(box, spec)` |
+| 页面自己发现的问题（没有发请求，或设备的回答不能用） | `throw pageFailure('原因代号', { 占位符 })`，调用处照常 `reportFailure({ op, error })` |
+| 要给出设备的原因 | 用 `requireApiSuccess(result, '接口名')` 抛错；**不要**写 `throw new Error(result.message)`：那会被当成「页面错误」，设备给的原因就丢了 |
+| 浏览器拒绝写剪贴板 | `reportCopyFailure(e)` |
+| 旧接口只发英文原文 | 在 `js/api.js` 的 `FAILURE_LEGACY_TEXT`（整句）或 `FAILURE_LEGACY_PREFIX`（开头）里加一条对照 |
+
+`write: true` 表示这个操作会改变设备上的东西：拿不到设备回答时说「结果未确认」，而不是「失败」；读取、测试、校验传 `write: false`。
 
 ## 失败提示条（`showFailureToast` / `reportFailure`，`js/app.js`）
 

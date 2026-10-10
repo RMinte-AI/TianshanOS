@@ -10,7 +10,7 @@ const failure = lang => langs[lang].failure;
 const slots = text => [...new Set([...text.matchAll(/(?<!\$)\{(\w+)\}/g)].map(m => m[1]))].sort();
 const CJK = /[㐀-鿿＀-￯　-〿]/;
 // "automation" is the service name exactly as the System page's service list shows it; "json" is in a file name; "ID" is the field's label
-const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'HTTP', 'WebSocket', 'Socket', 'IO', 'REST', 'OS', 'tscfg']);
+const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'HTTP', 'WebSocket', 'Socket', 'IO', 'REST', 'OS', 'tscfg', 'JSON', 'UTF', 'LPMU', 'CA', 'bin', 'www', 'root', 'admin', 'OTA', 'USB', 'LED', 'NAT', 'WiFi', 'AP', 'STA', 'CSR', 'PKI', 'FAT', 'URL', 'QR']);
 const flat = (object, prefix = '') => Object.entries(object).flatMap(([k, v]) => typeof v === 'string' ? [[prefix + k, v]] : flat(v, prefix + k + '.'));
 
 test('both languages have the same reasons, the same parts of each reason and the same placeholders', () => {
@@ -155,7 +155,7 @@ test('every reason token the firmware can send has a message in both languages',
 });
 
 test('the catalogue has no reason that nothing can produce (a sentence nobody can reach is a trap for the next edit)', () => {
-    const sources = [component('ts_api/src/ts_api_automation.c'), component('ts_api/src/ts_api_ssh.c'), component('ts_automation/src/ts_rule_engine.c'),
+    const sources = [component('ts_api/src/ts_api_automation.c'), component('ts_api/src/ts_api_ssh.c'), component('ts_api/src/ts_api_key.c'), component('ts_automation/src/ts_rule_engine.c'),
         component('ts_automation/src/ts_rule_store.c'), component('ts_config_pack/src/ts_config_pack.c'), component('ts_security/src/ts_ssh_client.c'), component('ts_webui/src/ts_webui_ws.c'), component('ts_webui/src/ts_ws_operation.c'), read('js/app.js'), read('js/api.js')].join('\n');
     // reasons the page produces from the error class, from a transport state, or from the API envelope of other modules
     const GENERIC = new Set(['busy', 'no_memory', 'not_found', 'no_permission', 'timeout', 'invalid_request', 'invalid_argument', 'not_supported', 'hardware_failed',

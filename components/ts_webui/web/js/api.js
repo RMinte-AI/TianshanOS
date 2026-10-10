@@ -86,12 +86,16 @@ function requireApiSuccess(result, operation = '') {
     }
     return result;
 }
+// A problem the page found by itself (nothing was sent, or an answer cannot be used): carries a catalogue reason for describeFailure.
+function pageFailure(token, params = {}) {
+    return Object.assign(new Error(token), {name: 'PageFailure', failureToken: token, failureParams: params});
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // User-facing failure text:  "<what failed>: <why>. <what to do next>"
 //   op      key under failure.ops, e.g. 'rule.enable' (.failed, or .unknown when the outcome is not confirmed)
 //   params  values for the {name} / {host} ... placeholders of the operation and reason texts
-//   result  API envelope {code, error | rawMessage, data};  error  an ApiOperationError;  token  a reason the UI detected itself
+//   result  API envelope {code, error | rawMessage, data};  error  an ApiOperationError;  token  a reason the UI detected itself (an error made by pageFailure(token, params) carries one)
 //   write   true for an operation that changes something: an exception without an answer is then "unconfirmed"
 // The device reports the reason as a stable token in `error` (e.g. 'execution_busy'); the texts live in the language packs
 // (failure.reasons.<token>.{why,hint}). A device text the catalogue does not know never reaches the user: it falls back to an
@@ -99,8 +103,25 @@ function requireApiSuccess(result, operation = '') {
 // ---------------------------------------------------------------------------------------------------------------------
 const FAILURE_LEGACY_TEXT = {   // English texts the device sends without a reason token
     'Memory allocation failed': 'no_memory', 'Rule not found': 'rule_not_found', 'Request timeout': 'timeout', 'Failed to fetch': 'network_lost',
-    'SD card not mounted': 'sd_unavailable'
+    'SD card not mounted': 'sd_unavailable',
+    'Invalid username or password': 'credentials_invalid', 'Invalid credentials': 'credentials_invalid', 'Account locked due to too many failed attempts': 'account_locked',
+    'Password must be 4-64 characters': 'password_length', 'Old password is incorrect': 'old_password_wrong', 'Root permission required': 'root_required',
+    'Missing token': 'auth_required', 'Invalid or expired token': 'auth_required', 'Session expired': 'auth_required',
+    'Cannot delete root directory': 'root_directory_protected', 'File not found': 'file_not_found', 'Source file not found': 'file_not_found', 'Directory not found': 'directory_not_found',
+    'SD card already mounted': 'sd_already_mounted', 'Failed to mount SD card': 'sd_mount_failed', 'Failed to unmount SD card': 'sd_unmount_failed',
+    'Failed to create directory': 'storage_failed', 'Failed to rename': 'storage_failed', 'Failed to delete': 'storage_failed',
+    'USB MUX not configured': 'usb_mux_unconfigured', 'WiFi STA not connected': 'wifi_sta_not_connected',
+    'Too many curve points': 'fan_curve_too_many', 'Invalid duty limits (0-100, min <= max)': 'fan_limits_invalid',
+    'Too many variables (max 8)': 'temp_too_many_variables', 'Each variable needs a name': 'temp_name_missing', 'At least one variable must have a positive weight': 'temp_weight_required',
+    'No private key exists. Generate key pair first.': 'cert_no_keypair', 'Key pair already exists. Use force=true to overwrite.': 'cert_keypair_exists', 'No certificate installed': 'cert_not_installed',
+    'CSR fields must be strings': 'csr_invalid', 'Export requires Developer device (OU=Developer)': 'pack_not_allowed', 'Key not found': 'key_not_found',
+    'Device not found': 'led_device_not_found', 'Effect not found': 'led_effect_not_found', 'Filter not found': 'led_filter_not_found', 'Font not found': 'led_font_not_found',
+    'Image only supported on matrix': 'led_matrix_only', 'QR code only supported on matrix': 'led_matrix_only', 'Text only supported on matrix': 'led_matrix_only',
+    'Text too long for QR code': 'qr_text_too_long', 'Failed to load image': 'led_image_unreadable', 'Failed to load background image': 'led_image_unreadable',
+    '无可用回滚分区': 'ota_no_rollback', '缺少 url 参数且未设置 OTA 服务器': 'ota_server_not_set', 'URL 格式无效': 'url_invalid', 'URL 过长': 'url_invalid', '文件不存在': 'file_not_found', '内存不足': 'no_memory', 'WWW OTA 已在运行': 'busy'
 };
+const FAILURE_LEGACY_PREFIX = [['AP config requires', 'ap_mode_required'], ['AP stations requires', 'ap_mode_required'], ['WiFi scan requires', 'sta_mode_required'], ['CSR device ID must fit', 'csr_invalid']];
+const legacyToken = raw => FAILURE_LEGACY_TEXT[raw] || (FAILURE_LEGACY_PREFIX.find(([prefix]) => raw.startsWith(prefix)) || [])[1];
 const FAILURE_CODE_TOKEN = {1: 'invalid_request', 2: 'not_found', 3: 'no_permission', 4: 'busy', 5: 'timeout', 6: 'no_memory',
     7: 'no_detail', 8: 'not_supported', 9: 'hardware_failed', 10: 'target_unreachable', 11: 'auth_required'};
 const FAILURE_CODE_NAME = {INVALID_ARG: 1, NOT_FOUND: 2, NO_PERMISSION: 3, BUSY: 4, TIMEOUT: 5, NO_MEM: 6, INTERNAL: 7,
@@ -110,7 +131,7 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     const ready = typeof i18n !== 'undefined' && typeof t === 'function';
     // numbers the device sends in `data` (e.g. an HTTP status) can fill the placeholders of the reason's text; the caller's params win
     const sent = Object.fromEntries(Object.entries(result?.data && typeof result.data === 'object' ? result.data : {}).filter(([, value]) => typeof value === 'number'));
-    params = {...sent, ...params};
+    params = {...error?.failureParams, ...sent, ...params};
     const has = (key, values = params) => ready && i18n.complete(key, values);
     const anything = new Proxy({}, {get: () => 'x'});
     const exists = key => ready && i18n.complete(key, anything);   // the text exists, whatever its placeholders need
@@ -123,7 +144,7 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
         part(`failure.reasons.${tok}.why`) && part(`failure.reasons.${tok}.hint`);
     // Every failed request is an ApiOperationError; any other exception comes from the page's own code.
     const pageError = !!error && error.name !== 'ApiOperationError';
-    let tok = token;
+    let tok = token || error?.failureToken || null;
     // (a request the page sends as GET can still change something: the caller says so with `write`)
     // write: true = changes something (unconfirmed when no answer came); false = a read or a test even if it was sent as POST; unset = by the request method
     const writeMayHaveHappened = write === true || (write === undefined && error?.uncertain);
@@ -132,7 +153,7 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     if (!tok && write && error && !(typeof error.code === 'number' && error.code !== 0)) tok = 'result_unknown';
     if (!tok && pageError) tok = 'page_error';
     if (!tok && known(raw)) tok = raw;
-    if (!tok && known(FAILURE_LEGACY_TEXT[raw])) tok = FAILURE_LEGACY_TEXT[raw];
+    if (!tok && known(legacyToken(raw))) tok = legacyToken(raw);
     if (!tok) tok = FAILURE_CODE_TOKEN[numeric] || 'no_detail';
     if (!known(tok)) tok = 'no_detail';                          // e.g. a reason text whose placeholders the caller could not fill
     const unconfirmed = FAILURE_UNCONFIRMED.has(tok);
@@ -152,7 +173,7 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     const detail = device || (typeof result?.data?.detail === 'string' ? result.data.detail : '');
     const stage = typeof result?.data?.stage === 'string' ? result.data.stage : '';
     const api = endpoint || error?.operation || '';
-    const page = pageError && typeof error.message === 'string' ? error.message : '';
+    const page = pageError && !error.failureToken && typeof error.message === 'string' ? error.message : '';
     // Details are for whoever has to look into it: a reason the page worked out by itself (nothing was sent) has none.
     const lines = !ready || !(api || detail || stage || page) ? [] : [
         line('code', tok), line('api', api), line('device', detail), line('stage', stage), line('page', page),
