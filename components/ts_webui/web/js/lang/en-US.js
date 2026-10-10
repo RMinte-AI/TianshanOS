@@ -2,6 +2,54 @@
  * TianShanOS WebUI - English Language Pack
  */
 if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
+    rulePack: {
+    pendingDelete: "Deletion saved; removal requires restart",
+    content: "View rule content",
+    overwriteLabel: "Overwrite impact",
+    overwriteImpact: "Replaces saved revision {revision}; the running version continues until restart.",
+    "disabledDependency": "This rule and some dependencies are disabled. Check dependencies before enabling it.",
+    "pending": "Saved; restart required",
+    "runCurrent": "Run the current, older version",
+    "exportCurrent": "Export the current running version",
+    "verified": "Signing trust, target device and rule content verified.",
+    "saved": "Saved; takes effect after restart. The running version has not changed.",
+    "alreadyActive": "This configuration is already saved and active.",
+    "unknown": "Save outcome is unconfirmed. Read the rule list before importing again.",
+    "cleanupPending": "Old storage objects still need cleanup. Keep the SD card installed and check after restart.",
+    "dynamicInputs": "Condition variables can be created at runtime; missing samples do not prove missing configuration.",
+    "summaryLabel": "Rule summary",
+    "summary": "{conditions} conditions, {actions} actions",
+    "verifyFailed": "Verification did not complete. Check the connection and select the file again.",
+    "errors": {
+        "action_unsupported": "This firmware does not support an action used by the package.",
+        "config_loading": "Rule configuration is still loading. Check again shortly.",
+        "invalid_pack": "The package format or content is invalid. Export it again.",
+        "invalid_rule_pack": "This is not a valid rule configuration package.",
+        "wrong_device": "This package targets another device. Export it using the target device certificate.",
+        "signature_invalid": "Signature verification failed. Obtain the original package again.",
+        "time_unverified": "Device time is unverified. Complete time synchronization first.",
+        "signing_trust_unconfigured": "A configuration signing root has not been selected. Ask the administrator to complete deployment configuration.",
+        "signer_untrusted": "The signer is not trusted by the device configuration signing policy.",
+        "signer_unauthorized": "The signer certificate is not authorized to sign configurations.",
+        "credential_changed": "Credentials or the selected file changed after preview. Verify again.",
+        "dependency_loading": "Dependency configuration is still loading. Verify again shortly.",
+        "dependency_unavailable": "Dependency configuration failed to load. Check and recover it first.",
+        "dependency_missing": "Required configuration is missing. Install the referenced template, command or host first.",
+        "dependency_disabled": "This enabled rule depends on disabled configuration. Check its dependencies.",
+        "preview_required": "Select the file again and complete preview first.",
+        "overwrite_required": "Configuration with this ID exists. Review it and select overwrite.",
+        "revision_conflict": "Saved configuration changed after preview. Verify again.",
+        "restart_pending": "This rule has a saved version awaiting restart. Ordinary edits, toggles and deletion are unavailable.",
+        "recovery_required": "Saved configuration requires recovery. Import is unavailable.",
+        "source_unavailable": "The required SD card is unavailable. Check its mount state.",
+        "source_read_only": "The current configuration source is read-only. Restore its writable source before importing.",
+        "service_busy": "A bound service is active or unconfirmed. Verify and stop it first.",
+        "capacity": "The saved rule limit has been reached, including pending rules.",
+        "no_memory": "The device has insufficient memory. Retry shortly.",
+        "storage_failed": "Configuration could not be saved reliably. Check storage and verify again.",
+        "commit_unknown": "Save outcome is unconfirmed. Read state before importing again."
+    }
+},
     conditionEditor: {
         variableRequired: "Select a condition variable.",
         variableInvalid: "The condition variable is invalid or exceeds 63 UTF-8 bytes.",
@@ -264,6 +312,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
 },
 
     runtimeRepair: {
+        restart_pending: "This rule has a saved version awaiting restart. Ordinary edits, toggles and deletion are unavailable.",
         configLoading: 'Configuration is loading. Refresh shortly.',
         confirmFingerprint: 'Verify this server fingerprint through a trusted channel. Trust this exact fingerprint and connect?',
         saved: 'Saved',

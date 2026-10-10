@@ -16,6 +16,7 @@
 
 #include "ts_automation_types.h"
 #include "esp_err.h"
+typedef struct cJSON cJSON;
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -359,6 +360,17 @@ void ts_rule_resolve_presentation(ts_auto_rule_t *rule);
 bool ts_rule_edit_begin(void);
 void ts_rule_edit_end(void);
 void ts_rule_config_status(bool *loaded, bool *recovery);
+bool ts_rule_restart_pending(void);
+esp_err_t ts_rule_refresh_saved(void);
+const char *ts_rule_load_error(void);
+void ts_rule_saved_status(const char *id, cJSON *object);
+cJSON *ts_rule_pending_list(void);
+esp_err_t ts_rule_import_pack(const char *bytes, size_t length, bool preview, bool overwrite,
+    uint32_t expected_revision, uint32_t expected_generation, uint32_t expected_credential,
+    const char *expected_digest, cJSON **data, const char **reason);
+typedef enum { TS_RULE_DEP_TEMPLATE, TS_RULE_DEP_COMMAND, TS_RULE_DEP_HOST, TS_RULE_DEP_ACTION_HOST } ts_rule_dependency_t;
+/* Configuration writers already hold ts_ssh_binding_lock; no network/execution side effects. */
+esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind, const char *id, const void *next);
 
 #ifdef __cplusplus
 }

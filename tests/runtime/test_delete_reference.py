@@ -6,11 +6,17 @@ os.chdir(root)
 idf=Path(os.environ.get('IDF_PATH','/Users/massif/esp/v5.5.2/esp-idf'))
 def extract(file,name):
  s=Path(file).read_text();m=re.search(r'^(?:static )?[^\n;]+\b'+name+r'\([^;]+?\)\s*\{',s,re.M);assert m,name
- return s[m.start():s.index('\n}',m.start())+2]+'\n'
+ masked=re.sub(r'/\*[\s\S]*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"',lambda match:' '*len(match[0]),s)
+ opening=s.index('{',m.start());depth=0
+ for end in range(opening,len(masked)):
+  depth+=(masked[end]=='{')-(masked[end]=='}')
+  if not depth:break
+ return s[m.start():end+1]+'\n'
 engine=Path('components/ts_automation/src/ts_rule_engine.c').read_text()
 a=engine.index('typedef struct {\n    ts_auto_rule_t *rules;');b=engine.index('static void payload_free',a)
-parts=[engine[a:b]]
-for name in ['find_rule_index','payload_free','payload_adopt','ts_rule_resolve_presentation','ts_rule_acquire','ts_rule_release','same_config','protected_bindings','validate_new_template_refs','ts_rule_commit','compare_values','ts_rule_eval_condition','ts_rule_eval_condition_group','execute_rule','ts_rule_get_by_index','ts_rule_count','ts_rule_config_status']:
+namespace={};exec(Path('tests/runtime/extract_engine.py').read_text(),namespace)
+parts=[namespace['header'],namespace['stubs'],engine[a:b]]
+for name in ['find_rule_index','payload_free','payload_adopt','ts_rule_resolve_presentation','ts_rule_acquire','ts_rule_release','same_config','protected_bindings','validate_new_template_refs','classify_rule_state','state_pending','pending_id','rule_union_count_locked','rule_commit_impl','ts_rule_commit','compare_values','ts_rule_eval_condition','ts_rule_eval_condition_group','execute_rule','ts_rule_get_by_index','ts_rule_count','ts_rule_config_status','ts_rule_edit_begin','ts_rule_edit_end']:
  parts.append(extract('components/ts_automation/src/ts_rule_engine.c',name))
 prefix=Path('tests/runtime/test_engine.c').read_text().split('int main(void)')[0]
 prefix=prefix.replace('#include "../../components/ts_automation/src/ts_rule_store.h"', '#include "'+str(root/'components/ts_automation/src/ts_rule_store.h')+'"')
@@ -26,8 +32,7 @@ code=prefix+r'''
 static const char *TAG="audit";
 static int removals,unlinks;
 static bool service_protected;
-bool ts_rule_edit_begin(void){return s_rule_ctx.initialized&&pthread_mutex_trylock(s_rule_ctx.transaction)==0;}
-void ts_rule_edit_end(void){pthread_mutex_unlock(s_rule_ctx.transaction);}
+esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind,const char *id,const void *next){return ESP_OK;} /* No package instance in this legacy fixture. */
 static bool template_binding_protected(const char *id,const ts_action_template_t *next){return service_protected;}
 static esp_err_t template_remove_impl(const char *id){++removals;template_missing=true;barrier(4);return ESP_OK;}
 '''
@@ -82,7 +87,7 @@ static void wait_at(int phase,pthread_t *thread,void *(*fn)(void*)){
 static void release_at(void){pthread_mutex_lock(&control);proceed=1;pthread_cond_broadcast(&changed);pthread_mutex_unlock(&control);}
 int main(int argc,char**argv){
  assert(argc==2);out_dir=argv[1];pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER,txn;
- pthread_mutexattr_t attr;pthread_mutexattr_init(&attr);pthread_mutexattr_settype(&attr,PTHREAD_MUTEX_RECURSIVE);pthread_mutex_init(&txn,&attr);pthread_mutexattr_destroy(&attr);
+ pthread_mutexattr_t attr;pthread_mutexattr_init(&attr);pthread_mutexattr_settype(&attr,PTHREAD_MUTEX_RECURSIVE);pthread_mutex_init(&txn,&attr);pthread_mutex_destroy(&binding);pthread_mutex_init(&binding,&attr);pthread_mutexattr_destroy(&attr);
  s_rule_ctx=(ts_rule_engine_ctx_t){.rules=calloc(32,sizeof(ts_auto_rule_t)),.capacity=32,.initialized=true,.loaded=true,.mutex=&lock,.transaction=&txn};
  // H01/02: includes disabled/non-dashboard rules; repeated references are unique; 47-byte labels.
  const char *label="Model \" < & > 中文";add("rule-0",label,false,true);

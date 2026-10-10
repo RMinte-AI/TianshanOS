@@ -72,8 +72,16 @@ static uint32_t launch(ts_ssh_session_t session) {
  uint32_t gen;remote_running=0;assert(ts_ssh_service_begin(&command,session,&gen)==ESP_OK);
  remote_running=1;char receipt[128];snprintf(receipt,sizeof(receipt),"STARTED %s\n",remote_identity);assert(ts_ssh_service_finish(command.id,gen,receipt,session));ts_ssh_service_unpin(command.id,pin);return gen;
 }
+static void *try_held_binding(void *unused){assert(!ts_ssh_binding_try_lock());return NULL;}
+static void check_binding_gate(void){
+ ts_ssh_binding_lock();assert(ts_ssh_binding_try_lock());ts_ssh_binding_unlock();
+ ts_ssh_binding_lock();ts_ssh_binding_unlock(); /* Real recursive production gate. */
+ pthread_t contender;assert(!pthread_create(&contender,NULL,try_held_binding,NULL));pthread_join(contender,NULL);
+ ts_ssh_binding_unlock();assert(ts_ssh_binding_try_lock());ts_ssh_binding_unlock();
+ puts("PASS production binding gate: recursive ownership, immediate contention rejection, balanced release");
+}
 int main(void) {
- initialize_command("original");assert(ts_ssh_service_init()==ESP_OK);assert(ts_ssh_log_watch_init()==ESP_OK);
+ initialize_command("original");assert(ts_ssh_service_init()==ESP_OK);check_binding_gate();assert(ts_ssh_log_watch_init()==ESP_OK);
  ts_ssh_config_t cfg=TS_SSH_DEFAULT_CONFIG();ts_ssh_session_t session;assert(ts_ssh_session_create(&cfg,&session)==ESP_OK);
  ts_ssh_service_status_t st;
  /* A command admitted but not yet launched must not race a successful stop. */

@@ -39,7 +39,7 @@ def typedef(name):
     typedef(name) for name in ['action_manager_ctx_t', 'action_binding_t', 'action_completion_t']))
 definitions = [function(manager, name) for name in [
     'completion_release', 'ts_action_snapshot_retain', 'ts_action_snapshot_release',
-    'ts_action_get_ssh_host', 'snapshot_command', 'ts_action_snapshot', 'action_admit',
+    'ts_action_get_ssh_host_ex', 'ts_action_get_ssh_host', 'snapshot_command', 'ts_action_snapshot', 'action_admit',
     'action_finished', 'direct_service_finished', 'entry_finished',
     'ts_action_manager_accepting', 'ts_action_manager_quiesce', 'ts_action_manager_resume',
     'prepare_action_entry', 'action_manager_execute', 'ts_action_manager_execute',

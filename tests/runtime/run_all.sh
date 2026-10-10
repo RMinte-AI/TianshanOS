@@ -5,6 +5,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
 for suite in log codec store engine ssh service_watch; do
     bash "tests/runtime/run_${suite}.sh"
 done
+bash tests/runtime/run_rule_pack.sh
 python3 tests/runtime/test_completion.py
 python3 tests/runtime/test_action_submission.py
 python3 tests/runtime/test_service_control.py

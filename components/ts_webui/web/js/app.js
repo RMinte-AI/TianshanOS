@@ -5,7 +5,7 @@ function runtimeText(key) {
 }
 function runtimeSaveError(result) {
     const code = result.data?.error_code || result.rawMessage || result.error || result.message;
-    const known = ['revision_conflict', 'source_read_only', 'recovery_required', 'commit_unknown', 'execution_busy', 'service_busy', 'busy_retired_config'];
+    const known = ['restart_pending', 'revision_conflict', 'source_read_only', 'recovery_required', 'commit_unknown', 'execution_busy', 'service_busy', 'busy_retired_config'];
     if (code === 'action_missing') {
         const name = result.missingTemplateName || result.data?.missing_template_id;
         return name ? t('deleteProtection.actionMissing', {name}) : runtimeText('saveFailed');
@@ -3887,13 +3887,15 @@ async function refreshQuickActions() {
                         <div class="quick-action-card${nohupInfo ? ' has-nohup' : ''}${nohupInfo?.serviceMode ? ' has-service' : ''}${isRunning ? ' is-running' : ''}" 
                              id="quick-action-${escapeHtml(rule.id)}"
                              data-rule-id="${escapeHtml(rule.id)}"
-                             data-allowed="${rule.enabled && rule.allow_manual_trigger && !rule.reference_unresolved && !nohupInfo?.unresolved}"
+                             data-allowed="${rule.enabled && rule.allow_manual_trigger && !rule.reference_unresolved && !nohupInfo?.unresolved && rule.pending_change !== 'delete' && rule.runtime_active !== false}"
+                             data-pending-change="${escapeHtml(rule.pending_change || 'none')}"
+                             aria-disabled="${rule.pending_change === 'delete' || rule.runtime_active === false}"
                              data-service="${nohupInfo?.serviceMode ? escapeHtml(nohupInfo.commandId) : ''}"
                              data-state="${nohupInfo?.serviceMode ? 'unknown' : 'stopped'}"
                              onclick="${cardOnClick}" 
                              title="${escapeHtml(cleanName)}">
                             <div class="quick-action-head"><div class="quick-action-name">${escapeHtml(cleanName)}</div></div>
-                            <div class="quick-action-foot"><small>${(!nohupInfo?.serviceMode || !rule.enabled || !rule.manual_trigger) ? runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic') : ''}${(rule.reference_unresolved || nohupInfo?.unresolved) ? ' · ' + runtimeText('referenceUnresolved') : ''}${statusHtml && (!rule.enabled || !rule.manual_trigger) ? ' · ' : ''}${statusHtml}</small>${nohupBtns}</div>
+                            <div class="quick-action-foot"><small>${rule.pending_change === 'delete' ? t('rulePack.pendingDelete') + ' · ' : ''}${(!nohupInfo?.serviceMode || !rule.enabled || !rule.manual_trigger) ? runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic') : ''}${(rule.reference_unresolved || nohupInfo?.unresolved) ? ' · ' + runtimeText('referenceUnresolved') : ''}${statusHtml && (!rule.enabled || !rule.manual_trigger) ? ' · ' : ''}${statusHtml}</small>${nohupBtns}</div>
                         </div>
                     `);
                 }
@@ -4117,7 +4119,7 @@ async function triggerQuickAction(ruleId) {
             } catch (_) { card.dataset.state = 'unknown'; }
         }
         if (card.dataset.allowed !== 'true' || (card.dataset.service && card.dataset.state !== 'stopped')) {
-            showToast(runtimeText('startBlocked'), 'warning'); return;
+            showToast(card.dataset.pendingChange === 'delete' ? t('rulePack.pendingDelete') : runtimeText('startBlocked'), 'warning'); return;
         }
 
         if (card.dataset.service) card.dataset.state = 'starting';
@@ -15319,7 +15321,8 @@ function formatUptimeSec(seconds) {
 async function automationControl(action) {
     try {
         const result = await api.call(`automation.${action}`);
-        showToast(typeof t === 'function' ? t('toast.actionResult', { action, msg: result.message || 'OK' }) : `${action}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
+        const message = (result.rawMessage || result.error || result.message) === 'restart_pending' ? runtimeText('restart_pending') : result.message || 'OK';
+        showToast(typeof t === 'function' ? t('toast.actionResult', { action, msg: message }) : `${action}: ${message}`, result.code === 0 ? 'success' : 'error');
         if (result.code === 0) {
             await refreshAutomationStatus();
         }
@@ -15353,15 +15356,19 @@ async function refreshRules() {
                 </div>
                 ${rules.map(r => {
                     const label = r.enabled ? t('common.disabled') : t('common.enabled');
+                    const locked = r.restart_required || r.readonly;
+                    const active = r.runtime_active !== false;
+                    const deleting = r.pending_change === 'delete';
+                    const handler = (name, ...args) => escapeHtml(name + '(' + args.map(x => JSON.stringify(x)).join(',') + ')');
                     return `
                     <div class="tr" ${cols}>
-                        <div><span class="mono">${r.id}</span></div>
-                        <div>${r.name || r.id}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
-                        <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="toggleRule('${r.id}', ${!r.enabled})"></button></div>
+                        <div><span class="mono">${escapeHtml(r.id)}</span></div>
+                        <div>${escapeHtml(r.name || r.id)}${r.restart_required ? ` <span class="tag">${t(deleting ? 'rulePack.pendingDelete' : 'rulePack.pending')}</span>` : ''}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
+                        <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"${locked ? ' disabled' : ''}></button></div>
                         <div>${r.conditions_count || 0}</div>
                         <div>${r.actions_count || 0}</div>
                         <div>${r.trigger_count || 0}</div>
-                        <div class="act">${icoBtn('ri-play-line', t('automation.manualTrigger'), `triggerRule('${r.id}')`)}${icoBtn('ri-edit-line', t('common.edit'), `editRule('${r.id}')`)}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), `showExportRuleModal('${r.id}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteRule('${r.id}')`, 'dg')}</div>
+                        <div class="act">${icoBtn('ri-play-line', t(deleting ? 'rulePack.pendingDelete' : r.restart_required ? 'rulePack.runCurrent' : 'automation.manualTrigger'), handler('triggerRule', r.id), '', !active || deleting)}${icoBtn('ri-edit-line', t('common.edit'), handler('editRule', r.id), '', locked)}${icoBtn('ri-download-line', t('rulePack.exportCurrent'), handler('showExportRuleModal', r.id), '', !active)}${icoBtn('ri-delete-bin-line', t('common.delete'), handler('deleteRule', r.id), 'dg', locked)}</div>
                     </div>`;
                 }).join('')}
             `;
@@ -16945,7 +16952,7 @@ async function deleteAction(id) {
 async function toggleSource(id, enable) {
     try {
         const action = enable ? 'automation.sources.enable' : 'automation.sources.disable';
-        const result = await ruleWriteWithRevision(action, id);
+        const result = await api.call(action, { id });
         showToast(typeof t === 'function' ? t('toast.sourceToggled', { id, state: enable ? t('status.enabled') : t('status.disabled') }) + ': ' + (result.message || 'OK') : `数据源 ${id} ${enable ? '启用' : '禁用'}: ${result.message || 'OK'}`, result.code === 0 ? 'success' : 'error');
         if (result.code === 0) {
             await refreshSources();
@@ -19062,6 +19069,7 @@ async function doExportRule(ruleId) {
  * 显示导入规则配置模态框
  */
 function showImportRuleModal() {
+    ++rulePackPreviewAttempt; rulePackPreview = null;
     let modal = document.getElementById('import-rule-modal');
     if (!modal) {
         modal = document.createElement('div');
@@ -19079,103 +19087,114 @@ function showImportRuleModal() {
 }
 
 function hideImportRuleModal() {
+    ++rulePackPreviewAttempt; rulePackPreview = null;
     const modal = document.getElementById('import-rule-modal');
     if (modal) modal.classList.add('hidden');
     window._importRuleTscfg = null;
 }
 
+let rulePackPreviewAttempt = 0;
+let rulePackPreview = null;
+function rulePackFailure(result) {
+    const token = result?.data?.error_code || result?.rawMessage || result?.error || result?.message;
+    const key = 'rulePack.errors.' + token;
+    const text = t(key);
+    return text !== key ? text : t('rulePack.errors.invalid_pack');
+}
 async function previewRuleImport() {
-    const fileInput = document.getElementById('import-rule-file');
-    const resultBox = document.getElementById('import-rule-result');
-    const step2 = document.getElementById('import-rule-step2');
-    const previewDiv = document.getElementById('import-rule-preview');
-    const importBtn = document.getElementById('import-rule-btn');
-    const statusEl = document.getElementById('import-rule-file-status');
-    
-    if (!fileInput.files || !fileInput.files[0]) {
-        if (statusEl) statusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件';
-        return;
-    }
-    
-    const file = fileInput.files[0];
-    if (statusEl) statusEl.textContent = file.name;
-    
-    resultBox.classList.remove('hidden', 'success', 'error');
-    resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
-    importBtn.disabled = true;
-    previewDiv.innerHTML = importPlaceholder('rule');
-    
+    const attempt = ++rulePackPreviewAttempt;
+    rulePackPreview = null;
+    window._importRuleTscfg = null;
+    const input = document.getElementById('import-rule-file');
+    const box = document.getElementById('import-rule-result');
+    const button = document.getElementById('import-rule-btn');
+    const preview = document.getElementById('import-rule-preview');
+    button.disabled = true;
+    if (!input.files?.[0]) return;
+    const file = input.files[0];
+    document.getElementById('import-rule-file-status').textContent = file.name;
+    box.className = 'result-box'; box.textContent = t('ssh.verifyingPack');
+    preview.innerHTML = importPlaceholder('rule');
     try {
-        const content = await file.text();
-        window._importRuleTscfg = content;
-        window._importRuleFilename = file.name;
-        
-        const result = await api.call('automation.rules.import', { 
-            tscfg: content,
-            filename: file.name,
-            preview: true
-        });
-        
-        if (result.code === 0 && result.data?.valid) {
-            const data = result.data;
-            renderImportPreview('rule', data, t('automation.packTypeRule'));
-            resultBox.className = 'result-box success';
-            resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
-            importBtn.disabled = false;
-        } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('ssh.cannotVerifyPack') : '无法验证配置包'));
+        const bytes = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(await file.arrayBuffer());
+        if (attempt !== rulePackPreviewAttempt) return;
+        const result = await api.call('automation.rules.import', {tscfg: bytes, filename: file.name, preview: true});
+        if (attempt !== rulePackPreviewAttempt) return;
+        const data = result.data;
+        if (result.code !== 0 || data?.valid !== true || data?.trusted !== true || data?.target_matches !== true ||
+            !data.rule || data.rule.id !== data.id || !Array.isArray(data.rule.actions) || !data.rule.actions.length ||
+            !Number.isInteger(data.expected_revision) || !Number.isInteger(data.expected_generation) ||
+            !Number.isInteger(data.credential_generation) || !/^[0-9a-f]{64}$/.test(data.package_digest || '')) {
+            box.className = 'result-box error'; box.textContent = rulePackFailure(result); return;
         }
-    } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
+        rulePackPreview = data;
+        window._importRuleTscfg = bytes; window._importRuleFilename = file.name;
+        renderImportPreview('rule', data, t('automation.packTypeRule'));
+        const conditions = Array.isArray(data.rule.conditions) ? data.rule.conditions.length : data.rule.conditions?.items?.length || 0;
+        preview.insertAdjacentHTML('afterbegin', row(t('common.name'), escapeHtml(data.rule.name || data.id)));
+        preview.insertAdjacentHTML('beforeend', row(t('rulePack.summaryLabel'), escapeHtml(t('rulePack.summary', {conditions, actions: data.rule.actions?.length || 0}))));
+        preview.insertAdjacentHTML('beforeend', `<details><summary>${escapeHtml(t('rulePack.content'))}</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify(data.rule, null, 2))}</pre></details>`);
+        if (data.exists) preview.insertAdjacentHTML('beforeend', row(t('rulePack.overwriteLabel'), escapeHtml(t('rulePack.overwriteImpact', {revision: data.expected_revision}))));
+        for (const warning of data.warnings || []) {
+            const key = warning === 'dynamic_inputs' ? 'rulePack.dynamicInputs'
+                : warning === 'dependency_disabled' ? 'rulePack.disabledDependency' : null;
+            if (key) preview.insertAdjacentHTML('beforeend', row(t('securityPage.noteLabel'), escapeHtml(t(key))));
+        }
+        box.className = 'result-box success'; box.textContent = t('rulePack.verified');
+        button.disabled = false;
+    } catch (error) {
+        if (attempt !== rulePackPreviewAttempt) return;
+        box.className = 'result-box error'; box.textContent = t('rulePack.verifyFailed');
     }
 }
-
 async function confirmRuleImport() {
-    const overwrite = document.getElementById('import-rule-overwrite').checked;
-    const resultBox = document.getElementById('import-rule-result');
-    const importBtn = document.getElementById('import-rule-btn');
-    
-    if (!window._importRuleTscfg) {
-        showToast((typeof t === 'function' ? t('toast.selectFileFirst') : '请先选择文件'), 'error');
-        return;
-    }
-    
-    resultBox.classList.remove('hidden', 'success', 'error');
-    resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
-    importBtn.disabled = true;
-    
+    const attempt = rulePackPreviewAttempt;
+    const preview = rulePackPreview;
+    const box = document.getElementById('import-rule-result');
+    const button = document.getElementById('import-rule-btn');
+    if (!preview || !window._importRuleTscfg) { box.textContent = t('rulePack.errors.preview_required'); return; }
+    const bytes = window._importRuleTscfg;
+    button.disabled = true;
+    box.className = 'result-box'; box.textContent = t('ssh.savingConfig');
+    let uncertain = false;
     try {
-        const params = { 
-            tscfg: window._importRuleTscfg,
-            filename: window._importRuleFilename,
-            overwrite: overwrite
-        };
-        
-        const result = await api.call('automation.rules.import', params);
-        
-        if (result.code === 0) {
-            const data = result.data;
-            if (data?.exists && !data?.imported) {
-                resultBox.className = 'result-box warning';
-                resultBox.textContent = typeof t === 'function' ? t('securityPage.configExistsCheckOverwrite', { id: data.id }) : `配置 ${data.id} 已存在，请勾选「覆盖」选项`;
-                importBtn.disabled = false;
-            } else {
-                resultBox.className = 'result-box success';
-                resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(typeof t === 'function' ? t('toast.configImported') : '已导入配置，重启后生效', 'success');
-                setTimeout(() => hideImportRuleModal(), 2000);
-            }
-        } else {
-            resultBox.className = 'result-box error';
-            resultBox.textContent = (result.message || (typeof t === 'function' ? t('toast.importFailed') : '导入失败'));
-            importBtn.disabled = false;
+        const result = await api.call('automation.rules.import', {
+            tscfg: bytes, filename: window._importRuleFilename,
+            overwrite: document.getElementById('import-rule-overwrite').checked,
+            expected_revision: preview.expected_revision, expected_generation: preview.expected_generation,
+            credential_generation: preview.credential_generation, package_digest: preview.package_digest
+        });
+        if (attempt !== rulePackPreviewAttempt) return;
+        const data = result.data;
+        if (result.code === 0 && data?.saved === true && data?.durable === true && data?.runtime_applied === false) {
+            box.className = data.cleanup_pending ? 'result-box warning' : 'result-box success';
+            box.textContent = t(data.restart_required ? 'rulePack.saved' : 'rulePack.alreadyActive') + (data.cleanup_pending ? ' ' + t('rulePack.cleanupPending') : '');
+            rulePackPreview = null;
+            await refreshRules();
+            return;
         }
-    } catch (e) {
-        resultBox.className = 'result-box error';
-        resultBox.textContent = e.message;
-        importBtn.disabled = false;
+        uncertain = result.code === 0 || data?.result_unknown === true || ['commit_unknown', 'recovery_required'].includes(result.rawMessage || result.error || result.message);
+        if (!uncertain) {
+            box.className = 'result-box error'; box.textContent = rulePackFailure(result);
+            if ((result.rawMessage || result.error || result.message) === 'overwrite_required') button.disabled = false;
+            else rulePackPreview = null;
+            return;
+        }
+    } catch (error) { uncertain = true; }
+    if (attempt !== rulePackPreviewAttempt) return;
+    if (uncertain) {
+        // Observe once; never replay an uncertain write.
+        box.className = 'result-box warning'; box.textContent = t('rulePack.unknown');
+        rulePackPreview = null;
+        try {
+            const state = await api.call('automation.rules.list');
+            if (attempt !== rulePackPreviewAttempt) return;
+            const saved = state.code === 0 && state.data?.loaded !== false && state.data?.recovery_required !== true && state.data?.rules?.find(r => r.id === preview.id && r.saved_exists !== false && r.pending_change !== 'delete' && r.package_digest === preview.package_digest);
+            if (saved && Number.isInteger(saved.saved_revision) && saved.saved_generation >= preview.expected_generation) {
+                box.className = 'result-box success'; box.textContent = t(saved.restart_required ? 'rulePack.saved' : 'rulePack.alreadyActive');
+                await refreshRules();
+            }
+        } catch (error) { /* Keep the explicit unknown result. */ }
     }
 }
 

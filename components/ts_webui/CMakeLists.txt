@@ -19,6 +19,7 @@ idf_component_register(
         esp_http_server
     PRIV_REQUIRES
         json
+        ts_config_pack
 )
 
 # ===========================================================================

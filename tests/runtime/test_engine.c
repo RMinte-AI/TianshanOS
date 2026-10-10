@@ -12,7 +12,8 @@
 #include "../../components/ts_automation/src/ts_rule_store.h"
 #define CONFIG_TS_AUTOMATION_MAX_RULES 4
 #define pdTRUE 1
-#define xSemaphoreTakeRecursive xSemaphoreTake
+#define xSemaphoreTakeRecursive fixture_recursive_take
+static int fixture_recursive_take(SemaphoreHandle_t p,unsigned timeout){return (timeout?pthread_mutex_lock(p):pthread_mutex_trylock(p))==0;}
 #define xSemaphoreGiveRecursive xSemaphoreGive
 static int fail_alloc=-1, commits, action_calls;
 static bool independent_service, template_missing;
@@ -25,6 +26,7 @@ static int64_t esp_timer_get_time(void){return 1000000;}
 void *heap_caps_calloc(size_t n,size_t size,unsigned caps){if(fail_alloc==0)return NULL;if(fail_alloc>0)--fail_alloc;return calloc(n,size);}
 void *heap_caps_malloc(size_t n,unsigned caps){return heap_caps_calloc(1,n,caps);}
 void ts_ssh_binding_lock(void){pthread_mutex_lock(&binding);}
+bool ts_ssh_binding_try_lock(void){return pthread_mutex_trylock(&binding)==0;}
 void ts_ssh_binding_unlock(void){pthread_mutex_unlock(&binding);}
 bool ts_action_manager_accepting(void){return true;}
 bool ts_ssh_service_rule_protected(const char *rule){return independent_service;}

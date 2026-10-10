@@ -34,20 +34,16 @@ esp_err_t ts_crypto_hash(ts_hash_algo_t algo, const void *data, size_t len,
     switch (algo) {
         case TS_HASH_SHA256:
             if (hash_len < 32) return ESP_ERR_INVALID_SIZE;
-            mbedtls_sha256(data, len, hash, 0);
-            break;
+            return mbedtls_sha256(data, len, hash, 0) == 0 ? ESP_OK : ESP_FAIL;
         case TS_HASH_SHA384:
             if (hash_len < 48) return ESP_ERR_INVALID_SIZE;
-            mbedtls_sha512(data, len, hash, 1);
-            break;
+            return mbedtls_sha512(data, len, hash, 1) == 0 ? ESP_OK : ESP_FAIL;
         case TS_HASH_SHA512:
             if (hash_len < 64) return ESP_ERR_INVALID_SIZE;
-            mbedtls_sha512(data, len, hash, 0);
-            break;
+            return mbedtls_sha512(data, len, hash, 0) == 0 ? ESP_OK : ESP_FAIL;
         default:
             return ESP_ERR_NOT_SUPPORTED;
     }
-    return ESP_OK;
 }
 
 esp_err_t ts_crypto_hmac(ts_hash_algo_t algo, const void *key, size_t key_len,

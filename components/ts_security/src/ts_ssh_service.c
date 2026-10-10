@@ -42,16 +42,19 @@ static bool complete(service_t *s, uint32_t registration, uint32_t operation) {
 }
 void ts_ssh_binding_lock(void) {
     if (binding_gate)
-        xSemaphoreTake(binding_gate, portMAX_DELAY);
+        xSemaphoreTakeRecursive(binding_gate, portMAX_DELAY);
+}
+bool ts_ssh_binding_try_lock(void) {
+    return !binding_gate || xSemaphoreTakeRecursive(binding_gate, 0) == pdTRUE;
 }
 void ts_ssh_binding_unlock(void) {
     if (binding_gate)
-        xSemaphoreGive(binding_gate);
+        xSemaphoreGiveRecursive(binding_gate);
 }
 
 esp_err_t ts_ssh_service_init(void) {
     if (!binding_gate)
-        binding_gate = xSemaphoreCreateMutex();
+        binding_gate = xSemaphoreCreateRecursiveMutex();
     if (!mutex)
         mutex = xSemaphoreCreateMutex();
     if (!services)

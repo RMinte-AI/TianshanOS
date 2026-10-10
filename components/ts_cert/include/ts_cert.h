@@ -142,6 +142,10 @@ typedef struct {
     char certificate_sha256[65];
 } ts_cert_snapshot_t;
 esp_err_t ts_cert_get_snapshot(bool require_ca, ts_cert_snapshot_t *snapshot);
+/* Rule packs have their own accepted-at time policy; this does not relax TLS prerequisites. */
+esp_err_t ts_cert_get_pack_snapshot(ts_cert_snapshot_t *snapshot);
+bool ts_cert_material_begin(uint32_t expected_generation);
+void ts_cert_material_end(void);
 void ts_cert_free_snapshot(ts_cert_snapshot_t *snapshot);
 bool ts_cert_prerequisites(const ts_cert_pki_status_t *status, bool require_ca);
 const char *ts_cert_validity_to_str(ts_cert_validity_t validity);

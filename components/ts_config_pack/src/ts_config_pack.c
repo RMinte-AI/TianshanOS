@@ -24,6 +24,7 @@
 #include "ts_core.h"
 #include "ts_cert.h"
 #include "ts_crypto.h"
+#include "ts_config_pack_trust.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include <string.h>
@@ -32,6 +33,53 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
+#include <ctype.h>
+#include <stdio.h>
+
+#ifndef CONFIG_TS_CONFIG_PACK_MAX_SIZE
+#define CONFIG_TS_CONFIG_PACK_MAX_SIZE 65536
+#endif
+
+static bool unambiguous_json(const cJSON *j, unsigned depth) {
+    if (depth > 32) return false;
+    for (const cJSON *a = j->child; a; a = a->next) {
+        if (cJSON_IsObject(j)) {
+            for (const cJSON *b = a->next; b; b = b->next)
+                if (a->string && b->string && !strcmp(a->string, b->string)) return false;
+        }
+        if (!unambiguous_json(a, depth + 1)) return false;
+    }
+    return true;
+}
+static cJSON *parse_json_bounded(const char *text, size_t length, size_t limit) {
+    if (!text || !length || length > limit || memchr(text, 0, length))
+        return NULL;
+    bool string = false;
+    unsigned depth = 0;
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char c = text[i];
+        if (string && c == '\\') {
+            if (i + 5 < length && text[i+1] == 'u' && !memcmp(text+i+2, "0000", 4)) return NULL;
+            ++i;
+        } else if (c == '"') string = !string;
+        else if (!string && (c == '{' || c == '[')) { if (++depth > 32) return NULL; }
+        else if (!string && (c == '}' || c == ']')) { if (!depth) return NULL; --depth; }
+    }
+    const char *end = NULL;
+    cJSON *j = cJSON_ParseWithLengthOpts(text, length, &end, false);
+    if (!j) return NULL;
+    while (end < text + length && isspace((unsigned char)*end)) ++end;
+    if (end != text + length || !unambiguous_json(j, 0)) { cJSON_Delete(j); return NULL; }
+    return j;
+}
+cJSON *ts_config_pack_parse_json(const char *text, size_t length) {
+    return parse_json_bounded(text,length,CONFIG_TS_CONFIG_PACK_MAX_SIZE);
+}
+/* Validate the outer transport before cJSON can discard a decoded NUL or
+ * choose one of duplicate parameters. JSON escaping can expand bytes sixfold. */
+cJSON *ts_config_pack_parse_import_request(const char *text,size_t length) {
+    return parse_json_bounded(text,length,(size_t)CONFIG_TS_CONFIG_PACK_MAX_SIZE*6+1024);
+}
 
 static const char *TAG = "ts_config_pack";
 
@@ -126,6 +174,10 @@ static const char *s_error_messages[] = {
     [TS_CONFIG_PACK_ERR_PERMISSION] = "Permission denied (not a developer device)",
     [TS_CONFIG_PACK_ERR_INVALID_ARG]= "Invalid argument",
     [TS_CONFIG_PACK_ERR_NOT_INIT]   = "System not initialized",
+    [TS_CONFIG_PACK_ERR_TIME_UNVERIFIED] = "Trusted time is not available",
+    [TS_CONFIG_PACK_ERR_TRUST_NOT_CONFIGURED] = "Configuration signing root is not configured",
+    [TS_CONFIG_PACK_ERR_SIGNER_ROLE] = "Certificate is not authorized for configuration signing",
+    [TS_CONFIG_PACK_ERR_CREDENTIAL_CHANGED] = "Credentials changed during validation",
 };
 
 const char *ts_config_pack_strerror(ts_config_pack_result_t result)
@@ -186,7 +238,7 @@ bool ts_config_pack_can_export(void)
     }
     
     /* 检查 OU 字段是否为 "Developer" */
-    bool can_export = (strstr(info.subject_ou, "Developer") != NULL);
+    bool can_export = strcmp(info.subject_ou, "Developer") == 0;
     if (!can_export) {
         ESP_LOGD(TAG, "Device OU='%s', export not allowed", info.subject_ou);
     }
@@ -424,20 +476,33 @@ ts_config_pack_result_t ts_config_pack_create(
         return TS_CONFIG_PACK_ERR_PERMISSION;
     }
     
+    /* PEM parsers require a terminating NUL; callers may supply exact bytes. */
+    if (!opts->recipient_cert_pem || !opts->recipient_cert_len || opts->recipient_cert_len > TS_CERT_PEM_MAX_LEN)
+        return TS_CONFIG_PACK_ERR_INVALID_ARG;
+    const char *terminator = memchr(opts->recipient_cert_pem, 0, opts->recipient_cert_len);
+    if (terminator && terminator != opts->recipient_cert_pem + opts->recipient_cert_len - 1)
+        return TS_CONFIG_PACK_ERR_INVALID_ARG;
+    size_t recipient_length = opts->recipient_cert_len - (terminator != NULL);
+    char *recipient_pem = TS_MALLOC_PSRAM(recipient_length + 1);
+    if (!recipient_pem) return TS_CONFIG_PACK_ERR_NO_MEM;
+    memcpy(recipient_pem, opts->recipient_cert_pem, recipient_length);
+    recipient_pem[recipient_length] = 0;
     /* 解析接收方证书，获取公钥 */
     ts_keypair_t recipient_key = NULL;
-    esp_err_t ret = ts_crypto_keypair_import(opts->recipient_cert_pem,
-                                              opts->recipient_cert_len,
+    esp_err_t ret = ts_crypto_keypair_import(recipient_pem,
+                                              recipient_length + 1,
                                               &recipient_key);
     if (ret != ESP_OK) {
+        free(recipient_pem);
         ESP_LOGE(TAG, "Failed to parse recipient certificate");
         return TS_CONFIG_PACK_ERR_INVALID_ARG;
     }
     
     /* 计算接收方证书指纹 */
     char recipient_fingerprint[CERT_FINGERPRINT_LEN + 1];
-    ret = compute_cert_fingerprint(opts->recipient_cert_pem, opts->recipient_cert_len,
+    ret = compute_cert_fingerprint(recipient_pem, recipient_length + 1,
                                     recipient_fingerprint, sizeof(recipient_fingerprint));
+    free(recipient_pem);
     if (ret != ESP_OK) {
         ts_crypto_keypair_free(recipient_key);
         return TS_CONFIG_PACK_ERR_INVALID_ARG;
@@ -466,8 +531,12 @@ ts_config_pack_result_t ts_config_pack_create(
     /* ECDH 密钥协商 */
     uint8_t shared_secret[32];
     size_t shared_len = sizeof(shared_secret);
-    ret = ts_crypto_ecdh_compute_shared(ephemeral_key, opts->recipient_cert_pem,
-                                         shared_secret, &shared_len);
+    uint8_t recipient_pubkey[ECDH_PUBKEY_LEN];
+    size_t recipient_pubkey_len=sizeof recipient_pubkey;
+    ret=ts_crypto_keypair_export_public_raw(recipient_key,recipient_pubkey,&recipient_pubkey_len);
+    if(ret==ESP_OK&&recipient_pubkey_len==sizeof recipient_pubkey)
+        ret = ts_crypto_ecdh_compute_shared_raw(ephemeral_key,recipient_pubkey,recipient_pubkey_len,shared_secret,&shared_len);
+    else ret=ESP_ERR_INVALID_ARG;
     
     /* 立即销毁临时私钥 */
     ts_crypto_keypair_free(ephemeral_key);
@@ -481,8 +550,10 @@ ts_config_pack_result_t ts_config_pack_create(
     /* 生成随机 salt 和 IV */
     uint8_t salt[HKDF_SALT_LEN];
     uint8_t iv[AES_IV_LEN];
-    ts_crypto_random(salt, sizeof(salt));
-    ts_crypto_random(iv, sizeof(iv));
+    if(ts_crypto_random(salt,sizeof salt)!=ESP_OK||ts_crypto_random(iv,sizeof iv)!=ESP_OK){
+        memset(shared_secret,0,sizeof shared_secret);
+        return TS_CONFIG_PACK_ERR_DECRYPT;
+    }
     
     /* HKDF 密钥派生 */
     uint8_t aes_key[AES_KEY_LEN];
@@ -553,7 +624,10 @@ ts_config_pack_result_t ts_config_pack_create(
     
     /* 计算待签名数据的哈希 */
     uint8_t data_hash[SHA256_LEN];
-    ts_crypto_hash(TS_HASH_SHA256, ciphertext, ciphertext_len, data_hash, sizeof(data_hash));
+    if (ts_crypto_hash(TS_HASH_SHA256, ciphertext, ciphertext_len, data_hash, sizeof(data_hash)) != ESP_OK) {
+        ts_crypto_keypair_free(signer_key);free(ciphertext);
+        return TS_CONFIG_PACK_ERR_SIGNATURE;
+    }
     
     /* ECDSA 签名 */
     uint8_t signature[MAX_SIGNATURE_LEN];
@@ -1442,7 +1516,7 @@ static esp_err_t compute_cert_fingerprint(const char *cert_pem, size_t cert_len,
     }
     
     /* 计算实际内容长度，去除尾部空白和 null */
-    size_t actual_len = strlen(cert_pem);
+    size_t actual_len = strnlen(cert_pem, cert_len);
     while (actual_len > 0 && 
            (cert_pem[actual_len - 1] == ' ' || 
             cert_pem[actual_len - 1] == '\t' ||
@@ -1478,14 +1552,14 @@ static ts_config_pack_result_t parse_tscfg_json(
     char **signature_b64,
     ts_config_pack_sig_info_t *sig_info)
 {
-    *root = cJSON_ParseWithLength(json, len);
-    if (!*root) {
+    *root = ts_config_pack_parse_json(json, len);
+    if (!cJSON_IsObject(*root)) {
         ESP_LOGE(TAG, "JSON parse error");
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
     /* 验证版本 */
-    cJSON *version = cJSON_GetObjectItem(*root, "tscfg_version");
+    cJSON *version = cJSON_GetObjectItemCaseSensitive(*root, "tscfg_version");
     if (!version || !cJSON_IsString(version)) {
         ESP_LOGE(TAG, "Missing tscfg_version");
         return TS_CONFIG_PACK_ERR_PARSE;
@@ -1496,19 +1570,25 @@ static ts_config_pack_result_t parse_tscfg_json(
     }
     
     /* 提取加密参数 */
-    cJSON *encryption = cJSON_GetObjectItem(*root, "encryption");
-    if (!encryption) {
+    cJSON *encryption = cJSON_GetObjectItemCaseSensitive(*root, "encryption");
+    if (!cJSON_IsObject(encryption)) {
         ESP_LOGE(TAG, "Missing encryption section");
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
-    cJSON *ephemeral_pub = cJSON_GetObjectItem(encryption, "ephemeral_public_key");
-    cJSON *salt = cJSON_GetObjectItem(encryption, "salt");
-    cJSON *iv = cJSON_GetObjectItem(encryption, "iv");
-    cJSON *tag = cJSON_GetObjectItem(encryption, "tag");
-    cJSON *recipient_fp = cJSON_GetObjectItem(encryption, "recipient_cert_fingerprint");
-    
-    if (!ephemeral_pub || !salt || !iv || !tag || !recipient_fp) {
+    cJSON *ephemeral_pub = cJSON_GetObjectItemCaseSensitive(encryption, "ephemeral_public_key");
+    cJSON *salt = cJSON_GetObjectItemCaseSensitive(encryption, "salt");
+    cJSON *iv = cJSON_GetObjectItemCaseSensitive(encryption, "iv");
+    cJSON *tag = cJSON_GetObjectItemCaseSensitive(encryption, "tag");
+    cJSON *recipient_fp = cJSON_GetObjectItemCaseSensitive(encryption, "recipient_cert_fingerprint");
+    cJSON *algorithm = cJSON_GetObjectItemCaseSensitive(encryption, "algorithm");
+    cJSON *kdf = cJSON_GetObjectItemCaseSensitive(encryption, "kdf");
+
+    if (!cJSON_IsString(ephemeral_pub) || !cJSON_IsString(salt) || !cJSON_IsString(iv) ||
+        !cJSON_IsString(tag) || !cJSON_IsString(recipient_fp) ||
+        !cJSON_IsString(algorithm) || strcmp(algorithm->valuestring, TS_CONFIG_PACK_ALGORITHM) ||
+        !cJSON_IsString(kdf) || strcmp(kdf->valuestring, TS_CONFIG_PACK_KDF) ||
+        strlen(recipient_fp->valuestring) != CERT_FINGERPRINT_LEN) {
         ESP_LOGE(TAG, "Missing encryption parameters");
         return TS_CONFIG_PACK_ERR_PARSE;
     }
@@ -1517,25 +1597,26 @@ static ts_config_pack_result_t parse_tscfg_json(
     const char *pub_str = cJSON_GetStringValue(ephemeral_pub);
     size_t out_len = sizeof(params->ephemeral_pubkey);
     if (ts_crypto_base64_decode(pub_str, strlen(pub_str), 
-                                 params->ephemeral_pubkey, &out_len) != ESP_OK) {
+                                 params->ephemeral_pubkey, &out_len) != ESP_OK ||
+        out_len != sizeof(params->ephemeral_pubkey) || params->ephemeral_pubkey[0] != 4) {
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
     out_len = sizeof(params->salt);
     if (ts_crypto_base64_decode(cJSON_GetStringValue(salt), strlen(cJSON_GetStringValue(salt)),
-                                 params->salt, &out_len) != ESP_OK) {
+                                 params->salt, &out_len) != ESP_OK || out_len != sizeof(params->salt)) {
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
     out_len = sizeof(params->iv);
     if (ts_crypto_base64_decode(cJSON_GetStringValue(iv), strlen(cJSON_GetStringValue(iv)),
-                                 params->iv, &out_len) != ESP_OK) {
+                                 params->iv, &out_len) != ESP_OK || out_len != sizeof(params->iv)) {
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
     out_len = sizeof(params->tag);
     if (ts_crypto_base64_decode(cJSON_GetStringValue(tag), strlen(cJSON_GetStringValue(tag)),
-                                 params->tag, &out_len) != ESP_OK) {
+                                 params->tag, &out_len) != ESP_OK || out_len != sizeof(params->tag)) {
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
@@ -1543,23 +1624,27 @@ static ts_config_pack_result_t parse_tscfg_json(
             sizeof(params->recipient_fingerprint) - 1);
     
     /* 提取 payload */
-    cJSON *payload = cJSON_GetObjectItem(*root, "payload");
-    if (!payload || !cJSON_IsString(payload)) {
+    cJSON *payload = cJSON_GetObjectItemCaseSensitive(*root, "payload");
+    if (!cJSON_IsString(payload) || !payload->valuestring[0]) {
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     *payload_b64 = cJSON_GetStringValue(payload);
     
     /* 提取签名信息 */
-    cJSON *signature_obj = cJSON_GetObjectItem(*root, "signature");
-    if (!signature_obj) {
+    cJSON *signature_obj = cJSON_GetObjectItemCaseSensitive(*root, "signature");
+    if (!cJSON_IsObject(signature_obj)) {
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
-    cJSON *signer_cert = cJSON_GetObjectItem(signature_obj, "signer_certificate");
-    cJSON *sig = cJSON_GetObjectItem(signature_obj, "signature");
-    cJSON *is_official = cJSON_GetObjectItem(signature_obj, "is_official");
+    cJSON *signer_cert = cJSON_GetObjectItemCaseSensitive(signature_obj, "signer_certificate");
+    cJSON *sig = cJSON_GetObjectItemCaseSensitive(signature_obj, "signature");
+    cJSON *is_official = cJSON_GetObjectItemCaseSensitive(signature_obj, "is_official");
+    const cJSON *sig_algorithm = cJSON_GetObjectItemCaseSensitive(signature_obj, "algorithm");
     
-    if (!signer_cert || !sig) {
+    if (!cJSON_IsString(signer_cert) || !signer_cert->valuestring[0] ||
+        strlen(signer_cert->valuestring) >= TS_CERT_PEM_MAX_LEN ||
+        !cJSON_IsString(sig) || !sig->valuestring[0] || !cJSON_IsString(sig_algorithm) ||
+        strcmp(sig_algorithm->valuestring, TS_CONFIG_PACK_SIG_ALGORITHM)) {
         return TS_CONFIG_PACK_ERR_PARSE;
     }
     
@@ -1569,39 +1654,11 @@ static ts_config_pack_result_t parse_tscfg_json(
     /* 填充签名信息 */
     if (sig_info) {
         sig_info->valid = false;  /* 稍后验证 */
-        sig_info->is_official = is_official ? cJSON_IsTrue(is_official) : false;
+        (void)is_official;
+        sig_info->is_official = false; /* Unauthenticated metadata is never authorization. */
         sig_info->signed_at = 0;  /* 默认值 */
         
-        /* 解析 signed_at 时间戳 (ISO 8601 格式: "2026-02-04T02:30:00Z") */
-        cJSON *signed_at = cJSON_GetObjectItem(signature_obj, "signed_at");
-        if (signed_at && cJSON_IsString(signed_at)) {
-            const char *time_str = cJSON_GetStringValue(signed_at);
-            /* 手动解析 ISO 8601 格式 */
-            int year, month, day, hour, min, sec;
-            if (sscanf(time_str, "%d-%d-%dT%d:%d:%dZ", 
-                       &year, &month, &day, &hour, &min, &sec) == 6) {
-                struct tm tm = {0};
-                tm.tm_year = year - 1900;
-                tm.tm_mon = month - 1;
-                tm.tm_mday = day;
-                tm.tm_hour = hour;
-                tm.tm_min = min;
-                tm.tm_sec = sec;
-                tm.tm_isdst = 0;
-                /* 设置环境变量为 UTC 然后调用 mktime */
-                char *old_tz = getenv("TZ");
-                setenv("TZ", "UTC0", 1);
-                tzset();
-                sig_info->signed_at = mktime(&tm);
-                if (old_tz) {
-                    setenv("TZ", old_tz, 1);
-                } else {
-                    unsetenv("TZ");
-                }
-                tzset();
-            }
-        }
-        
+        /* Outer signed_at is unauthenticated display metadata; do not change process timezone. */
         /* 解析签名者证书获取 CN 和 OU */
         ts_cert_info_t cert_info;
         if (ts_cert_parse_certificate(*signer_cert_pem, strlen(*signer_cert_pem) + 1, 
@@ -1609,9 +1666,7 @@ static ts_config_pack_result_t parse_tscfg_json(
             strncpy(sig_info->signer_cn, cert_info.subject_cn, sizeof(sig_info->signer_cn) - 1);
             strncpy(sig_info->signer_ou, cert_info.subject_ou, sizeof(sig_info->signer_ou) - 1);
             /* 根据 OU 字段更新 is_official 标记 */
-            if (strstr(cert_info.subject_ou, "Developer") != NULL) {
-                sig_info->is_official = true;
-            }
+            /* Only the verified rule-pack path may report trusted Developer status. */
         }
     }
     
@@ -1639,7 +1694,10 @@ static ts_config_pack_result_t verify_signature(
     
     /* 计算数据哈希 */
     uint8_t hash[SHA256_LEN];
-    ts_crypto_hash(TS_HASH_SHA256, data_to_sign, data_len, hash, sizeof(hash));
+    if (ts_crypto_hash(TS_HASH_SHA256, data_to_sign, data_len, hash, sizeof(hash)) != ESP_OK) {
+        ts_crypto_keypair_free(signer_key);
+        return TS_CONFIG_PACK_ERR_SIGNATURE;
+    }
     
     /* 验证签名 */
     ret = ts_crypto_ecdsa_verify(signer_key, hash, sizeof(hash), signature, sig_len);
@@ -1668,30 +1726,16 @@ static ts_config_pack_result_t verify_signature(
 /**
  * @brief 解密 payload
  */
-static ts_config_pack_result_t decrypt_payload(
+static ts_config_pack_result_t decrypt_payload_key(
     const ts_config_pack_crypto_params_t *params,
+    const char *key_pem,
     const uint8_t *ciphertext,
     size_t ciphertext_len,
     char **plaintext,
     size_t *plaintext_len)
 {
-    /* 获取设备私钥 - 使用堆分配避免栈溢出 */
-    char *key_pem = TS_MALLOC_PSRAM(TS_CERT_KEY_MAX_LEN);
-    if (!key_pem) {
-        return TS_CONFIG_PACK_ERR_NO_MEM;
-    }
-    size_t key_len = TS_CERT_KEY_MAX_LEN;
-    esp_err_t ret = ts_cert_get_private_key(key_pem, &key_len);
-    if (ret != ESP_OK) {
-        free(key_pem);
-        ESP_LOGE(TAG, "Failed to get device private key");
-        return TS_CONFIG_PACK_ERR_RECIPIENT;
-    }
-    
     ts_keypair_t device_key = NULL;
-    ret = ts_crypto_keypair_import(key_pem, key_len, &device_key);
-    memset(key_pem, 0, TS_CERT_KEY_MAX_LEN);  /* 清除私钥 */
-    free(key_pem);
+    esp_err_t ret = ts_crypto_keypair_import(key_pem, strlen(key_pem) + 1, &device_key);
     
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to import device key");
@@ -1752,6 +1796,83 @@ static ts_config_pack_result_t decrypt_payload(
     *plaintext_len = ciphertext_len;
     
     return TS_CONFIG_PACK_OK;
+}
+
+static ts_config_pack_result_t decrypt_payload(const ts_config_pack_crypto_params_t *params,
+    const uint8_t *ciphertext, size_t ciphertext_len, char **plaintext, size_t *plaintext_len)
+{
+    char *key = TS_MALLOC_PSRAM(TS_CERT_KEY_MAX_LEN);
+    if (!key) return TS_CONFIG_PACK_ERR_NO_MEM;
+    size_t len = TS_CERT_KEY_MAX_LEN;
+    ts_config_pack_result_t ret = TS_CONFIG_PACK_ERR_RECIPIENT;
+    if (ts_cert_get_private_key(key, &len) == ESP_OK)
+        ret = decrypt_payload_key(params, key, ciphertext, ciphertext_len, plaintext, plaintext_len);
+    memset(key, 0, TS_CERT_KEY_MAX_LEN); free(key);
+    return ret;
+}
+
+ts_config_pack_result_t ts_config_pack_load_verified_mem(const char *text, size_t length,
+    const ts_config_pack_acceptance_t *accepted, ts_config_pack_t **pack,
+    ts_config_pack_acceptance_t *acceptance, uint32_t *credential_generation)
+{
+    if (!pack) return TS_CONFIG_PACK_ERR_INVALID_ARG;
+    *pack = NULL;
+    cJSON *root = NULL;
+    ts_config_pack_crypto_params_t params = {0};
+    char *payload = NULL, *signer = NULL, *signature_text = NULL;
+    ts_config_pack_sig_info_t info = {0};
+    ts_cert_snapshot_t snapshot = {0};
+    unsigned char *ciphertext = NULL;
+    char *plaintext = NULL;
+    ts_config_pack_acceptance_t local = {0};
+    ts_config_pack_result_t ret = parse_tscfg_json(text, length, &root, &params,
+                                                 &payload, &signer, &signature_text, &info);
+    if (ret != TS_CONFIG_PACK_OK) goto done;
+    esp_err_t snapshot_result = ts_cert_get_pack_snapshot(&snapshot);
+    if (snapshot_result != ESP_OK) {
+        ret = snapshot_result == ESP_ERR_NO_MEM ? TS_CONFIG_PACK_ERR_NO_MEM : TS_CONFIG_PACK_ERR_CERT_CHAIN; goto done;
+    }
+    char recipient[65], hash[65];
+    unsigned char digest[32];
+    if (compute_cert_fingerprint(snapshot.certificate, strlen(snapshot.certificate) + 1,
+                                 recipient, sizeof recipient) != ESP_OK ||
+        ts_crypto_hash(TS_HASH_SHA256, text, length, digest, sizeof digest) != ESP_OK ||
+        ts_crypto_hex_encode(digest, sizeof digest, hash, sizeof hash) != ESP_OK) {
+        ret = TS_CONFIG_PACK_ERR_INVALID_ARG; goto done;
+    }
+    if (strcmp(recipient, params.recipient_fingerprint)) { ret = TS_CONFIG_PACK_ERR_RECIPIENT; goto done; }
+    ret = ts_config_pack_signer_trust(signer, &snapshot, hash, recipient, accepted, &local);
+    if (ret != TS_CONFIG_PACK_OK) goto done;
+    size_t cipher_len = strlen(payload) * 3 / 4 + 4;
+    ciphertext = TS_MALLOC_PSRAM(cipher_len);
+    if (!ciphertext) { ret = TS_CONFIG_PACK_ERR_NO_MEM; goto done; }
+    unsigned char signature[MAX_SIGNATURE_LEN]; size_t sig_len = sizeof signature;
+    if (ts_crypto_base64_decode(payload, strlen(payload), ciphertext, &cipher_len) != ESP_OK || !cipher_len ||
+        ts_crypto_base64_decode(signature_text, strlen(signature_text), signature, &sig_len) != ESP_OK || !sig_len) {
+        ret = TS_CONFIG_PACK_ERR_PARSE; goto done;
+    }
+    ret = verify_signature(signer, ciphertext, cipher_len, signature, sig_len);
+    if (ret != TS_CONFIG_PACK_OK) goto done;
+    size_t plain_len = 0;
+    ret = decrypt_payload_key(&params, snapshot.key, ciphertext, cipher_len, &plaintext, &plain_len);
+    if (ret != TS_CONFIG_PACK_OK) goto done;
+    cJSON *content = ts_config_pack_parse_json(plaintext, plain_len);
+    if (!content) { ret = TS_CONFIG_PACK_ERR_PARSE; goto done; }
+    cJSON_Delete(content);
+    ts_cert_pki_status_t status = {0};
+    if (ts_cert_get_status(&status) != ESP_OK || status.generation != snapshot.generation) {
+        ret = TS_CONFIG_PACK_ERR_CREDENTIAL_CHANGED; goto done;
+    }
+    ts_config_pack_t *loaded = TS_CALLOC_PSRAM(1, sizeof(*loaded));
+    if (!loaded) { ret = TS_CONFIG_PACK_ERR_NO_MEM; goto done; }
+    loaded->content = plaintext; plaintext = NULL; loaded->content_len = plain_len;
+    info.valid = info.is_official = true; loaded->sig_info = info;
+    if (acceptance) *acceptance = local;
+    if (credential_generation) *credential_generation = snapshot.generation;
+    *pack = loaded;
+done:
+    cJSON_Delete(root); free(ciphertext); free(plaintext); ts_cert_free_snapshot(&snapshot);
+    return ret;
 }
 
 // ============================================================================
