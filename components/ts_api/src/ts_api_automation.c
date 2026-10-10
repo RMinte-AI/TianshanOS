@@ -716,7 +716,11 @@ static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result
         result->message = strdup("Rule not found");
     } else {
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("Failed to trigger rule");
+        result->data=cJSON_CreateObject();
+        if(result->data)ts_rule_saved_status(id_param->valuestring,result->data);
+        const cJSON *change=cJSON_GetObjectItemCaseSensitive(result->data,"pending_change");
+        result->message = strdup(cJSON_IsString(change)&&!strcmp(change->valuestring,"delete")?
+                                 "restart_pending":"Failed to trigger rule");
     }
 
     return ESP_OK;
@@ -731,8 +735,12 @@ static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result
  */
 static esp_err_t api_automation_rules_get(const cJSON *params, ts_api_result_t *result) {
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(params, "id");
+    if(!ts_rule_edit_begin()){
+        ts_api_result_error(result,TS_API_ERR_INTERNAL,"configuration_busy");return ESP_OK;
+    }
     ts_auto_rule_t rule;
     if (!cJSON_IsString(id) || ts_rule_acquire(id->valuestring, &rule) != ESP_OK) {
+        ts_rule_edit_end();
         ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Rule not found");
         return ESP_OK;
     }
@@ -741,6 +749,7 @@ static esp_err_t api_automation_rules_get(const cJSON *params, ts_api_result_t *
     if(result->data)ts_rule_saved_status(rule.id,result->data);
     ts_rule_release(&rule);
     result->code = result->data ? TS_API_OK : TS_API_ERR_INTERNAL;
+    ts_rule_edit_end();
     return ESP_OK;
 }
 

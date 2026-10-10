@@ -32,6 +32,7 @@ async function pageFor(language,mode,run){
     if(endpoint==='automation/rules/import'){
      if(params.preview){
       const data={...preview,exists:mode==='old',expected_revision:mode==='old'?4:0};
+      if(params.tscfg==='unsupported'){res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({code:1,message:'action_unsupported'}));return;}
       if(params.tscfg==='untrusted')data.trusted=false;
       if(params.tscfg==='slow'||params.tscfg==='fast')data.rule={...preview.rule,name:params.tscfg};
       reply={code:0,data};
@@ -48,7 +49,7 @@ async function pageFor(language,mode,run){
       if(mode==='conflict')reply={code:1,message:'revision_conflict'};
       else{
        saved=true;
-       if(mode==='lost'||mode==='unknown'){
+       if(mode==='lost'||mode==='unknown'||mode==='deleted'){
         res.writeHead(200,{'Content-Type':'application/json'});res.flushHeaders();
         res.write('{"code":0,');setImmediate(()=>res.destroy());return;
        }
@@ -59,6 +60,12 @@ async function pageFor(language,mode,run){
     if(endpoint==='automation/rules/list')reply={code:0,data:{loaded:true,recovery_required:mode==='unknown',rules:saved?[{id,name:'Night <b>test</b>',enabled:false,
       readonly:true,restart_required:true,runtime_active:mode==='old',saved_revision:mode==='old'?5:1,active_revision:mode==='old'?4:0,saved_generation:8,
       package_digest:hash,conditions_count:1,actions_count:1}]:[]}};
+    if(endpoint==='ssh/hosts/list')reply={code:0,data:{hosts:[]}};
+    if(endpoint==='ssh/commands/list')reply={code:0,data:{commands:[]}};
+    if(endpoint==='automation/rules/list'&&mode==='deleted')reply={code:0,data:{loaded:true,recovery_required:false,rules:[{
+      id,name:'Old rule',enabled:true,readonly:false,allow_manual_trigger:true,manual_trigger:true,show_on_dashboard:true,
+      pending_change:'delete',saved_exists:false,saved_revision:null,saved_generation:8,saved_source:null,package_digest:null,
+      restart_required:true,runtime_active:true,active_revision:4,revision:4,conditions_count:0,actions_count:1,actions:[{type:'log',message:'old'}]}]}};
     res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(reply));
    });return;
   }
@@ -158,6 +165,31 @@ for(const language of ['zh-CN','en-US']){
    await page.locator('#import-rule-file').setInputFiles({name:'untrusted.tscfg',buffer:Buffer.from('untrusted')});
    await page.waitForFunction(()=>document.getElementById('import-rule-result').classList.contains('error'));
    assert(await page.locator('#import-rule-btn').isDisabled());assert.equal(writes(),0);
+  });
+ });
+ test(language+': confirmed deletion row and quick action cannot trigger or confirm an uncertain pack save',async()=>{
+  await pageFor(language,'deleted',async({page,calls,writes})=>{
+   await page.locator('#import-rule-btn').click();
+   await page.waitForFunction(()=>document.getElementById('import-rule-result').textContent===t('rulePack.unknown'));
+   assert.equal(writes(),1);
+   await page.evaluate(async()=>{await refreshRules();document.body.insertAdjacentHTML('beforeend','<div id="quick-actions-grid"></div>');await refreshQuickActions();});
+   assert.equal(await page.locator('#rules-list .tr:not(.th)').count(),1);
+   assert.match(await page.locator('#rules-list').innerText(),language==='zh-CN'?/已保存删除，待重启移除/:/Deletion saved; removal requires restart/);
+   const buttons=page.locator('#rules-list .tr:not(.th) button');
+   for(const [i,disabled] of [[0,true],[1,true],[2,true],[3,false],[4,true]])assert.equal(await buttons.nth(i).isDisabled(),disabled);
+   const card=page.locator('#quick-actions-grid .quick-action-card');assert.equal(await card.count(),1);
+   assert.equal(await card.getAttribute('data-allowed'),'false');assert.equal(await card.getAttribute('aria-disabled'),'true');
+   assert.match(await card.innerText(),language==='zh-CN'?/已保存删除/:/Deletion saved/);
+   await page.evaluate(id=>triggerQuickAction(id),id);
+   assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
+  });
+ });
+ test(language+': unsupported action preview has a translated error and cannot save',async()=>{
+  await pageFor(language,'ok',async({page,writes})=>{
+   await page.locator('#import-rule-file').setInputFiles({name:'unsupported.tscfg',buffer:Buffer.from('unsupported')});
+   await page.waitForFunction(()=>document.getElementById('import-rule-result').textContent===t('rulePack.errors.action_unsupported'));
+   assert(await page.locator('#import-rule-btn').isDisabled());assert.equal(writes(),0);
+   assert.doesNotMatch(await page.locator('#import-rule-result').innerText(),/rulePack\.errors/);
   });
  });
  test(language+': datasource switch works without a same-name rule',async()=>{

@@ -12,26 +12,33 @@
 #include "ts_ssh_hosts_config.h"
 #include "nvs.h"
 static bool templates_ready=true, template_exists=true, template_enabled=true;
+static bool config_valid=true,internal_valid=true;
+static esp_err_t config_read_error=ESP_OK;
 static bool command_exists,command_enabled=true,host_exists,internal_host;
 static esp_err_t command_state=ESP_OK,host_state=ESP_OK;
+static esp_err_t template_state=ESP_OK;
 static ts_auto_action_t template_action={.type=TS_AUTO_ACT_LOG};
 esp_err_t ts_action_template_get(const char *id,ts_action_template_t *t){
  if(!template_exists||strcmp(id,"template"))return ESP_ERR_NOT_FOUND;
  memset(t,0,sizeof *t);strcpy(t->id,id);t->enabled=template_enabled;t->action=template_action;return ESP_OK;
 }
 bool ts_action_templates_ready(void){return templates_ready;}
+esp_err_t ts_action_templates_load_state(void){return templates_ready?ESP_OK:template_state==ESP_OK?ESP_ERR_INVALID_STATE:template_state;}
 bool ts_ssh_commands_config_is_initialized(void){return true;}
 bool ts_ssh_hosts_config_is_initialized(void){return true;}
 esp_err_t ts_ssh_commands_config_load_state(void){return command_state;}
 esp_err_t ts_ssh_hosts_config_load_state(void){return host_state;}
 esp_err_t ts_ssh_commands_config_get(const char *id,ts_ssh_command_config_t *c){if(!command_exists||strcmp(id,"command"))return ESP_ERR_NOT_FOUND;memset(c,0,sizeof *c);strcpy(c->id,id);strcpy(c->host_id,"host");c->enabled=command_enabled;return ESP_OK;}
-esp_err_t ts_ssh_hosts_config_get(const char *id,ts_ssh_host_config_t *h){if(!host_exists||strcmp(id,"host"))return ESP_ERR_NOT_FOUND;memset(h,0,sizeof *h);strcpy(h->id,id);strcpy(h->host,"192.0.2.1");strcpy(h->username,"test");h->port=22;h->enabled=false;return ESP_OK;}
+esp_err_t ts_ssh_hosts_config_get(const char *id,ts_ssh_host_config_t *h){if(config_read_error!=ESP_OK)return config_read_error;if(!host_exists||strcmp(id,"host"))return ESP_ERR_NOT_FOUND;memset(h,0,sizeof *h);strcpy(h->id,id);strcpy(h->host,"192.0.2.1");strcpy(h->username,"test");h->port=config_valid?22:0;h->enabled=false;return ESP_OK;}
+#ifndef RULE_ENGINE_INTEGRATION
 esp_err_t ts_action_get_ssh_host_ex(const char *id,ts_action_ssh_host_t *h,bool *internal){*internal=internal_host;if(!host_exists||strcmp(id,"host"))return ESP_ERR_NOT_FOUND;memset(h,0,sizeof *h);strcpy(h->id,id);strcpy(h->host,"192.0.2.1");strcpy(h->username,"test");h->port=22;return ESP_OK;}
 esp_err_t ts_action_get_ssh_host(const char *id,ts_action_ssh_host_t *h){bool internal;return ts_action_get_ssh_host_ex(id,h,&internal);}
+#endif
 typedef struct {char key[24];void *data;size_t size;} value_t;
 static value_t values[160];
 static unsigned operation, fault, mode;
 static bool fail_selector_read;
+static bool fail_selector_write;
 static jmp_buf crash;
 static bool before(void){
  ++operation;
@@ -59,6 +66,7 @@ esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *n){
  return after()?ESP_FAIL:ESP_OK;
 }
 esp_err_t nvs_set_blob(nvs_handle_t h,const char *key,const void *bytes,size_t n){
+ if(fail_selector_write&&!strcmp(key,"set_select"))return ESP_FAIL;
  if(before())return ESP_FAIL;value_t *v=value(key,true);if(!v)return ESP_ERR_NO_MEM;
  free(v->data);v->data=malloc(n);assert(v->data);memcpy(v->data,bytes,n);v->size=n;
  return after()?ESP_FAIL:ESP_OK;
@@ -102,7 +110,7 @@ static int unlink_fault(const char *p){if(before()){errno=EIO;return -1;}int r=u
 #undef fclose
 #undef unlink
 static void reset_disk(void){
- fail_selector_read=false;
+ fail_selector_read=fail_selector_write=false;
  fault=mode=operation=0;ts_rule_store_set_reset();
  for(unsigned i=0;i<160;++i){free(values[i].data);memset(&values[i],0,sizeof values[i]);}
  DIR *d=opendir(OBJECT_DIR);struct dirent *e;

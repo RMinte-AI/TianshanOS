@@ -162,6 +162,7 @@ esp_err_t ts_action_manager_resume(void);
  */
 bool ts_action_manager_is_initialized(void);
 bool ts_action_templates_ready(void);
+esp_err_t ts_action_templates_load_state(void);
 
 /*===========================================================================*/
 /*                          SSH Host Management                               */

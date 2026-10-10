@@ -123,6 +123,7 @@ typedef struct {
     /* Initialization state */
     bool initialized;
     atomic_bool templates_ready;
+    atomic_int templates_load_result;
 } action_manager_ctx_t;
 
 static action_manager_ctx_t *s_ctx = NULL;
@@ -290,6 +291,7 @@ esp_err_t ts_action_manager_init(void)
         goto cleanup;
     }
     
+    s_ctx->templates_load_result=ESP_ERR_INVALID_STATE;
     s_ctx->initialized = true;
     
     /* 延迟加载模板（等待 SD 卡挂载，避免栈溢出）*/
@@ -355,6 +357,9 @@ void ts_action_deferred_load_task(void *arg)
 }
 
 bool ts_action_templates_ready(void) { return s_ctx && s_ctx->initialized && s_ctx->templates_ready; }
+esp_err_t ts_action_templates_load_state(void) {
+    return s_ctx&&s_ctx->initialized?atomic_load(&s_ctx->templates_load_result):ESP_ERR_INVALID_STATE;
+}
 
 esp_err_t ts_action_manager_deinit(void)
 {
@@ -504,7 +509,7 @@ esp_err_t ts_action_get_ssh_host_ex(const char *host_id, ts_action_ssh_host_t *h
         return ESP_OK;
     }
     
-    return ESP_ERR_NOT_FOUND;
+    return ret;
 }
 
 esp_err_t ts_action_get_ssh_host(const char *id,ts_action_ssh_host_t *out) {
@@ -3331,6 +3336,7 @@ esp_err_t ts_action_templates_load(void) {
     esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_TEMPLATE,NULL,NULL);
     if (ret == ESP_OK) {
         ret = templates_load_impl();
+        s_ctx->templates_load_result=ret;
         s_ctx->templates_ready = ret == ESP_OK;
     }
     ts_ssh_binding_unlock();
@@ -3342,6 +3348,7 @@ esp_err_t ts_action_templates_load_from_file(const char *path) {
     esp_err_t ret = ts_rule_dependency_change(TS_RULE_DEP_TEMPLATE,NULL,NULL);
     if (ret == ESP_OK) {
         ret = templates_load_file_impl(path);
+        s_ctx->templates_load_result=ret;
         s_ctx->templates_ready = ret == ESP_OK;
     }
     ts_ssh_binding_unlock();

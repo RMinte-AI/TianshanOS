@@ -9,7 +9,7 @@ code=namespace['code'].split('int main(void) {',1)[0]
 def extract(path,name):
  source=Path(path).read_text();m=re.search(r'^(?:static )?(?:\w+[ \t]+)+[ \t*]*'+name+r'\([^;]+?\)\s*\{',source,re.M);assert m,name
  return source[m.start():source.index('\n}',m.start())+2]+'\n'
-code=code.replace('int template_count;', 'int template_count; bool templates_ready;')
+code=code.replace('int template_count;', 'int template_count; bool templates_ready; int templates_load_result;')
 code+=r'''
 #include "ts_rule_engine.h"
 esp_err_t ts_rule_dependency_change(ts_rule_dependency_t k,const char *id,const void *next){return ESP_OK;}

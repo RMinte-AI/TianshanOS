@@ -3,6 +3,7 @@
  */
 if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     rulePack: {
+    pendingDelete: "Deletion saved; removal requires restart",
     content: "View rule content",
     overwriteLabel: "Overwrite impact",
     overwriteImpact: "Replaces saved revision {revision}; the running version continues until restart.",
@@ -20,6 +21,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     "summary": "{conditions} conditions, {actions} actions",
     "verifyFailed": "Verification did not complete. Check the connection and select the file again.",
     "errors": {
+        "action_unsupported": "This firmware does not support an action used by the package.",
         "config_loading": "Rule configuration is still loading. Check again shortly.",
         "invalid_pack": "The package format or content is invalid. Export it again.",
         "invalid_rule_pack": "This is not a valid rule configuration package.",

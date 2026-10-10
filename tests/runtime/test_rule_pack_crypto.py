@@ -68,16 +68,17 @@ if '--engine' in sys.argv:
     src=(root/'components/ts_automation/src/ts_rule_engine.c').read_text()
     a=src.index('typedef struct {\n    ts_auto_rule_t *rules;');b=src.index('static void payload_free',a)
     names=['find_rule_index','payload_free','payload_adopt','ts_rule_resolve_presentation',
-           'ts_rule_acquire','ts_rule_release','same_config','protected_bindings','pending_id',
+           'ts_rule_acquire','ts_rule_release','same_config','protected_bindings','classify_rule_state','state_pending','pending_id','rule_union_count_locked','rebuild_rule_states',
            'rule_commit_impl','ts_rule_commit','ts_rule_get_by_index','ts_rule_restart_pending',
            'ts_rule_saved_status','ts_rule_pending_list','pack_reason','ts_rule_import_pack',
            'ts_rule_edit_begin','ts_rule_edit_end','ts_rule_count','ts_rule_config_status','ts_rule_load_error',
            'dependency_change_rule','ts_rule_dependency_change','load_rules','ts_rules_load',
-           'ts_rules_load_from_file','ts_rule_engine_deinit','ts_rule_refresh_saved']
+           'ts_rules_load_from_file','ts_rule_engine_deinit','ts_rule_refresh_saved','ts_rule_deferred_load_task',
+           'compare_values','ts_rule_eval_condition','ts_rule_eval_condition_group','execute_rule','ts_rule_trigger']
     parts=[src[a:b]]
     masked=re.sub(r'/\*[\s\S]*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"',lambda m:' '*len(m.group()),src)
     for name in names:
-        match=re.search(r'^(?:static )?(?:esp_err_t|void|bool|int|cJSON|const char|rule_payload_t)[ \t]+\**'+name+r'\([^;]*?\)\s*\{',src,re.M)
+        match=re.search(r'^(?:static )?(?:esp_err_t|void|bool|int|cJSON|const char|rule_payload_t|rule_state_t)[ \t]+\**'+name+r'\([^;]*?\)\s*\{',src,re.M)
         assert match,name
         opening=src.index('{',match.start());depth=0
         for end in range(opening,len(masked)):
@@ -85,12 +86,21 @@ if '--engine' in sys.argv:
             if not depth:break
         parts.append(src[match.start():end+1])
     api=(root/'components/ts_api/src/ts_api_automation.c').read_text()
-    a=api.index('static esp_err_t api_automation_rules_list(')
-    parts.append(api[a:api.index('\n}',a)+2])
+    for name in ['api_automation_rules_list','rule_commit_reply','rule_mutate_locked','rule_mutate','api_automation_rules_enable']:
+        match=re.search(r'^static (?:esp_err_t|void) '+name+r'\([^;]*?\)\s*\{',api,re.M);assert match,name
+        parts.append(api[match.start():api.index('\n}',match.start())+2])
     (build/'pack_engine.inc').write_text('\n'.join(parts))
+    manager=(root/'components/ts_automation/src/ts_action_manager.c').read_text()
+    a=manager.index('typedef struct {\n    atomic_uint refs;');b=manager.index('} action_binding_t;',a)+len('} action_binding_t;')
+    snapshots=[manager[a:b]]
+    for name in ['ts_action_register_ssh_host','ts_action_unregister_ssh_host','ts_action_get_ssh_host_ex','ts_action_templates_load','ts_action_snapshot_owner','ts_action_snapshot_retain','ts_action_snapshot_release','snapshot_command','ts_action_snapshot']:
+        m=re.search(r'^(?:static )?(?:void|esp_err_t) '+name+r'\([^;]*?\)\s*\{',manager,re.M);assert m,name
+        snapshots.append(manager[m.start():manager.index('\n}',m.start())+2])
+    (build/'pack_snapshot.inc').write_text('\n'.join(snapshots))
     sources[0]=root/'tests/runtime/rule_pack/test_engine_pack.c'
     cmd += ['-I'+str(build),'-DCONFIG_TS_AUTOMATION_MAX_RULES=4']
 executable=build/('crypto-baseline' if '--baseline' in sys.argv else 'unconfigured' if '--unconfigured' in sys.argv else 'engine' if '--engine' in sys.argv else 'store' if '--store' in sys.argv else 'crypto')
 cmd += sources+[native/'library/libmbedx509.a',native/'library/libmbedcrypto.a','-lpthread','-o',executable]
 run(cmd,cwd=root)
-run([executable,pki],cwd=root,env={**env,'ASAN_OPTIONS':'detect_leaks=0'} if '--store' in sys.argv else env)
+case=next((a.split('=',1)[1] for a in sys.argv if a.startswith('--case=')),None)
+run([executable,pki,*([case] if case else [])],cwd=root,env={**env,'ASAN_OPTIONS':'detect_leaks=0'} if '--store' in sys.argv else env)

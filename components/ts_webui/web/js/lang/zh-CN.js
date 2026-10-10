@@ -3,6 +3,7 @@
  */
 if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     rulePack: {
+    pendingDelete: "已保存删除，待重启移除",
     content: "查看规则内容",
     overwriteLabel: "覆盖影响",
     overwriteImpact: "替换已保存的第 {revision} 版；重启前仍运行当前版本。",
@@ -20,6 +21,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     "summary": "{conditions} 项条件，{actions} 项动作",
     "verifyFailed": "未能完成验证，请检查连接后重新选择文件。",
     "errors": {
+        "action_unsupported": "配置包使用了当前固件尚不支持的动作。",
         "config_loading": "规则配置仍在加载，请稍后刷新。",
         "invalid_pack": "配置包格式或内容无效，请重新导出。",
         "invalid_rule_pack": "此文件不是有效的规则配置包。",

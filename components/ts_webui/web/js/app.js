@@ -3889,13 +3889,15 @@ async function refreshQuickActions() {
                         <div class="quick-action-card${nohupInfo ? ' has-nohup' : ''}${nohupInfo?.serviceMode ? ' has-service' : ''}${isRunning ? ' is-running' : ''}" 
                              id="quick-action-${escapeHtml(rule.id)}"
                              data-rule-id="${escapeHtml(rule.id)}"
-                             data-allowed="${rule.enabled && rule.allow_manual_trigger && !rule.reference_unresolved && !nohupInfo?.unresolved}"
+                             data-allowed="${rule.enabled && rule.allow_manual_trigger && !rule.reference_unresolved && !nohupInfo?.unresolved && rule.pending_change !== 'delete' && rule.runtime_active !== false}"
+                             data-pending-change="${escapeHtml(rule.pending_change || 'none')}"
+                             aria-disabled="${rule.pending_change === 'delete' || rule.runtime_active === false}"
                              data-service="${nohupInfo?.serviceMode ? escapeHtml(nohupInfo.commandId) : ''}"
                              data-state="${nohupInfo?.serviceMode ? 'unknown' : 'stopped'}"
                              onclick="${cardOnClick}" 
                              title="${escapeHtml(cleanName)}">
                             <div class="quick-action-head"><div class="quick-action-name">${escapeHtml(cleanName)}</div></div>
-                            <div class="quick-action-foot"><small>${(!nohupInfo?.serviceMode || !rule.enabled || !rule.manual_trigger) ? runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic') : ''}${(rule.reference_unresolved || nohupInfo?.unresolved) ? ' · ' + runtimeText('referenceUnresolved') : ''}${statusHtml && (!rule.enabled || !rule.manual_trigger) ? ' · ' : ''}${statusHtml}</small>${nohupBtns}</div>
+                            <div class="quick-action-foot"><small>${rule.pending_change === 'delete' ? t('rulePack.pendingDelete') + ' · ' : ''}${(!nohupInfo?.serviceMode || !rule.enabled || !rule.manual_trigger) ? runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic') : ''}${(rule.reference_unresolved || nohupInfo?.unresolved) ? ' · ' + runtimeText('referenceUnresolved') : ''}${statusHtml && (!rule.enabled || !rule.manual_trigger) ? ' · ' : ''}${statusHtml}</small>${nohupBtns}</div>
                         </div>
                     `);
                 }
@@ -4124,7 +4126,7 @@ async function triggerQuickAction(ruleId) {
             } catch (_) { card.dataset.state = 'unknown'; }
         }
         if (card.dataset.allowed !== 'true' || (card.dataset.service && card.dataset.state !== 'stopped')) {
-            showToast(runtimeText('startBlocked'), 'warning'); return;
+            showToast(card.dataset.pendingChange === 'delete' ? t('rulePack.pendingDelete') : runtimeText('startBlocked'), 'warning'); return;
         }
 
         if (card.dataset.service) card.dataset.state = 'starting';
@@ -15290,16 +15292,17 @@ async function refreshRules() {
                     const label = r.enabled ? t('common.disabled') : t('common.enabled');
                     const locked = r.restart_required || r.readonly;
                     const active = r.runtime_active !== false;
+                    const deleting = r.pending_change === 'delete';
                     const handler = (name, ...args) => escapeHtml(name + '(' + args.map(x => JSON.stringify(x)).join(',') + ')');
                     return `
                     <div class="tr" ${cols}>
                         <div><span class="mono">${escapeHtml(r.id)}</span></div>
-                        <div>${escapeHtml(r.name || r.id)}${r.restart_required ? ` <span class="tag">${t('rulePack.pending')}</span>` : ''}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
+                        <div>${escapeHtml(r.name || r.id)}${r.restart_required ? ` <span class="tag">${t(deleting ? 'rulePack.pendingDelete' : 'rulePack.pending')}</span>` : ''}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
                         <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"${locked ? ' disabled' : ''}></button></div>
                         <div>${r.conditions_count || 0}</div>
                         <div>${r.actions_count || 0}</div>
                         <div>${r.trigger_count || 0}</div>
-                        <div class="act">${icoBtn('ri-play-line', t(r.restart_required ? 'rulePack.runCurrent' : 'automation.manualTrigger'), handler('triggerRule', r.id), '', !active)}${icoBtn('ri-edit-line', t('common.edit'), handler('editRule', r.id), '', locked)}${icoBtn('ri-download-line', t('rulePack.exportCurrent'), handler('showExportRuleModal', r.id), '', !active)}${icoBtn('ri-delete-bin-line', t('common.delete'), handler('deleteRule', r.id), 'dg', locked)}</div>
+                        <div class="act">${icoBtn('ri-play-line', t(deleting ? 'rulePack.pendingDelete' : r.restart_required ? 'rulePack.runCurrent' : 'automation.manualTrigger'), handler('triggerRule', r.id), '', !active || deleting)}${icoBtn('ri-edit-line', t('common.edit'), handler('editRule', r.id), '', locked)}${icoBtn('ri-download-line', t('rulePack.exportCurrent'), handler('showExportRuleModal', r.id), '', !active)}${icoBtn('ri-delete-bin-line', t('common.delete'), handler('deleteRule', r.id), 'dg', locked)}</div>
                     </div>`;
                 }).join('')}
             `;
@@ -19113,7 +19116,7 @@ async function confirmRuleImport() {
         try {
             const state = await api.call('automation.rules.list');
             if (attempt !== rulePackPreviewAttempt) return;
-            const saved = state.code === 0 && state.data?.loaded !== false && state.data?.recovery_required !== true && state.data?.rules?.find(r => r.id === preview.id && r.package_digest === preview.package_digest);
+            const saved = state.code === 0 && state.data?.loaded !== false && state.data?.recovery_required !== true && state.data?.rules?.find(r => r.id === preview.id && r.saved_exists !== false && r.pending_change !== 'delete' && r.package_digest === preview.package_digest);
             if (saved && Number.isInteger(saved.saved_revision) && saved.saved_generation >= preview.expected_generation) {
                 box.className = 'result-box success'; box.textContent = t(saved.restart_required ? 'rulePack.saved' : 'rulePack.alreadyActive');
                 await refreshRules();

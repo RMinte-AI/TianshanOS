@@ -7,3 +7,7 @@ python3 tests/runtime/test_rule_pack_crypto.py
 python3 tests/runtime/test_rule_pack_crypto.py --unconfigured
 python3 tests/runtime/test_rule_pack_crypto.py --store
 python3 tests/runtime/test_rule_pack_crypto.py --engine
+# Directed review counterexamples, using the same production fixture and PKI.
+for scenario in r1 r2 r3_ssh r3_webhook; do
+    python3 tests/runtime/test_rule_pack_crypto.py --engine --case="$scenario"
+done

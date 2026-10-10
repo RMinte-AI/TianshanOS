@@ -40,3 +40,26 @@ and never exempt healthy-storage failures because recover returned an error.
 Run: IDF_PATH=/path/to/esp-idf bash tests/runtime/run_rule_pack.sh (also included by run_all.sh).
 The fixture builds the SDK's native Mbed TLS and generates disposable OpenSSL PKI; no installed device credential
 is read. Browser tests: node --test tests/prompts/rule-pack.browser.test.cjs with the existing Playwright dependency.
+
+R1-R3 review repair (base af6fcf262c38b7fc466dfb3e2180791d94f2f173):
+R1: classify union IDs(A,S), including pending_delete and unknown; recovery publishes deletion admission
+flags before reopening mutations. Confirmed pending deletion preserves existing runtime objects/leases and
+admitted snapshots but denies new automatic/manual admission and same-ID mutations/imports. New IDs consume
+union capacity; known successful ordinary deletion still removes runtime immediately. API pending_change,
+saved_exists and null saved fields reflect deletion; no digest from an old running version confirms import.
+R2: strict static dependencies apply only to package sources. Ordinary NVS/SD JSON keeps prior loading
+compatibility. Published metadata stores its own source; a pending replacement does not relabel runtime.
+Package guards cover active retained packages (excluding confirmed deletion) plus saved packages. Genuine
+first dependency initialization is allowed; destructive reload of retained packages remains protected.
+Deferred loading uses actual dependencies; templates distinguish loading from failure, without global waiting.
+R3: one read-only effective-action/proposed-object resolver serves preflight and dependency changes.
+One-level template priority, direct SSH and command-reference SSH follow actual internal-first host getter.
+Fallback fields/readiness and newly shadowing internal hosts are validated before mutation. Direct SSH does
+not depend on command readiness. Webhook remains unimplemented: new packages/protected template changes reject
+it even for disabled packages; ordinary legacy rules retain loading behavior. No snapshots/pins/connections,
+queue admission, execution or variable writes occur in this checker; dynamic execution is not prevalidated.
+Directed A1-A3/B1-B3/C1-C3 tests extract actual production engine/API/snapshot/host-getter/initialization guards
+and use real crypto, codec and complete-set store. Hardware/RTOS, local dependency storage and NVS are adapters;
+there is no claim of physical reboot, real SSH/network execution, or validation of installed device credentials.
+Browser tests use the real bilingual page with simulated API replies; runtime tests separately prove payloads.
+No v3 storage layout, selector protocol, encrypted trust or executor semantics are changed by this repair.
