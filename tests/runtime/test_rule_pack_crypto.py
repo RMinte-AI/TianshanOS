@@ -100,7 +100,7 @@ if '--engine' in sys.argv:
     sources[0]=root/'tests/runtime/rule_pack/test_engine_pack.c'
     cmd += ['-I'+str(build),'-DCONFIG_TS_AUTOMATION_MAX_RULES=4']
 executable=build/('crypto-baseline' if '--baseline' in sys.argv else 'unconfigured' if '--unconfigured' in sys.argv else 'engine' if '--engine' in sys.argv else 'store' if '--store' in sys.argv else 'crypto')
-cmd += sources+[native/'library/libmbedx509.a',native/'library/libmbedcrypto.a','-lpthread','-o',executable]
+cmd += sources+[native/'library/libmbedx509.a',native/'library/libmbedcrypto.a','-lpthread','-lm','-o',executable]
 run(cmd,cwd=root)
 case=next((a.split('=',1)[1] for a in sys.argv if a.startswith('--case=')),None)
 run([executable,pki,*([case] if case else [])],cwd=root,env={**env,'ASAN_OPTIONS':'detect_leaks=0'} if '--store' in sys.argv else env)

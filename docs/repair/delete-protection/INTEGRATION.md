@@ -58,3 +58,11 @@
 真实签名根、Developer 证书用途、可信时间、NVS/SD 空间及设备验收仍未完成。
 启动即可发生旧集合到 v3 的迁移；不承诺旧固件原地降级。完整迁移/信任边界见
 `tests/runtime/rule_pack_contract.txt`；R1–R3 历史红/绿证据见 `tests/runtime/rule_pack/R1-R3-review.md`。
+
+## GitHub Linux CI 跟进
+
+整合提交后的首轮 runtime job（run `38020495204`，job `114120217161`）在实际 Linux 链接时
+报告 `round@@GLIBC_2.2.5` / `DSO missing from command line`。规则包原生夹具编译命令漏了 `-lm`，
+macOS 自动带入系统数学符号，因而本地未暴露。新增显式 `-lm`；不改固件或断言。
+同时给同样编译真实递归锁夹具的 configuration_protocol 命令补 POSIX 接口声明，与其余调用者一致。
+这是测试构建适配，不修改生产源码；实际固件和 WebUI 产物因此不需重建。
