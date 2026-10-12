@@ -5,15 +5,8 @@ on:
     branches: [main, develop]
     tags:
       - 'v*'  # 版本标签触发
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.github/copilot-instructions.md'
   pull_request:
     branches: [main, develop]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   release:
     types: [published]  # 手动发布 Release 时也自动构建并上传 bin
   workflow_dispatch:  # 允许手动触发
@@ -30,7 +23,28 @@ env:
   TARGET: esp32s3
 
 jobs:
+  changes:
+    name: Check scope
+    runs-on: ubuntu-latest
+    outputs:
+      run_full: ${{ steps.scope.outputs.run_full }}
+      publish_release: ${{ steps.scope.outputs.publish_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python3 -m unittest discover -s tests/ci -p 'test_*.py'
+      - run: python3 tests/release/test_release.py
+      - name: Select checks and release eligibility
+        id: scope
+        run: python3 tools/ci/check_profile.py
+
   web-tests:
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
     name: WebUI regression tests
     runs-on: ubuntu-latest
     steps:
@@ -42,18 +56,27 @@ jobs:
           cache-dependency-path: tests/prompts/package-lock.json
       - run: npm ci --prefix tests/prompts
       - run: npm test --prefix tests/prompts
-      - run: python3 tests/release/test_release.py
       - run: python3 tests/release/test_web_minify.py
       - name: Install Chrome for actual-page regressions
         working-directory: tests/prompts
         run: npx playwright install --with-deps chrome
       - run: npm run test:browser --prefix tests/prompts
+      - name: Offline xterm and vendor regressions
+        run: npm run test:xterm --prefix tests/prompts
+        env:
+          OFFLINE_RESULTS: ${{ runner.temp }}/xterm-source
 
   runtime-tests:
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
     name: Runtime and fan regression tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python3 -m pip install -r tests/certificate/requirements.txt
       - name: Fetch matching ESP-IDF cJSON and MbedTLS sources for host tests
         run: |
           export IDF_PATH="$RUNNER_TEMP/runtime-idf"
@@ -66,6 +89,11 @@ jobs:
           node-version: '22'
       - run: bash tests/runtime/run_all.sh
       - run: bash tests/ws_subscriptions/run_operation_adapter.sh
+      - name: Current WebSocket and lifecycle regressions
+        run: |
+          bash tests/ws_subscriptions/run_host.sh
+          bash tests/ws_subscriptions/run_reviewer.sh
+          bash tests/ws_subscriptions/run_f1_f2.sh
       - run: bash tests/fan_monitor/run_host.sh
       - name: Fan output and decay regressions
         run: |
@@ -73,22 +101,20 @@ jobs:
           node tests/fan_review/test_ui.cjs "$RUNNER_TEMP/fan-review.jsonl"
           python3 tests/fan_decay/run_host.py --csv "$RUNNER_TEMP/fan-decay.csv"
           node tests/fan_decay/test_ui.cjs
-      - name: CSR subject signing and parsing regression
+      - name: Certificate and current service-stop regressions
         run: |
           cmake -S "$IDF_PATH/components/mbedtls/mbedtls" -B "$RUNNER_TEMP/mbedtls" -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=OFF
           cmake --build "$RUNNER_TEMP/mbedtls" --parallel 2
-          cc -std=c11 -g -fsanitize=address,undefined -Itests/certificate/stubs -Icomponents/ts_cert/include \
-            -I"$IDF_PATH/components/mbedtls/mbedtls/include" \
-            tests/certificate/test_subject.c components/ts_cert/src/ts_cert_subject.c \
-            "$RUNNER_TEMP/mbedtls/library/libmbedx509.a" "$RUNNER_TEMP/mbedtls/library/libmbedcrypto.a" \
-            -lm -o "$RUNNER_TEMP/csr-subject"
-          "$RUNNER_TEMP/csr-subject"
+          CERT_TEST_PYTHON=python3 CERT_TEST_BUILD="$RUNNER_TEMP/certificate-tests" CERT_MBEDTLS_BUILD="$RUNNER_TEMP/mbedtls" bash tests/certificate/run_host.sh
 
   build:
+    needs: changes
+    if: needs.changes.outputs.run_full == 'true'
     name: Build ESP32-S3 Firmware
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     
     steps:
       - name: Checkout repository
@@ -159,16 +185,33 @@ jobs:
       - name: Get version info
         id: version
         run: |
-          if [ -f build/project_description.json ]; then
-            VERSION=$(grep -o '"project_version":[^,]*' build/project_description.json | cut -d'"' -f4)
-          fi
-          echo "version=${VERSION:-0.0.0}" >> $GITHUB_OUTPUT
-          echo "📦 Build version: ${VERSION:-0.0.0}"
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          from pathlib import Path
+          version = json.loads(Path('build/project_description.json').read_text())['project_version']
+          if not version:
+              raise ValueError('Build version is empty')
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\ncommit={commit}\n')
+          print('Build version:', version, 'commit:', commit)
+          PYTHON
 
       - name: Print build size
         run: |
           source ~/esp/esp-idf/export.sh
           idf.py size
+
+      - name: Verify this build flashes its Web image
+        run: python3 tools/ci/check_web_artifacts.py --build-dir build
+
+      - name: Upload built Web resources
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-assets-${{ github.sha }}
+          path: build/esp-idf/ts_webui/web_optimized/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
@@ -192,73 +235,89 @@ jobs:
             build/config/sdkconfig.h
           retention-days: 7
 
-  # 编译成功后自动创建或更新 Release：tag 推送、main 推送或手动发布 Release
+  web-artifacts:
+    name: Built WebUI smoke test
+    needs: [changes, build]
+    if: needs.changes.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/prompts/package-lock.json
+      - run: npm ci --prefix tests/prompts
+      - name: Set emitted Web directory
+        run: echo "PROJECT_WEB_ROOT=$RUNNER_TEMP/built-web" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-assets-${{ github.sha }}
+          path: ${{ runner.temp }}/built-web
+      - run: python3 tools/ci/check_web_artifacts.py --web-root "$PROJECT_WEB_ROOT"
+      - name: Install Chrome
+        working-directory: tests/prompts
+        run: npx playwright install --with-deps chrome
+      - name: Load the emitted WebUI and verify resource failures block it
+        run: node --test tests/prompts/xterm-offline.test.cjs tests/ci/test_web_resource_failure.cjs
+        env:
+          OFFLINE_RESULTS: ${{ runner.temp }}/xterm-built
+
+  ci-gate:
+    name: CI Gate
+    needs: [changes, web-tests, runtime-tests, build, web-artifacts]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide using the selected results
+        if: ${{ always() && !cancelled() }}
+        run: python3 tools/ci/check_gate.py
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          RUN_CANCELLED: 'false'
+      - name: Reject cancellation at the final decision
+        if: ${{ always() && cancelled() }}
+        run: |
+          echo "CI Gate failed: workflow cancelled at the final decision" >&2
+          exit 1
+
+  # main keeps automatic version-based publication; PR/dispatch/fork never publish.
   release:
     name: Create or Update Release
-    needs: [build, web-tests, runtime-tests]
-    if: github.repository == 'RMinte-AI/TianshanOS' && (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event_name == 'push'))
+    needs: [changes, build, ci-gate]
+    if: ${{ !cancelled() && needs.changes.outputs.publish_release == 'true' && needs.build.result == 'success' && needs['ci-gate'].result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 创建 Release 需要写权限
-    
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
         with:
-          pattern: tianshanos-firmware-*
+          name: tianshanos-firmware-${{ needs.build.outputs.version }}
           path: firmware
-
-      - name: Resolve release tag
-        id: release_tag
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF_NAME}"
-          else
-            VERSION="${{ needs.build.outputs.version }}"
-            TAG="v${VERSION%%+*}"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Release tag: $TAG"
-
-      - name: Validate Chinese release notes and build version
-        env:
-          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
-          BUILD_VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          python3 tools/check_release.py "$RELEASE_TAG" "$BUILD_VERSION"
-
-      - name: Check if release already exists (main branch)
-        if: github.ref == 'refs/heads/main'
-        id: check
+      - name: Validate version, release state and this build's tag
+        id: preflight
+        run: python3 tools/ci/check_release_state.py
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          TAG="${{ steps.release_tag.outputs.tag }}"
-          if gh release view "$TAG" 2>/dev/null; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "⏭️ Release $TAG already exists, skipping"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Release
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/') || (github.ref == 'refs/heads/main' && steps.check.outputs.skip != 'true')
+          BUILD_VERSION: ${{ needs.build.outputs.version }}
+          BUILD_COMMIT: ${{ needs.build.outputs.commit }}
+      - name: Create or upload the release assets
+        if: steps.preflight.outputs.skip_release == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_tag.outputs.tag }}
-          name: ${{ steps.release_tag.outputs.tag }}
+          tag_name: ${{ steps.preflight.outputs.tag }}
+          name: ${{ steps.preflight.outputs.tag }}
           files: |
             firmware/**/*.bin
             firmware/**/flasher_args.json
           fail_on_unmatched_files: true
-          target_commitish: ${{ github.sha }}
-          body_path: docs/releases/${{ steps.release_tag.outputs.tag }}.md
+          target_commitish: ${{ needs.build.outputs.commit }}
+          body_path: docs/releases/${{ steps.preflight.outputs.tag }}.md
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
