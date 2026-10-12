@@ -216,6 +216,7 @@ scenarioTests('automation', [
     // ---- rules
     {id: 'rule.trigger.ok', setup: (p, c) => p.evaluate(n => ruleNames.set('night-off', n), c.rule), act: p => p.evaluate(() => triggerRule('night-off')), device: {'automation/rules/trigger': wire('wire-trigger-ok.json')}},
     {id: 'rule.trigger.engine-not-accepting', setup: (p, c) => p.evaluate(n => ruleNames.set('night-off', n), c.rule), act: p => p.evaluate(() => triggerRule('night-off')), device: {'automation/rules/trigger': wire('wire-trigger-engine-not-accepting.json')}},
+    {id: 'rule.trigger.pending-delete', setup: (p, c) => p.evaluate(n => ruleNames.set('night-off', n), c.rule), act: p => p.evaluate(() => triggerRule('night-off')), device: {'automation/rules/trigger': wire('wire-trigger-rule-pending-delete.json')}},
     {id: 'rule.trigger.not-allowed', setup: (p, c) => p.evaluate(n => ruleNames.set('night-off', n), c.rule), act: p => p.evaluate(() => triggerRule('night-off')), device: {'automation/rules/trigger': wire('wire-trigger-manual-not-allowed.json')}},
     {id: 'rule.trigger.no-answer', setup: (p, c) => p.evaluate(n => ruleNames.set('night-off', n), c.rule), act: p => p.evaluate(() => triggerRule('night-off')), device: {'automation/rules/trigger': DROP}},
     {id: 'rule.delete.ok', setup: async (p, c) => { await page.rules(p); await page.sureToDelete(p); await p.evaluate(n => ruleNames.set('night-off', n), c.rule); },

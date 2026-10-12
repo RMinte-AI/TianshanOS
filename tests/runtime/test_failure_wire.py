@@ -23,7 +23,7 @@ update = os.environ.get('UPDATE_FIXTURES') == '1'
 CAPTURES = ['wire-rule-ok.json', 'wire-rule-ok-mirror.json', 'wire-rule-execution-busy.json', 'wire-rule-revision-conflict.json',
             'wire-rule-service-busy.json', 'wire-rule-commit-unknown.json', 'wire-rule-capacity.json',
             'wire-trigger-ok.json', 'wire-trigger-engine-not-accepting.json', 'wire-trigger-rule-disabled.json',
-            'wire-trigger-manual-not-allowed.json', 'wire-trigger-execution-busy.json', 'wire-trigger-service-not-admissible.json',
+            'wire-trigger-manual-not-allowed.json', 'wire-trigger-rule-pending-delete.json', 'wire-trigger-execution-busy.json', 'wire-trigger-service-not-admissible.json',
             'wire-trigger-not-found.json', 'wire-trigger-generic.json',
             'wire-engine-start-ok.json', 'wire-engine-start-paused.json', 'wire-engine-start-unavailable.json', 'wire-engine-start-nomem.json',
             'wire-engine-stop-timeout.json', 'wire-engine-pause-not-running.json', 'wire-engine-pause-paused.json',
@@ -231,12 +231,13 @@ int main(void) {
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_NOT_ACCEPTING,"wire-trigger-engine-not-accepting.json",TS_API_ERR_BUSY,"engine_not_accepting");
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_DISABLED,"wire-trigger-rule-disabled.json",TS_API_ERR_INTERNAL,"rule_disabled");
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_MANUAL_NOT_ALLOWED,"wire-trigger-manual-not-allowed.json",TS_API_ERR_INTERNAL,"manual_not_allowed");
+    trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_PENDING_DELETE,"wire-trigger-rule-pending-delete.json",TS_API_ERR_INTERNAL,"rule_pending_delete");
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_RUNNING,"wire-trigger-execution-busy.json",TS_API_ERR_BUSY,"execution_busy");
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_SERVICE_STATE,"wire-trigger-service-not-admissible.json",TS_API_ERR_INTERNAL,"service_not_admissible");
     trigger(ESP_ERR_NOT_FOUND,TS_RULE_REJECT_NONE,"wire-trigger-not-found.json",TS_API_ERR_NOT_FOUND,"Rule not found");     /* unchanged text */
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_NONE,"wire-trigger-generic.json",TS_API_ERR_INTERNAL,"Failed to trigger rule"); /* no reason known */
     /* every refusal the engine can report has a token, and none is reported for a call that was not refused */
-    for(int why=TS_RULE_REJECT_NOT_ACCEPTING;why<=TS_RULE_REJECT_CHANGED;why++) {
+    for(int why=TS_RULE_REJECT_NOT_ACCEPTING;why<=TS_RULE_REJECT_PENDING_DELETE;why++) {
         assert(trigger_reject_token((ts_rule_reject_t)why)!=NULL);
         assert(trigger_reject_code((ts_rule_reject_t)why)==TS_API_ERR_BUSY||trigger_reject_code((ts_rule_reject_t)why)==TS_API_ERR_INTERNAL);
     }

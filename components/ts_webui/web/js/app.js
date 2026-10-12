@@ -6712,7 +6712,7 @@ async function toggleNat() {
         }
         await refreshNetworkPage();
     } catch (e) { 
-        reportFailure({ op: 'network.nattoggle', error: e, write: true }); 
+        reportFailure({ op: 'network.nattoggle', error: e, write: true });
     }
 }
 

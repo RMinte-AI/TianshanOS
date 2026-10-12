@@ -1027,6 +1027,18 @@
       "details": null
     }
   },
+  "rule.trigger.pending-delete": {
+    "zh-CN": {
+      "type": "error",
+      "text": "触发规则“夜间关灯”失败：这条规则已被删除，要重启设备后才会真正移除。在此之前它不能再执行；重启设备后它会消失。",
+      "details": "原因代号：rule_pending_delete\n接口：automation.rules.trigger\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to trigger rule “Night off”: this rule has been deleted and is removed after a restart. It cannot run in the meantime. It disappears once the device restarts.",
+      "details": "Reason code: rule_pending_delete\nAPI: automation.rules.trigger\nTime: <time>"
+    }
+  },
   "source.add.capacity": {
     "zh-CN": {
       "type": "error",

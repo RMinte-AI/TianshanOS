@@ -81,6 +81,11 @@ int main(void){
   s_rule_ctx.recovery_error=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_RECOVERY);s_rule_ctx.recovery_error=false;
   s_rule_ctx.meta[0].committing=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_CONFIG_BUSY);s_rule_ctx.meta[0].committing=false;
   s_rule_ctx.meta[0].executing=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_RUNNING);s_rule_ctx.meta[0].executing=false;
+  /* a deletion that waits for a restart: its own reason, ahead of "being saved" and "executing"; automatic evaluation stays silent */
+  s_rule_ctx.meta[0].pending_delete=true;s_rule_ctx.meta[0].committing=true;s_rule_ctx.meta[0].executing=true;before=action_calls;
+  assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_PENDING_DELETE&&action_calls==before);
+  assert(execute_rule(a.id,false,&triggered,NULL)==ESP_OK&&!triggered&&action_calls==before);
+  s_rule_ctx.meta[0].pending_delete=s_rule_ctx.meta[0].committing=s_rule_ctx.meta[0].executing=false;
   /* an unknown rule is not an admission decision: no reason, and the caller still gets NOT_FOUND */
   why=TS_RULE_REJECT_RUNNING;assert(execute_rule("no-such-rule",true,&triggered,&why)==ESP_ERR_NOT_FOUND&&why==TS_RULE_REJECT_NONE);
   /* the rule changed between admission and start */

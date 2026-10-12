@@ -237,7 +237,7 @@ for (const language of ['zh-CN', 'en-US']) {
     };
 
     test(`${language}: quick actions: every reason a card cannot start is its own sentence`, async () => {
-        for (const [extra, token] of [[{enabled: false}, 'rule_disabled'], [{allow_manual_trigger: false}, 'manual_not_allowed'], [{reference_unresolved: true}, 'reference_unresolved']]) {
+        for (const [extra, token] of [[{enabled: false}, 'rule_disabled'], [{allow_manual_trigger: false}, 'manual_not_allowed'], [{reference_unresolved: true}, 'reference_unresolved'], [{pending_change: 'delete'}, 'rule_pending_delete'], [{runtime_active: false}, 'rule_not_active']]) {
             await withPage(language, quickDevice(extra), async ({page, calls}) => {
                 const card = await quickPage(page);
                 await card.waitFor();
