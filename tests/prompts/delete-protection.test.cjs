@@ -14,7 +14,8 @@ for(const lang of ['zh-CN','en-US'])test(`${lang}: protected delete explains ser
 });
 async function deleteFixture(){
  const h=harness();await h.ready();h.load();h.el('page-content');
- h.ctx.confirmSheet=async()=>true;
+ h.ctx.confirmSheet=async options=>{h.ctx.lastSheet=options;return false;};
+ h.ctx.confirmAction=async()=>true;
  h.run(`refreshActions=async()=>{};refreshCommandsList=()=>{};selectedHostId='host';sshCommands={host:[{id:'model',name:'Model',nohup:true,serviceMode:true}]};`);
  return h;
 }
@@ -44,7 +45,9 @@ for(const entry of ['action','command']){
  for(const state of ['running','ready','unknown'])test(`${entry}: ${state} never leads to delete or stop`,async()=>{
   const h=await deleteFixture(),calls=responses(h,{state});await invoke(h);
   assert(!calls.some(c=>c.name.endsWith('.delete')||c.name.endsWith('.remove')||c.name.endsWith('.stop')));
-  assert(h.el('toast').textContent.includes(h.ctx.t('promptRepair.serviceDeleteProtected')));
+  assert(h.ctx.lastSheet.bodyHtml.includes(h.ctx.t('deleteProtection.'+(state==='unknown'?'unconfirmed':'running'),{command:'model'})));
+  assert.equal(h.ctx.lastSheet.primary,h.ctx.t(entry==='command'?'common.close':'deleteProtection.viewCommand'));
+  assert.equal(h.ctx.lastSheet.secondary,entry==='command'?false:h.ctx.t('common.close'));
  });
  test(`${entry}: failed verification never deletes`,async()=>{
   const h=await deleteFixture(),calls=responses(h,{phase:'failed'});await invoke(h);

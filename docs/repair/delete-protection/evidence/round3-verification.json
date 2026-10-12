@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-10",
+  "worktree": "/Users/massif/.codex/worktrees/automation-delete-protection/TianshanOS",
+  "branch": "fix/automation-delete-protection",
+  "base": "050757bb8046206797804ba5edc110ae3244bf17",
+  "unit": {
+    "command": "node --test tests/prompts/static.test.cjs tests/prompts/delete-reference.test.cjs tests/prompts/delete-protection.test.cjs",
+    "exit_code": 0,
+    "pass": 33,
+    "fail": 0
+  },
+  "browser": {
+    "command": "node --test tests/prompts/delete-reference.browser.test.cjs tests/prompts/delete-protection.browser.test.cjs",
+    "exit_code": 0,
+    "pass": 38,
+    "fail": 0
+  },
+  "diff_check": {
+    "command": "git diff --check",
+    "exit_code": 0
+  },
+  "v1_sha256": "9102fb703caf49e1e312f07efec7e3131bc6999009e0eb0d40243b3d53c26345",
+  "protected_file_sha256": {
+    "components/ts_api/src/ts_api_automation.c": "96d92e3faf24b4fcfb7e00a9fb84d70dfcc1980abd91aa67fe9bfa55dc2a7736",
+    "components/ts_automation/include/ts_action_manager.h": "b76ba33d17c219283a4b362bbe3cb755adeb044fedc9f32ff6ddc3b5c8bffc86",
+    "components/ts_automation/include/ts_rule_engine.h": "38d58102d4ca2714768a06bdd8abe238d2853a68d8403aef31f00162fbf01209",
+    "components/ts_automation/src/ts_action_manager.c": "d415d2ced03795c147608167e5dbe51160abb7e5bc850e2552bd66eb56e53bd8",
+    "components/ts_automation/src/ts_rule_engine.c": "8b0a1a4374226591fee02211d65c363dfb6b383ed348cdd10d35051e9c5a4aaf",
+    "components/ts_webui/web/js/api.js": "f635a33081cbd9e022e5674467ac3ae995c21bdb125e64439b41d8d6b53394b4",
+    "components/ts_webui/web/css/style.css": "5aef54b61efe7a5d9882a647cfcc6b88949a5f115897401f5293822653437b43"
+  },
+  "round_changed_files": [
+    "components/ts_webui/web/js/app.js",
+    "components/ts_webui/web/index.html",
+    "components/ts_webui/web/js/lang/zh-CN.js",
+    "components/ts_webui/web/js/lang/en-US.js",
+    "tests/prompts/static.test.cjs",
+    "tests/prompts/delete-reference.test.cjs",
+    "tests/prompts/delete-protection.test.cjs",
+    "tests/prompts/delete-reference.browser.test.cjs",
+    "tests/prompts/delete-protection.browser.test.cjs",
+    "docs/repair/delete-protection/PLAN.md",
+    "docs/repair/delete-protection/COPY.md",
+    "docs/repair/delete-protection/RESULT.md",
+    "docs/repair/delete-protection/evidence/source-hashes.json"
+  ],
+  "not_run": [
+    "firmware tests",
+    "full tests",
+    "ESP-IDF build",
+    "hardware tests"
+  ],
+  "departures": []
+}

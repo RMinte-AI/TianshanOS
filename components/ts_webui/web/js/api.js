@@ -75,6 +75,7 @@ class ApiOperationError extends Error {
         this.name = 'ApiOperationError';
         this.code = result?.code;
         this.rawMessage = apiErrorReason(result);
+        this.data = result?.data;
         this.operation = operation;
         this.httpStatus = result?.httpStatus;
         Object.assign(this, metadata);

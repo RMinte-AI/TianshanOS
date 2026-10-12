@@ -1,4 +1,4 @@
-![TianshanOS](assets/tsintro.png)
+![TianshanOS](assets/tianshanos-banner-en.png)
 
 [English](README_EN.md) | [中文](README.md)
 

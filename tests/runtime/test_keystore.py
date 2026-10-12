@@ -10,6 +10,9 @@ a=api_source.index('static esp_err_t api_key_generate(');api_handler=api_source[
 web_source=(root/'components/ts_webui/src/ts_webui_api.c').read_text()
 a=web_source.index('static esp_err_t send_key_generate_result(');web_handler=web_source[a:web_source.index('\nstatic esp_err_t',a+1)]
 a=web_source.index('static esp_err_t api_handler(');web_handler+=web_source[a:web_source.index('\nstatic esp_err_t login_handler',a)]
+a=web_source.index('static bool is_binary_upload_complete(');body_complete=web_source[a:web_source.index('\n}',a)+2]
+pack_source=(root/'components/ts_config_pack/src/ts_config_pack.c').read_text()
+a=pack_source.index('static bool unambiguous_json(');strict_json=pack_source[a:pack_source.index('\nstatic const char *TAG',a)]
 source=re.sub(r'^#include .*$', '',source,flags=re.M)
 platform=(root/'tests/certificate/stubs/platform.h').read_text()
 platform=platform[:platform.index('typedef void *ts_keypair_t;')]+'\n#endif\n'
@@ -21,17 +24,21 @@ prefix=r'''
 #include "ts_crypto.h"
 #include "ts_api.h"
 #include <stdatomic.h>
+#include <ctype.h>
+#define CONFIG_TS_CONFIG_PACK_MAX_SIZE 65536
 #define TS_LOGI(...) ((void)0)
 #define TS_LOGE(...) ((void)0)
 #define TS_LOGD(...) ((void)0)
 #define API_PREFIX "/api/v1"
 #define TS_API_MALLOC malloc
-typedef struct {const char *uri;const char *body;size_t body_len;int method;void *req;} ts_http_request_t;
-static size_t httpd_req_get_url_query_len(void *p){return 0;}
+typedef struct {size_t content_len,query_len;} test_http_req_t;
+typedef struct {const char *uri;const char *body;size_t body_len;int method;test_http_req_t *req;} ts_http_request_t;
+static size_t httpd_req_get_url_query_len(void *p){return p?((test_http_req_t *)p)->query_len:0;}
 static esp_err_t httpd_req_get_url_query_str(void *p,char *b,size_t n){return ESP_FAIL;}
 esp_err_t ts_http_send_json(ts_http_request_t *,int,const char *);
 esp_err_t ts_http_send_error(ts_http_request_t *,int,const char *);
 static int64_t esp_timer_get_time(void){return 0;}
+static unsigned rule_dispatch_calls;
 #include "cJSON.h"
 static size_t allocation_size_fail;
 static void *key_alloc(size_t n){return n==allocation_size_fail?NULL:malloc(n);}
@@ -92,6 +99,7 @@ esp_err_t ts_crypto_keypair_export_private(ts_keypair_t p,char *b,size_t *n){if(
 esp_err_t ts_crypto_keypair_export_openssh(ts_keypair_t p,char *b,size_t *n,const char *c){if(public_error)return public_error;strcpy(b,"SYNTHETIC");*n=10;return ESP_OK;}
 esp_err_t ts_api_call(const char *name,const cJSON *p,ts_api_result_t *r){
  if(!strcmp(name,"key.generate"))return api_key_generate(p,r);
+ if(!strcmp(name,"automation.rules.import")){++rule_dispatch_calls;r->code=0;return ESP_OK;}
  r->code=TS_API_ERR_INTERNAL;r->message=strdup("fixture");r->data=cJSON_CreateObject();cJSON_AddBoolToObject(r->data,"should_omit",true);return ESP_FAIL;
 }
 void ts_api_result_error(ts_api_result_t *r,ts_api_result_code_t c,const char *s){r->code=c;r->message=strdup(s);}
@@ -179,13 +187,20 @@ int main(int argc,char **argv){
   req.uri="/api/v1/other/endpoint";assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(!cJSON_GetObjectItem(response,"data"));cJSON_Delete(response);
   req.uri="/api/v1/key/generate";cJSON_Hooks fail_request={always_fail,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   r=(ts_api_result_t){.code=0,.data=cJSON_CreateObject()};cJSON_AddBoolToObject(r.data,"generated",true);cJSON_Hooks hooks={always_fail,free};cJSON_InitHooks(&hooks);send_key_generate_result(NULL,&r,"test",0);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
+  const char *invalid[]={"{\"tscfg\":\"{}\\u0000tail\"}","{\"preview\":true,\"preview\":false}","{} {}","[]"};
+  test_http_req_t native={0};req=(ts_http_request_t){.uri="/api/v1/automation/rules/import",.req=&native};
+  for(unsigned i=0;i<sizeof invalid/sizeof *invalid;++i){req.body=invalid[i];req.body_len=native.content_len=strlen(req.body);assert(api_handler(&req,NULL)==ESP_OK&&send_status==400&&!rule_dispatch_calls);}
+  char nul_body[]="{\"tscfg\":\"{}\0tail\"}";req.body=nul_body;req.body_len=native.content_len=sizeof nul_body-1;assert(api_handler(&req,NULL)==ESP_OK&&send_status==400&&!rule_dispatch_calls);
+  req.body="{\"tscfg\":\"{}\"}";req.body_len=strlen(req.body);native.content_len=req.body_len+1;assert(api_handler(&req,NULL)==ESP_OK&&send_status==400&&!rule_dispatch_calls);
+  native.content_len=req.body_len;native.query_len=10;assert(api_handler(&req,NULL)==ESP_OK&&send_status==400&&!rule_dispatch_calls);native.query_len=0;
+  assert(api_handler(&req,NULL)==ESP_OK&&send_status==200&&rule_dispatch_calls==1);
  }
  ts_keystore_deinit();assert(!live_crypto);puts("PASS actual keystore regression");
 }
 '''
 
 with tempfile.TemporaryDirectory(prefix='ts-keystore-') as tmp:
- p=Path(tmp);(p/'platform.h').write_text(platform);(p/'esp_err.h').write_text('#include "platform.h"\n');(p/'test.c').write_text(prefix+source+api_handler+web_handler+boundaries)
+ p=Path(tmp);(p/'platform.h').write_text(platform);(p/'esp_err.h').write_text('#include "platform.h"\n');(p/'test.c').write_text(prefix+strict_json+body_complete+source+api_handler+web_handler+boundaries)
  env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
  subprocess.run(['cc','-std=c11','-g','-Wno-deprecated-declarations','-fsanitize=address,undefined','-I'+tmp,'-I'+str(root/'components/ts_security/include'),'-I'+str(root/'components/ts_api/include'),'-I'+str(idf/'components/json/cJSON'),str(p/'test.c'),str(idf/'components/json/cJSON/cJSON.c'),'-lm','-lpthread','-o',str(p/'test')],check=True,env=env)
  failures=[]

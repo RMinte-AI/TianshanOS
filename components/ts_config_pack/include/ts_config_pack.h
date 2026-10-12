@@ -61,7 +61,23 @@ typedef enum {
     TS_CONFIG_PACK_ERR_PERMISSION,      /**< Permission denied (not a developer device) */
     TS_CONFIG_PACK_ERR_INVALID_ARG,     /**< Invalid argument */
     TS_CONFIG_PACK_ERR_NOT_INIT,        /**< System not initialized */
+    TS_CONFIG_PACK_ERR_TIME_UNVERIFIED,
+    TS_CONFIG_PACK_ERR_TRUST_NOT_CONFIGURED,
+    TS_CONFIG_PACK_ERR_SIGNER_ROLE,
+    TS_CONFIG_PACK_ERR_CREDENTIAL_CHANGED,
 } ts_config_pack_result_t;
+
+/** Local acceptance of exact v1 package bytes; never constructed from package metadata. */
+typedef struct {
+    uint32_t policy;
+    int64_t accepted_at;
+    char package_sha256[65], signer_sha256[65], root_sha256[65], recipient[65];
+} ts_config_pack_acceptance_t;
+
+/** Bounded complete JSON, rejects duplicate keys and decoded NUL characters. */
+cJSON *ts_config_pack_parse_json(const char *text, size_t length);
+cJSON *ts_config_pack_parse_import_request(const char *text, size_t length);
+
 
 /**
  * @brief Signature verification result
@@ -87,6 +103,11 @@ typedef struct {
     char *source_file;                   /**< Original source filename */
     char *target_device;                 /**< Target device CN */
 } ts_config_pack_t;
+
+/** Explicit signing trust, one credential snapshot, optional local acceptance for offline reload. */
+ts_config_pack_result_t ts_config_pack_load_verified_mem(
+    const char *text, size_t length, const ts_config_pack_acceptance_t *accepted,
+    ts_config_pack_t **pack, ts_config_pack_acceptance_t *acceptance, uint32_t *credential_generation);
 
 /**
  * @brief Export options for creating a config pack

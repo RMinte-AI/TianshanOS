@@ -9,7 +9,12 @@ code=namespace['code'].split('int main(void) {',1)[0]
 def extract(path,name):
  source=Path(path).read_text();m=re.search(r'^(?:static )?(?:\w+[ \t]+)+[ \t*]*'+name+r'\([^;]+?\)\s*\{',source,re.M);assert m,name
  return source[m.start():source.index('\n}',m.start())+2]+'\n'
+code=code.replace('int template_count;', 'int template_count; bool templates_ready; int templates_load_result;')
 code+=r'''
+#include "ts_rule_engine.h"
+esp_err_t ts_rule_dependency_change(ts_rule_dependency_t k,const char *id,const void *next){return ESP_OK;}
+void ts_ssh_binding_lock(void){}
+void ts_ssh_binding_unlock(void){}
 #include <dirent.h>
 #define TS_CONFIG_PACK_OK 0
 typedef int ts_config_pack_result_t;
@@ -38,6 +43,7 @@ esp_err_t ts_action_templates_save(void){++backups;return ESP_OK;}
 esp_err_t nvs_get_u8(nvs_handle_t h,const char *k,uint8_t *count){++fallbacks;*count=0;return ESP_ERR_NOT_FOUND;}
 esp_err_t nvs_get_str(nvs_handle_t h,const char *k,char *s,size_t *n){++fallbacks;return ESP_ERR_NOT_FOUND;}
 '''
+code+=extract('components/ts_automation/src/ts_action_manager.c','templates_load_impl')
 code+=extract('components/ts_automation/src/ts_action_manager.c','ts_action_templates_load')
 code+=r'''
 static void put(const char *p,const char *s){FILE*f=fopen(p,"wb");assert(f);assert(fwrite(s,1,strlen(s),f)==strlen(s));fclose(f);}

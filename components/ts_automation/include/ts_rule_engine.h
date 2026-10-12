@@ -16,6 +16,7 @@
 
 #include "ts_automation_types.h"
 #include "esp_err.h"
+typedef struct cJSON cJSON;
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -83,7 +84,12 @@ esp_err_t ts_rule_disable(const char *id);
  * @param id Rule ID
  * @return Rule pointer or NULL
  */
-typedef struct {int applied,durable,mirror_synced;uint32_t revision;const char *error_code;} ts_rule_commit_result_t;
+typedef struct {
+    int applied, durable, mirror_synced;
+    uint32_t revision;
+    const char *error_code;
+    char missing_template_id[TS_AUTO_NAME_MAX_LEN]; /* Request-local diagnostic, never persisted. */
+} ts_rule_commit_result_t;
 esp_err_t ts_rule_acquire(const char *id,ts_auto_rule_t *out);
 void ts_rule_release(ts_auto_rule_t *rule);
 esp_err_t ts_rule_commit(const ts_auto_rule_t *candidate,const char *id,uint32_t expected_revision,ts_rule_commit_result_t *result);
@@ -354,6 +360,17 @@ void ts_rule_resolve_presentation(ts_auto_rule_t *rule);
 bool ts_rule_edit_begin(void);
 void ts_rule_edit_end(void);
 void ts_rule_config_status(bool *loaded, bool *recovery);
+bool ts_rule_restart_pending(void);
+esp_err_t ts_rule_refresh_saved(void);
+const char *ts_rule_load_error(void);
+void ts_rule_saved_status(const char *id, cJSON *object);
+cJSON *ts_rule_pending_list(void);
+esp_err_t ts_rule_import_pack(const char *bytes, size_t length, bool preview, bool overwrite,
+    uint32_t expected_revision, uint32_t expected_generation, uint32_t expected_credential,
+    const char *expected_digest, cJSON **data, const char **reason);
+typedef enum { TS_RULE_DEP_TEMPLATE, TS_RULE_DEP_COMMAND, TS_RULE_DEP_HOST, TS_RULE_DEP_ACTION_HOST } ts_rule_dependency_t;
+/* Configuration writers already hold ts_ssh_binding_lock; no network/execution side effects. */
+esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind, const char *id, const void *next);
 
 #ifdef __cplusplus
 }

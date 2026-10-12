@@ -111,10 +111,17 @@ int main(int argc,char **argv) {
     clock_now=from;assert(status().cert_info.is_valid);clock_now=to;assert(status().cert_info.is_valid);
     clock_now=to+1;assert(status().cert_info.validity==TS_CERT_VALIDITY_EXPIRED&&status().cert_info.days_until_expiry==-1);
     clock_now=0;assert(status().status==TS_CERT_STATUS_TIME_UNVERIFIED&&!status().cert_info.is_valid);
+    ts_cert_snapshot_t offline;
+    assert(ts_cert_get_snapshot(true,&offline)!=ESP_OK);
+    assert(ts_cert_get_pack_snapshot(&offline)==ESP_OK&&offline.generation==status().generation);
+    ts_cert_free_snapshot(&offline);
+    fail_alloc=true;assert(ts_cert_get_pack_snapshot(&offline)==ESP_ERR_NO_MEM&&!offline.key&&!offline.certificate&&!offline.ca);fail_alloc=false;
     clock_now=-1;assert(!status().time_ready);clock_now=1790121600;
     install(future);assert(status().status==TS_CERT_STATUS_NOT_YET_VALID);install(expired);assert(status().status==TS_CERT_STATUS_EXPIRED);install(a);
     drop_event=true;install(b);assert(status().generation>generation);drop_event=false;
-    ts_cert_snapshot_t snap;assert(ts_cert_get_snapshot(true,&snap)==0);install(a);assert(!strcmp(snap.certificate,b));assert(snap.generation!=status().generation);ts_cert_free_snapshot(&snap);
+    ts_cert_snapshot_t snap;assert(ts_cert_get_snapshot(true,&snap)==0);uint32_t old_generation=snap.generation;install(a);assert(!strcmp(snap.certificate,b));assert(snap.generation!=status().generation);ts_cert_free_snapshot(&snap);
+    assert(!ts_cert_material_begin(old_generation));
+    assert(ts_cert_material_begin(status().generation));ts_cert_material_end();
     pthread_t t1,t2;pthread_create(&t1,NULL,writer,NULL);pthread_create(&t2,NULL,reader,NULL);pthread_join(t1,NULL);pthread_join(t2,NULL);
     assert(ts_cert_get_snapshot(true,&snap)==0);generation=status().generation;
     assert(ts_cert_generate_keypair()==0);assert(status().generation!=generation&&!status().has_certificate);assert(snap.certificate!=NULL);ts_cert_free_snapshot(&snap);

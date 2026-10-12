@@ -1,0 +1,42 @@
+✔ zh-CN: protected delete explains service state rather than internal failure (16.509792ms)
+✔ en-US: protected delete explains service state rather than internal failure (5.778917ms)
+✔ action: unregistered service is verified stopped before deletion (6.317ms)
+✔ action: running never leads to delete or stop (5.484833ms)
+✔ action: ready never leads to delete or stop (5.237917ms)
+✔ action: unknown never leads to delete or stop (5.097834ms)
+✔ action: failed verification never deletes (5.028959ms)
+✔ action: ordinary command has no service verification (4.297542ms)
+✔ action: repeated click submits only one verification and delete (4.405ms)
+✔ action: leaving the page during verification cancels subsequent deletion (5.282917ms)
+✔ command: unregistered service is verified stopped before deletion (4.273167ms)
+✔ command: running never leads to delete or stop (3.944958ms)
+✔ command: ready never leads to delete or stop (5.8435ms)
+✔ command: unknown never leads to delete or stop (4.614542ms)
+✔ command: failed verification never deletes (4.517209ms)
+✔ command: ordinary command has no service verification (5.151209ms)
+✔ command: repeated click submits only one verification and delete (5.937667ms)
+✔ command: leaving the page during verification cancels subsequent deletion (3.846917ms)
+✔ switching hosts during verification removes the original command only (3.861625ms)
+✔ action: newer start prevents stale deletion and status painting (6.249666ms)
+✔ action: newer stop prevents stale deletion and status painting (3.94125ms)
+✔ action: newer verify prevents stale deletion and status painting (4.029584ms)
+✔ command: newer start prevents stale deletion and status painting (5.167167ms)
+✔ command: newer stop prevents stale deletion and status painting (4.964041ms)
+✔ command: newer verify prevents stale deletion and status painting (4.144833ms)
+✔ action: stale admission failure cannot replace newer start feedback (4.126417ms)
+✔ command: stale admission failure cannot replace newer start feedback (5.768083ms)
+✔ zh-CN: H15 nine states, busy and operation kind select an approved explanation (16.52475ms)
+✔ en-US: H15 nine states, busy and operation kind select an approved explanation (6.080042ms)
+✔ zh-CN: approved keys, placeholders and missing-template display label (5.785667ms)
+✔ en-US: approved keys, placeholders and missing-template display label (5.5785ms)
+Checked 3076 references including conditional and finite dynamic families.
+✔ actual UI literal/conditional and finite dynamic keys exist in both languages with matching contracts (6.108292ms)
+✔ production i18n is the inline entry; no second translator script is loaded (0.121792ms)
+ℹ tests 33
+ℹ suites 0
+ℹ pass 33
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 192.045542

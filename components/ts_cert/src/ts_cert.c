@@ -1290,3 +1290,37 @@ esp_err_t ts_cert_get_snapshot(bool require_ca, ts_cert_snapshot_t *snapshot)
     material_unlock(previous, 0);
     return result;
 }
+
+esp_err_t ts_cert_get_pack_snapshot(ts_cert_snapshot_t *snapshot)
+{
+    if (!snapshot || !s_mutex) return ESP_ERR_INVALID_ARG;
+    memset(snapshot, 0, sizeof(*snapshot));
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    ts_cert_pki_status_t status;
+    esp_err_t ret = ts_cert_get_status_locked(&status);
+    if (ret == ESP_OK && (status.storage_error || !status.key_valid || !status.key_matches ||
+        !status.has_certificate || !status.ca_valid)) ret = ESP_ERR_INVALID_STATE;
+    if (ret == ESP_OK) {
+        snapshot->key = copy_pem(s_private_key_pem, strlen(s_private_key_pem) + 1);
+        snapshot->certificate = copy_pem(s_certificate_pem, strlen(s_certificate_pem) + 1);
+        snapshot->ca = copy_pem(s_ca_chain_pem, strlen(s_ca_chain_pem) + 1);
+        snapshot->generation = s_generation;
+        memcpy(snapshot->certificate_sha256, s_fingerprint, sizeof(s_fingerprint));
+        if (!snapshot->key || !snapshot->certificate || !snapshot->ca) {
+            ts_cert_free_snapshot(snapshot); ret = ESP_ERR_NO_MEM;
+        }
+    }
+    xSemaphoreGive(s_mutex);
+    return ret;
+}
+/* Short configuration admission lease: acquire after certificate/crypto work.
+ * Never call TLS/material parsing while holding it. */
+bool ts_cert_material_begin(uint32_t expected_generation)
+{
+    if (!s_mutex) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_generation == expected_generation) return true;
+    xSemaphoreGive(s_mutex);
+    return false;
+}
+void ts_cert_material_end(void) { xSemaphoreGive(s_mutex); }

@@ -1,0 +1,46 @@
+✔ action: real REST verification gates stopped deletion (677.755291ms)
+✔ action: real REST verification gates ready deletion (190.431375ms)
+✔ command: real REST verification gates stopped deletion (141.920542ms)
+✔ command: real REST verification gates ready deletion (219.136458ms)
+✔ action: delayed verification cannot overwrite a newer real start (175.024709ms)
+✔ command: delayed verification cannot overwrite a newer real start (168.640959ms)
+✔ zh-CN: navigation buttons open existing pages without positioning or deletion (964.0105ms)
+✔ en-US: navigation buttons open existing pages without positioning or deletion (517.2845ms)
+✔ zh-CN 390: 32 production references, escaping, design, close and navigation (390.682792ms)
+✔ zh-CN 390: 47-byte label and 63-byte ID remain readable (267.434875ms)
+✔ zh-CN 390: service-blocked 47-byte template title does not clip (264.435041ms)
+✔ zh-CN 390: C group has only Close; missing list remains blocked (363.04725ms)
+✔ zh-CN 390: successive service and reference blockers have no stale sheet (414.364625ms)
+✔ zh-CN 390: homepage empty/loading/recovery retains grid and entry (191.583333ms)
+✔ zh-CN 390: stale selection failure names the chosen option and retains draft (266.922375ms)
+✔ zh-CN 1440: 32 production references, escaping, design, close and navigation (379.798125ms)
+✔ zh-CN 1440: 47-byte label and 63-byte ID remain readable (274.992625ms)
+✔ zh-CN 1440: service-blocked 47-byte template title does not clip (258.833958ms)
+✔ zh-CN 1440: C group has only Close; missing list remains blocked (375.246541ms)
+✔ zh-CN 1440: successive service and reference blockers have no stale sheet (409.31575ms)
+✔ zh-CN 1440: homepage empty/loading/recovery retains grid and entry (185.908041ms)
+✔ zh-CN 1440: stale selection failure names the chosen option and retains draft (270.203458ms)
+✔ en-US 390: 32 production references, escaping, design, close and navigation (414.266375ms)
+✔ en-US 390: 47-byte label and 63-byte ID remain readable (318.463917ms)
+✔ en-US 390: service-blocked 47-byte template title does not clip (306.5255ms)
+✔ en-US 390: C group has only Close; missing list remains blocked (442.086083ms)
+✔ en-US 390: successive service and reference blockers have no stale sheet (450.665083ms)
+✔ en-US 390: homepage empty/loading/recovery retains grid and entry (254.423167ms)
+✔ en-US 390: stale selection failure names the chosen option and retains draft (309.357459ms)
+✔ en-US 1440: 32 production references, escaping, design, close and navigation (395.291ms)
+✔ en-US 1440: 47-byte label and 63-byte ID remain readable (335.782666ms)
+✔ en-US 1440: service-blocked 47-byte template title does not clip (298.214833ms)
+✔ en-US 1440: C group has only Close; missing list remains blocked (445.234291ms)
+✔ en-US 1440: successive service and reference blockers have no stale sheet (491.603334ms)
+✔ en-US 1440: homepage empty/loading/recovery retains grid and entry (235.669625ms)
+✔ en-US 1440: stale selection failure names the chosen option and retains draft (320.05925ms)
+✔ zh-CN: non-root homepage has approved guidance and no management entry (198.403083ms)
+✔ zh-CN: template lookup failure uses saveFailed and retains the actual draft (263.494208ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11611.17775

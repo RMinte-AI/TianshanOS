@@ -12,10 +12,11 @@
 #include "../../components/ts_automation/src/ts_rule_store.h"
 #define CONFIG_TS_AUTOMATION_MAX_RULES 4
 #define pdTRUE 1
-#define xSemaphoreTakeRecursive xSemaphoreTake
+#define xSemaphoreTakeRecursive fixture_recursive_take
+static int fixture_recursive_take(SemaphoreHandle_t p,unsigned timeout){return (timeout?pthread_mutex_lock(p):pthread_mutex_trylock(p))==0;}
 #define xSemaphoreGiveRecursive xSemaphoreGive
 static int fail_alloc=-1, commits, action_calls;
-static bool independent_service;
+static bool independent_service, template_missing;
 static pthread_mutex_t binding=PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t control=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed=PTHREAD_COND_INITIALIZER;
@@ -25,6 +26,7 @@ static int64_t esp_timer_get_time(void){return 1000000;}
 void *heap_caps_calloc(size_t n,size_t size,unsigned caps){if(fail_alloc==0)return NULL;if(fail_alloc>0)--fail_alloc;return calloc(n,size);}
 void *heap_caps_malloc(size_t n,unsigned caps){return heap_caps_calloc(1,n,caps);}
 void ts_ssh_binding_lock(void){pthread_mutex_lock(&binding);}
+bool ts_ssh_binding_try_lock(void){return pthread_mutex_trylock(&binding)==0;}
 void ts_ssh_binding_unlock(void){pthread_mutex_unlock(&binding);}
 bool ts_action_manager_accepting(void){return true;}
 bool ts_ssh_service_rule_protected(const char *rule){return independent_service;}
@@ -32,7 +34,7 @@ void ts_action_snapshot_owner(const ts_auto_action_t *action,const char *rule){}
 bool ts_ssh_service_any_in_use(void){return independent_service;}
 bool ts_ssh_service_start_admissible(const char *id){return true;}
 bool ts_ssh_service_command_protected(const char *id){return false;}
-esp_err_t ts_action_template_get(const char *id,ts_action_template_t *out){return ESP_ERR_NOT_FOUND;}
+esp_err_t ts_action_template_get(const char *id,ts_action_template_t *out){if(template_missing)return ESP_ERR_NOT_FOUND;memset(out,0,sizeof(*out));out->action.type=TS_AUTO_ACT_LOG;return ESP_OK;}
 esp_err_t ts_ssh_commands_config_get(const char *id,ts_ssh_command_config_t *out){return ESP_ERR_NOT_FOUND;}
 static void barrier(int phase){pthread_mutex_lock(&control);if(block_phase==phase){reached=1;pthread_cond_broadcast(&changed);while(!proceed)pthread_cond_wait(&changed,&control);}pthread_mutex_unlock(&control);}
 esp_err_t ts_variable_get(const char *id,ts_auto_value_t *out){barrier(1);out->type=TS_AUTO_VAL_BOOL;out->bool_val=true;return ESP_OK;}
@@ -62,6 +64,7 @@ int main(void){
  uint32_t old_instance=s_rule_ctx.rules[0].instance;assert(ts_rule_commit(NULL,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);assert(ts_rule_commit(&a,a.id,0,&result)==ESP_OK);assert(s_rule_ctx.rules[0].instance!=old_instance&&s_rule_ctx.rules[0].trigger_count==0);
  strcpy(a.actions[0].template_id,"missing");
  assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
+ template_missing=true; /* Emulate an imported/offline missing reference after a valid save. */
  independent_service=true; /* action can be finished while remote run is still owned */
  assert(!s_rule_ctx.meta[0].executing);
  assert(ts_rule_commit(NULL,a.id,s_rule_ctx.rules[0].revision,&result)!=ESP_OK);
@@ -69,8 +72,8 @@ int main(void){
  assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)!=ESP_OK);
  independent_service=false;
  assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
- strcpy(a.actions[0].template_id,"missing");
- assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
+ strcpy(a.actions[0].template_id,"missing");template_missing=false;
+ assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);template_missing=true;
  assert(ts_rule_commit(NULL,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
  ts_rule_dispose(&a);free(s_rule_ctx.rules);
  puts("PASS actual rule engine: revisions/no-op/allocation failures, stale-evaluation barrier, pinned old execution, retirement bound, enable/manual/allow matrix, recreate identity");

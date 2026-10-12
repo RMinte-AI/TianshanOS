@@ -1,4 +1,4 @@
-<p><img src="https://raw.githubusercontent.com/RMinte-AI/.github/06b4b2a/profile/assets/banner.png" alt="RMinte AI — AI that works. Right where you are. RM-01 product photograph." width="1600"></p>
+![TianshanOS](assets/tianshanos-banner-en.png)
 
 [English](README_EN.md) | [中文](README.md)
 

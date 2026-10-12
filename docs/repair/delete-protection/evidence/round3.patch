@@ -1,0 +1,231 @@
+--- a/components/ts_webui/web/js/app.js
++++ b/components/ts_webui/web/js/app.js
+@@ -8 +8 @@
+-    const known = ['revision_conflict', 'source_read_only', 'recovery_required', 'commit_unknown', 'execution_busy', 'service_busy', 'busy_retired_config', 'action_missing'];
++    const known = ['revision_conflict', 'source_read_only', 'recovery_required', 'commit_unknown', 'execution_busy', 'service_busy', 'busy_retired_config'];
+@@ -12,0 +13 @@
++    if (code === 'template_lookup_failed') return runtimeText('saveFailed');
+@@ -8269 +8270 @@
+-    return 'operationPending';
++    return 'unconfirmed';
+@@ -8295 +8296,2 @@
+-        primary = t('deleteProtection.viewCommand'); target = '/commands';
++        if (context.type === 'command') primary = t('common.close');
++        else { primary = t('deleteProtection.viewCommand'); target = '/commands'; }
+@@ -8315,0 +8318 @@
++    const isRoot = api.isRoot();
+@@ -8317,2 +8320,4 @@
+-    const body = loading ? runtimeText('configLoading') : recovery ? runtimeText('recovery_required') : t('automationPage.quickActionsHint');
+-    const detail = loading ? t('deleteProtection.loadingDetails') : recovery ? t('deleteProtection.recoveryDetails') : '';
++    const body = loading ? runtimeText('configLoading') : recovery ? runtimeText('recovery_required') :
++        (isRoot ? t('automationPage.quickActionsHint') : t('deleteProtection.quickEmptyNeedRoot'));
++    const detail = loading ? (isRoot ? t('deleteProtection.loadingDetails') : t('deleteProtection.quickLoadingNeedRoot')) :
++        recovery ? (isRoot ? t('deleteProtection.recoveryDetails') : t('deleteProtection.quickRecoveryNeedRoot')) : '';
+@@ -8321 +8326 @@
+-        '<button type="button" class="btn sm" onclick="window.location.hash=\'/automation\'">' + t('deleteProtection.goAutomation') + '</button></div>';
++        (isRoot ? '<button type="button" class="btn sm" onclick="window.location.hash=\'/automation\'">' + t('deleteProtection.goAutomation') + '</button>' : '') + '</div>';
+--- a/components/ts_webui/web/index.html
++++ b/components/ts_webui/web/index.html
+@@ -91 +91 @@
+-    window.TS_ASSET_VERSION = '0.6.1-lpmu6-keygen1-delete1';
++    window.TS_ASSET_VERSION = '0.6.1-lpmu6-keygen1-delete2';
+@@ -264 +264 @@
+-    <script defer src="/js/app.js?v=0.6.1-lpmu6-keygen2-delete1"></script>
++    <script defer src="/js/app.js?v=0.6.1-lpmu6-keygen2-delete2"></script>
+--- a/components/ts_webui/web/js/lang/zh-CN.js
++++ b/components/ts_webui/web/js/lang/zh-CN.js
+@@ -39 +39,4 @@
+-        "loadingDetails": "如果长时间没有变化，请在「终端」页打开「系统日志」查看原因。"
++        "loadingDetails": "如果长时间没有变化，请在「终端」页打开「系统日志」查看原因。",
++        "quickLoadingNeedRoot": "如果长时间没有变化，请联系拥有 root 权限的用户查看原因。",
++        "quickRecoveryNeedRoot": "请联系拥有 root 权限的用户处理。",
++        "quickEmptyNeedRoot": "如需添加快捷操作，请联系拥有 root 权限的用户。"
+--- a/components/ts_webui/web/js/lang/en-US.js
++++ b/components/ts_webui/web/js/lang/en-US.js
+@@ -39 +39,4 @@
+-        "loadingDetails": "If nothing changes for a long time, open “System Logs” on the Terminal page to see why."
++        "loadingDetails": "If nothing changes for a long time, open “System Logs” on the Terminal page to see why.",
++        "quickLoadingNeedRoot": "If nothing changes for a long time, contact a user with root access to find out why.",
++        "quickRecoveryNeedRoot": "Contact a user with root access to resolve this.",
++        "quickEmptyNeedRoot": "To add quick actions, contact a user with root access."
+--- a/tests/prompts/static.test.cjs
++++ b/tests/prompts/static.test.cjs
+@@ -14 +14 @@
+-for(const family of ['promptRepair','runtimeRepair'])for(const key of Object.keys(langs['zh-CN'][family]))calls.push({f:'dynamic '+family,key:family+'.'+key,dynamic:true});
++for(const family of ['promptRepair','runtimeRepair','deleteProtection'])for(const key of Object.keys(langs['zh-CN'][family]))calls.push({f:'dynamic '+family,key:family+'.'+key,dynamic:true});
+--- a/tests/prompts/delete-reference.test.cjs
++++ b/tests/prompts/delete-reference.test.cjs
+@@ -14 +14,2 @@
+- assert.equal(h.ctx.deleteServiceMessage({state:'future',busy:false}),'operationPending');
++ assert.equal(h.ctx.deleteServiceMessage({state:'future',busy:false}),'unconfirmed');
++ assert.equal(h.ctx.deleteServiceMessage({busy:false}),'unconfirmed');
+@@ -20,0 +22 @@
++ assert.equal(h.ctx.runtimeSaveError({data:{error_code:'template_lookup_failed'}}),h.ctx.runtimeText('saveFailed'));
+--- a/tests/prompts/delete-protection.test.cjs
++++ b/tests/prompts/delete-protection.test.cjs
+@@ -49 +49,2 @@
+-  assert(h.ctx.lastSheet.primary===h.ctx.t('deleteProtection.viewCommand'));
++  assert.equal(h.ctx.lastSheet.primary,h.ctx.t(entry==='command'?'common.close':'deleteProtection.viewCommand'));
++  assert.equal(h.ctx.lastSheet.secondary,entry==='command'?false:h.ctx.t('common.close'));
+--- a/tests/prompts/delete-reference.browser.test.cjs
++++ b/tests/prompts/delete-reference.browser.test.cjs
+@@ -11,2 +11,2 @@
+-async function pageFor(language,width,run){
+- const state={templateName:name,wire:'in-use',service:false,serviceState:'stopped',rules:[],loaded:true,recovery:false},calls=[],errors=[];
++async function pageFor(language,width,run,level='root'){
++ const state={templateName:name,wire:'in-use',service:false,serviceState:'stopped',rules:[],loaded:true,recovery:false,level,saveError:null},calls=[],errors=[];
+@@ -20 +20 @@
+-    if(endpoint==='automation/rules/add')return send(fixture('action-missing'));
++    if(endpoint==='automation/rules/add')return send(state.saveError?{code:4,message:state.saveError,data:{error_code:state.saveError}}:fixture('action-missing'));
+@@ -22 +22 @@
+-    if(endpoint==='auth/status')data={valid:true,level:'root',username:'root'};
++    if(endpoint==='auth/status')data={valid:true,level:state.level,username:state.level};
+@@ -40 +40 @@
+- await context.addInitScript(lang=>{localStorage.setItem('ts_language',lang);localStorage.setItem('ts_level','root');localStorage.setItem('ts_token','fixture');localStorage.setItem('ts_username','root');class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}window.WebSocket=Socket;},language);
++ await context.addInitScript(({lang,level})=>{localStorage.setItem('ts_language',lang);localStorage.setItem('ts_level',level);localStorage.setItem('ts_token','fixture');localStorage.setItem('ts_username',level);class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}window.WebSocket=Socket;},{lang:language,level});
+@@ -43 +43 @@
+- try{await page.goto(base);await page.waitForFunction(()=>i18n.isReady());await page.evaluate(()=>{closeLoginModal();location.hash='/automation';});await page.waitForSelector('#actions-list button[onclick]');await run({page,state,calls});assert.deepEqual(errors,[]);}
++ try{await page.goto(base);await page.waitForFunction(()=>i18n.isReady());await page.evaluate(root=>{closeLoginModal();if(root)location.hash='/automation';},level==='root');await page.waitForSelector(level==='root'?'#actions-list button[onclick]':'#quick-actions-grid');await run({page,state,calls});assert.deepEqual(errors,[]);}
+@@ -111 +111,3 @@
+-   if(scenario==='recovery')assert((await grid.textContent()).includes(await page.evaluate(()=>runtimeText('recovery_required'))));
++   if(scenario==='recovery'){assert((await grid.textContent()).includes(await page.evaluate(()=>runtimeText('recovery_required'))));assert((await grid.textContent()).includes(await page.evaluate(()=>t('deleteProtection.recoveryDetails'))));}
++   const bodyKey=scenario==='empty'?'automationPage.quickActionsHint':scenario==='loading'?'runtimeRepair.configLoading':'runtimeRepair.recovery_required';
++   assert((await grid.textContent()).includes(await page.evaluate(k=>t(k),bodyKey)));
+@@ -121,0 +124,25 @@
++
++// One Chinese admin scene: both auth status and initial storage use the same non-root level.
++test('zh-CN: non-root homepage has approved guidance and no management entry',async()=>pageFor('zh-CN',390,async({page,state})=>{
++ assert.equal(await page.evaluate(()=>api.getLevel()),'admin');assert.equal(await page.evaluate(()=>api.isRoot()),false);
++ for(const scenario of ['empty','loading','recovery']){
++  state.loaded=scenario==='empty';state.recovery=scenario==='recovery';await page.evaluate(()=>refreshQuickActions());
++  const grid=page.locator('#quick-actions-grid');assert.equal(await grid.count(),1);assert.equal(await grid.locator('button').count(),0);
++  const titleKey=scenario==='empty'?'automationPage.noQuickActions':scenario==='loading'?'deleteProtection.quickLoadingTitle':'deleteProtection.quickRecoveryTitle';
++  assert.equal(await grid.locator('.t-body').textContent(),await page.evaluate(k=>t(k),titleKey));
++  const newKey={empty:'deleteProtection.quickEmptyNeedRoot',loading:'deleteProtection.quickLoadingNeedRoot',recovery:'deleteProtection.quickRecoveryNeedRoot'}[scenario];
++  assert((await grid.textContent()).includes(await page.evaluate(k=>t(k),newKey)));
++  if(scenario!=='empty')assert.equal(await grid.locator('.t-note').first().textContent(),await page.evaluate(k=>t(k),scenario==='loading'?'runtimeRepair.configLoading':'runtimeRepair.recovery_required'));
++  for(const oldKey of ['deleteProtection.loadingDetails','deleteProtection.recoveryDetails','automationPage.quickActionsHint'])
++   assert(!(await grid.textContent()).includes(await page.evaluate(k=>t(k),oldKey)));
++ }
++},'admin'));
++test('zh-CN: template lookup failure uses saveFailed and retains the actual draft',async()=>pageFor('zh-CN',390,async({page,state,calls})=>{
++ state.saveError='template_lookup_failed';
++ await page.evaluate(async()=>{showAddRuleModal();await addActionTemplateRow('missing');});
++ await page.locator('#rule-id').fill('new-rule');await page.locator('#rule-name').fill('Lookup draft remains');await page.locator('#rule-manual-only').check();
++ await page.locator('#add-rule-modal button[onclick="submitAddRule()"] ').click();
++ await page.waitForFunction(()=>document.getElementById('toast')?.textContent===t('runtimeRepair.saveFailed'));
++ assert.equal(await page.locator('#rule-name').inputValue(),'Lookup draft remains');assert.equal(await page.locator('#add-rule-modal').count(),1);
++ assert.equal(calls.filter(c=>c.endpoint==='automation/rules/add').length,1);
++}));
+--- a/tests/prompts/delete-protection.browser.test.cjs
++++ b/tests/prompts/delete-protection.browser.test.cjs
+@@ -35 +35 @@
+-  await page.evaluate(()=>{confirmAction=async()=>true;refreshActions=async()=>{};refreshCommandsList=()=>{};selectedHostId='host';sshCommands={host:[{id:'model',name:'Model'}]};});
++  await page.evaluate(()=>{confirmAction=async()=>true;refreshActions=async()=>{};window.commandRefreshes=0;refreshCommandsList=()=>{window.commandRefreshes++;};window.deleteNavigationCalls=0;const navigate=router.navigate.bind(router);router.navigate=(...args)=>{window.deleteNavigationCalls++;return navigate(...args);};selectedHostId='host';sshCommands={host:[{id:'model',name:'Model'}]};});
+@@ -37 +37,10 @@
+-  if(state==='ready'){await page.locator('.confirm-sheet').waitFor();assert((await page.locator('.confirm-sheet').textContent()).includes('仍在运行'));await page.keyboard.press('Escape');}
++  if(state==='ready'){
++   await page.locator('.confirm-sheet').waitFor();assert((await page.locator('.confirm-sheet').textContent()).includes('仍在运行'));
++   if(entry==='command'){
++    assert.equal(await page.locator('.confirm-sheet button').count(),1);
++    assert.equal(await page.locator('.confirm-sheet button').textContent(),await page.evaluate(()=>t('common.close')));
++    const before=await page.evaluate(()=>({nav:window.deleteNavigationCalls,refresh:window.commandRefreshes,hash:location.hash}));
++    await page.locator('.confirm-sheet button').click();await deletion;
++    assert.deepEqual(await page.evaluate(()=>({nav:window.deleteNavigationCalls,refresh:window.commandRefreshes,hash:location.hash})),before);
++   }else await page.keyboard.press('Escape');
++  }
+--- a/docs/repair/delete-protection/PLAN.md
++++ b/docs/repair/delete-protection/PLAN.md
+@@ -1 +1 @@
+-# 删除保护与快捷操作提示：已确认的实施方案 v3
++# 删除保护与快捷操作提示：已确认的实施方案 v4（第三轮方案 v2）
+@@ -3 +3 @@
+-日期：2026-10-09。用户已明确回复“确认，按第二轮文案实施”。
++日期：2026-10-10。用户已明确回复“确认，按第二轮文案实施”，并批准第三轮方案 v2 及三句非 root 首页说明。
+@@ -31,3 +31,3 @@
+-- runtimeSaveError 只增加 action_missing 的处理，原有原因结构保持；新文案在 deleteProtection 命名空间。
+-- 查看规则和查看指令只改变路由，不定位、不高亮、不自动编辑或删除。
+-- 首页 recovery > loading > 空状态，保留面板与前往自动化入口；不泛化提示用户检查 SD 卡。
++- runtimeSaveError 保留 action_missing 的名称提示，将本轮新增原因 template_lookup_failed 映射到现有 saveFailed；不扩展其他原因。新文案在 deleteProtection 命名空间。
++- 查看规则以及从模板阻断框查看指令只改变路由，不定位、不高亮、不自动编辑或删除；指令自身被阻断时只有关闭，不重载当前页。
++- 首页 recovery > loading > 空状态，保留面板；root 原说明及前往自动化入口不变，所有非 root 无按钮，按状态使用 quickLoadingNeedRoot/quickRecoveryNeedRoot/quickEmptyNeedRoot 三句用户确认说明。不泛化提示用户检查 SD 卡。
+@@ -36 +36 @@
+-- app/api/语言包/CSS 资源查询标识含 delete1，发布版本仍为 0.6.1。
++- app.js 查询标识及语言包使用的 TS_ASSET_VERSION 为 delete2；api.js/CSS 保持 delete1。xterm 地址随 TS_ASSET_VERSION 变化，内容未改；发布版本仍为 0.6.1。
+@@ -51 +51 @@
+-| 未来未知状态 | operationPending，保持拒绝 |
++| 未来未知或缺失状态 | unconfirmed，保持拒绝 |
+--- a/docs/repair/delete-protection/COPY.md
++++ b/docs/repair/delete-protection/COPY.md
+@@ -30,0 +31,3 @@
++| deleteProtection.quickLoadingNeedRoot | 如果长时间没有变化，请联系拥有 root 权限的用户查看原因。 | If nothing changes for a long time, contact a user with root access to find out why. |
++| deleteProtection.quickRecoveryNeedRoot | 请联系拥有 root 权限的用户处理。 | Contact a user with root access to resolve this. |
++| deleteProtection.quickEmptyNeedRoot | 如需添加快捷操作，请联系拥有 root 权限的用户。 | To add quick actions, contact a user with root access. |
+@@ -32,2 +35,2 @@
+-C 组不使用 goAutomation；只有首页三个状态使用该跳转入口。关闭复用 common.close。
+-空状态 quickActionsHint 已改为「在首页显示」，加载/恢复正文复用现有 runtimeRepair.configLoading/recovery_required；后端服务兜底复用 promptRepair.serviceDeleteProtected。
++C 组不使用 goAutomation；首页三个状态仅 root 使用该跳转入口。指令自身的服务阻断框只有 common.close，模板场景保留 viewCommand。
++root 空状态 quickActionsHint 已改为「在首页显示」，加载/恢复正文复用现有 runtimeRepair.configLoading/recovery_required；后端服务兜底复用 promptRepair.serviceDeleteProtected。非 root 加载/恢复的补充句与空状态正文使用上述三个 NeedRoot 新键，用户已确认定稿，无占位符，逐字采用。
+--- a/docs/repair/delete-protection/RESULT.md
++++ b/docs/repair/delete-protection/RESULT.md
+@@ -34 +34 @@
+-## 验证
++## 上一轮验证（第三轮实施前的源码）
+@@ -50 +50 @@
+-## 资源与工件
++## 上一轮资源与工件（不代表第三轮净增量或新构建）
+@@ -60 +60 @@
+-## 文案与截图
++## 文案与上一轮截图
+@@ -78,0 +79,26 @@
++
++
++## 第三轮补记：2026-10-10，按第三轮方案 v2 完成
++
++用户已授权实施 R1–R5 并确认三句非 root 首页说明。完整方案在主目录 `output/review-delete-protection-copy/第三轮修复方案与交接-v2.md`，回执在同目录 `第三轮实施回执.md`。仍为原独立工作目录中的未提交修改。
++
++- R1：静态检查加入 deleteProtection，当前原24键加新增3键均由相同检查覆盖。
++- R2：无未完成操作证据的未知/缺失服务状态使用 unconfirmed；真实 pending 分支及删除安全门保持。
++- R3：template_lookup_failed 使用现有 saveFailed；action_missing 名称说明保持，保存失败草稿保留。
++- R4：只有 root 显示自动化入口；三句已确认非 root 说明按场景使用，root 原正文/补充句保持。新 t() 使用字面量键。
++- R5：指令自身的服务阻断框只有关闭，关闭不导航或重载；动作模板查看指令和查看规则继续只跳转。
++- TS_ASSET_VERSION 和 app.js 查询串为 delete2；api.js/CSS 保持 delete1，xterm 地址随共享标识变化。没有改变发布版本。
++
++| 本轮实际命令（独立目录） | 结果 | 证据 |
++|---|---|---|
++| `node --test tests/prompts/static.test.cjs tests/prompts/delete-reference.test.cjs tests/prompts/delete-protection.test.cjs` | 33/33，通过 | [round3-unit.log](evidence/round3-unit.log) |
++| `node --test tests/prompts/delete-reference.browser.test.cjs tests/prompts/delete-protection.browser.test.cjs` | 38/38，通过 | [round3-browser.log](evidence/round3-browser.log) |
++| `git diff --check` | 通过，无空白错误 | [round3-verification.json](evidence/round3-verification.json) |
++
++新增浏览器场景只有中文 admin 三状态和中文查询失败保留草稿；已有相关文件的语言/视口/服务覆盖照常执行，没有新增矩阵。admin 同时用于 auth/status 返回等级和初始化 localStorage，实际 api.getLevel 为 admin、isRoot 为 false。三状态无按钮、对应定稿出现、旧 root 管理操作提示不出现；加载/恢复标题与正文保持，空状态仅替换正文。
++
++本轮未运行固件测试、全量测试、ESP-IDF构建或真机测试；固件/HTTP未修改，用户明确限定验证范围。上方126/262结果、构建日志、截图、二进制及2807B资源统计均为上一轮历史证据，不能当作本轮固件工件或资源增量。没有重新生成 HTTP fixture、截图或二进制。
++
++[source-hashes.json](evidence/source-hashes.json)现对应本轮源码；[source-hashes-before-round3.json](evidence/source-hashes-before-round3.json)保留上一轮源码记录，旧工件哈希不变。复审可用[round3.patch](evidence/round3.patch)查看相对上一轮未提交实现的精确增量，而不只与 main 比较。补丁采用无上下文格式，避免空白上下文行被 Git 当作尾随空格；需要应用时使用 git apply --unidiff-zero。
++
++方案无实质偏差，没有需要用户另作决定的事项。固件、通用HTTP出口、锁顺序、committing及api.js/CSS等受保护文件与本轮开始时逐字相同；main源码未改。未提交、推送、开PR、合并或刷机，未修改其他分支/工作目录。
+--- a/docs/repair/delete-protection/evidence/source-hashes.json
++++ b/docs/repair/delete-protection/evidence/source-hashes.json
+@@ -8 +8 @@
+-  "components/ts_webui/web/index.html": "5b2413878fc9c7a7895811591233968c44acef69ddd88751520dc928c0a16097",
++  "components/ts_webui/web/index.html": "4fe61cb62fc0a0d82c8d8bc25a6989a3f83d51a07ae0b160719a51a0e8efe5c7",
+@@ -10,3 +10,3 @@
+-  "components/ts_webui/web/js/app.js": "fe704a6ebb90917ce154ed38504822f760de257623703ef6ba8a7c17fa6f119f",
+-  "components/ts_webui/web/js/lang/en-US.js": "a8ddfed891595514698b6aaf4212b39e035a644b10396f8015fd1dfdc38bd400",
+-  "components/ts_webui/web/js/lang/zh-CN.js": "f4872db0c2e94974d2541f5e1a04a15bea5a28ec058667a699ee98091c4c5ddf",
++  "components/ts_webui/web/js/app.js": "159dba2c7008282bbf3d291735a2547aa4546da905f1dee50870f4e85d852393",
++  "components/ts_webui/web/js/lang/en-US.js": "4efc90a760ea704ab0daf4eee7ef232e6e0c3d43bb4453f8119603d7b9e964f6",
++  "components/ts_webui/web/js/lang/zh-CN.js": "ff3881d4d344fee9109ab8ab185684289ea780e54b2696b54b2d971ffa44eb5f",
+@@ -22,4 +22,4 @@
+-  "tests/prompts/delete-protection.browser.test.cjs": "c0691c5d8bea3190720c2e7c6e8a83a897bb3f18ae0d8b5001148d0fc0bb10cb",
+-  "tests/prompts/delete-protection.test.cjs": "1ad5a34b98b7ba2ca99ac7c162e1076e8ec973131919dca601df90ec8cabfd56",
+-  "tests/prompts/delete-reference.browser.test.cjs": "d2eb6f4a04e93cef4ae0331f1c5d0207cc0d63905a2f88636caf52f0718c1d1b",
+-  "tests/prompts/delete-reference.test.cjs": "3b6b9db25ec1513afbfd443ab20fee3690176b0053337d099b8762a7514025eb",
++  "tests/prompts/delete-protection.browser.test.cjs": "2bc58639fcbeeffd1d25cf7f1785d992e6f76c56312248e3d91426b978626aec",
++  "tests/prompts/delete-protection.test.cjs": "40bb3dd4a9b08739b9f6e74e0f4a26734f21a37ff6cc30eabe9f897c9534347c",
++  "tests/prompts/delete-reference.browser.test.cjs": "230b0b27f29af1f4c2a8f84c810d81dda4086d6d5ae0953e09a6265da8bdf346",
++  "tests/prompts/delete-reference.test.cjs": "083b29086734e8195c1414ad0387fb8bbdf6f0f96d083eb4ed752a349504ce76",
+@@ -31 +31,2 @@
+-  "tests/runtime/test_engine.c": "aea606273a6fc0442f07974afae4d25e5ee34fa07ede6f66e8fc4b35c0539b7c"
++  "tests/runtime/test_engine.c": "aea606273a6fc0442f07974afae4d25e5ee34fa07ede6f66e8fc4b35c0539b7c",
++  "tests/prompts/static.test.cjs": "be2ea30d0e40ee116a19283add4973b7e4685faf65062f2ad903c6d37563ea94"
