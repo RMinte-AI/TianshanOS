@@ -108,6 +108,7 @@ static void timer_pump(void){while(timer_queued){typeof(timer_queue[0]) q=timer_
 esp_err_t ts_ssh_session_create(const ts_ssh_config_t*c,ts_ssh_session_t *out){stage("create");if(remote_failure==1)return ESP_FAIL;*out=host_calloc(1,sizeof(**out));if(*out)(*out)->config=*c;return *out?ESP_OK:ESP_ERR_NO_MEM;}
 esp_err_t ts_ssh_connect(ts_ssh_session_t s){stage("connect");if(s->config.cancelled && s->config.cancelled(s->config.cancel_context))return ESP_ERR_TIMEOUT;stage("auth");return remote_failure==2?ESP_FAIL:ESP_OK;}
 const char *ts_ssh_get_error(ts_ssh_session_t s){(void)s;return "fake network error";}
+const char *ts_ssh_connect_reason(ts_ssh_session_t s,const char **stage){(void)s;if(stage)*stage=NULL;return "ssh_connect_failed";}
 esp_err_t ts_ssh_disconnect(ts_ssh_session_t s){(void)s;return ESP_OK;}
 esp_err_t ts_ssh_session_destroy(ts_ssh_session_t s){session_destroys++;tracked_free(s);return ESP_OK;}
 void ts_ssh_abort(ts_ssh_session_t s){s->aborted=true;aborts++;}
@@ -158,7 +159,7 @@ static void setup(void){start();memset(s_clients,0,sizeof(s_clients));s_server=(
 static void finish_all(void){drive_all();assert(!ts_ws_op_busy());stop();assert(!live_allocations);}
 static void connect_shell(void){cJSON *j=cJSON_Parse("{\"host\":\"fake\",\"user\":\"fake\"}");current=(void*)3;handle_ssh_connect(&reqs[1],j);current=(void*)1;cJSON_Delete(j);}
 static unsigned terminal_frames,output_frames,connected_frames,disconnecting_frames;static bool output_after_terminal;
-static void observe(httpd_ws_frame_t *f){const char *p=(char*)f->payload;if(strstr(p,"ssh_output")||strstr(p,"ssh_exec_output")){if(terminal_frames)output_after_terminal=true;output_frames++;}if(strstr(p,"ssh_exec_done")||strstr(p,"ssh_exec_error")||strstr(p,"\"status\":\"error\"")||strstr(p,"\"status\":\"closed\""))terminal_frames++;if(strstr(p,"\"status\":\"connected\""))connected_frames++;if(strstr(p,"\"status\":\"disconnecting\""))disconnecting_frames++;}
+static void observe(httpd_ws_frame_t *f){const char *p=(char*)f->payload;if(strstr(p,"\"type\":\"ssh_output\"")||strstr(p,"\"type\":\"ssh_exec_output\"")){   /* the frame type, not a reason token that happens to contain the word */if(terminal_frames)output_after_terminal=true;output_frames++;}if(strstr(p,"ssh_exec_done")||strstr(p,"ssh_exec_error")||strstr(p,"\"status\":\"error\"")||strstr(p,"\"status\":\"closed\""))terminal_frames++;if(strstr(p,"\"status\":\"connected\""))connected_frames++;if(strstr(p,"\"status\":\"disconnecting\""))disconnecting_frames++;}
 static jmp_buf worker_yield;
 static void yield_worker(void){longjmp(worker_yield,1);}
 static void worker_step(void){wait_hook=yield_worker;current=(void*)2;if(!setjmp(worker_yield))worker_fn(NULL);current=(void*)1;wait_hook=NULL;}

@@ -16,10 +16,13 @@ for(const language of ['zh-CN','en-US'])test(`${language}: H15 nine states, busy
 });
 for(const language of ['zh-CN','en-US'])test(`${language}: approved keys, placeholders and missing-template display label`,async()=>{
  const h=harness(language);await h.ready();h.load();
- const missing=h.ctx.runtimeSaveError?h.ctx.runtimeSaveError({data:{error_code:'action_missing',missing_template_id:'missing'},missingTemplateName:'Human label'}):h.run("runtimeSaveError({data:{error_code:'action_missing',missing_template_id:'missing'},missingTemplateName:'Human label'})");
- assert(missing.includes('Human label')&&!missing.includes('action_missing'));
- assert.equal(h.ctx.runtimeSaveError({rawMessage:'action_missing'}),h.ctx.runtimeText('saveFailed'));
- assert.equal(h.ctx.runtimeSaveError({data:{error_code:'template_lookup_failed'}}),h.ctx.runtimeText('saveFailed'));
+ const said=spec=>h.ctx.describeFailure(spec).message;
+ const missing=said({op:'rule.save',params:{name:'Rule',template:'Human label'},write:true,result:{code:1,error:'action_missing',data:{error_code:'action_missing',missing_template_id:'missing'}}});
+ assert(missing.includes('Human label')&&!missing.includes('action_missing')&&!missing.includes('{'),missing);
+ const unnamed=said({op:'rule.save',params:{name:'Rule'},write:true,token:'action_missing_unnamed',result:{code:1,error:'action_missing'}});
+ assert(unnamed.includes(h.ctx.t('failure.reasons.action_missing_unnamed.why'))&&!unnamed.includes('{'),unnamed);
+ const lookup=said({op:'rule.save',params:{name:'Rule'},write:true,result:{code:7,error:'template_lookup_failed'}});
+ assert(lookup.includes(h.ctx.t('failure.reasons.template_lookup_failed.why')),lookup);
  let sheet;h.ctx.confirmSheet=async options=>{sheet=options;return false;};
  await h.ctx.showDeleteProtection({code:4,message:'action_in_use'}, {type:'action',name:'Model'},()=>true);
  assert(sheet.bodyHtml.includes(h.ctx.escapeHtml(h.ctx.t('deleteProtection.actionInUseWithoutDetails',{name:'Model'}))));

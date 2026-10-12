@@ -449,6 +449,20 @@ void ts_api_result_error(ts_api_result_t *result, ts_api_result_code_t code,
     }
 }
 
+void ts_api_result_reason(ts_api_result_t *result, ts_api_result_code_t code,
+                         const char *token, const char *detail)
+{
+    ts_api_result_error(result, code, token);
+    if (result && detail && detail[0]) {
+        cJSON *data = cJSON_CreateObject();
+        if (data && cJSON_AddStringToObject(data, "detail", detail)) {
+            result->data = data;
+        } else {
+            cJSON_Delete(data);
+        }
+    }
+}
+
 cJSON *ts_api_result_to_json(const ts_api_result_t *result)
 {
     if (result == NULL) {

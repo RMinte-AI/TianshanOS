@@ -146,8 +146,8 @@ for (const language of ['zh-CN','en-US']) {
     const preserved=message===document.getElementById('toast').textContent;
     const disabled=document.getElementById('config-pack-apply-button').disabled;
     resolveNew({code:0,data:{success:true}});await newer;
-    return {preserved,disabled,history:document.getElementById('config-pack-task-results')?.textContent};
-   });assert(r.preserved&&r.disabled);assert(r.history.includes('older failure'));
+    return {preserved,disabled,history:document.getElementById('config-pack-task-results')?.textContent,said:describeFailure({op:'pack.apply',error:new Error('older failure'),endpoint:'config.pack.apply',write:true}).message};
+   });assert(r.preserved&&r.disabled);assert(r.history.includes(r.said),r.history);
   }finally{await context.close();}
  });
  test(`R6: fixed upload destination and separate refresh failure ${language}`,async()=>{
@@ -159,8 +159,8 @@ for (const language of ['zh-CN','en-US']) {
     let resolve;const paths=[];api.fileUpload=async path=>{paths.push(path);if(paths.length===1)await new Promise(r=>resolve=r);return {status:'uploaded'};};
     const pending=uploadFiles();currentFilePath='/sdcard/b';resolve();await pending;
     showUploadDialog();handleFileSelect({target:{files:[new File(['c'],'c.txt')]}});api.storageList=async()=>({code:7,error:'read failed'});const result=await uploadFiles();
-    return {paths,result,list:document.getElementById('file-list').textContent,summary:document.getElementById('operation-summary').textContent};
-   });assert.deepEqual(r.paths.slice(0,2),['/sdcard/a/a.txt','/sdcard/a/b.txt']);assert.equal(r.result.success,1);assert.equal(r.result.failures.length,0);assert(r.list.includes('read failed'));
+    return {paths,result,list:document.getElementById('file-list').textContent,summary:document.getElementById('operation-summary').textContent,said:describeFailure({op:'file.list',error:new ApiOperationError({code:7,error:'read failed'},'storage.list'),endpoint:'storage.list',write:false}).message,note:t('promptRepair.listRefreshFailed')};
+   });assert.deepEqual(r.paths.slice(0,2),['/sdcard/a/a.txt','/sdcard/a/b.txt']);assert.equal(r.result.success,1);assert.equal(r.result.failures.length,0);assert(r.list.includes(r.said),r.list);assert(r.summary.includes(r.note),r.summary);
   }finally{await context.close();}
  });
  test(`R6: out-of-order directory success and error do not replace latest list ${language}`,async()=>{

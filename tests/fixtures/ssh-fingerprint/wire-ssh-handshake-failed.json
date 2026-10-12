@@ -1,0 +1,1 @@
+{"code":10,"error":"ssh_handshake_failed","data":{"stage":"handshake","detail":"SSH connection failed (code=-1)"}}

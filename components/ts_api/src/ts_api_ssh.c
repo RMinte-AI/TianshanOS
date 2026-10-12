@@ -31,12 +31,14 @@
 #include "ts_ssh_hosts_config.h"
 #include "ts_ssh_commands_config.h"
 #include "ts_config_pack.h"
+#include "ts_api_pack.h"
 #include "ts_cert.h"
 #include "ts_webui.h"
 #include "ts_log.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -61,6 +63,22 @@ static void cleanup_key_buffer(ssh_request_key_t *key) {
         free(key->data);
         key->data = NULL;
         key->len = 0;
+    }
+}
+
+/* Failure with the reason token as the error text and {stage, detail} as data (data is delivered with failures). */
+static void ssh_connect_error(ts_api_result_t *result, ts_ssh_session_t session)
+{
+    const char *stage = "connect";
+    const char *reason = ts_ssh_connect_reason(session, &stage);
+    const char *detail = ts_ssh_get_error(session);
+    ts_api_result_error(result, TS_API_ERR_CONNECTION, reason);
+    cJSON *data = cJSON_CreateObject();
+    if (data && cJSON_AddStringToObject(data, "stage", stage) &&
+        (!detail || !detail[0] || cJSON_AddStringToObject(data, "detail", detail))) {
+        result->data = data;
+    } else {
+        cJSON_Delete(data);
     }
 }
 
@@ -153,7 +171,7 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
     esp_err_t ret = ts_known_hosts_verify(session, &verify_result, &host_info);
     
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to verify host fingerprint");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "known_host_failed", esp_err_to_name(ret));
         return ret;
     }
 
@@ -184,7 +202,7 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
                             host_info.host, host_info.port, host_info.fingerprint);
                     return ESP_OK;
                 } else {
-                    ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to save host key");
+                    ts_api_result_reason(result, TS_API_ERR_INTERNAL, "known_host_failed", esp_err_to_name(ret));
                     return ret;
                 }
             } else {
@@ -197,7 +215,7 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
                 cJSON_AddStringToObject(data, "message", 
                     "New host - set trust_new=true or use hosts.add to trust this host");
                 result->code = TS_API_ERR_HOST_NEW;
-                result->message = TS_STRDUP_PSRAM("New host requires confirmation");
+                result->message = TS_STRDUP_PSRAM("ssh_host_key_unknown");
                 result->data = data;
                 return ESP_ERR_INVALID_STATE;
             }
@@ -211,7 +229,7 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
                 if (ret == ESP_OK) {
                     return ESP_OK;
                 } else {
-                    ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to update host key");
+                    ts_api_result_reason(result, TS_API_ERR_INTERNAL, "known_host_failed", esp_err_to_name(ret));
                     return ret;
                 }
             } else {
@@ -232,13 +250,13 @@ static esp_err_t verify_host_fingerprint(ts_ssh_session_t session,
                     "WARNING: Host key has changed! This could indicate a man-in-the-middle attack. "
                     "Set accept_changed=true only if you are sure the server was reinstalled.");
                 result->code = TS_API_ERR_HOST_MISMATCH;
-                result->message = TS_STRDUP_PSRAM("Host key mismatch - possible MITM attack");
+                result->message = TS_STRDUP_PSRAM("ssh_host_key_changed");
                 result->data = data;
                 return ESP_ERR_INVALID_STATE;
             }
             
         default:
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Host verification error");
+            ts_api_result_error(result, TS_API_ERR_INTERNAL, "known_host_failed");
             return ESP_FAIL;
     }
 }
@@ -309,7 +327,7 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
     esp_err_t ret = configure_ssh_from_params(params, &config, &request_key);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid SSH configuration");
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "ssh_config_invalid");
         cleanup_key_buffer(&request_key);
         return ret;
     }
@@ -324,7 +342,7 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
     ts_ssh_session_t session = NULL;
     ret = ts_ssh_session_create(&config, &session);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create session");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         cleanup_key_buffer(&request_key);
         return ret;
     }
@@ -332,9 +350,8 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
     /* 连接（TCP 层） */
     ret = connect_verified(session, params, result, false);
     if (ret != ESP_OK) {
-        const char *err = ts_ssh_get_error(session);
         if (result->code == TS_API_OK)
-            ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
+            ssh_connect_error(result, session);
         ts_ssh_session_destroy(session);
         cleanup_key_buffer(&request_key);
         return ret;
@@ -378,7 +395,7 @@ static esp_err_t api_ssh_exec(const cJSON *params, ts_api_result_t *result)
         ts_api_result_ok(result, data);
         ts_ssh_exec_result_free(&exec_result);
     } else {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Command execution failed");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "ssh_exec_failed", ts_ssh_get_error(session));
     }
     
     ts_ssh_disconnect(session);
@@ -512,11 +529,9 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
     
     if (ret != ESP_OK) {
         if (ret == ESP_ERR_INVALID_STATE) {
-            ts_api_result_error(result, TS_API_ERR_BUSY, 
-                                "Another SSH exec session is running");
+            ts_api_result_error(result, TS_API_ERR_BUSY, "ssh_exec_busy");
         } else {
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, 
-                                "Failed to start SSH exec session");
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "ssh_start_failed", esp_err_to_name(ret));
         }
         return ret;
     }
@@ -554,13 +569,13 @@ static esp_err_t api_ssh_cancel(const cJSON *params, ts_api_result_t *result)
     /* Exact instance identity; a status wildcard is never a control target. */
     if (!cJSON_IsNumber(sid) || sid->valuedouble < 1 || sid->valuedouble > UINT32_MAX ||
         sid->valuedouble != (double)(uint32_t)sid->valuedouble) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "No running session");
+        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "ssh_no_session");
         return ESP_ERR_NOT_FOUND;
     }
     esp_err_t ret = ts_webui_ssh_exec_cancel((uint32_t)sid->valuedouble);
     if (ret != ESP_OK) {
         ts_api_result_error(result, ret == ESP_ERR_INVALID_STATE ? TS_API_ERR_NOT_FOUND : TS_API_ERR_INTERNAL,
-                            ret == ESP_ERR_INVALID_STATE ? "No running session" : "Failed to request cancellation");
+                            ret == ESP_ERR_INVALID_STATE ? "ssh_no_session" : "ssh_cancel_failed");
         return ret;
     }
     /* Existing wire field means accepted intent, not confirmed remote exit. */
@@ -604,7 +619,7 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
     esp_err_t ret = configure_ssh_from_params(params, &config, &request_key);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid SSH configuration");
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "ssh_config_invalid");
         cleanup_key_buffer(&request_key);
         return ret;
     }
@@ -613,7 +628,7 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
     ts_ssh_session_t session = NULL;
     ret = ts_ssh_session_create(&config, &session);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create session");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         cleanup_key_buffer(&request_key);
         return ret;
     }
@@ -628,9 +643,13 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
             return ESP_OK;
         }
         const char *err = ts_ssh_get_error(session);
+        const char *stage = "connect";
+        const char *reason = ts_ssh_connect_reason(session, &stage);
         cJSON *data = cJSON_CreateObject();
         cJSON_AddBoolToObject(data, "success", false);
         cJSON_AddStringToObject(data, "error", err ? err : "Connection failed");
+        cJSON_AddStringToObject(data, "reason", reason);   /* additive: older clients keep reading `error` */
+        cJSON_AddStringToObject(data, "stage", stage);
         ts_api_result_ok(result, data);
         ts_ssh_session_destroy(session);
         cleanup_key_buffer(&request_key);
@@ -740,7 +759,7 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     size_t pubkey_len = 0;
     esp_err_t ret = ts_keystore_load_public_key(keyid->valuestring, &pubkey_data, &pubkey_len);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Key not found in keystore");
+        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "key_not_found");
         return ret;
     }
     
@@ -757,7 +776,7 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     ts_ssh_session_t session = NULL;
     ret = ts_ssh_session_create(&config, &session);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create session");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         free(pubkey_data);
         return ret;
     }
@@ -765,9 +784,8 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     /* 首次部署自动保存新主机指纹；已知主机指纹变化仍在认证前拒绝。 */
     ret = connect_verified(session, params, result, true);
     if (ret != ESP_OK) {
-        const char *err = ts_ssh_get_error(session);
         if (result->code == TS_API_OK)
-            ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
+            ssh_connect_error(result, session);
         ts_ssh_session_destroy(session);
         free(pubkey_data);
         return ret;
@@ -788,7 +806,7 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     size_t deploy_capacity = strlen(pubkey_data) * 4 + 256;
     char *deploy_cmd = TS_MALLOC_PSRAM(deploy_capacity);
     if (!deploy_cmd) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Out of memory");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         ts_ssh_disconnect(session);
         ts_ssh_session_destroy(session);
         free(pubkey_data);
@@ -800,7 +818,7 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
         ts_ssh_disconnect(session);
         ts_ssh_session_destroy(session);
         free(pubkey_data);
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Cannot construct public key deployment command");
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "pubkey_invalid");
         return ESP_ERR_INVALID_ARG;
     }
     
@@ -821,8 +839,7 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     ts_ssh_session_destroy(session);
     
     if (!deploy_ok) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, 
-                           stderr_msg ? stderr_msg : "Deploy command failed");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "ssh_deploy_failed", stderr_msg);
         free(stderr_msg);
         free(pubkey_data);
         return ESP_FAIL;
@@ -969,7 +986,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     size_t pubkey_len = 0;
     esp_err_t ret = ts_keystore_load_public_key(keyid->valuestring, &pubkey_data, &pubkey_len);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Key not found in keystore");
+        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "key_not_found");
         return ret;
     }
     
@@ -977,7 +994,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     char *pubkey_copy = TS_STRDUP_PSRAM(pubkey_data);
     if (!pubkey_copy) {
         free(pubkey_data);
-        ts_api_result_error(result, TS_API_ERR_NO_MEM, "Out of memory");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         return ESP_ERR_NO_MEM;
     }
     
@@ -987,7 +1004,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     if (!key_type || !key_data) {
         free(pubkey_data);
         free(pubkey_copy);
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid public key format");
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "pubkey_invalid");
         return ESP_ERR_INVALID_ARG;
     }
     
@@ -1009,7 +1026,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     ts_ssh_session_t session = NULL;
     ret = ts_ssh_session_create(&config, &session);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create session");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         free(pubkey_data);
         free(pubkey_copy);
         return ret;
@@ -1017,9 +1034,8 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
 
     ret = connect_verified(session, params, result, false);
     if (ret != ESP_OK) {
-        const char *err = ts_ssh_get_error(session);
         if (result->code == TS_API_OK)
-            ts_api_result_error(result, TS_API_ERR_CONNECTION, err ? err : "Failed to connect");
+            ssh_connect_error(result, session);
         ts_ssh_session_destroy(session);
         free(pubkey_data);
         free(pubkey_copy);
@@ -1041,7 +1057,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     /* 1. 检查密钥是否存在 */
     char *check_cmd = TS_MALLOC_PSRAM(512);
     if (!check_cmd) {
-        ts_api_result_error(result, TS_API_ERR_NO_MEM, "Out of memory");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         ts_ssh_disconnect(session);
         ts_ssh_session_destroy(session);
         free(pubkey_data);
@@ -1062,7 +1078,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     free(check_cmd);
     
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to check key");
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "ssh_revoke_check_failed");
         ts_ssh_exec_result_free(&exec_result);
         ts_ssh_disconnect(session);
         ts_ssh_session_destroy(session);
@@ -1092,7 +1108,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     /* 2. 执行删除操作 */
     char *revoke_cmd = TS_MALLOC_PSRAM(512);
     if (!revoke_cmd) {
-        ts_api_result_error(result, TS_API_ERR_NO_MEM, "Out of memory");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         ts_ssh_disconnect(session);
         ts_ssh_session_destroy(session);
         free(pubkey_data);
@@ -1121,7 +1137,7 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     free(pubkey_copy);
     
     if (!revoke_ok) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to revoke key");
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "ssh_revoke_failed");
         return ESP_FAIL;
     }
     
@@ -1163,7 +1179,7 @@ static esp_err_t api_ssh_keygen(const cJSON *params, ts_api_result_t *result)
     
     /* 检查密钥是否已存在 */
     if (ts_keystore_key_exists(id->valuestring)) {
-        ts_api_result_error(result, TS_API_ERR_BUSY, "Key already exists");
+        ts_api_result_error(result, TS_API_ERR_BUSY, "key_exists");
         return ESP_ERR_INVALID_STATE;
     }
     
@@ -1357,7 +1373,7 @@ static esp_err_t api_ssh_hosts_add(const cJSON *params, ts_api_result_t *result)
         cJSON_AddStringToObject(data, "id", config.id);
         ts_api_result_ok(result, data);
     } else if (ret == ESP_ERR_NO_MEM) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Max hosts reached");
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "host_capacity");
     } else {
         ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to add host");
     }
@@ -1468,8 +1484,7 @@ static esp_err_t api_ssh_hosts_export(const cJSON *params, ts_api_result_t *resu
     
     /* 检查导出权限 */
     if (!ts_config_pack_can_export()) {
-        ts_api_result_error(result, TS_API_ERR_NO_PERMISSION, 
-            "This device is not authorized to export config packs");
+        ts_api_result_reason(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
     
@@ -1497,7 +1512,7 @@ static esp_err_t api_ssh_hosts_export(const cJSON *params, ts_api_result_t *resu
     char *json_str = cJSON_PrintUnformatted(host_json);
     cJSON_Delete(host_json);
     if (!json_str) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize config");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         return ESP_OK;
     }
     
@@ -1514,7 +1529,7 @@ static esp_err_t api_ssh_hosts_export(const cJSON *params, ts_api_result_t *resu
         cert_pem = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
         if (!cert_pem) {
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Out of memory");
+            ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
             return ESP_OK;
         }
         cert_len = 4096;
@@ -1522,7 +1537,7 @@ static esp_err_t api_ssh_hosts_export(const cJSON *params, ts_api_result_t *resu
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get device certificate");
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
     }
@@ -1546,7 +1561,7 @@ static esp_err_t api_ssh_hosts_export(const cJSON *params, ts_api_result_t *resu
     }
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config pack");
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -1602,13 +1617,7 @@ static esp_err_t api_ssh_hosts_import(const cJSON *params, ts_api_result_t *resu
         tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        const char *err_msg = "Failed to verify config pack";
-        if (pack_result == TS_CONFIG_PACK_ERR_RECIPIENT) {
-            err_msg = "This config pack is not for this device";
-        } else if (pack_result == TS_CONFIG_PACK_ERR_SIGNATURE) {
-            err_msg = "Invalid signature";
-        }
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, err_msg);
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -1665,7 +1674,7 @@ static esp_err_t api_ssh_hosts_import(const cJSON *params, ts_api_result_t *resu
     /* 确保目录存在 */
     if (stat(TS_SSH_HOSTS_SDCARD_DIR, &st) != 0) {
         if (mkdir(TS_SSH_HOSTS_SDCARD_DIR, 0755) != 0) {
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create hosts directory");
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
             return ESP_OK;
         }
     }
@@ -1674,7 +1683,7 @@ static esp_err_t api_ssh_hosts_import(const cJSON *params, ts_api_result_t *resu
     snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", TS_SSH_HOSTS_SDCARD_DIR, config_id);
     FILE *f = fopen(filepath, "w");
     if (!f) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config file");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
         return ESP_OK;
     }
     
@@ -1683,7 +1692,7 @@ static esp_err_t api_ssh_hosts_import(const cJSON *params, ts_api_result_t *resu
     
     if (written != strlen(tscfg->valuestring)) {
         unlink(filepath);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to write config file");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
         return ESP_OK;
     }
     
@@ -2013,7 +2022,7 @@ static esp_err_t api_ssh_commands_add(const cJSON *params, ts_api_result_t *resu
         cJSON_AddStringToObject(data, "name", config.name);
         ts_api_result_ok(result, data);
     } else if (ret == ESP_ERR_NO_MEM) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Max commands reached");
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "command_capacity");
     } else {
         ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to add command");
     }
@@ -2152,8 +2161,7 @@ static esp_err_t api_ssh_commands_export(const cJSON *params, ts_api_result_t *r
     
     /* 检查导出权限 */
     if (!ts_config_pack_can_export()) {
-        ts_api_result_error(result, TS_API_ERR_NO_PERMISSION, 
-            "This device is not authorized to export config packs");
+        ts_api_result_reason(result, TS_API_ERR_NO_PERMISSION, "pack_not_allowed", NULL);
         return ESP_OK;
     }
     
@@ -2220,7 +2228,7 @@ static esp_err_t api_ssh_commands_export(const cJSON *params, ts_api_result_t *r
     char *json_str = cJSON_PrintUnformatted(export_json);
     cJSON_Delete(export_json);
     if (!json_str) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize config");
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
         return ESP_OK;
     }
     
@@ -2237,7 +2245,7 @@ static esp_err_t api_ssh_commands_export(const cJSON *params, ts_api_result_t *r
         cert_pem = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
         if (!cert_pem) {
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Out of memory");
+            ts_api_result_error(result, TS_API_ERR_NO_MEM, "no_memory");
             return ESP_OK;
         }
         cert_len = 4096;
@@ -2245,7 +2253,7 @@ static esp_err_t api_ssh_commands_export(const cJSON *params, ts_api_result_t *r
         if (ret != ESP_OK) {
             free(cert_pem);
             cJSON_free(json_str);
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get device certificate");
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "device_cert_unavailable", esp_err_to_name(ret));
             return ESP_OK;
         }
         free_cert = true;
@@ -2268,7 +2276,7 @@ static esp_err_t api_ssh_commands_export(const cJSON *params, ts_api_result_t *r
     if (free_cert) free(cert_pem);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config pack");
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -2330,13 +2338,7 @@ static esp_err_t api_ssh_commands_import(const cJSON *params, ts_api_result_t *r
         tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
     
     if (pack_result != TS_CONFIG_PACK_OK) {
-        const char *err_msg = "Failed to verify config pack";
-        if (pack_result == TS_CONFIG_PACK_ERR_RECIPIENT) {
-            err_msg = "This config pack is not for this device";
-        } else if (pack_result == TS_CONFIG_PACK_ERR_SIGNATURE) {
-            err_msg = "Invalid signature";
-        }
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, err_msg);
+        pack_failure(result, pack_result);
         return ESP_OK;
     }
     
@@ -2394,7 +2396,7 @@ static esp_err_t api_ssh_commands_import(const cJSON *params, ts_api_result_t *r
     /* 确保目录存在 */
     if (stat(TS_SSH_COMMANDS_SDCARD_DIR, &st) != 0) {
         if (mkdir(TS_SSH_COMMANDS_SDCARD_DIR, 0755) != 0) {
-            ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create commands directory");
+            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
             return ESP_OK;
         }
     }
@@ -2403,7 +2405,7 @@ static esp_err_t api_ssh_commands_import(const cJSON *params, ts_api_result_t *r
     snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", TS_SSH_COMMANDS_SDCARD_DIR, config_id);
     FILE *f = fopen(filepath, "w");
     if (!f) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create config file");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
         return ESP_OK;
     }
     
@@ -2412,7 +2414,7 @@ static esp_err_t api_ssh_commands_import(const cJSON *params, ts_api_result_t *r
     
     if (written != strlen(tscfg->valuestring)) {
         unlink(filepath);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to write config file");
+        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
         return ESP_OK;
     }
     
@@ -2456,7 +2458,8 @@ esp_err_t ts_api_service_control(const cJSON *params, ts_api_result_t *result, t
     if (ret != ESP_OK) {
         cJSON_Delete(data);
         ts_api_result_error(result, ret == ESP_ERR_INVALID_STATE ? TS_API_ERR_BUSY :
-            ret == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM : TS_API_ERR_INTERNAL, esp_err_to_name(ret));
+            ret == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM : TS_API_ERR_INTERNAL,
+            ret == ESP_ERR_INVALID_STATE ? "service_not_admissible" : ret == ESP_ERR_NO_MEM ? "no_memory" : esp_err_to_name(ret));
         return ret;
     }
     cJSON_SetNumberValue(operation, operation_id);

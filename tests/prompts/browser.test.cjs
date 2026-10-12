@@ -76,7 +76,7 @@ for(const language of ['zh-CN','en-US']) {
     else if(params.trust_new!==true){code=1002;data={status:'new_host',fingerprint:'first'};}
     else{deployed=true;data={deployed:true,verified:true,registered:true,host_id:host.id};}
    }
-   await route.fulfill({json:{code,data,message:code===1001?'Host key mismatch - possible MITM attack':code===1002?'New host requires confirmation':''}});
+   await route.fulfill({json:{code,data,message:code===1001?'ssh_host_key_changed':code===1002?'ssh_host_key_unknown':''}});
   });
   try {
    await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
@@ -98,7 +98,7 @@ for(const language of ['zh-CN','en-US']) {
    await page.waitForFunction(()=>document.getElementById('deploy-result').classList.contains('error'));
    assert.equal(copies.length,3);assert.equal(copies[2].params.accept_changed,false);
    assert.equal(await page.locator('.confirm-sheet').count(),0);
-   assert((await page.locator('#deploy-result').textContent()).includes('Host key mismatch'));
+   assert((await page.locator('#deploy-result').textContent()).includes(language==='zh-CN'?'指纹和之前登记的不一样':'differs from the one registered before'));
    assert((await page.locator('#ssh-hosts-table-body').textContent()).includes(host.id));
    assert.deepEqual(errors,[]);
   } finally {await context.close();}
@@ -163,9 +163,11 @@ for(const language of ['zh-CN','en-US']){
     assert.equal(await card.evaluate(el=>el.style.pointerEvents),'');
     assert.equal(await card.getAttribute('data-state'),state==='stopped'?'starting':state);
     if(state!=='stopped'){
-     await page.waitForFunction(()=>document.getElementById('toast')?.textContent===runtimeText('startBlocked'));
+     // not stopped (or not confirmed stopped): the card says which, by name; nothing is sent
+     const blocked=await page.evaluate(token=>describeFailure({op:'quick.start',phase:'blocked',params:{name:'Model'},token}).message,state==='running'?'service_running':'service_not_confirmed_stopped');
+     await page.waitForFunction(text=>document.querySelector('#toast .toast-msg')?.textContent===text,blocked);
      assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
-     assert.equal(await page.locator('#toast').textContent(),await page.evaluate(()=>runtimeText('startBlocked')));
+     assert.equal(await page.locator('#toast .toast-msg').textContent(),blocked);
     }
    }
    const verify=calls.filter(c=>c.endpoint==='automation/services/status'&&c.params.verify);

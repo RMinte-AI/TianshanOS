@@ -1,0 +1,1354 @@
+{
+  "action.delete.check-busy": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "自动化配置正在更新，本次未删除动作模板。请等待更新完成后再删除。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "The automation configuration is being updated. The action template was not deleted. Wait for the update to finish before deleting.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.check-failed": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "没能确认是否还有规则在使用这个动作模板，所以没有删除。请在「终端」页打开「系统日志」查看原因。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "Couldn't confirm whether any rule still uses this action template, so it was not deleted. Open “System Logs” on the Terminal page to see why.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.check-loading": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "规则配置仍在加载，本次未删除动作模板。请等待加载完成后再删除。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "The rule configuration is still loading. The action template was not deleted. Wait for loading to finish before deleting.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.check-recovery": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "规则配置需要恢复核对，本次未删除动作模板。请在「终端」页打开「系统日志」查看详情。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "The rule configuration needs a recovery check. The action template was not deleted. Open “System Logs” on the Terminal page for details.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.in-use": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "动作模板“restart-agx”正被以下规则使用。请先把它从这些规则中移除，或删除不再需要的规则，再删除动作模板。",
+      "items": [
+        "Night off · night-off",
+        "Morning · morning"
+      ],
+      "buttons": [
+        "关闭",
+        "查看规则"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "Action template “restart-agx” is used by the rules below. Remove it from those rules, or delete rules you no longer need, before deleting the template.",
+      "items": [
+        "Night off · night-off",
+        "Morning · morning"
+      ],
+      "buttons": [
+        "Close",
+        "View rules"
+      ]
+    }
+  },
+  "action.delete.in-use-no-details": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "动作模板“restart-agx”仍被规则使用，无法删除。请先把它从使用它的规则中移除。",
+      "items": [],
+      "buttons": [
+        "关闭",
+        "查看规则"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "Action template “restart-agx” is still used by rules, so it can't be deleted. Remove it from those rules first.",
+      "items": [],
+      "buttons": [
+        "Close",
+        "View rules"
+      ]
+    }
+  },
+  "action.delete.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "删除动作模板“重启 AGX”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.actions.delete\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of deleting action template “Restart AGX” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.actions.delete\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "action.delete.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已删除动作模板“重启 AGX”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Action template “Restart AGX” deleted",
+      "details": null
+    }
+  },
+  "action.delete.protected": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板“restart-agx”",
+      "text": "还没有确认指令“restart-agx”对应的服务是否已停止。请先在「指令」页点这条指令的刷新图标核验状态；如果它仍在运行，请先停止，再删除。",
+      "items": [],
+      "buttons": [
+        "关闭",
+        "查看指令"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template “restart-agx”",
+      "text": "It hasn't been confirmed that the service for command “restart-agx” has stopped. On the SSH Commands page, select the refresh icon for this command to verify its state. If it is still running, stop it before deleting.",
+      "items": [],
+      "buttons": [
+        "Close",
+        "View commands"
+      ]
+    }
+  },
+  "action.delete.template-unreadable": {
+    "zh-CN": {
+      "type": "error",
+      "text": "删除动作模板“重启 AGX”失败：设备上找不到它。它可能已被删除，请刷新列表。",
+      "details": "原因代号：not_found\n接口：automation.actions.get\n原始信息：Template not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to delete action template “Restart AGX”: it was not found on the device. It may have been deleted; refresh the list.",
+      "details": "Reason code: not_found\nAPI: automation.actions.get\nOriginal text: Template not found\nTime: <time>"
+    }
+  },
+  "action.list.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取动作模板列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the action template list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "action.list.refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取动作模板列表失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the action template list: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  },
+  "action.load.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "读取动作模板“重启 AGX”的内容失败：设备上找不到它。它可能已被删除，请刷新列表。",
+      "details": "原因代号：not_found\n接口：automation.actions.get\n原始信息：Template not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to read action template “Restart AGX”: it was not found on the device. It may have been deleted; refresh the list.",
+      "details": "Reason code: not_found\nAPI: automation.actions.get\nOriginal text: Template not found\nTime: <time>"
+    }
+  },
+  "action.save.capacity": {
+    "zh-CN": {
+      "type": "error",
+      "text": "保存动作模板“restart-agx”失败：动作模板数量已达上限。请先删除不用的动作模板。",
+      "details": "原因代号：template_capacity\n接口：automation.actions.add\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to save action template “restart-agx”: the limit for action templates has been reached. Delete action templates you no longer need.",
+      "details": "Reason code: template_capacity\nAPI: automation.actions.add\nTime: <time>"
+    }
+  },
+  "action.save.exists": {
+    "zh-CN": {
+      "type": "error",
+      "text": "保存动作模板“重启 AGX”失败：已经有相同 ID 的动作模板。请换一个 ID，或直接编辑已有的那个。",
+      "details": "原因代号：template_exists\n接口：automation.actions.add\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to save action template “Restart AGX”: an action template with the same ID already exists. Use a different ID, or edit the existing one.",
+      "details": "Reason code: template_exists\nAPI: automation.actions.add\nTime: <time>"
+    }
+  },
+  "action.save.generic": {
+    "zh-CN": {
+      "type": "error",
+      "text": "保存动作模板“重启 AGX”失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": "原因代号：no_detail\n接口：automation.actions.add\n原始信息：Failed to update template\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to save action template “Restart AGX”: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": "Reason code: no_detail\nAPI: automation.actions.add\nOriginal text: Failed to update template\nTime: <time>"
+    }
+  },
+  "action.save.missing-command": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写命令行",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter a command line",
+      "focused": true
+    }
+  },
+  "action.save.missing-id": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写动作 ID",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter an action ID",
+      "focused": true
+    }
+  },
+  "action.save.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "保存动作模板“重启 AGX”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.actions.add\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of saving action template “Restart AGX” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.actions.add\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "action.save.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已保存动作模板“重启 AGX”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Action template “Restart AGX” saved",
+      "details": null
+    }
+  },
+  "action.save.protected": {
+    "zh-CN": {
+      "type": "error",
+      "text": "保存动作模板“重启 AGX”失败：它绑定的服务还没有确认已停止，或有操作正在使用它。请先核验或停止服务，待操作完成后再试。",
+      "details": "原因代号：service_delete_protected\n接口：automation.actions.update\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to save action template “Restart AGX”: its service is not confirmed to be stopped, or an operation is using it. Verify or stop the service first, then try again once the operation has finished.",
+      "details": "Reason code: service_delete_protected\nAPI: automation.actions.update\nTime: <time>"
+    }
+  },
+  "action.test.failed": {
+    "zh-CN": {
+      "type": "error",
+      "text": "测试动作模板“重启 AGX”失败：动作执行时没有成功。点“详情”可以看到设备返回的内容。",
+      "details": "原因代号：action_failed\n接口：automation.actions.execute\n原始信息：command exited with 3\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to test action template “Restart AGX”: the action did not run successfully. Click Details to see what the device returned.",
+      "details": "Reason code: action_failed\nAPI: automation.actions.execute\nOriginal text: command exited with 3\nTime: <time>"
+    }
+  },
+  "action.test.failed-without-output": {
+    "zh-CN": {
+      "type": "error",
+      "text": "测试动作模板“重启 AGX”失败：动作执行时没有成功。点“详情”可以看到设备返回的内容。",
+      "details": "原因代号：action_failed\n接口：automation.actions.execute\n原始信息：Action failed: ESP_FAIL (status=3)\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to test action template “Restart AGX”: the action did not run successfully. Click Details to see what the device returned.",
+      "details": "Reason code: action_failed\nAPI: automation.actions.execute\nOriginal text: Action failed: ESP_FAIL (status=3)\nTime: <time>"
+    }
+  },
+  "action.test.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "测试动作模板“重启 AGX”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.actions.execute\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of testing action template “Restart AGX” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.actions.execute\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "action.test.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "测试动作模板“重启 AGX”失败：设备上找不到它。它可能已被删除，请刷新列表。",
+      "details": "原因代号：not_found\n接口：automation.actions.execute\n原始信息：Template not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to test action template “Restart AGX”: it was not found on the device. It may have been deleted; refresh the list.",
+      "details": "Reason code: not_found\nAPI: automation.actions.execute\nOriginal text: Template not found\nTime: <time>"
+    }
+  },
+  "action.test.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "动作模板“重启 AGX”执行成功\n输出：0",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Action template “Restart AGX” ran successfully\nOutput: 0",
+      "details": null
+    }
+  },
+  "action.test.timeout": {
+    "zh-CN": {
+      "type": "error",
+      "text": "测试动作模板“重启 AGX”失败：动作执行超时。请检查动作的目标（如主机、命令）是否可用。",
+      "details": "原因代号：action_timeout\n接口：automation.actions.execute\n原始信息：no answer\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to test action template “Restart AGX”: the action timed out. Check that what the action targets (such as the host or command) is available.",
+      "details": "Reason code: action_timeout\nAPI: automation.actions.execute\nOriginal text: no answer\nTime: <time>"
+    }
+  },
+  "engine.pause.already-paused": {
+    "zh-CN": {
+      "type": "error",
+      "text": "暂停自动化引擎失败：自动化引擎处于暂停状态。如要恢复运行，请先点“停止”，再点“启动”。",
+      "details": "原因代号：engine_paused\n接口：automation.pause\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to pause the automation engine: the automation engine is paused. To resume it, click Stop first, then Start.",
+      "details": "Reason code: engine_paused\nAPI: automation.pause\nTime: <time>"
+    }
+  },
+  "engine.pause.not-running": {
+    "zh-CN": {
+      "type": "error",
+      "text": "暂停自动化引擎失败：自动化引擎当前没有在运行。请先点“启动”。",
+      "details": "原因代号：engine_not_running\n接口：automation.pause\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to pause the automation engine: the automation engine is not running. Click Start first.",
+      "details": "Reason code: engine_not_running\nAPI: automation.pause\nTime: <time>"
+    }
+  },
+  "engine.reload.config-invalid": {
+    "zh-CN": {
+      "type": "error",
+      "text": "重新加载自动化配置失败：自动化引擎的配置文件（automation.json）是空的、太大，或格式不对。请修正或删除这个文件，再点“重载”。",
+      "details": "原因代号：config_file_invalid\n接口：automation.reload\n原始信息：ESP_ERR_INVALID_SIZE\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to reload the automation configuration: the engine configuration file (automation.json) is empty, too large, or not valid. Fix or delete this file, then click Reload.",
+      "details": "Reason code: config_file_invalid\nAPI: automation.reload\nOriginal text: ESP_ERR_INVALID_SIZE\nTime: <time>"
+    }
+  },
+  "engine.reload.unavailable": {
+    "zh-CN": {
+      "type": "error",
+      "text": "重新加载自动化配置失败：自动化引擎正在停止、仍有操作在执行，或还没有完成初始化。请稍等几秒再试。",
+      "details": "原因代号：engine_unavailable\n接口：automation.reload\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to reload the automation configuration: the automation engine is stopping, still busy with actions, or not initialized yet. Wait a few seconds and try again.",
+      "details": "Reason code: engine_unavailable\nAPI: automation.reload\nTime: <time>"
+    }
+  },
+  "engine.start.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "启动自动化引擎的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.start\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of starting the automation engine is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.start\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "engine.start.no-memory": {
+    "zh-CN": {
+      "type": "error",
+      "text": "启动自动化引擎失败：设备可用内存不足。请稍后再试；仍然失败请重启设备。",
+      "details": "原因代号：no_memory\n接口：automation.start\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to start the automation engine: the device is low on memory. Try again later; restart the device if it keeps failing.",
+      "details": "Reason code: no_memory\nAPI: automation.start\nTime: <time>"
+    }
+  },
+  "engine.start.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已启动自动化引擎",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Automation engine started",
+      "details": null
+    }
+  },
+  "engine.start.old-firmware-text": {
+    "zh-CN": {
+      "type": "error",
+      "text": "启动自动化引擎失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": "原因代号：no_detail\n接口：automation.start\n原始信息：Failed to start automation engine\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to start the automation engine: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": "Reason code: no_detail\nAPI: automation.start\nOriginal text: Failed to start automation engine\nTime: <time>"
+    }
+  },
+  "engine.start.paused": {
+    "zh-CN": {
+      "type": "error",
+      "text": "启动自动化引擎失败：自动化引擎处于暂停状态。如要恢复运行，请先点“停止”，再点“启动”。",
+      "details": "原因代号：engine_paused\n接口：automation.start\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to start the automation engine: the automation engine is paused. To resume it, click Stop first, then Start.",
+      "details": "Reason code: engine_paused\nAPI: automation.start\nTime: <time>"
+    }
+  },
+  "engine.start.unavailable": {
+    "zh-CN": {
+      "type": "error",
+      "text": "启动自动化引擎失败：自动化引擎正在停止、仍有操作在执行，或还没有完成初始化。请稍等几秒再试。",
+      "details": "原因代号：engine_unavailable\n接口：automation.start\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to start the automation engine: the automation engine is stopping, still busy with actions, or not initialized yet. Wait a few seconds and try again.",
+      "details": "Reason code: engine_unavailable\nAPI: automation.start\nTime: <time>"
+    }
+  },
+  "engine.status.unreadable": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取自动化引擎状态失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the automation engine status: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  },
+  "engine.stop.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "停止自动化引擎的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.stop\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of stopping the automation engine is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.stop\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "engine.stop.timeout": {
+    "zh-CN": {
+      "type": "error",
+      "text": "停止自动化引擎失败：还有正在执行的操作没有结束，引擎暂时无法停止。请等它们结束后再停止。",
+      "details": "原因代号：engine_stop_timeout\n接口：automation.stop\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to stop the automation engine: some actions are still running, so the engine cannot stop yet. Wait for them to finish, then stop it.",
+      "details": "Reason code: engine_stop_timeout\nAPI: automation.stop\nTime: <time>"
+    }
+  },
+  "host.list.refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取主机列表失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the host list: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  },
+  "image.list.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取图片列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the image list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "image.list.sd-missing": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取图片列表失败：SD 卡不可用。请确认 SD 卡已插好并已挂载。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the image list: the SD card is not available. Make sure the SD card is inserted and mounted.",
+      "details": null
+    }
+  },
+  "pack.export-action.not-found": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“重启 AGX”（动作模板）失败：设备上找不到它。它可能已被删除，请刷新列表。",
+      "details": "原因代号：not_found\n接口：automation.actions.export\n原始信息：Action template not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “Restart AGX” (action template): it was not found on the device. It may have been deleted; refresh the list.",
+      "details": "Reason code: not_found\nAPI: automation.actions.export\nOriginal text: Action template not found\nTime: <time>"
+    }
+  },
+  "pack.export-rule.cert-unavailable": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“夜间关灯”（规则）失败：设备证书不可用。请先到「安全」页检查设备证书。",
+      "details": "原因代号：device_cert_unavailable\n接口：automation.rules.export\n原始信息：ESP_FAIL\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “Night off” (rule): the device certificate is not available. Check the device certificate on the Security page first.",
+      "details": "Reason code: device_cert_unavailable\nAPI: automation.rules.export\nOriginal text: ESP_FAIL\nTime: <time>"
+    }
+  },
+  "pack.export-source.invalid-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“温度”（数据源）失败：设备返回的内容无法识别。请刷新页面后再试。",
+      "details": "原因代号：invalid_response\n接口：automation.sources.export\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “Temperature” (data source): the device's response could not be read. Refresh the page and try again.",
+      "details": "Reason code: invalid_response\nAPI: automation.sources.export\nTime: <time>"
+    }
+  },
+  "pack.export-source.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“温度”（数据源）失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": "原因代号：network_lost\n接口：automation.sources.export\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “Temperature” (data source): the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": "Reason code: network_lost\nAPI: automation.sources.export\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "pack.export-source.no-memory": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“温度”（数据源）失败：设备可用内存不足。请稍后再试；仍然失败请重启设备。",
+      "details": "原因代号：no_memory\n接口：automation.sources.export\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “Temperature” (data source): the device is low on memory. Try again later; restart the device if it keeps failing.",
+      "details": "Reason code: no_memory\nAPI: automation.sources.export\nTime: <time>"
+    }
+  },
+  "pack.export-source.not-allowed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“温度”（数据源）失败：这台设备不是开发者设备，没有导出配置包的权限。请在开发者设备上导出配置包。",
+      "details": "原因代号：pack_not_allowed\n接口：automation.sources.export\n原始信息：Permission denied (not a developer device)\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “Temperature” (data source): this device is not a developer device and may not export config packs. Export the config pack on a developer device.",
+      "details": "Reason code: pack_not_allowed\nAPI: automation.sources.export\nOriginal text: Permission denied (not a developer device)\nTime: <time>"
+    }
+  },
+  "pack.import-action.no-file": {
+    "zh-CN": {
+      "type": "error",
+      "text": "请先选择要导入的配置包文件（.tscfg）",
+      "details": null
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Please choose the config pack file (.tscfg) to import first",
+      "details": null
+    }
+  },
+  "pack.import-rule.commit-unknown": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”的结果未确认。请重新读取并核对当前状态，不要重复提交。",
+      "details": "原因代号：commit_unknown\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of importing the config pack “rule_night.tscfg” is unconfirmed. Reload and check the current state before submitting again.",
+      "details": "Reason code: commit_unknown\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.dependency-missing": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：规则用到的动作模板、指令或主机，在这台设备上找不到。请先在设备上创建它们，再导入这条规则。",
+      "details": "原因代号：dependency_missing\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: an action template, command or host used by the rule does not exist on this device. Create them on the device first, then import the rule.",
+      "details": "Reason code: dependency_missing\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”的结果未确认。请重新读取并核对当前状态，不要重复提交。",
+      "details": "原因代号：commit_unknown\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of importing the config pack “rule_night.tscfg” is unconfirmed. Reload and check the current state before submitting again.",
+      "details": "Reason code: commit_unknown\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.no-memory": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：设备可用内存不足。请稍后再试；仍然失败请重启设备。",
+      "details": "原因代号：no_memory\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: the device is low on memory. Try again later; restart the device if it keeps failing.",
+      "details": "Reason code: no_memory\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.overwrite-required": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：设备上已经有同 ID 的规则。请核对预览里的内容，确认要替换就勾选“覆盖已存在的配置”。",
+      "details": "原因代号：overwrite_required\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: a rule with the same ID already exists on the device. Check the preview, and tick the overwrite option if you want to replace it.",
+      "details": "Reason code: overwrite_required\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.preview-required": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：还没有完成验证预览。请重新选择文件，验证通过后再导入。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: the preview has not been completed. Choose the file again and import once the verification passes.",
+      "details": null
+    }
+  },
+  "pack.import-rule.restart-pending": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：有规则的保存结果要重启设备后才会生效。请先重启设备，再进行这项操作。",
+      "details": "原因代号：restart_pending\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: a saved rule change only takes effect after a restart. Restart the device first, then try again.",
+      "details": "Reason code: restart_pending\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.revision-conflict": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：设备上的这份配置刚被其他操作修改过。请刷新后确认最新内容，再重新操作。",
+      "details": "原因代号：revision_conflict\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: the configuration on the device was just changed by another operation. Refresh, check the latest content, then try again.",
+      "details": "Reason code: revision_conflict\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-source.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“source_temp.tscfg”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.sources.import\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of importing the config pack “source_temp.tscfg” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.sources.import\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "pack.import-source.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已导入配置包“source_temp.tscfg”，重启后生效",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Imported the config pack “source_temp.tscfg”. It takes effect after a restart.",
+      "details": null
+    }
+  },
+  "pack.import-source.storage-failed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“source_temp.tscfg”失败：写入设备存储失败。若在用 SD 卡，请确认卡已插好；详情见「终端」→「系统日志」。",
+      "details": "原因代号：storage_failed\n接口：automation.sources.import\n原始信息：No such file or directory\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “source_temp.tscfg”: writing to the device storage failed. If you use an SD card, make sure it is inserted; see Terminal → System Logs.",
+      "details": "Reason code: storage_failed\nAPI: automation.sources.import\nOriginal text: No such file or directory\nTime: <time>"
+    }
+  },
+  "pack.verify-action.not-a-pack": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“notes.txt”失败：这个文件不是有效的配置包（内容无法解析）。请确认选的是从天山 OS 导出的 .tscfg 文件，并且没有被改动过。",
+      "details": "原因代号：pack_parse_failed\n接口：automation.actions.import\n原始信息：JSON parse error\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “notes.txt”: this file is not a valid config pack (its content cannot be parsed). Make sure you picked a .tscfg file exported from TianshanOS and that it has not been modified.",
+      "details": "Reason code: pack_parse_failed\nAPI: automation.actions.import\nOriginal text: JSON parse error\nTime: <time>"
+    }
+  },
+  "pack.verify-rule.signature": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“rule_night.tscfg”失败：配置包的签名验证没有通过。文件可能被改动过；请重新导出，并且只使用可信来源的配置包。",
+      "details": "原因代号：pack_signature_invalid\n接口：automation.rules.import\n原始信息：Signature verification failed\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “rule_night.tscfg”: the signature of the config pack did not pass verification. The file may have been modified. Export it again, and only use config packs from a trusted source.",
+      "details": "Reason code: pack_signature_invalid\nAPI: automation.rules.import\nOriginal text: Signature verification failed\nTime: <time>"
+    }
+  },
+  "pack.verify-rule.untrusted": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“rule_night.tscfg”失败：设备不信任这个配置包的签名者。请使用设备信任的签名者重新导出。",
+      "details": "原因代号：signer_untrusted\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “rule_night.tscfg”: the device does not trust the signer of this config pack. Export it again with a signer the device trusts.",
+      "details": "Reason code: signer_untrusted\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.verify-rule.wrong-device": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“rule_night.tscfg”失败：这个配置包是为另一台设备生成的。请让导出方用这台设备的证书重新导出。",
+      "details": "原因代号：wrong_device\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “rule_night.tscfg”: this config pack was made for another device. Ask for it to be exported again with this device’s certificate.",
+      "details": "Reason code: wrong_device\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.verify-source.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“source_temp.tscfg”失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": "原因代号：network_lost\n接口：automation.sources.import\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “source_temp.tscfg”: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": "Reason code: network_lost\nAPI: automation.sources.import\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "pack.verify-source.wrong-device": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“source_temp.tscfg”失败：这个配置包不是为这台设备生成的。请让导出方用这台设备的证书重新导出。",
+      "details": "原因代号：pack_wrong_device\n接口：automation.sources.import\n原始信息：Not intended for this device\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “source_temp.tscfg”: this config pack was not made for this device. Ask whoever exported it to export it again with this device’s certificate.",
+      "details": "Reason code: pack_wrong_device\nAPI: automation.sources.import\nOriginal text: Not intended for this device\nTime: <time>"
+    }
+  },
+  "rule.add-action.list-unreadable": {
+    "zh-CN": {
+      "type": "error",
+      "text": "读取动作模板列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": "原因代号：network_lost\n接口：automation.actions.list\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to read the action template list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": "Reason code: network_lost\nAPI: automation.actions.list\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "rule.add-action.no-templates": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "无法添加动作：还没有任何动作模板。请先到页面里的“动作模板”区域创建一个，再回来选择。",
+      "details": null
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "Can't add an action: there are no action templates yet. Create one in the “Action templates” area of the page first, then come back and choose it.",
+      "details": null
+    }
+  },
+  "rule.delete.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "删除规则“夜间关灯”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.rules.delete\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of deleting rule “Night off” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.rules.delete\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "rule.delete.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已删除规则“夜间关灯”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Rule “Night off” deleted",
+      "details": null
+    }
+  },
+  "rule.delete.running": {
+    "zh-CN": {
+      "type": "error",
+      "text": "删除规则“夜间关灯”失败：它正在执行中。等执行完成后再试。",
+      "details": "原因代号：execution_busy\n接口：automation.rules.delete\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to delete rule “Night off”: it is running right now. Wait for it to finish, then try again.",
+      "details": "Reason code: execution_busy\nAPI: automation.rules.delete\nTime: <time>"
+    }
+  },
+  "rule.list.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取规则列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the rule list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "rule.list.refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取规则列表失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the rule list: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  },
+  "rule.load.no-answer": {
+    "zh-CN": {
+      "type": "error",
+      "text": "读取规则“夜间关灯”的内容失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": "原因代号：network_lost\n接口：automation.rules.get\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to read rule “Night off”: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": "Reason code: network_lost\nAPI: automation.rules.get\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "rule.load.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "读取规则“夜间关灯”的内容失败：设备上找不到这条规则。它可能已被删除，请刷新页面。",
+      "details": "原因代号：rule_not_found\n接口：automation.rules.get\n原始信息：Rule not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to read rule “Night off”: the rule was not found on the device. It may have been deleted; refresh the page.",
+      "details": "Reason code: rule_not_found\nAPI: automation.rules.get\nOriginal text: Rule not found\nTime: <time>"
+    }
+  },
+  "rule.trigger.engine-not-accepting": {
+    "zh-CN": {
+      "type": "error",
+      "text": "触发规则“夜间关灯”失败：自动化引擎暂时没有接收执行请求（可能正在重载配置，或已停止）。请稍等几秒再试。一直不行，请到「系统」页的服务列表里重启“automation”服务。",
+      "details": "原因代号：engine_not_accepting\n接口：automation.rules.trigger\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to trigger rule “Night off”: the automation engine is not accepting runs right now (it may be reloading its configuration, or stopped). Wait a few seconds and try again. If it keeps happening, restart the “automation” service in the service list on the System page.",
+      "details": "Reason code: engine_not_accepting\nAPI: automation.rules.trigger\nTime: <time>"
+    }
+  },
+  "rule.trigger.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "触发规则“夜间关灯”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.rules.trigger\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of triggering rule “Night off” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.rules.trigger\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "rule.trigger.not-allowed": {
+    "zh-CN": {
+      "type": "error",
+      "text": "触发规则“夜间关灯”失败：这条规则没有开启“允许手动执行”。请在规则设置里打开“允许手动执行”。",
+      "details": "原因代号：manual_not_allowed\n接口：automation.rules.trigger\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to trigger rule “Night off”: the rule does not allow manual execution. Turn on “Allow manual execution” in the rule settings.",
+      "details": "Reason code: manual_not_allowed\nAPI: automation.rules.trigger\nTime: <time>"
+    }
+  },
+  "rule.trigger.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已触发规则“夜间关灯”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Rule “Night off” triggered",
+      "details": null
+    }
+  },
+  "rule.trigger.pending-delete": {
+    "zh-CN": {
+      "type": "error",
+      "text": "触发规则“夜间关灯”失败：这条规则已被删除，要重启设备后才会真正移除。在此之前它不能再执行；重启设备后它会消失。",
+      "details": "原因代号：rule_pending_delete\n接口：automation.rules.trigger\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to trigger rule “Night off”: this rule has been deleted and is removed after a restart. It cannot run in the meantime. It disappears once the device restarts.",
+      "details": "Reason code: rule_pending_delete\nAPI: automation.rules.trigger\nTime: <time>"
+    }
+  },
+  "source.add.capacity": {
+    "zh-CN": {
+      "type": "error",
+      "text": "创建数据源“温度”失败：数据源数量已达上限。请先删除不用的数据源。",
+      "details": "原因代号：source_capacity\n接口：automation.sources.add\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to create data source “Temperature”: the limit for data sources has been reached. Delete data sources you no longer need.",
+      "details": "Reason code: source_capacity\nAPI: automation.sources.add\nTime: <time>"
+    }
+  },
+  "source.add.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "创建数据源“温度”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.sources.add\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of creating data source “Temperature” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.sources.add\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "source.add.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已创建数据源“温度”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Data source “Temperature” created",
+      "details": null
+    }
+  },
+  "source.add.unavailable": {
+    "zh-CN": {
+      "type": "error",
+      "text": "创建数据源“温度”失败：自动化引擎正在停止、仍有操作在执行，或还没有完成初始化。请稍等几秒再试。",
+      "details": "原因代号：engine_unavailable\n接口：automation.sources.add\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to create data source “Temperature”: the automation engine is stopping, still busy with actions, or not initialized yet. Wait a few seconds and try again.",
+      "details": "Reason code: engine_unavailable\nAPI: automation.sources.add\nTime: <time>"
+    }
+  },
+  "source.delete.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "删除数据源“温度”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.sources.delete\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of deleting data source “Temperature” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.sources.delete\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "source.delete.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "删除数据源“温度”失败：设备上找不到它。它可能已被删除，请刷新列表。",
+      "details": "原因代号：not_found\n接口：automation.sources.delete\n原始信息：Source not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to delete data source “Temperature”: it was not found on the device. It may have been deleted; refresh the list.",
+      "details": "Reason code: not_found\nAPI: automation.sources.delete\nOriginal text: Source not found\nTime: <time>"
+    }
+  },
+  "source.delete.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已删除数据源“温度”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Data source “Temperature” deleted",
+      "details": null
+    }
+  },
+  "source.disable.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "禁用数据源“温度”失败：设备上找不到它。它可能已被删除，请刷新列表。",
+      "details": "原因代号：not_found\n接口：automation.sources.disable\n原始信息：Source not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to disable data source “Temperature”: it was not found on the device. It may have been deleted; refresh the list.",
+      "details": "Reason code: not_found\nAPI: automation.sources.disable\nOriginal text: Source not found\nTime: <time>"
+    }
+  },
+  "source.enable.generic": {
+    "zh-CN": {
+      "type": "error",
+      "text": "启用数据源“温度”失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": "原因代号：no_detail\n接口：automation.sources.enable\n原始信息：Failed to enable source\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to enable data source “Temperature”: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": "Reason code: no_detail\nAPI: automation.sources.enable\nOriginal text: Failed to enable source\nTime: <time>"
+    }
+  },
+  "source.enable.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "启用数据源“温度”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：automation.sources.enable\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of enabling data source “Temperature” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: automation.sources.enable\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "source.enable.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已启用数据源“温度”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Data source “Temperature” enabled",
+      "details": null
+    }
+  },
+  "source.list.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取数据源列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the data source list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "source.test-rest.connect-failed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "请求“http://192.0.2.9/api/status”失败：设备连不上这个地址。请检查地址和端口是否正确、对方是否在线，以及设备自己的网络（含 DNS）是否正常。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The request to “http://192.0.2.9/api/status” failed: the device cannot connect to this address. Check the address and port, that the other side is online, and the device’s own network (including DNS).",
+      "details": null
+    }
+  },
+  "source.test-rest.http-error": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "请求“http://192.0.2.9/api/status”失败：对方返回了错误状态 HTTP 401。请检查地址的路径和认证头是否正确；点“详情”可以看到对方返回的内容。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The request to “http://192.0.2.9/api/status” failed: the other side answered with HTTP error 401. Check the path of the address and the authentication header; click Details to see what it returned.",
+      "details": null
+    }
+  },
+  "source.test-rest.init-failed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "请求“not an address”失败：设备没能发起这次连接。请检查地址的写法是否正确。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The request to “not an address” failed: the device could not start this connection. Check that the address is written correctly.",
+      "details": null
+    }
+  },
+  "source.test-rest.missing-address": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请输入 API 地址",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter the API address",
+      "focused": true
+    }
+  },
+  "source.test-rest.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "请求“http://192.0.2.9/api/status”失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The request to “http://192.0.2.9/api/status” failed: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "source.test-sio.connect-timeout": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "连接 Socket.IO“http://192.0.2.9:3000”失败：连接超时。请确认对方在线、网络可达，且没有防火墙拦截。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to connect to Socket.IO “http://192.0.2.9:3000”: the connection timed out. Make sure the other side is online, reachable, and not blocked by a firewall.",
+      "details": null
+    }
+  },
+  "source.test-sio.event-timeout": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "连接 Socket.IO“http://192.0.2.9:3000”失败：已经连上，但等了一会儿没有收到事件。请确认事件名是否正确，或者把事件名留空，让设备自动发现。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to connect to Socket.IO “http://192.0.2.9:3000”: it connected, but no event arrived after waiting. Check the event name, or leave it empty so the device discovers it.",
+      "details": null
+    }
+  },
+  "source.test-sio.no-session": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "连接 Socket.IO“http://192.0.2.9:3000”失败：对方没有按 Socket.IO 的方式回应。请确认这是 Socket.IO 服务器的地址，并且协议版本兼容。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to connect to Socket.IO “http://192.0.2.9:3000”: the other side did not answer the way a Socket.IO server does. Make sure this is the address of a Socket.IO server and that the protocol versions are compatible.",
+      "details": null
+    }
+  },
+  "source.test-ws.connect-failed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "连接 WebSocket“ws://192.0.2.9:81/feed”失败：没能建立连接（对方没有响应，或拒绝了连接）。请检查地址和端口，以及对方是否支持 WebSocket。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to connect to WebSocket “ws://192.0.2.9:81/feed”: the connection could not be established (the other side did not respond, or refused it). Check the address and port, and that the other side supports WebSocket.",
+      "details": null
+    }
+  },
+  "source.test-ws.no-data": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "连接 WebSocket“ws://192.0.2.9:81/feed”失败：已经连上，但等了一会儿没有收到任何消息。请确认这个地址会主动推送消息。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to connect to WebSocket “ws://192.0.2.9:81/feed”: it connected, but no message arrived after waiting. Make sure this address pushes messages by itself.",
+      "details": null
+    }
+  },
+  "source.test-ws.start-failed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "连接 WebSocket“ws://192.0.2.9:81/feed”失败：设备没能启动 WebSocket 连接。请检查地址的写法是否正确。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to connect to WebSocket “ws://192.0.2.9:81/feed”: the device could not start the WebSocket connection. Check that the address is written correctly.",
+      "details": null
+    }
+  },
+  "source.test-ws.timeout": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "连接 WebSocket“ws://192.0.2.9:81/feed”失败：连接超时。请确认对方在线、网络可达，且没有防火墙拦截。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to connect to WebSocket “ws://192.0.2.9:81/feed”: the connection timed out. Make sure the other side is online, reachable, and not blocked by a firewall.",
+      "details": null
+    }
+  },
+  "variable.list.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取变量列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the variable list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "variable.list.refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取变量列表失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the variable list: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  }
+}

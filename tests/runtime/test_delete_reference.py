@@ -16,7 +16,7 @@ engine=Path('components/ts_automation/src/ts_rule_engine.c').read_text()
 a=engine.index('typedef struct {\n    ts_auto_rule_t *rules;');b=engine.index('static void payload_free',a)
 namespace={};exec(Path('tests/runtime/extract_engine.py').read_text(),namespace)
 parts=[namespace['header'],namespace['stubs'],engine[a:b]]
-for name in ['find_rule_index','payload_free','payload_adopt','ts_rule_resolve_presentation','ts_rule_acquire','ts_rule_release','same_config','protected_bindings','validate_new_template_refs','classify_rule_state','state_pending','pending_id','rule_union_count_locked','rule_commit_impl','ts_rule_commit','compare_values','ts_rule_eval_condition','ts_rule_eval_condition_group','execute_rule','ts_rule_get_by_index','ts_rule_count','ts_rule_config_status','ts_rule_edit_begin','ts_rule_edit_end']:
+for name in ['find_rule_index','payload_free','payload_adopt','ts_rule_resolve_presentation','ts_rule_acquire','ts_rule_release','same_config','protected_bindings','validate_new_template_refs','classify_rule_state','state_pending','pending_id','rule_union_count_locked','rule_commit_impl','ts_rule_commit','compare_values','ts_rule_eval_condition','ts_rule_eval_condition_group','refuse','execute_rule','ts_rule_get_by_index','ts_rule_count','ts_rule_config_status','ts_rule_edit_begin','ts_rule_edit_end']:
  parts.append(extract('components/ts_automation/src/ts_rule_engine.c',name))
 prefix=Path('tests/runtime/test_engine.c').read_text().split('int main(void)')[0]
 prefix=prefix.replace('#include "../../components/ts_automation/src/ts_rule_store.h"', '#include "'+str(root/'components/ts_automation/src/ts_rule_store.h')+'"')
@@ -114,7 +114,7 @@ int main(int argc,char**argv){
  assert(ts_rule_commit(&r,r.id,revision,&result)==ESP_ERR_NOT_FOUND&&commits==before&&!s_rule_ctx.meta[0].committing);
  assert(!strcmp(result.missing_template_id,"missing")&&s_rule_ctx.rules[0].revision==revision);
  ts_api_result_t reply={0};rule_commit_reply(&reply,ESP_ERR_NOT_FOUND,&result);capture("action-missing",reply);
- bool triggered=false;assert(execute_rule(r.id,true,&triggered)==ESP_OK&&triggered);
+ bool triggered=false;assert(execute_rule(r.id,true,&triggered,NULL)==ESP_OK&&triggered);
  r.actions[0].template_id[0]=0;strcpy(r.name,"after failure");assert(ts_rule_commit(&r,r.id,revision,&result)==ESP_OK);
  r.enabled=false;assert(ts_rule_commit(&r,r.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);r.enabled=true;assert(ts_rule_commit(&r,r.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
  ts_rule_dispose(&r);clear_rules();

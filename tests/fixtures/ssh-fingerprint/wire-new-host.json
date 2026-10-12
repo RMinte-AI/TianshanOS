@@ -1,0 +1,1 @@
+{"code":1002,"error":"ssh_host_key_unknown","data":{"status":"new_host","host":"192.0.2.8","port":22,"fingerprint":"SHA256:SYNTHETICobservedFINGERPRINT0123456789abcdefghi","message":"New host - set trust_new=true or use hosts.add to trust this host"}}

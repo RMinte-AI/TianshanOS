@@ -43,9 +43,15 @@ void ts_action_snapshot_release(ts_auto_action_t *out){}
 esp_err_t ts_rule_store_commit(const ts_auto_rule_t *rules,int n,const ts_auto_rule_t *candidate,const char *id,int source,ts_rule_commit_t *result){++commits;*result=(ts_rule_commit_t){.applied=1,.durable=1,.mirror_synced=1,.error_code="ok"};return ESP_OK;}
 static void record_execution(const char*a,ts_rule_exec_status_t b,ts_rule_trigger_source_t c,const char*d,uint8_t e,uint8_t f){}
 static esp_err_t execute_actions_with_stats(const ts_auto_action_t*a,int n,int*ok,int*fail){++action_calls;barrier(2);strcpy(observed,a[0].log.message);*ok=n;*fail=0;return ESP_OK;}
+/* Switches for the refusal tests, layered over the stubs above so the stubs keep their text. */
+static bool refuse_new_work,service_blocked;static void (*after_snapshot)(void);
+#define ts_action_manager_accepting() (!refuse_new_work && (ts_action_manager_accepting)())
+#define ts_ssh_service_start_admissible(id) (!service_blocked && (ts_ssh_service_start_admissible)(id))
+#define ts_action_snapshot(source,out) (after_snapshot?after_snapshot():(void)0,(ts_action_snapshot)(source,out))
 #include "engine.inc"
 static ts_auto_rule_t candidate(const char *message){ts_auto_rule_t r;const char *text="{\"id\":\"rule\",\"name\":\"test\",\"enabled\":true,\"manual_trigger\":false,\"show_on_dashboard\":false,\"allow_manual_trigger\":true,\"conditions\":[{\"variable\":\"host.ready\",\"value\":true}],\"actions\":[{\"type\":\"log\",\"message\":\"old\"}]}";cJSON*j=cJSON_Parse(text);assert(ts_rule_decode(j,&r)==ESP_OK);cJSON_Delete(j);strcpy(r.actions[0].log.message,message);return r;}
-static void *evaluate(void*arg){bool triggered;esp_err_t ret=execute_rule("rule",false,&triggered);assert(ret==ESP_OK);return NULL;}
+static void bump_revision(void){++s_rule_ctx.rules[0].revision;}
+static void *evaluate(void*arg){bool triggered;esp_err_t ret=execute_rule("rule",false,&triggered,NULL);assert(ret==ESP_OK);return NULL;}
 static pthread_t start_block(int phase){pthread_t t;pthread_mutex_lock(&control);block_phase=phase;reached=proceed=0;pthread_create(&t,NULL,evaluate,NULL);while(!reached)pthread_cond_wait(&changed,&control);pthread_mutex_unlock(&control);return t;}
 static void unblock(pthread_t t){pthread_mutex_lock(&control);proceed=1;pthread_cond_broadcast(&changed);pthread_mutex_unlock(&control);pthread_join(t,NULL);block_phase=0;}
 int main(void){
@@ -58,8 +64,43 @@ int main(void){
  t=start_block(2);strcpy(a.actions[0].log.message,"third");assert(ts_rule_commit(&a,a.id,2,&result)==ESP_OK);assert(s_rule_ctx.retired==1);ts_auto_rule_t held;assert(ts_rule_acquire(a.id,&held)==ESP_OK);strcpy(a.name,"bounded");assert(ts_rule_commit(&a,a.id,3,&result)!=ESP_OK);ts_rule_release(&held);assert(ts_rule_commit(NULL,a.id,3,&result)!=ESP_OK);unblock(t);assert(!strcmp(observed,"new")&&s_rule_ctx.retired==0&&s_rule_ctx.rules[0].trigger_count==1);
  for(int enabled=0;enabled<2;enabled++)for(int manual=0;manual<2;manual++)for(int allow=0;allow<2;allow++){
   a.enabled=enabled;a.manual_trigger=manual;a.allow_manual_trigger=allow;assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
-  before=action_calls;bool triggered;execute_rule(a.id,false,&triggered);assert((action_calls>before)==(enabled&&!manual));
-  before=action_calls;execute_rule(a.id,true,&triggered);assert((action_calls>before)==(enabled&&allow));
+  before=action_calls;bool triggered;execute_rule(a.id,false,&triggered,NULL);assert((action_calls>before)==(enabled&&!manual));
+  ts_rule_reject_t why=TS_RULE_REJECT_CHANGED;
+  before=action_calls;esp_err_t manual_ret=execute_rule(a.id,true,&triggered,&why);assert((action_calls>before)==(enabled&&allow));
+  /* a manual trigger that is refused says why; one that is accepted says nothing */
+  assert(manual_ret==(enabled&&allow?ESP_OK:ESP_ERR_INVALID_STATE));
+  assert(why==(!enabled?TS_RULE_REJECT_DISABLED:!allow?TS_RULE_REJECT_MANUAL_NOT_ALLOWED:TS_RULE_REJECT_NONE));
+ }
+ {  /* every other way a manual trigger is refused reports its own reason; none of them runs an action */
+  ts_rule_reject_t why;bool triggered;
+  a.enabled=true;a.manual_trigger=false;a.allow_manual_trigger=true;assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
+  before=action_calls;assert(execute_rule(a.id,true,&triggered,&why)==ESP_OK&&why==TS_RULE_REJECT_NONE&&action_calls==before+1);
+  before=action_calls;
+  refuse_new_work=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_NOT_ACCEPTING);refuse_new_work=false;
+  s_rule_ctx.loaded=false;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_NOT_LOADED);s_rule_ctx.loaded=true;
+  s_rule_ctx.recovery_error=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_RECOVERY);s_rule_ctx.recovery_error=false;
+  s_rule_ctx.meta[0].committing=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_CONFIG_BUSY);s_rule_ctx.meta[0].committing=false;
+  s_rule_ctx.meta[0].executing=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_RUNNING);s_rule_ctx.meta[0].executing=false;
+  /* a deletion that waits for a restart: its own reason, ahead of "being saved" and "executing"; automatic evaluation stays silent */
+  s_rule_ctx.meta[0].pending_delete=true;s_rule_ctx.meta[0].committing=true;s_rule_ctx.meta[0].executing=true;before=action_calls;
+  assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_PENDING_DELETE&&action_calls==before);
+  assert(execute_rule(a.id,false,&triggered,NULL)==ESP_OK&&!triggered&&action_calls==before);
+  s_rule_ctx.meta[0].pending_delete=s_rule_ctx.meta[0].committing=s_rule_ctx.meta[0].executing=false;
+  /* an unknown rule is not an admission decision: no reason, and the caller still gets NOT_FOUND */
+  why=TS_RULE_REJECT_RUNNING;assert(execute_rule("no-such-rule",true,&triggered,&why)==ESP_ERR_NOT_FOUND&&why==TS_RULE_REJECT_NONE);
+  /* the rule changed between admission and start */
+  after_snapshot=bump_revision;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_CHANGED);after_snapshot=NULL;
+  assert(action_calls==before);
+  /* a bound service that may not be started right now */
+  ts_auto_action_type_t original=a.actions[0].type;a.actions[0].type=TS_AUTO_ACT_SSH_CMD_REF;strcpy(a.actions[0].ssh_ref.cmd_id,"svc");
+  assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
+  service_blocked=true;assert(execute_rule(a.id,true,&triggered,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_SERVICE_STATE);
+  assert(execute_rule(a.id,false,&triggered,NULL)==ESP_OK&&action_calls==before);   /* automatic evaluation stays silent */
+  service_blocked=false;a.actions[0].type=original;assert(ts_rule_commit(&a,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);
+  /* the public entry points: _ex reports the reason, the original keeps its plain behaviour */
+  refuse_new_work=true;why=TS_RULE_REJECT_NONE;assert(ts_rule_trigger_ex(a.id,&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_NOT_ACCEPTING);
+  assert(ts_rule_trigger(a.id)==ESP_ERR_INVALID_STATE&&ts_rule_trigger_ex(a.id,NULL)==ESP_ERR_INVALID_STATE);refuse_new_work=false;
+  before=action_calls;why=TS_RULE_REJECT_CHANGED;assert(ts_rule_trigger_ex(a.id,&why)==ESP_OK&&why==TS_RULE_REJECT_NONE&&action_calls==before+1);
  }
  uint32_t old_instance=s_rule_ctx.rules[0].instance;assert(ts_rule_commit(NULL,a.id,s_rule_ctx.rules[0].revision,&result)==ESP_OK);assert(ts_rule_commit(&a,a.id,0,&result)==ESP_OK);assert(s_rule_ctx.rules[0].instance!=old_instance&&s_rule_ctx.rules[0].trigger_count==0);
  strcpy(a.actions[0].template_id,"missing");

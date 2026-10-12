@@ -137,12 +137,12 @@ test('zh-CN: non-root homepage has approved guidance and no management entry',as
    assert(!(await grid.textContent()).includes(await page.evaluate(k=>t(k),oldKey)));
  }
 },'admin'));
-test('zh-CN: template lookup failure uses saveFailed and retains the actual draft',async()=>pageFor('zh-CN',390,async({page,state,calls})=>{
+test('zh-CN: template lookup failure says what could not be confirmed and retains the actual draft',async()=>pageFor('zh-CN',390,async({page,state,calls})=>{
  state.saveError='template_lookup_failed';
  await page.evaluate(async()=>{showAddRuleModal();await addActionTemplateRow('missing');});
  await page.locator('#rule-id').fill('new-rule');await page.locator('#rule-name').fill('Lookup draft remains');await page.locator('#rule-manual-only').check();
  await page.locator('#add-rule-modal button[onclick="submitAddRule()"] ').click();
- await page.waitForFunction(()=>document.getElementById('toast')?.textContent===t('runtimeRepair.saveFailed'));
+ await page.waitForFunction(()=>document.getElementById('toast')?.textContent.includes(t('failure.reasons.template_lookup_failed.why')));
  assert.equal(await page.locator('#rule-name').inputValue(),'Lookup draft remains');assert.equal(await page.locator('#add-rule-modal').count(),1);
  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/add').length,1);
 }));

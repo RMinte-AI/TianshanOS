@@ -4,7 +4,7 @@ static unsigned powers,errors,outputs[32],terminals[32],logs,protection_order[64
 static void observe_all(httpd_ws_frame_t*f){const char*p=(char*)f->payload;
  for(unsigned i=0;i<8;i++){char match[80];snprintf(match,sizeof(match),"\"topic\":\"%s\"",topics[i].name);if(strstr(p,match))observed_topics[i]++;}
  if(strstr(p,"power_event")){powers++;if(protection_n<64){cJSON*j=cJSON_Parse(p);protection_order[protection_n++]=cJSON_GetObjectItem(j,"protection_count")->valueint;cJSON_Delete(j);}}
- if(strstr(p,"ssh_exec_output")||strstr(p,"ssh_output"))outputs[sent_fd]++;
+ if(strstr(p,"\"type\":\"ssh_exec_output\"")||strstr(p,"\"type\":\"ssh_output\""))outputs[sent_fd]++;   /* the frame type, not a reason token that contains the word */
  if(strstr(p,"ssh_exec_error")||strstr(p,"\"status\":\"error\""))errors++;
  if(strstr(p,"ssh_exec_done")||strstr(p,"ssh_exec_error"))terminals[sent_fd]++;
  if(!strcmp(p,"log"))logs++;

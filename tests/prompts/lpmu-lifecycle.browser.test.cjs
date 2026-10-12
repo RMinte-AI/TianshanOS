@@ -137,7 +137,7 @@ for (const language of ['zh-CN', 'en-US']) {
                 showNetworkLpmuAccessResult({success:true,summary:'SIMULATED RESULT',runId:31});
             });
             await page.locator('#network-lpmu-result-modal summary').click();
-            await page.waitForFunction(()=>document.querySelector('#network-lpmu-result-modal pre').textContent.includes(t('networkPage.lpmuAccessLogFailed')));
+            await page.waitForFunction(()=>document.querySelector('#network-lpmu-result-modal pre').textContent.includes(t('failure.ops.network.lpmulog.failed')));
             assert.equal(await page.evaluate(()=>logCalls),1);
             await page.locator('#network-lpmu-result-modal summary').click();
             await page.locator('#network-lpmu-result-modal summary').click();
@@ -182,7 +182,7 @@ for (const language of ['zh-CN', 'en-US']) {
                 showNetworkLpmuAccessResult({success:true,summary:'SIMULATED RESULT',runId:33});
             },failure);
             await page.locator('#network-lpmu-result-modal summary').click();
-            await page.waitForFunction(()=>document.querySelector('#network-lpmu-result-modal pre').textContent.includes(t('networkPage.lpmuAccessLogFailed')));
+            await page.waitForFunction(()=>document.querySelector('#network-lpmu-result-modal pre').textContent.includes(t('failure.ops.network.lpmulog.failed')));
             assert.equal(await page.evaluate(()=>logCalls),1);
             assert.equal(await page.locator('#network-lpmu-result-modal .state.ok').count(),2);
             assert.deepEqual(errors,[]);

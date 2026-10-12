@@ -21,8 +21,8 @@ for(const lang of ['zh-CN','en-US']){
  });
  test(`${lang}: business failure keeps inputs, stage and cleanup, distinguishes memory/storage`,async()=>{
   const h=await setup(lang);let posts=0;h.ctx.fetch=async()=>{posts++;return reply({code:7,error:'key_storage_full',data:{failed_stage:'metadata_write',esp_error:'ESP_ERR_NVS_NOT_ENOUGH_SPACE',cleanup_complete:false,cleanup_error:'ESP_FAIL'}});};
-  await h.ctx.generateKey();assert.equal(posts,1);assert(!h.el('keygen-modal').classList.contains('hidden'));assert.equal(h.el('keygen-id').value,'fixture');assert(h.el('keygen-status').textContent.includes('metadata_write'));assert(h.el('keygen-status').textContent.includes('ESP_FAIL'));assert(!h.el('keygen-submit').disabled);
-  h.ctx.fetch=async()=>reply({code:6,error:'Memory allocation failed'});h.run('toastDeadline=0;');await h.ctx.generateKey();assert(h.el('keygen-status').textContent.includes(h.ctx.t('keyGeneration.memory')));
+  await h.ctx.generateKey();assert.equal(posts,1);assert(!h.el('keygen-modal').classList.contains('hidden'));assert.equal(h.el('keygen-id').value,'fixture');assert(h.el('keygen-status').textContent.includes(h.ctx.t('failure.reasons.key_storage_full.why')));assert(h.el('keygen-status').textContent.includes('metadata_write'));assert(h.el('keygen-status').textContent.includes('ESP_FAIL'));assert(!h.el('keygen-submit').disabled);
+  h.ctx.fetch=async()=>reply({code:6,error:'Memory allocation failed'});h.run('toastDeadline=0;');await h.ctx.generateKey();assert(h.el('keygen-status').textContent.includes(h.ctx.describeFailure({op:'key.generate',params:{id:'fixture'},write:true,result:{code:6,error:'Memory allocation failed'}}).message));
  });
  for(const failure of ['timeout','network','http','body','json','string-code','missing','wrong-id','response-allocation','response-no-message'])test(`${lang}: ${failure} is unknown, one POST and at most one record check, no automatic retry`,async()=>{
   const h=await setup(lang);let posts=0,checks=0;

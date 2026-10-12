@@ -132,6 +132,33 @@ esp_err_t ts_rule_evaluate(const char *id, bool *triggered);
  */
 esp_err_t ts_rule_trigger(const char *id);
 
+/**
+ * @brief Why a manual trigger was refused (ts_rule_trigger_ex). TS_RULE_REJECT_NONE when the trigger was accepted,
+ *        or failed for a reason that is not an admission decision (not found, out of memory, ...).
+ */
+typedef enum {
+    TS_RULE_REJECT_NONE = 0,
+    TS_RULE_REJECT_NOT_ACCEPTING,      /**< the action manager takes no new work (reloading or stopped) */
+    TS_RULE_REJECT_DISABLED,           /**< the rule is disabled */
+    TS_RULE_REJECT_MANUAL_NOT_ALLOWED, /**< allow_manual_trigger is off */
+    TS_RULE_REJECT_NOT_LOADED,         /**< the configuration is not loaded yet */
+    TS_RULE_REJECT_RECOVERY,           /**< the configuration needs a recovery check */
+    TS_RULE_REJECT_CONFIG_BUSY,        /**< the configuration is being saved */
+    TS_RULE_REJECT_RUNNING,            /**< the rule is already executing */
+    TS_RULE_REJECT_SERVICE_STATE,      /**< a bound service cannot be started in its current state */
+    TS_RULE_REJECT_CHANGED,            /**< the rule was changed or removed while the trigger was admitted */
+    TS_RULE_REJECT_PENDING_DELETE      /**< the rule's deletion is saved and takes effect after a restart */
+} ts_rule_reject_t;
+
+/**
+ * @brief ts_rule_trigger() that also reports why a manual trigger was refused
+ *
+ * @param id  Rule ID
+ * @param why Optional; receives the refusal reason (TS_RULE_REJECT_NONE if the call was not refused)
+ * @return Same as ts_rule_trigger()
+ */
+esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why);
+
 /*===========================================================================*/
 /*                           Condition Evaluation                             */
 /*===========================================================================*/

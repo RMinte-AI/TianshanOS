@@ -1,0 +1,310 @@
+{
+  "command.cancel.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "取消命令的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ssh.cancel\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of cancelling the command is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ssh.cancel\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "command.cancel.no-session": {
+    "zh-CN": {
+      "type": "error",
+      "text": "取消命令失败：没有正在执行的命令。它可能已经结束了。",
+      "details": "原因代号：ssh_no_session\n接口：ssh.cancel\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to cancel the command: there is no command running. It may have finished already.",
+      "details": "Reason code: ssh_no_session\nAPI: ssh.cancel\nTime: <time>"
+    }
+  },
+  "command.delete.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "删除指令“Restart AGX”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ssh.commands.remove\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of deleting command “Restart AGX” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ssh.commands.remove\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "command.delete.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已删除指令“Restart AGX”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Command “Restart AGX” deleted",
+      "details": null
+    }
+  },
+  "command.delete.service-running": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除指令“Restart AGX”",
+      "text": "还没有确认指令“Restart AGX”对应的服务是否已停止。请先在「指令」页点这条指令的刷新图标核验状态；如果它仍在运行，请先停止，再删除。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete command “Restart AGX”",
+      "text": "It hasn't been confirmed that the service for command “Restart AGX” has stopped. On the SSH Commands page, select the refresh icon for this command to verify its state. If it is still running, stop it before deleting.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "command.helper.host-key-unknown": {
+    "zh-CN": {
+      "type": "line",
+      "text": "在“root@192.0.2.8:22”上执行辅助命令失败：这是第一次连接这台主机，它的指纹还没有登记。请先到「安全」页的 SSH 主机里点“测试”，核对并信任它的指纹。",
+      "details": null
+    },
+    "en-US": {
+      "type": "line",
+      "text": "Failed to run the helper command on “root@192.0.2.8:22”: this is the first connection to this host and its fingerprint is not registered yet. On the Security page, click Test on the SSH host first, then check and trust its fingerprint.",
+      "details": null
+    }
+  },
+  "command.helper.no-answer": {
+    "zh-CN": {
+      "type": "line",
+      "text": "在“root@192.0.2.8:22”上执行辅助命令失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "line",
+      "text": "Failed to run the helper command on “root@192.0.2.8:22”: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "command.helper.wrong-password": {
+    "zh-CN": {
+      "type": "line",
+      "text": "在“root@192.0.2.8:22”上执行辅助命令失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
+      "details": null
+    },
+    "en-US": {
+      "type": "line",
+      "text": "Failed to run the helper command on “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
+      "details": null
+    }
+  },
+  "command.run.busy": {
+    "zh-CN": {
+      "type": "error",
+      "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：另一条 SSH 命令正在执行。请等它结束，或先取消它。",
+      "details": "原因代号：ssh_exec_busy\n接口：ssh.exec_stream\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: another SSH command is running. Wait for it to finish, or cancel it first.",
+      "details": "Reason code: ssh_exec_busy\nAPI: ssh.exec_stream\nTime: <time>"
+    }
+  },
+  "command.run.error-text-from-old-firmware": {
+    "zh-CN": {
+      "type": "error",
+      "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：无法连接到目标。请检查网络连接和目标的地址。",
+      "details": "原因代号：target_unreachable\n接口：ssh.exec_stream\n原始信息：SSH connection failed (code=259)\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: the target could not be reached. Check the network connection and the target address.",
+      "details": "Reason code: target_unreachable\nAPI: ssh.exec_stream\nOriginal text: SSH connection failed (code=259)\nTime: <time>"
+    }
+  },
+  "command.run.error-while-running": {
+    "zh-CN": {
+      "type": "error",
+      "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：连接超时。请确认主机已开机、网络可达，且没有防火墙拦截。",
+      "details": "原因代号：ssh_connect_timeout\n接口：ssh.exec_stream\n原始信息：SSH connection failed (code=263)\n阶段：timeout\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: the connection timed out. Make sure the host is on, reachable, and not blocked by a firewall.",
+      "details": "Reason code: ssh_connect_timeout\nAPI: ssh.exec_stream\nOriginal text: SSH connection failed (code=263)\nStage: timeout\nTime: <time>"
+    }
+  },
+  "command.run.output-incomplete": {
+    "zh-CN": {
+      "type": "error",
+      "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：命令的输出没能完整送到页面，远端的执行结果未确认。请到那台主机上确认命令是否已经执行完，不要直接重复执行。",
+      "details": "原因代号：ssh_output_incomplete\n接口：ssh.exec_stream\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: the output of the command did not reach this page completely, so the result on the host is unconfirmed. Check on that host whether the command has finished, and do not simply run it again.",
+      "details": "Reason code: ssh_output_incomplete\nAPI: ssh.exec_stream\nTime: <time>"
+    }
+  },
+  "command.run.start-failed": {
+    "zh-CN": {
+      "type": "error",
+      "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：没能开始执行这条 SSH 命令。请稍后再试；点“详情”可以看到设备返回的信息。",
+      "details": "原因代号：ssh_start_failed\n接口：ssh.exec_stream\n原始信息：ESP_ERR_NO_MEM\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: the SSH command could not be started. Try again later; click Details to see what the device returned.",
+      "details": "Reason code: ssh_start_failed\nAPI: ssh.exec_stream\nOriginal text: ESP_ERR_NO_MEM\nTime: <time>"
+    }
+  },
+  "command.run.wrong-password": {
+    "zh-CN": {
+      "type": "error",
+      "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
+      "details": "原因代号：ssh_auth_failed\n接口：ssh.exec_stream\n原始信息：SSH connection failed (code=259)\n阶段：auth\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
+      "details": "Reason code: ssh_auth_failed\nAPI: ssh.exec_stream\nOriginal text: SSH connection failed (code=259)\nStage: auth\nTime: <time>"
+    }
+  },
+  "command.save.bad-id": {
+    "zh-CN": {
+      "type": "field",
+      "text": "指令 ID 只能包含字母、数字、下划线和短横线，不能以下划线或短横线开头或结尾，最长 31 个字符",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "The command ID may only contain letters, numbers, underscores and hyphens, cannot start or end with an underscore or hyphen, and can be at most 31 characters long",
+      "focused": true
+    }
+  },
+  "command.save.capacity": {
+    "zh-CN": {
+      "type": "error",
+      "text": "保存指令“Restart AGX”失败：指令数量已达上限。请先删除不用的指令。",
+      "details": "原因代号：command_capacity\n接口：ssh.commands.add\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to save command “Restart AGX”: the limit for commands has been reached. Delete commands you no longer need.",
+      "details": "Reason code: command_capacity\nAPI: ssh.commands.add\nTime: <time>"
+    }
+  },
+  "command.save.missing-command": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写要执行的命令",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter the command to run",
+      "focused": true
+    }
+  },
+  "command.save.missing-id": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写指令 ID",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter a command ID",
+      "focused": true
+    }
+  },
+  "command.save.missing-name": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写指令名称",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter a name for the command",
+      "focused": true
+    }
+  },
+  "command.save.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "保存指令“Restart AGX”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ssh.commands.add\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of saving command “Restart AGX” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ssh.commands.add\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "command.save.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已保存指令“Restart AGX”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Command “Restart AGX” saved",
+      "details": null
+    }
+  },
+  "host.list.commands-page-refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取主机列表失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the host list: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  },
+  "pack.export-command.not-allowed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“restart”（SSH 指令）失败：这台设备不是开发者设备，没有导出配置包的权限。请在开发者设备上导出配置包。",
+      "details": "原因代号：pack_not_allowed\n接口：ssh.commands.export\n原始信息：Permission denied (not a developer device)\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “restart” (SSH command): this device is not a developer device and may not export config packs. Export the config pack on a developer device.",
+      "details": "Reason code: pack_not_allowed\nAPI: ssh.commands.export\nOriginal text: Permission denied (not a developer device)\nTime: <time>"
+    }
+  },
+  "pack.export-host.cert-unavailable": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导出“root@192.0.2.8”（SSH 主机）失败：设备证书不可用。请先到「安全」页检查设备证书。",
+      "details": "原因代号：device_cert_unavailable\n接口：ssh.hosts.export\n原始信息：ESP_FAIL\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to export “root@192.0.2.8” (SSH host): the device certificate is not available. Check the device certificate on the Security page first.",
+      "details": "Reason code: device_cert_unavailable\nAPI: ssh.hosts.export\nOriginal text: ESP_FAIL\nTime: <time>"
+    }
+  },
+  "pack.import-host.storage-failed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“lab.tscfg”失败：写入设备存储失败。若在用 SD 卡，请确认卡已插好；详情见「终端」→「系统日志」。",
+      "details": "原因代号：storage_failed\n接口：ssh.hosts.import\n原始信息：No such file or directory\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “lab.tscfg”: writing to the device storage failed. If you use an SD card, make sure it is inserted; see Terminal → System Logs.",
+      "details": "Reason code: storage_failed\nAPI: ssh.hosts.import\nOriginal text: No such file or directory\nTime: <time>"
+    }
+  }
+}

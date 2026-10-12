@@ -116,7 +116,7 @@ static esp_err_t check_auth(ts_http_request_t *req, uint32_t *session_id, ts_per
 #endif
 }
 
-/* This endpoint retains storage failure details; other response contracts stay unchanged. */
+/* key.generate: same envelope as the generic path (failure details included) plus per-request stage logging. */
 static esp_err_t send_key_generate_result(ts_http_request_t *req, ts_api_result_t *result,
                                           const char *request_id, int64_t started)
 {
@@ -347,10 +347,21 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
         // Return the actual error from the API handler with HTTP 200
         // API errors (like "no data") are business logic errors, not HTTP errors
         cJSON *response = cJSON_CreateObject();
-        cJSON_AddNumberToObject(response, "code", result.code);
-        cJSON_AddStringToObject(response, "error", result.message ? result.message : "Internal error");
-        
-        char *json = cJSON_PrintUnformatted(response);
+        /* code and error are the failure itself: if either cannot be written, send HTTP 500 rather
+         * than a document the client would misread. */
+        bool built = response &&
+                     cJSON_AddNumberToObject(response, "code", result.code) &&
+                     cJSON_AddStringToObject(response, "error", result.message ? result.message : "Internal error");
+        /* A failing handler may attach details the client must act on, e.g. the host-key
+         * fingerprint ssh.exec reports with code 1001/1002 so the UI can ask the user to
+         * confirm it. Dropping them leaves a bare error and no way to continue. Handlers
+         * that fail without details leave data NULL, so their responses do not change. */
+        if (built && result.data) {
+            cJSON *data = cJSON_Duplicate(result.data, true);
+            if (data && !cJSON_AddItemToObject(response, "data", data)) cJSON_Delete(data);
+        }
+
+        char *json = built ? cJSON_PrintUnformatted(response) : NULL;
         cJSON_Delete(response);
         ts_api_result_free(&result);
         
@@ -628,6 +639,7 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
         cJSON_AddBoolToObject(validation, "valid", pack_result == TS_CONFIG_PACK_OK);
         cJSON_AddNumberToObject(validation, "result_code", pack_result);
         cJSON_AddStringToObject(validation, "result_message", ts_config_pack_strerror(pack_result));
+        cJSON_AddStringToObject(validation, "reason", ts_config_pack_reason(pack_result));
         
         if (pack_result == TS_CONFIG_PACK_OK || sig_info.signer_cn[0] != '\0') {
             cJSON *sig = cJSON_CreateObject();
@@ -648,6 +660,7 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
                                pack_result == TS_CONFIG_PACK_OK ? "success" : "error");
         cJSON_AddNumberToObject(ws_data, "result_code", pack_result);
         cJSON_AddStringToObject(ws_data, "result_message", ts_config_pack_strerror(pack_result));
+        cJSON_AddStringToObject(ws_data, "reason", ts_config_pack_reason(pack_result));
         
         if (pack_result == TS_CONFIG_PACK_OK || sig_info.signer_cn[0] != '\0') {
             cJSON *ws_sig = cJSON_CreateObject();

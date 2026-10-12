@@ -97,6 +97,9 @@ async function pageFor(language,mode,run){
   assert.deepEqual(errors,[]);
  }finally{await context.close();await new Promise(resolve=>server.close(resolve));}
 }
+// The sentence the page must show for a failed verification / import comes from the failure catalogue (one source of truth).
+const said=(page,op,file,extra)=>page.evaluate(([op,file,extra])=>describeFailure({op,params:{kind:t('failure.kinds.rule'),file:file??window._importRuleFilename??''},...extra}).message,[op,file,extra]);
+const shown=(page,text)=>page.waitForFunction(text=>document.getElementById('import-rule-result').textContent.includes(text),text);
 for(const language of ['zh-CN','en-US']){
  test(language+': preview -> one save -> pending row and escaped ID',async()=>{
   await pageFor(language,'ok',async({page,calls,writes,saved})=>{
@@ -121,7 +124,7 @@ for(const language of ['zh-CN','en-US']){
  test(language+': saved generation conflict requires a fresh preview',async()=>{
   await pageFor(language,'conflict',async({page,writes,saved})=>{
    await page.locator('#import-rule-btn').click();
-   await page.waitForFunction(()=>document.getElementById('import-rule-result').textContent===t('rulePack.errors.revision_conflict'));
+   await shown(page,await said(page,'pack.import',null,{token:'revision_conflict',write:true}));
    assert.equal(writes(),1);assert.equal(saved(),false);
    assert(await page.locator('#import-rule-btn').isDisabled());
   });
@@ -140,10 +143,10 @@ for(const language of ['zh-CN','en-US']){
  test(language+': recovery failure cannot confirm an uncertain save',async()=>{
   await pageFor(language,'unknown',async({page,calls,writes})=>{
    await page.locator('#import-rule-btn').click();
-   await page.waitForFunction(()=>document.getElementById('import-rule-result').textContent===t('rulePack.unknown'));
+   await shown(page,await said(page,'pack.import',null,{token:'commit_unknown',write:true}));
    await page.waitForTimeout(100);
    assert(calls.some(c=>c.endpoint==='automation/rules/list'));assert.equal(writes(),1);
-   assert.equal(await page.locator('#import-rule-result').innerText(),await page.evaluate(()=>t('rulePack.unknown')));
+   assert((await page.locator('#import-rule-result').innerText()).includes(await said(page,'pack.import',null,{token:'commit_unknown',write:true})));
    assert(await page.locator('#import-rule-btn').isDisabled());
   });
  });
@@ -170,7 +173,7 @@ for(const language of ['zh-CN','en-US']){
  test(language+': confirmed deletion row and quick action cannot trigger or confirm an uncertain pack save',async()=>{
   await pageFor(language,'deleted',async({page,calls,writes})=>{
    await page.locator('#import-rule-btn').click();
-   await page.waitForFunction(()=>document.getElementById('import-rule-result').textContent===t('rulePack.unknown'));
+   await shown(page,await said(page,'pack.import',null,{token:'commit_unknown',write:true}));
    assert.equal(writes(),1);
    await page.evaluate(async()=>{await refreshRules();document.body.insertAdjacentHTML('beforeend','<div id="quick-actions-grid"></div>');await refreshQuickActions();});
    assert.equal(await page.locator('#rules-list .tr:not(.th)').count(),1);
@@ -187,7 +190,7 @@ for(const language of ['zh-CN','en-US']){
  test(language+': unsupported action preview has a translated error and cannot save',async()=>{
   await pageFor(language,'ok',async({page,writes})=>{
    await page.locator('#import-rule-file').setInputFiles({name:'unsupported.tscfg',buffer:Buffer.from('unsupported')});
-   await page.waitForFunction(()=>document.getElementById('import-rule-result').textContent===t('rulePack.errors.action_unsupported'));
+   await shown(page,await said(page,'pack.verify','unsupported.tscfg',{token:'action_unsupported'}));
    assert(await page.locator('#import-rule-btn').isDisabled());assert.equal(writes(),0);
    assert.doesNotMatch(await page.locator('#import-rule-result').innerText(),/rulePack\.errors/);
   });

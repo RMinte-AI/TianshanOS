@@ -73,3 +73,7 @@
 - `docs/macos27/REVIEW.md`、`TESTING.md`、`ROLLBACK.md`：完整审查、可复现命令和精确回退。
 
 后续只需针对未验收边界推进：用户解锁Mac以运行Safari/原生输入检查；提供真实手机与只读设备验证环境；决定P-07的11KiB增量是否可接受。设备写入/部署仍需新授权。本轮不把这些缺口作为缩减本地页面实施的理由，也不将目标或发布标记为全部完成。
+
+## 后续变更
+
+- 0.6.1 之后清理了 50 个确认没有任何入口的旧函数（含上文标 N/A 的 `loadLedPage`、`refreshLedPage`、`openColorModal`、`renderVariables`、`updateActionFields`），以及再也打不开的「主机指纹不匹配」旧弹窗。上面各份映射文件和 `tests/macos27/map-runtime.cjs` 仍按验收当时的源码记录，其中这些函数名在当前代码里已不存在；需要查看时请切到 `v0.6.1` 标签。

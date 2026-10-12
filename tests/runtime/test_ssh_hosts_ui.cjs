@@ -32,8 +32,13 @@ function t(key, args = {}) {
     for (const [name, text] of Object.entries(args)) value = value.replaceAll(`{${name}}`, text);
     return value;
 }
+// the page's i18n.complete(): the text exists and every placeholder it needs is given
+const i18n = {complete: (key, values = {}) => {
+    const text = key.split('.').reduce((v, k) => v?.[k], languages[locale]);
+    return typeof text === 'string' && [...text.matchAll(/\{(\w+)\}/g)].every(m => values[m[1]] !== undefined && values[m[1]] !== null);
+}};
 const context = vm.createContext({console: {log() {}, error() {}}, document: {getElementById: el},
-    window: {}, t, capturePageValidity: () => () => current,
+    window: {}, t, i18n, capturePageValidity: () => () => current,
     escapeHtml: text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
     showToast: (msg, tone) => toasts.push({msg, tone}),
     api: {
@@ -55,7 +60,7 @@ vm.runInContext(apiSource.slice(apiSource.indexOf('function apiErrorReason'), ap
 vm.runInContext("let currentDeployKeyId = 'synthetic-key';", context);
 const loadVersion = source.match(/^let sshHostsLoadVersion[^\n]+/m);
 if (loadVersion) vm.runInContext(loadVersion[0], context);
-for (const name of ['loadSshHostsData', 'refreshSshHostsList', 'deployKey']) vm.runInContext(fn(name), context);
+for (const name of ['failureHtml', 'failureNote', 'packBox', 'loadSshHostsData', 'refreshSshHostsList', 'deployKey']) vm.runInContext(fn(name), context);
 const target = {id: 'test@192.0.2.8:2222', host: '192.0.2.8', port: 2222, username: 'test', keyid: 'synthetic-key'};
 function reset() {
     deployment = {code: 0, data: {deployed: true, verified: true, registered: true, host_id: target.id}};
@@ -63,7 +68,7 @@ function reset() {
     calls = listCalls = 0;toasts = [];current = true;
     el('deploy-host').value = '192.0.2.8';el('deploy-user').value = 'test';
     el('deploy-password').value = 'synthetic';el('deploy-port').value = '2222';
-    el('deploy-result').classList.add('hidden', 'success', 'warning', 'error');
+    el('deploy-result').classList.add('hidden', 'success', 'warning', 'error');el('deploy-result').innerHTML = '';
     context.window._sshHostsData = {old: {id: 'old', host: '192.0.2.9'}};
     context.window._sshHostsList = [context.window._sshHostsData.old];
 }
@@ -71,7 +76,8 @@ async function deploy(tone, key) {
     await context.deployKey();
     assert.equal(calls, 1);assert.equal(el('deploy-btn').disabled, false);
     assert(el('deploy-result').classList.contains(tone));
-    assert(el('deploy-result').textContent.includes(t(key).split('{')[0]));
+    // a failure is written as markup (sentence + Details link), the partial outcomes as plain text
+    assert((tone === 'error' ? el('deploy-result').innerHTML : el('deploy-result').textContent).includes(t(key).split('{')[0]));
     if (tone !== 'error') assert.equal(toasts.at(-1).tone, tone);
     if (tone !== 'success') assert(!el('deploy-result').classList.contains('success'));
 }
@@ -100,7 +106,7 @@ async function deploy(tone, key) {
             if (fail === 'format') listing = {code: 0, data: {}};
             await deploy('warning', 'promptRepair.keyVerified');
             assert.equal(context.window._sshHostsData, oldCache);assert.equal(context.window._sshHostsList, oldList);
-            assert(el('ssh-hosts-table-body').innerHTML.includes(t('common.loadFailed')));
+            assert(el('ssh-hosts-table-body').innerHTML.includes(t('failure.ops.host.list.failed')));
             assert(!el('ssh-hosts-table-body').innerHTML.includes(t('securityPage.noDeployedHostsHint')));
             assert(el('deploy-result').textContent.includes(t('promptRepair.deployedHostsRefreshFailed')));
         }
@@ -115,7 +121,7 @@ async function deploy(tone, key) {
         assert(el('ssh-hosts-table-body').innerHTML.includes(t('securityPage.noDeployedHostsHint')));
         assert.equal(context.window._sshHostsList.length, 0);
         reset();deployment = {code: 7, message: 'synthetic deployment failure'};
-        await deploy('error', 'pkiPage.deployFailedMsg');assert.equal(listCalls, 0);
+        await deploy('error', 'failure.ops.key.deploy.failed');assert.equal(listCalls, 0);
         reset();current = false;await context.deployKey();assert.equal(listCalls, 0);assert.equal(toasts.length, 0);
         for (const oldResponse of [{code: 0, data: {hosts: []}}, {code: 7, data: {hosts: []}}]) {
             reset();const originalCall = context.api.call;let finishOld, reads = 0;

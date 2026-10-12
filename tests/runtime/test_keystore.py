@@ -100,7 +100,7 @@ esp_err_t ts_crypto_keypair_export_openssh(ts_keypair_t p,char *b,size_t *n,cons
 esp_err_t ts_api_call(const char *name,const cJSON *p,ts_api_result_t *r){
  if(!strcmp(name,"key.generate"))return api_key_generate(p,r);
  if(!strcmp(name,"automation.rules.import")){++rule_dispatch_calls;r->code=0;return ESP_OK;}
- r->code=TS_API_ERR_INTERNAL;r->message=strdup("fixture");r->data=cJSON_CreateObject();cJSON_AddBoolToObject(r->data,"should_omit",true);return ESP_FAIL;
+ r->code=TS_API_ERR_INTERNAL;r->message=strdup("fixture");r->data=cJSON_CreateObject();cJSON_AddBoolToObject(r->data,"failure_details",true);return ESP_FAIL;
 }
 void ts_api_result_error(ts_api_result_t *r,ts_api_result_code_t c,const char *s){r->code=c;r->message=strdup(s);}
 void ts_api_result_ok(ts_api_result_t *r,cJSON *data){r->code=0;r->data=data;}
@@ -184,7 +184,7 @@ int main(int argc,char **argv){
   reset();const char *body="{\"id\":\"new\",\"request_id\":\"kg-test\"}";ts_http_request_t req={.uri="/api/v1/key/generate",.body=body,.body_len=strlen(body)};
   fail_key="new_meta";fail_write_at=1;assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(cJSON_GetObjectItem(response,"data")&&cJSON_GetObjectItem(response,"code")->valueint!=0);cJSON_Delete(response);absent("new");
   reset();assert(api_handler(&req,NULL)==ESP_OK);assert(find("new_priv"));response=cJSON_Parse(sent_json);assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"generated")));cJSON_Delete(response);
-  req.uri="/api/v1/other/endpoint";assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(!cJSON_GetObjectItem(response,"data"));cJSON_Delete(response);
+  req.uri="/api/v1/other/endpoint";assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(send_status==200&&cJSON_GetObjectItem(response,"code")->valueint==TS_API_ERR_INTERNAL);assert(!strcmp(cJSON_GetObjectItem(response,"error")->valuestring,"fixture")&&!cJSON_GetObjectItem(response,"message"));/* generic failures carry the handler's details (e.g. the host-key fingerprint of ssh.exec) */assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"failure_details")));cJSON_Delete(response);
   req.uri="/api/v1/key/generate";cJSON_Hooks fail_request={always_fail,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   r=(ts_api_result_t){.code=0,.data=cJSON_CreateObject()};cJSON_AddBoolToObject(r.data,"generated",true);cJSON_Hooks hooks={always_fail,free};cJSON_InitHooks(&hooks);send_key_generate_result(NULL,&r,"test",0);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   const char *invalid[]={"{\"tscfg\":\"{}\\u0000tail\"}","{\"preview\":true,\"preview\":false}","{} {}","[]"};

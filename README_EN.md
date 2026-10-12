@@ -6,7 +6,7 @@
 
 TianshanOS is the device management system for RM-01. It runs on the ESP32 out-of-band management controller. Use a browser to check device status, manage power, fans and lighting, configure networking, and set up SSH commands and automation rules.
 
-**Current version: 0.6.1** · Web interface in Chinese and English · [0.6.1 release notes (Chinese)](docs/releases/v0.6.1.md)
+**Current version: 0.6.2** · Web interface in Chinese and English · [0.6.2 release notes (Chinese)](docs/releases/v0.6.2.md)
 
 ## Features
 
@@ -25,7 +25,7 @@ TianshanOS is the device management system for RM-01. It runs on the ESP32 out-o
 2. Open a browser on a computer connected to the same network and enter the device's IP address.
 3. Sign in with your device account. Check status on the dashboard and open the page you need.
 
-The Terminal, SSH Commands and Automation pages require root access. See the user guide for configuration saving, SD card backups and firmware updates. When updating to 0.6.1, use matching versions of the application firmware and Web interface resources.
+The Terminal, SSH Commands and Automation pages require root access. See the user guide for configuration saving, SD card backups and firmware updates. When updating to 0.6.2, use matching versions of the application firmware and Web interface resources.
 
 ## User guides
 

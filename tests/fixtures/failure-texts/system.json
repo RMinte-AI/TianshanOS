@@ -1,0 +1,278 @@
+{
+  "cert.install.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "安装证书的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：cert.install\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of installing the certificate is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: cert.install\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "cert.install.no-keypair": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "安装证书失败：设备上还没有密钥对。请先生成密钥对。",
+      "details": "原因代号：cert_no_keypair\n接口：cert.install\n原始信息：No private key exists. Generate key pair first.\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to install the certificate: the device has no key pair yet. Generate a key pair first.",
+      "details": "Reason code: cert_no_keypair\nAPI: cert.install\nOriginal text: No private key exists. Generate key pair first.\nTime: <time>"
+    }
+  },
+  "device.reboot.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "重启设备的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：system.reboot\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of restarting the device is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: system.reboot\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "fan.setspeed.rejected": {
+    "zh-CN": {
+      "type": "error",
+      "text": "设置风扇 2 的转速失败：设备认为这次提交的内容不合要求。请检查填写的内容后再试。",
+      "details": "原因代号：invalid_request\n接口：fan.set\n原始信息：Invalid fan id\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to set the speed of fan 2: the device rejected the request as invalid. Check what you entered and try again.",
+      "details": "Reason code: invalid_request\nAPI: fan.set\nOriginal text: Invalid fan id\nTime: <time>"
+    }
+  },
+  "file.createdir.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "创建文件夹的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：storage.mkdir\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of creating the folder is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: storage.mkdir\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "file.delete.batch-mixed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "删除结果：1 项成功，2 项失败或未确认。\n/sdcard/b.txt: 删除文件或文件夹的结果未确认。请先刷新核对当前状态，不要重复提交。\n/sdcard: 删除文件或文件夹失败：根目录不能删除。请只删除里面的文件或文件夹。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Deletion results: 1 succeeded; 2 failed or are unconfirmed.\n/sdcard/b.txt: The result of deleting the file or folder is unconfirmed. Refresh and check the current state before repeating the operation.\n/sdcard: Failed to delete the file or folder: the root directory cannot be deleted. Delete only the files or folders inside it.",
+      "details": null
+    }
+  },
+  "file.delete.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "删除文件或文件夹失败：找不到这个文件。它可能已被删除，请刷新文件列表。",
+      "details": "原因代号：file_not_found\n接口：storage.delete\n原始信息：File not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to delete the file or folder: the file was not found. It may have been deleted; refresh the file list.",
+      "details": "Reason code: file_not_found\nAPI: storage.delete\nOriginal text: File not found\nTime: <time>"
+    }
+  },
+  "file.mount.failed": {
+    "zh-CN": {
+      "type": "error",
+      "text": "挂载 SD 卡失败：SD 卡没能挂载。请确认卡已插好、没有损坏，并且是设备支持的文件系统。",
+      "details": "原因代号：sd_mount_failed\n接口：storage.mount\n原始信息：Failed to mount SD card\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to mount the SD card: the SD card could not be mounted. Make sure the card is inserted, not damaged, and uses a file system the device supports.",
+      "details": "Reason code: sd_mount_failed\nAPI: storage.mount\nOriginal text: Failed to mount SD card\nTime: <time>"
+    }
+  },
+  "led.brightness.device-not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "设置 LED 矩阵屏 (16x16) 的亮度失败：找不到这个 LED 设备。请刷新页面，或检查设备配置。",
+      "details": "原因代号：led_device_not_found\n接口：led.brightness\n原始信息：Device not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to set the brightness of LED Matrix (16x16): the LED device was not found. Refresh the page, or check the device configuration.",
+      "details": "Reason code: led_device_not_found\nAPI: led.brightness\nOriginal text: Device not found\nTime: <time>"
+    }
+  },
+  "login.locked": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "登录失败：连续输错次数太多，这个账户暂时被锁定。请等 5 分钟后再试。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Login failed: too many wrong attempts have locked this account for a while. Wait 5 minutes and try again.",
+      "details": null
+    }
+  },
+  "login.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "登录失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Login failed: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "login.wrong-password": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "登录失败：用户名或密码不对。请检查后重新输入。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Login failed: the username or password is wrong. Check them and try again.",
+      "details": null
+    }
+  },
+  "network.nat.no-upstream": {
+    "zh-CN": {
+      "type": "error",
+      "text": "切换 NAT 失败：设备还没有连上上级 WiFi。请先让设备连上 WiFi，再开启 NAT。",
+      "details": "原因代号：wifi_sta_not_connected\n接口：nat.enable\n原始信息：WiFi STA not connected\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to switch NAT: the device is not connected to an upstream WiFi network. Connect the device to WiFi first, then turn on NAT.",
+      "details": "Reason code: wifi_sta_not_connected\nAPI: nat.enable\nOriginal text: WiFi STA not connected\nTime: <time>"
+    }
+  },
+  "ota.check.server-unreachable": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "检查更新失败：你的浏览器连不上 OTA 服务器。请检查服务器地址是否正确、服务器是否在线，并确认服务器允许跨域访问。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to check for updates: your browser could not reach the OTA server. Check the server address, that the server is online, and that it allows cross-origin access.",
+      "details": null
+    }
+  },
+  "ota.path.firmware-missing": {
+    "zh-CN": {
+      "type": "error",
+      "text": "无法开始从 SD 卡升级：SD 卡上找不到固件文件 /sdcard/ota/TianShanOS.bin。请检查路径是否正确、SD 卡是否已插好。",
+      "details": null
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Could not start the upgrade from the SD card: the firmware file /sdcard/ota/TianShanOS.bin was not found on the SD card. Check the path and that the SD card is inserted.",
+      "details": null
+    }
+  },
+  "ota.path.nothing-entered": {
+    "zh-CN": {
+      "type": "error",
+      "text": "无法开始从 SD 卡升级：文件夹 /sdcard/ota 里没有固件文件（.bin）。请把固件放进这个文件夹，或直接填写固件文件的路径。",
+      "details": null
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Could not start the upgrade from the SD card: there is no firmware file (.bin) in the folder /sdcard/ota. Put the firmware into this folder, or enter the path of the firmware file itself.",
+      "details": null
+    }
+  },
+  "ota.upload.device-refused": {
+    "zh-CN": {
+      "type": "error",
+      "text": "升级失败：设备在升级过程中报告了错误。点“详情”可以看到设备给出的原因。",
+      "details": "原因代号：ota_failed\n接口：ota.proxy\n原始信息：Not enough space\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "The upgrade failed: the device reported an error during the upgrade. Click Details to see the reason the device gave.",
+      "details": "Reason code: ota_failed\nAPI: ota.proxy\nOriginal text: Not enough space\nTime: <time>"
+    }
+  },
+  "ota.upload.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "升级的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ota.proxy\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of the upgrade is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ota.proxy\nTime: <time>"
+    }
+  },
+  "pack.verify.signature-invalid": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包失败：配置包的签名验证没有通过。文件可能被改动过；请重新导出，并且只使用可信来源的配置包。",
+      "details": "原因代号：pack_signature_invalid\n接口：config.pack.verify\n原始信息：Signature verification failed\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack: the signature of the config pack did not pass verification. The file may have been modified. Export it again, and only use config packs from a trusted source.",
+      "details": "Reason code: pack_signature_invalid\nAPI: config.pack.verify\nOriginal text: Signature verification failed\nTime: <time>"
+    }
+  },
+  "service.restart.busy": {
+    "zh-CN": {
+      "type": "error",
+      "text": "重启服务“automation”失败：设备正在处理另一项操作。等它完成后再试。",
+      "details": "原因代号：busy\n接口：service.restart\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to restart service “automation”: the device is busy with another operation. Wait for it to finish, then try again.",
+      "details": "Reason code: busy\nAPI: service.restart\nTime: <time>"
+    }
+  },
+  "service.stop.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "停止服务“automation”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：service.stop\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of stopping service “automation” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: service.stop\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "system.hostname.rejected": {
+    "zh-CN": {
+      "type": "error",
+      "text": "设置主机名失败：设备认为这次提交的内容不合要求。请检查填写的内容后再试。",
+      "details": "原因代号：invalid_request\n接口：hostname\n原始信息：Invalid hostname\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to set the host name: the device rejected the request as invalid. Check what you entered and try again.",
+      "details": "Reason code: invalid_request\nAPI: hostname\nOriginal text: Invalid hostname\nTime: <time>"
+    }
+  },
+  "wifi.scan.wrong-mode": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "扫描 WiFi 失败：WiFi 客户端模式还没有开启。请先把 WiFi 模式切到客户端，或“热点+客户端”。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to scan for WiFi networks: station mode is not on. Switch the WiFi mode to STA or AP+STA first.",
+      "details": null
+    }
+  }
+}

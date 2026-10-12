@@ -1,0 +1,410 @@
+{
+  "clipboard.denied": {
+    "zh-CN": {
+      "type": "error",
+      "text": "复制到剪贴板失败：浏览器不允许这个页面写入剪贴板。请手动选中文字复制；用 HTTP 地址访问时，部分浏览器会禁用剪贴板。",
+      "details": "原因代号：clipboard_denied\n页面错误：Write permission denied.\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to copy to the clipboard: the browser does not let this page write to the clipboard. Select the text and copy it by hand. Some browsers disable the clipboard on pages opened over HTTP.",
+      "details": "Reason code: clipboard_denied\nPage error: Write permission denied.\nTime: <time>"
+    }
+  },
+  "host.list.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取主机列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the host list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "host.list.refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取主机列表失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the host list: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  },
+  "host.remove.failed": {
+    "zh-CN": {
+      "type": "error",
+      "text": "移除主机“root@192.0.2.8”失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": "原因代号：no_detail\n接口：ssh.hosts.remove\n原始信息：Failed to remove host\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to remove host “root@192.0.2.8”: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": "Reason code: no_detail\nAPI: ssh.hosts.remove\nOriginal text: Failed to remove host\nTime: <time>"
+    }
+  },
+  "host.remove.list-stale": {
+    "zh-CN": {
+      "type": "error",
+      "text": "找不到这台主机的记录：页面上的列表已经过期。请刷新列表后再试。",
+      "details": null
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Can't find the record of this host: the list on this page is out of date. Refresh the list and try again.",
+      "details": null
+    }
+  },
+  "host.remove.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "移除主机“root@192.0.2.8”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ssh.hosts.remove\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of removing host “root@192.0.2.8” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ssh.hosts.remove\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "host.remove.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已移除主机“root@192.0.2.8”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Host “root@192.0.2.8” removed",
+      "details": null
+    }
+  },
+  "host.revoke.key-changed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”失败：这台主机的指纹和之前登记的不一样。可能是服务器重装了，也可能有人在冒充它；请先到「安全」页核对指纹。",
+      "details": "原因代号：ssh_host_key_changed\n接口：ssh.revoke\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to revoke key “lab-key” from “root@192.0.2.8:22”: the fingerprint of this host differs from the one registered before. The server may have been reinstalled, or someone may be impersonating it. Check the fingerprint on the Security page first.",
+      "details": "Reason code: ssh_host_key_changed\nAPI: ssh.revoke\nTime: <time>"
+    }
+  },
+  "host.revoke.missing-password": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请输入密码",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter the password",
+      "focused": true
+    }
+  },
+  "host.revoke.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ssh.revoke\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of revoking key “lab-key” from “root@192.0.2.8:22” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ssh.revoke\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "host.revoke.record-not-removed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "公钥已经从服务器上撤销，但没能移除本机上的主机记录“root@192.0.2.8”：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": "原因代号：no_detail\n接口：ssh.hosts.remove\n原始信息：Failed to remove host\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The public key was revoked on the server, but the host record “root@192.0.2.8” on this device could not be removed: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": "Reason code: no_detail\nAPI: ssh.hosts.remove\nOriginal text: Failed to remove host\nTime: <time>"
+    }
+  },
+  "host.revoke.wrong-password": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
+      "details": "原因代号：ssh_auth_failed\n接口：ssh.revoke\n原始信息：SSH connection failed (code=259)\n阶段：auth\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to revoke key “lab-key” from “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
+      "details": "Reason code: ssh_auth_failed\nAPI: ssh.revoke\nOriginal text: SSH connection failed (code=259)\nStage: auth\nTime: <time>"
+    }
+  },
+  "key.delete.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "删除密钥“lab-key”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：key.delete\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of deleting key “lab-key” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: key.delete\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "key.delete.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "删除密钥“lab-key”失败：设备的密钥库里没有这把密钥。请刷新密钥列表，或重新生成密钥。",
+      "details": "原因代号：key_not_found\n接口：key.delete\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to delete key “lab-key”: the device’s keystore has no such key. Refresh the key list, or generate the key again.",
+      "details": "Reason code: key_not_found\nAPI: key.delete\nTime: <time>"
+    }
+  },
+  "key.delete.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已删除密钥“lab-key”",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Key “lab-key” deleted",
+      "details": null
+    }
+  },
+  "key.deploy.host-key-changed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "向“root@192.0.2.8:22”部署密钥“lab-key”失败：这台主机的指纹和之前登记的不一样。可能是服务器重装了，也可能有人在冒充它；请先到「安全」页核对指纹。",
+      "details": "原因代号：ssh_host_key_changed\n接口：ssh.copyid\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to deploy key “lab-key” to “root@192.0.2.8:22”: the fingerprint of this host differs from the one registered before. The server may have been reinstalled, or someone may be impersonating it. Check the fingerprint on the Security page first.",
+      "details": "Reason code: ssh_host_key_changed\nAPI: ssh.copyid\nTime: <time>"
+    }
+  },
+  "key.deploy.missing-host": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写服务器地址",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter the server address",
+      "focused": true
+    }
+  },
+  "key.deploy.missing-password": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写密码",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter the password",
+      "focused": true
+    }
+  },
+  "key.deploy.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "向“root@192.0.2.8:22”部署密钥“lab-key”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ssh.copyid\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of deploying key “lab-key” to “root@192.0.2.8:22” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ssh.copyid\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "key.deploy.server-refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "向“root@192.0.2.8:22”部署密钥“lab-key”失败：服务器没有接受部署公钥的命令。点“详情”可以看到服务器返回的信息；请确认这个账户有权限修改自己的 SSH 授权文件。",
+      "details": "原因代号：ssh_deploy_failed\n接口：ssh.copyid\n原始信息：sh: 1: cannot create /root/.ssh/authorized_keys: Permission denied\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to deploy key “lab-key” to “root@192.0.2.8:22”: the server did not accept the command that installs the public key. Click Details to see what the server returned, and make sure this account may change its own SSH authorization file.",
+      "details": "Reason code: ssh_deploy_failed\nAPI: ssh.copyid\nOriginal text: sh: 1: cannot create /root/.ssh/authorized_keys: Permission denied\nTime: <time>"
+    }
+  },
+  "key.deploy.timeout": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "向“root@192.0.2.8:22”部署密钥“lab-key”失败：连接超时。请确认主机已开机、网络可达，且没有防火墙拦截。",
+      "details": "原因代号：ssh_connect_timeout\n接口：ssh.copyid\n原始信息：SSH connection failed (code=263)\n阶段：timeout\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to deploy key “lab-key” to “root@192.0.2.8:22”: the connection timed out. Make sure the host is on, reachable, and not blocked by a firewall.",
+      "details": "Reason code: ssh_connect_timeout\nAPI: ssh.copyid\nOriginal text: SSH connection failed (code=263)\nStage: timeout\nTime: <time>"
+    }
+  },
+  "key.deploy.wrong-password": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "向“root@192.0.2.8:22”部署密钥“lab-key”失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
+      "details": "原因代号：ssh_auth_failed\n接口：ssh.copyid\n原始信息：SSH connection failed (code=259)\n阶段：auth\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to deploy key “lab-key” to “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
+      "details": "Reason code: ssh_auth_failed\nAPI: ssh.copyid\nOriginal text: SSH connection failed (code=259)\nStage: auth\nTime: <time>"
+    }
+  },
+  "key.export-private.no-answer": {
+    "zh-CN": {
+      "type": "error",
+      "text": "导出密钥“lab-key”的私钥失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": "原因代号：network_lost\n接口：key.export.private\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to export the private key of “lab-key”: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": "Reason code: network_lost\nAPI: key.export.private\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "key.export-public.invalid-answer": {
+    "zh-CN": {
+      "type": "error",
+      "text": "导出密钥“lab-key”的公钥失败：设备返回的内容无法识别。请刷新页面后再试。",
+      "details": "原因代号：invalid_response\n接口：key.export\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to export the public key of “lab-key”: the device's response could not be read. Refresh the page and try again.",
+      "details": "Reason code: invalid_response\nAPI: key.export\nTime: <time>"
+    }
+  },
+  "key.export-public.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "导出密钥“lab-key”的公钥失败：设备的密钥库里没有这把密钥。请刷新密钥列表，或重新生成密钥。",
+      "details": "原因代号：key_not_found\n接口：key.export\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to export the public key of “lab-key”: the device’s keystore has no such key. Refresh the key list, or generate the key again.",
+      "details": "Reason code: key_not_found\nAPI: key.export\nTime: <time>"
+    }
+  },
+  "key.revoke.missing-user": {
+    "zh-CN": {
+      "type": "field",
+      "text": "请填写用户名",
+      "focused": true
+    },
+    "en-US": {
+      "type": "field",
+      "text": "Please enter the user name",
+      "focused": true
+    }
+  },
+  "key.revoke.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：ssh.revoke\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of revoking key “lab-key” from “root@192.0.2.8:22” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: ssh.revoke\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "key.revoke.server-failed": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”失败：服务器上的公钥没能删除。请稍后重试，或登录那台服务器手动删除。",
+      "details": "原因代号：ssh_revoke_failed\n接口：ssh.revoke\n原始信息：exit status 1\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to revoke key “lab-key” from “root@192.0.2.8:22”: the public key could not be removed from the server. Try again later, or log in to that server and remove it by hand.",
+      "details": "Reason code: ssh_revoke_failed\nAPI: ssh.revoke\nOriginal text: exit status 1\nTime: <time>"
+    }
+  },
+  "key.revoke.wrong-password": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
+      "details": "原因代号：ssh_auth_failed\n接口：ssh.revoke\n原始信息：SSH connection failed (code=259)\n阶段：auth\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to revoke key “lab-key” from “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
+      "details": "Reason code: ssh_auth_failed\nAPI: ssh.revoke\nOriginal text: SSH connection failed (code=259)\nStage: auth\nTime: <time>"
+    }
+  },
+  "known-host.list.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取已知主机指纹列表失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the known host fingerprint list: the device cannot be reached. Check the network connection between this computer and the device.",
+      "details": null
+    }
+  },
+  "known-host.list.refused": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "读取已知主机指纹列表失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to read the known host fingerprint list: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
+      "details": null
+    }
+  },
+  "known-host.remove.no-answer": {
+    "zh-CN": {
+      "type": "warning",
+      "text": "删除“192.0.2.8:22”的指纹记录的结果未确认。请先刷新核对当前状态，不要重复提交。",
+      "details": "原因代号：result_unknown\n接口：hosts.remove\n原始信息：Failed to fetch\n时间：<time>"
+    },
+    "en-US": {
+      "type": "warning",
+      "text": "The result of deleting the fingerprint record of “192.0.2.8:22” is unconfirmed. Refresh and check the current state before repeating the operation.",
+      "details": "Reason code: result_unknown\nAPI: hosts.remove\nOriginal text: Failed to fetch\nTime: <time>"
+    }
+  },
+  "known-host.remove.not-found": {
+    "zh-CN": {
+      "type": "error",
+      "text": "删除“192.0.2.8:22”的指纹记录失败：设备上找不到它。它可能已被删除，请刷新列表。",
+      "details": "原因代号：not_found\n接口：hosts.remove\n原始信息：Host not found\n时间：<time>"
+    },
+    "en-US": {
+      "type": "error",
+      "text": "Failed to delete the fingerprint record of “192.0.2.8:22”: it was not found on the device. It may have been deleted; refresh the list.",
+      "details": "Reason code: not_found\nAPI: hosts.remove\nOriginal text: Host not found\nTime: <time>"
+    }
+  },
+  "known-host.remove.ok": {
+    "zh-CN": {
+      "type": "success",
+      "text": "已删除“192.0.2.8:22”的指纹记录",
+      "details": null
+    },
+    "en-US": {
+      "type": "success",
+      "text": "Fingerprint record of “192.0.2.8:22” deleted",
+      "details": null
+    }
+  }
+}

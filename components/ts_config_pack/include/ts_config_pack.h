@@ -350,6 +350,11 @@ ts_config_pack_result_t ts_config_pack_apply_file(
 const char *ts_config_pack_strerror(ts_config_pack_result_t result);
 
 /**
+ * @brief Reason token for a result, for the Web UI to translate (e.g. "pack_wrong_device"); never NULL
+ */
+const char *ts_config_pack_reason(ts_config_pack_result_t result);
+
+/**
  * @brief Export device certificate for config encryption
  * 
  * Outputs the device certificate that others can use to encrypt configs
