@@ -18,7 +18,7 @@ for source,names,dest in [
   parts.append(s[m.start():s.index('\n}',m.start())+2])
  Path(sys.argv[1],dest).write_text('\n'.join(parts))
 PY
-cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -Wno-macro-redefined -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer.c "$cjson/cJSON.c" -o "$build/reviewer"
+cc -std=gnu11 -g -Wno-deprecated-declarations -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -Icomponents/ts_webui/include -Icomponents/ts_webui/src -Icomponents/ts_security/include -Icomponents/ts_automation/include -Icomponents/ts_drivers/include -Icomponents/ts_console/include -Icomponents/ts_net/include -Wno-macro-redefined -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer.c "$cjson/cJSON.c" -lm -o "$build/reviewer"
 "$build/reviewer"
 
 cc -std=gnu11 -g -fsanitize=address,undefined -Itests/ws_subscriptions/stubs -I"$cjson" -I"$build" tests/ws_subscriptions/test_reviewer_service.c -o "$build/service"

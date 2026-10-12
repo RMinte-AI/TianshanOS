@@ -3,7 +3,6 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('check_release', ROOT / 'tools/check_release.py')
@@ -32,26 +31,42 @@ class ReleaseTests(unittest.TestCase):
                 module.validate('v0.5.2', '0.5.2', root)
 
     def test_actual_workflow_release_condition(self):
-        workflow = (ROOT / '.github/workflows/build.yml').read_text()
-        release = workflow.split('\n  release:\n', 1)[1]
-        expression = re.search(r'^    if: (.+)$', release, re.M).group(1)
-        expression = expression.replace('&&', ' and ').replace('||', ' or ')
+        policy_spec = importlib.util.spec_from_file_location('check_profile', ROOT / 'tools/ci/check_profile.py')
+        policy = importlib.util.module_from_spec(policy_spec)
+        policy_spec.loader.exec_module(policy)
         cases = [
-            ('RMinte-AI/TianshanOS', 'push', 'refs/heads/main', True),
-            ('massif-01/TianshanOS', 'push', 'refs/heads/main', False),
-            ('RMinte-AI/TianshanOS', 'pull_request', 'refs/pull/41/merge', False),
-            ('RMinte-AI/TianshanOS', 'push', 'refs/heads/develop', False),
-            ('RMinte-AI/TianshanOS', 'push', 'refs/tags/v0.5.2', True),
-            ('RMinte-AI/TianshanOS', 'workflow_dispatch', 'refs/heads/main', False),
+            ('RMinte-AI/TianshanOS', 'push', 'refs/heads/main', {}, True),
+            ('massif-01/TianshanOS', 'push', 'refs/heads/main', {}, False),
+            ('RMinte-AI/TianshanOS', 'pull_request', 'refs/pull/41/merge', {}, False),
+            ('RMinte-AI/TianshanOS', 'push', 'refs/heads/develop', {}, False),
+            ('RMinte-AI/TianshanOS', 'push', 'refs/tags/v0.5.2', {}, True),
+            ('RMinte-AI/TianshanOS', 'release', 'refs/tags/v0.5.2', {'action': 'published'}, True),
+            ('RMinte-AI/TianshanOS', 'workflow_dispatch', 'refs/heads/main', {}, False),
         ]
-        for repo, event, ref, expected in cases:
-            github = SimpleNamespace(repository=repo, event_name=event, ref=ref)
+        for repo, event, ref, payload, expected in cases:
             with self.subTest(repo=repo, event=event, ref=ref):
-                self.assertEqual(eval(expression, {'__builtins__': {}}, {'github': github, 'startsWith': str.startswith}), expected)
-        self.assertIn('needs: [build, web-tests, runtime-tests]', release)
-        self.assertIn('target_commitish: ${{ github.sha }}', release)
-        self.assertIn('body_path: docs/releases/${{ steps.release_tag.outputs.tag }}.md', release)
+                self.assertEqual(policy.classify(repo, event, ref, payload, ['README.md'])['publish_release'], expected)
+        workflow = (ROOT / '.github/workflows/build.yml').read_text()
+        jobs = workflow.split('\njobs:\n', 1)[1]
+        def job(name):
+            return re.search(r'^  ' + re.escape(name) + r':\n(.*?)(?=^  [\w-]+:|\Z)', jobs, re.M | re.S).group(1)
+        release = job('release')
+        dependencies = re.search(r'^    needs: \[(.*?)\]$', release, re.M).group(1)
+        self.assertEqual(set(x.strip() for x in dependencies.split(',')), {'changes', 'build', 'ci-gate'})
+        expression = re.search(r'^    if: (.+)$', release, re.M).group(1)
+        self.assertEqual(re.sub(r'\s+', '', expression), "${{!cancelled()&&needs.changes.outputs.publish_release=='true'&&needs.build.result=='success'&&needs['ci-gate'].result=='success'}}")
+        self.assertIn('target_commitish: ${{ needs.build.outputs.commit }}', release)
+        self.assertIn('body_path: docs/releases/${{ steps.preflight.outputs.tag }}.md', release)
         self.assertIn('generate_release_notes: false', release)
+        self.assertIn('python3 tools/ci/check_profile.py', job('changes'))
+        gate = job('ci-gate')
+        selected = re.search(r'^    needs: \[(.*?)\]$', gate, re.M).group(1)
+        self.assertEqual(set(x.strip() for x in selected.split(',')), {'changes', 'web-tests', 'runtime-tests', 'build', 'web-artifacts'})
+        self.assertIn('if: always()', gate)
+        self.assertIn('if: ${{ always() && !cancelled() }}', gate)
+        self.assertIn('if: ${{ always() && cancelled() }}', gate)
+        self.assertIn('CI Gate failed: workflow cancelled at the final decision', gate)
+        self.assertNotIn('paths-ignore:', workflow)
 
 
 if __name__ == '__main__':
