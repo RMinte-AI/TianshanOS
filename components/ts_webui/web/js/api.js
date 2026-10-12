@@ -174,7 +174,8 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     const device = raw && raw !== tok ? raw : '';
     const detail = device || (typeof body?.detail === 'string' ? body.detail : '');
     const stage = typeof body?.stage === 'string' ? body.stage : '';
-    const api = endpoint || error?.operation || '';
+    // the name of the call, the same way everywhere: storage.mkdir (not /storage/mkdir, not storageMkdir)
+    const api = String(endpoint || error?.operation || '').replace(/^\/+/, '').replace(/\//g, '.').replace(/([a-z0-9])([A-Z])/g, (_, a, b) => a + '.' + b.toLowerCase());
     const page = pageError && !error.failureToken && typeof error.message === 'string' ? error.message : '';
     // Details are for whoever has to look into it: a reason the page worked out by itself (nothing was sent) has none.
     const lines = !ready || !(api || detail || stage || page) ? [] : [
