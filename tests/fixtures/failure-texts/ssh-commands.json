@@ -49,14 +49,22 @@
   },
   "command.delete.service-running": {
     "zh-CN": {
-      "type": "error",
-      "text": "删除指令“Restart AGX”失败：它绑定的服务还没有确认已停止，或有操作正在使用它。请先核验或停止服务，待操作完成后再试。",
-      "details": "原因代号：service_delete_protected\n接口：ssh.commands.remove\n时间：<time>"
+      "type": "sheet",
+      "title": "无法删除指令“Restart AGX”",
+      "text": "还没有确认指令“Restart AGX”对应的服务是否已停止。请先在「指令」页点这条指令的刷新图标核验状态；如果它仍在运行，请先停止，再删除。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
     },
     "en-US": {
-      "type": "error",
-      "text": "Failed to delete command “Restart AGX”: its service is not confirmed to be stopped, or an operation is using it. Verify or stop the service first, then try again once the operation has finished.",
-      "details": "Reason code: service_delete_protected\nAPI: ssh.commands.remove\nTime: <time>"
+      "type": "sheet",
+      "title": "Can't delete command “Restart AGX”",
+      "text": "It hasn't been confirmed that the service for command “Restart AGX” has stopped. On the SSH Commands page, select the refresh icon for this command to verify its state. If it is still running, stop it before deleting.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
     }
   },
   "command.helper.host-key-unknown": {
@@ -147,24 +155,24 @@
     "zh-CN": {
       "type": "error",
       "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：没能开始执行这条 SSH 命令。请稍后再试；点“详情”可以看到设备返回的信息。",
-      "details": "原因代号：ssh_start_failed\n接口：ssh.exec_stream\n时间：<time>"
+      "details": "原因代号：ssh_start_failed\n接口：ssh.exec_stream\n原始信息：ESP_ERR_NO_MEM\n时间：<time>"
     },
     "en-US": {
       "type": "error",
       "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: the SSH command could not be started. Try again later; click Details to see what the device returned.",
-      "details": "Reason code: ssh_start_failed\nAPI: ssh.exec_stream\nTime: <time>"
+      "details": "Reason code: ssh_start_failed\nAPI: ssh.exec_stream\nOriginal text: ESP_ERR_NO_MEM\nTime: <time>"
     }
   },
   "command.run.wrong-password": {
     "zh-CN": {
       "type": "error",
       "text": "在“root@192.0.2.8:22”上执行命令“Restart AGX”失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
-      "details": "原因代号：ssh_auth_failed\n接口：ssh.exec_stream\n时间：<time>"
+      "details": "原因代号：ssh_auth_failed\n接口：ssh.exec_stream\n原始信息：SSH connection failed (code=259)\n阶段：auth\n时间：<time>"
     },
     "en-US": {
       "type": "error",
       "text": "Failed to run command “Restart AGX” on “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
-      "details": "Reason code: ssh_auth_failed\nAPI: ssh.exec_stream\nTime: <time>"
+      "details": "Reason code: ssh_auth_failed\nAPI: ssh.exec_stream\nOriginal text: SSH connection failed (code=259)\nStage: auth\nTime: <time>"
     }
   },
   "command.save.bad-id": {
@@ -267,24 +275,24 @@
     "zh-CN": {
       "type": "inline",
       "text": "导出“restart”（SSH 指令）失败：这台设备不是开发者设备，没有导出配置包的权限。请在开发者设备上导出配置包。",
-      "details": "原因代号：pack_not_allowed\n接口：ssh.commands.export\n时间：<time>"
+      "details": "原因代号：pack_not_allowed\n接口：ssh.commands.export\n原始信息：Permission denied (not a developer device)\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
       "text": "Failed to export “restart” (SSH command): this device is not a developer device and may not export config packs. Export the config pack on a developer device.",
-      "details": "Reason code: pack_not_allowed\nAPI: ssh.commands.export\nTime: <time>"
+      "details": "Reason code: pack_not_allowed\nAPI: ssh.commands.export\nOriginal text: Permission denied (not a developer device)\nTime: <time>"
     }
   },
   "pack.export-host.cert-unavailable": {
     "zh-CN": {
       "type": "inline",
       "text": "导出“root@192.0.2.8”（SSH 主机）失败：设备证书不可用。请先到「安全」页检查设备证书。",
-      "details": "原因代号：device_cert_unavailable\n接口：ssh.hosts.export\n时间：<time>"
+      "details": "原因代号：device_cert_unavailable\n接口：ssh.hosts.export\n原始信息：ESP_FAIL\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
       "text": "Failed to export “root@192.0.2.8” (SSH host): the device certificate is not available. Check the device certificate on the Security page first.",
-      "details": "Reason code: device_cert_unavailable\nAPI: ssh.hosts.export\nTime: <time>"
+      "details": "Reason code: device_cert_unavailable\nAPI: ssh.hosts.export\nOriginal text: ESP_FAIL\nTime: <time>"
     }
   },
   "pack.import-host.storage-failed": {

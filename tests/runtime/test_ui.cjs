@@ -30,7 +30,7 @@ function row(fields,extra={}){return {...extra,querySelector:s=>fields[s]||null}
   assert.equal(toast.at(-1),locale==='zh-CN'?'已保存规则“Model”':'Rule “Model” saved');
   response={code:1,message:'revision_conflict'};writes=[];failures.length=0;await ctx.submitAddRule('model');assert.equal(writes.length,1);assert.equal(el('rule-name').value,'Model');
   assert.equal(failures.length,1);assert.equal(failures[0].type,'error');   // a refusal is an error; an unconfirmed result below is a warning
-  assert.equal(failures[0].message,locale==='zh-CN'?'保存规则“Model”失败：它刚被其他操作修改过。请刷新后确认最新内容，再重新操作。':'Failed to save rule “Model”: it was just changed by another operation. Refresh, check the latest content, then try again.');
+  assert.equal(failures[0].message,locale==='zh-CN'?'保存规则“Model”失败：设备上的这份配置刚被其他操作修改过。请刷新后确认最新内容，再重新操作。':'Failed to save rule “Model”: the configuration on the device was just changed by another operation. Refresh, check the latest content, then try again.');
   assert(failures[0].details.includes('revision_conflict')&&failures[0].details.includes('automation.rules.update'));
   reject=true;writes=[];failures.length=0;await ctx.submitAddRule('model');assert.equal(writes.length,1);
   assert.equal(failures.length,1);assert.equal(failures[0].type,'warning');

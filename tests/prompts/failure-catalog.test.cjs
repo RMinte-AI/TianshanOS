@@ -10,7 +10,7 @@ const failure = lang => langs[lang].failure;
 const slots = text => [...new Set([...text.matchAll(/(?<!\$)\{(\w+)\}/g)].map(m => m[1]))].sort();
 const CJK = /[㐀-鿿＀-￯　-〿]/;
 // "automation" is the service name exactly as the System page's service list shows it; "json" is in a file name; "ID" is the field's label
-const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'HTTP', 'WebSocket', 'Socket', 'IO', 'REST', 'OS', 'tscfg', 'JSON', 'UTF', 'LPMU', 'CA', 'bin', 'www', 'root', 'admin', 'OTA', 'USB', 'LED', 'NAT', 'WiFi', 'AP', 'STA', 'CSR', 'PKI', 'FAT', 'URL', 'QR']);
+const ALLOWED_LATIN = new Set(['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'HTTP', 'WebSocket', 'Socket', 'IO', 'REST', 'OS', 'tscfg', 'AGX', 'DHCP', 'JSON', 'UTF', 'LPMU', 'CA', 'bin', 'www', 'root', 'admin', 'OTA', 'USB', 'LED', 'NAT', 'WiFi', 'AP', 'STA', 'CSR', 'PKI', 'FAT', 'URL', 'QR']);
 const flat = (object, prefix = '') => Object.entries(object).flatMap(([k, v]) => typeof v === 'string' ? [[prefix + k, v]] : flat(v, prefix + k + '.'));
 
 test('both languages have the same reasons, the same parts of each reason and the same placeholders', () => {
@@ -86,15 +86,17 @@ function usedOperations(app) {
 test('the operations the page reports through describeFailure exist, with the texts that call needs', () => {
     const used = usedOperations(read('js/app.js'));
     assert(used.size >= 20, [...used.keys()].join());
+    const problems = [];
     for (const lang of ['zh-CN', 'en-US']) {
         const ops = failure(lang).ops;
         for (const [op, {phases, write}] of used) {
             const [group, name] = op.split('.');
-            assert(ops[group]?.[name], `${lang}: no texts for ${op}`);
-            for (const phase of phases) assert.equal(typeof ops[group][name][phase], 'string', `${lang}: ${op}.${phase}`);
-            if (write) assert.equal(typeof ops[group][name].unknown, 'string', `${lang}: ${op}.unknown (a write may end unconfirmed)`);
+            if (!ops[group]?.[name]) { problems.push(`${lang}: no texts for ${op}`); continue; }
+            for (const phase of phases) if (typeof ops[group][name][phase] !== 'string') problems.push(`${lang}: ${op}.${phase}`);
+            if (write && typeof ops[group][name].unknown !== 'string') problems.push(`${lang}: ${op}.unknown (a write may end unconfirmed)`);
         }
     }
+    assert.deepEqual(problems, []);
 });
 
 test('every operation in the catalogue is used by the page (a text nobody can reach is a trap for the next edit)', () => {
@@ -109,6 +111,54 @@ test('every operation in the catalogue is used by the page (a text nobody can re
         }
     }
     assert.deepEqual(dead, []);
+});
+
+// A call site must give the texts of its operation the values they name ({name}, {host}, ...). Without them describeFailure
+// quietly falls back to the generic "the operation failed", and nobody notices until a person reads the page.
+function topLevelParts(text) {   // "a, b: {c, d}, ...e" -> ['a', 'b: {c, d}', '...e'] (commas inside brackets or quotes do not split)
+    const parts = []; let depth = 0, quote = null, start = 0;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+        if ('\'"`'.includes(c)) quote = c;
+        else if ('({['.includes(c)) depth++;
+        else if (')}]'.includes(c)) depth--;
+        else if (c === ',' && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+    }
+    parts.push(text.slice(start));
+    return parts.map(part => part.trim()).filter(Boolean);
+}
+function givenParams(spec) {   // the names a call site passes as params; null when they come from a variable or a spread
+    const body = spec.trim().slice(1, -1);
+    const parts = topLevelParts(body);
+    if (parts.some(part => part.startsWith('...'))) return null;
+    const entry = parts.find(part => /^params\b/.test(part));
+    if (!entry) return new Set();
+    const literal = entry.match(/^params\s*:\s*(\{[\s\S]*\})$/);
+    if (!literal) return null;
+    const inner = topLevelParts(literal[1].slice(1, -1));
+    if (inner.some(part => part.startsWith('...') || part.startsWith('['))) return null;
+    return new Set(inner.map(part => part.match(/^(\w+)/)[1]));
+}
+test('every call site gives its operation the values the texts name', () => {
+    const app = read('js/app.js'), problems = [];
+    for (const lang of ['zh-CN', 'en-US']) {
+        const ops = failure(lang).ops;
+        for (const m of app.matchAll(/\bop:\s*'([a-z]+\.[a-z]+)'/g)) {
+            const spec = enclosingObject(app, m.index), [group, name] = m[1].split('.');
+            const texts = ops[group]?.[name];
+            if (!texts) continue;   // another test reports a missing operation
+            const phase = (spec.match(/\bphase:\s*'(\w+)'/) || [, 'failed'])[1];
+            const write = /\bwrite\b/.test(spec.replace(/\bwrite:\s*false\b/g, ''));
+            const needed = new Set([...slots(texts[phase] || ''), ...(write ? slots(texts.unknown || '') : [])]);
+            const given = givenParams(spec);
+            if (given === null) continue;   // params come from a variable: the page-level tests cover those
+            const line = app.slice(0, m.index).split('\n').length;
+            for (const slot of needed) if (!given.has(slot)) problems.push(`${lang} app.js:${line} ${m[1]} needs {${slot}}`);
+        }
+        if (lang === 'zh-CN') continue;
+    }
+    assert.deepEqual([...new Set(problems)], []);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

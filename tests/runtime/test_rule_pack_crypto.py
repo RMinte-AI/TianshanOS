@@ -74,7 +74,7 @@ if '--engine' in sys.argv:
            'ts_rule_edit_begin','ts_rule_edit_end','ts_rule_count','ts_rule_config_status','ts_rule_load_error',
            'dependency_change_rule','ts_rule_dependency_change','load_rules','ts_rules_load',
            'ts_rules_load_from_file','ts_rule_engine_deinit','ts_rule_refresh_saved','ts_rule_deferred_load_task',
-           'compare_values','ts_rule_eval_condition','ts_rule_eval_condition_group','execute_rule','ts_rule_trigger']
+           'compare_values','ts_rule_eval_condition','ts_rule_eval_condition_group','refuse','execute_rule','ts_rule_trigger_ex','ts_rule_trigger']
     parts=[src[a:b]]
     masked=re.sub(r'/\*[\s\S]*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"',lambda m:' '*len(m.group()),src)
     for name in names:

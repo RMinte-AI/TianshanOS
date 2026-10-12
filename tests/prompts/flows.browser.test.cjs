@@ -29,7 +29,8 @@ function checkSentence(language, shown, where) {
     assert(!/code=|errno|ESP_/.test(text), `${where}: an internal word reached the user: ${text}`);
     if (language === 'zh-CN') {
         assert(CJK.test(text), `${where}: no Chinese: ${text}`);
-        const latin = (text.replace(/[“”‘’]/g, '').match(/[A-Za-z]{2,}/g) || []).filter(word => !['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'LED', 'REST', 'Webhook', 'QR', 'URL', 'WebSocket', 'Socket', 'IO', 'HTTP', 'API', 'OS', 'tscfg'].includes(word));
+        const latin = (text.replace(/[“”‘’]/g, '').replace(/\/[\w.\-/]+/g, '').match(/[A-Za-z]{2,}/g) || []).filter(word => !['SSH', 'SD', 'DNS', 'IP', 'WebUI', 'automation', 'json', 'ID', 'LED', 'REST', 'Webhook', 'QR', 'URL', 'WebSocket', 'Socket', 'IO', 'HTTP', 'API', 'OS', 'tscfg',
+            'WiFi', 'NAT', 'OTA', 'AGX', 'LPMU', 'DHCP', 'USB', 'CA', 'PKI', 'CSR', 'JSON', 'UTF', 'AP', 'STA', 'www', 'bin'].includes(word));
         assert.deepEqual(latin, [], `${where}: English in the Chinese text: ${text}`);
     } else {
         assert(!CJK.test(text.replace(/[“”’]/g, '')), `${where}: Chinese in the English text: ${text}`);
@@ -57,6 +58,20 @@ async function observeLastLine(page, selector) {
     const element = page.locator(selector);
     await element.waitFor();
     return element.evaluate(node => ({type: 'line', text: node.textContent.split('\n').map(line => line.trim()).filter(Boolean).at(-1) ?? '', details: null}));
+}
+// A blocked delete explains itself in a dialog: read it, then close it the way a user would (the secondary button comes first).
+async function observeSheet(page) {
+    const sheet = page.locator('.confirm-sheet');
+    await sheet.waitFor();
+    const seen = await sheet.evaluate(node => {
+        const body = node.querySelector('.t-body').cloneNode(true);
+        const items = [...body.querySelectorAll('.grp .row')].map(row => [...row.children].map(cell => cell.textContent.trim()).join(' · '));   // the user's own rule names are listed under the sentence
+        body.querySelectorAll('.grp').forEach(list => list.remove());
+        return {type: 'sheet', title: node.querySelector('.st')?.textContent.trim() ?? '', text: body.textContent.trim().replace(/\s*\n\s*/g, ' / '), items,
+            buttons: [...node.querySelectorAll('button[data-r]')].map(button => button.textContent.trim())};
+    });
+    await sheet.locator('button[data-r="0"], button[data-r="1"]').first().click();
+    return seen;
 }
 async function observeField(page, id) {
     const message = page.locator(`#${id}`).locator('xpath=ancestor::*[contains(@class,"row") or contains(@class,"fl")][1]').locator('.fe-msg');
@@ -94,10 +109,13 @@ function scenarioTests(file, scenarios) {
                 const names = {rule: NAMES.rule[language === 'zh-CN' ? 0 : 1], action: NAMES.action[language === 'zh-CN' ? 0 : 1], source: NAMES.source[language === 'zh-CN' ? 0 : 1]};
                 await kit.withPage(language, respond, async ({page, calls}) => {
                     await scenario.setup?.(page, names);
-                    await scenario.act(page, names);
                     const show = scenario.show ?? 'toast';
-                    const seen = show === 'toast' ? await observeToast(page) : show.inline ? await observeInline(page, show.inline) : show.last ? await observeLastLine(page, show.last) : await observeField(page, show.field);
+                    const acting = Promise.resolve(scenario.act(page, names));
+                    if (!show.sheet) await acting;   // a dialog keeps the handler waiting until the user answers: read it first
+                    const seen = show === 'toast' ? await observeToast(page) : show.sheet ? await observeSheet(page) : show.inline ? await observeInline(page, show.inline) : show.last ? await observeLastLine(page, show.last) : await observeField(page, show.field);
+                    if (show.sheet) await acting;
                     checkSentence(language, seen.text, scenario.id);
+                    if (seen.title) checkSentence(language, seen.title, scenario.id + ' (title)');
                     // the folded details are for whoever looks into it: they carry the machine words the sentence must not
                     if (seen.details) assert(/(原因代号|Reason code)[:：]/.test(seen.details), `${scenario.id}: details without the reason code`);
                     if (scenario.verify) await scenario.verify({page, calls, seen, language});
@@ -121,6 +139,62 @@ const page = {
     sureToDelete: p => p.evaluate(() => { confirmAction = async () => true; }),
 };
 const rulesList = (name = 'night-off') => ok({loaded: true, rules: [{id: name, name: 'Night off', enabled: true, manual_trigger: true, conditions_count: 1, actions_count: 1, trigger_count: 0}]});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The pages that were converted in bulk: sign-in, device, files, network, LED, fan, OTA, certificates, config packs.
+// One scenario per kind of failure (a sentence from the device's own legacy text, one the page worked out by itself, a lost
+// answer to a write, a batch, a dialog result box) so that the golden sentences below can be read like a document.
+const dom = html => p => p.evaluate(html => document.body.insertAdjacentHTML('beforeend', html), html);
+const sure = p => p.evaluate(() => { confirmAction = async () => true; });
+scenarioTests('system', [
+    // ---- sign in (the reason stays in the form)
+    ...[['wrong-password', '{"code":3,"error":"Invalid username or password"}'], ['locked', '{"code":3,"error":"Account locked due to too many failed attempts"}'], ['no-answer', DROP]].map(([name, answer]) => ({
+        id: 'login.' + name, show: {inline: '#login-error'}, device: {'auth/login': answer},
+        act: p => p.evaluate(() => { document.getElementById('login-modal').classList.remove('hidden'); document.getElementById('username').value = 'root'; document.getElementById('password').value = 'wrong'; document.getElementById('login-form').requestSubmit(); })})),
+    // ---- device
+    {id: 'device.reboot.no-answer', setup: sure, device: {'system/reboot': DROP},
+     act: async p => { await p.evaluate(() => confirmReboot()); await p.waitForFunction(() => document.getElementById('toast').classList.contains('toast-warning')); }},
+    {id: 'service.restart.busy', act: p => p.evaluate(() => serviceAction('automation', 'restart')), device: {'service/restart': '{"code":4,"error":"busy"}'}},
+    {id: 'service.stop.no-answer', act: p => p.evaluate(() => serviceAction('automation', 'stop')), device: {'service/stop': DROP}},
+    {id: 'fan.setspeed.rejected', setup: p => p.evaluate(() => { refreshFans = async () => {}; }), act: p => p.evaluate(() => setFanSpeed(2, 60)), device: {'fan/set': '{"code":1,"error":"Invalid fan id"}'}},
+    {id: 'led.brightness.device-not-found', act: p => p.evaluate(() => setBrightness('matrix', 50)), device: {'led/brightness': '{"code":2,"error":"Device not found"}'}},
+    // ---- files
+    {id: 'file.mount.failed', setup: p => p.evaluate(() => { refreshFilesPage = async () => {}; }), act: p => p.evaluate(() => mountSdCard()), device: {'storage/mount': '{"code":7,"error":"Failed to mount SD card"}'}},
+    {id: 'file.delete.not-found', setup: async p => { await sure(p); await p.evaluate(() => { refreshFilesPage = async () => {}; }); }, act: p => p.evaluate(() => deleteFile('/sdcard/a.txt')), device: {'storage/delete': '{"code":2,"error":"File not found"}'}},
+    {id: 'file.delete.batch-mixed', show: {inline: '#operation-summary'},
+     setup: async p => { await sure(p); await p.evaluate(() => { refreshFilesPage = async () => {}; selectedFiles.clear(); selectedFiles.add('/sdcard/a.txt'); selectedFiles.add('/sdcard/b.txt'); selectedFiles.add('/sdcard'); }); },
+     act: p => p.evaluate(() => batchDelete()),
+     device: {'storage/delete': call => call.params.path === '/sdcard/a.txt' ? ok() : call.params.path === '/sdcard' ? '{"code":1,"error":"Cannot delete root directory"}' : DROP}},
+    {id: 'file.createdir.no-answer', setup: async p => { await dom('<input id="new-folder-name" value="logs"><div id="newfolder-modal" class="hidden"></div>')(p); await p.evaluate(() => { currentFilePath = '/sdcard'; }); },
+     act: p => p.evaluate(() => createNewFolder()), device: {'storage/mkdir': DROP}},
+    // ---- network
+    {id: 'wifi.scan.wrong-mode', setup: dom('<div id="wifi-scan-section" class="hidden"><div id="wifi-scan-results"></div></div>'), show: {inline: '#wifi-scan-results'},
+     act: p => p.evaluate(() => showWifiScan()), device: {'network/wifi/scan': '{"code":8,"error":"WiFi scan requires STA or APSTA mode"}'}},
+    {id: 'network.nat.no-upstream', setup: p => p.evaluate(() => { refreshNetworkPage = async () => {}; }), act: p => p.evaluate(() => toggleNat()),
+     device: {'nat/status': ok({enabled: false}), 'nat/enable': '{"code":7,"error":"WiFi STA not connected"}'}},
+    {id: 'system.hostname.rejected', setup: dom('<input id="hostname-input" value="bad name">'), act: p => p.evaluate(() => setHostname()), device: {'network/hostname': '{"code":1,"error":"Invalid hostname"}'}},
+    // ---- OTA
+    {id: 'ota.path.firmware-missing', setup: dom('<input id="ota-file-input" value="/sdcard/ota/TianShanOS.bin"><input type="checkbox" id="ota-file-include-www">'),
+     act: p => p.evaluate(() => otaFromFile()), device: {'storage/info': '{"code":2,"error":"File not found"}'}},
+    {id: 'ota.path.nothing-entered', setup: dom('<input id="ota-file-input" value="/sdcard/ota"><input type="checkbox" id="ota-file-include-www">'),
+     act: p => p.evaluate(() => otaFromFile()), device: {'storage/list': ok({entries: [{name: 'notes.txt', type: 'file'}]})}},
+    {id: 'ota.check.server-unreachable', setup: dom('<input id="ota-server-input" value="http://127.0.0.1:9"><div id="ota-update-status"></div>'), show: {inline: '#ota-update-status'},
+     act: p => p.evaluate(() => checkForUpdates()), device: {'ota/test_connection': '{"code":1,"error":"x"}'}},
+    {id: 'ota.upload.device-refused', act: p => p.evaluate(async () => { try { await uploadFirmwareToDevice(new ArrayBuffer(3), false); } catch (error) { reportFailure({ op: 'ota.upgrade', error, endpoint: 'ota.proxy', write: true }); } }),
+     device: {'ota/firmware': '{"status":"error","message":"Not enough space"}'}},
+    {id: 'ota.upload.no-answer', act: p => p.evaluate(async () => { try { await uploadFirmwareToDevice(new ArrayBuffer(3), false); } catch (error) { reportFailure({ op: 'ota.upgrade', error, endpoint: 'ota.proxy', write: true }); } }),
+     device: {'ota/firmware': DROP}},
+    // ---- certificates and config packs (the result boxes of their dialogs)
+    {id: 'cert.install.no-keypair', show: {inline: '#cert-install-result'},
+     setup: dom('<textarea id="cert-pem-input">-----BEGIN CERTIFICATE-----</textarea><div id="cert-install-result" class="hidden"></div><button id="cert-install-submit"></button>'),
+     act: p => p.evaluate(() => installCertMaterial(false)), device: {'cert/install': '{"code":1,"error":"No private key exists. Generate key pair first."}'}},
+    {id: 'cert.install.no-answer', show: {inline: '#cert-install-result'},
+     setup: dom('<textarea id="cert-pem-input">-----BEGIN CERTIFICATE-----</textarea><div id="cert-install-result" class="hidden"></div><button id="cert-install-submit"></button>'),
+     act: p => p.evaluate(() => installCertMaterial(false)), device: {'cert/install': DROP}},
+    {id: 'pack.verify.signature-invalid', show: {inline: '#pack-import-result'},
+     setup: dom('<textarea id="pack-import-content">{"x":1}</textarea><div id="pack-import-result" class="hidden"></div><div id="pack-import-preview" class="hidden"></div>'),
+     act: p => p.evaluate(() => verifyConfigPack()), device: {'config/pack/verify': ok({valid: false, reason: 'pack_signature_invalid', result_message: 'Signature verification failed'})}},
+]);
 
 scenarioTests('automation', [
     // ---- the engine's four buttons
@@ -197,7 +271,17 @@ scenarioTests('automation', [
      device: {'automation/actions/get': ok({id: 'restart-agx', type: 'cli'}), 'automation/actions/delete': '{"code":0,"message":"Action template deleted"}'}},
     {id: 'action.delete.protected', setup: async (p, c) => { await page.sureToDelete(p); await p.evaluate(n => actionNames.set('restart-agx', n), c.action); },
      act: p => p.evaluate(() => deleteAction('restart-agx')),
-     device: {'automation/actions/get': ok({id: 'restart-agx', type: 'cli'}), 'automation/actions/delete': '{"code":4,"message":"service_delete_protected"}'}},
+     device: {'automation/actions/get': ok({id: 'restart-agx', type: 'cli'}), 'automation/actions/delete': '{"code":4,"message":"service_delete_protected"}'}, show: {sheet: true}},
+    // the explanation dialog of a blocked delete (the device names the rules that still use the template, or cannot check)
+    ...[['in-use', '{"code":4,"error":"action_in_use","data":{"details_available":true,"rules":[{"id":"night-off","name":"Night off"},{"id":"morning","name":"Morning"}]}}'],
+        ['in-use-no-details', '{"code":4,"error":"action_in_use","data":{"details_available":false}}'],
+        ['check-busy', '{"code":4,"error":"action_reference_check_unavailable","data":{"check_reason":"busy"}}'],
+        ['check-loading', '{"code":4,"error":"action_reference_check_unavailable","data":{"check_reason":"loading"}}'],
+        ['check-recovery', '{"code":4,"error":"action_reference_check_unavailable","data":{"check_reason":"recovery"}}'],
+        ['check-failed', '{"code":4,"error":"action_reference_check_unavailable","data":{"check_reason":"other"}}']].map(([name, answer]) => ({
+        id: 'action.delete.' + name, setup: async (p, c) => { await page.sureToDelete(p); await p.evaluate(n => actionNames.set('restart-agx', n), c.action); },
+        act: p => p.evaluate(() => deleteAction('restart-agx')), show: {sheet: true},
+        device: {'automation/actions/get': ok({id: 'restart-agx', type: 'cli'}), 'automation/actions/delete': answer}})),
     {id: 'action.delete.no-answer', setup: async (p, c) => { await page.sureToDelete(p); await p.evaluate(n => actionNames.set('restart-agx', n), c.action); },
      act: p => p.evaluate(() => deleteAction('restart-agx')),
      device: {'automation/actions/get': ok({id: 'restart-agx', type: 'cli'}), 'automation/actions/delete': DROP}},
@@ -259,8 +343,20 @@ scenarioTests('automation', [
      act: p => p.evaluate(() => confirmSourceImport()), device: {'automation/sources/import': '{"code":7,"message":"storage_failed","data":{"detail":"No such file or directory"}}'}, show: {inline: '#import-source-result'}},
     {id: 'pack.import-source.no-answer', setup: p => p.evaluate(() => { showImportSourceModal(); window._importSourceTscfg = '{}'; window._importSourceFilename = 'source_temp.tscfg'; }),
      act: p => p.evaluate(() => confirmSourceImport()), device: {'automation/sources/import': DROP}, show: {inline: '#import-source-result'}},
-    {id: 'pack.import-rule.unavailable', setup: p => p.evaluate(() => { showImportRuleModal(); window._importRuleTscfg = '{}'; window._importRuleFilename = 'rule_night.tscfg'; }),
-     act: p => p.evaluate(() => confirmRuleImport()), device: {'automation/rules/import': '{"code":8,"message":"rule_import_unavailable","data":{"detail":"encrypted rule import requires a recoverable writer"}}'}, show: {inline: '#import-rule-result'}},
+    // the rule pack: the preview decides what the import may do (revision, generation, credentials and digest come from it)
+    {id: 'pack.import-rule.preview-required', setup: p => p.evaluate(() => { showImportRuleModal(); window._importRuleTscfg = '{}'; window._importRuleFilename = 'rule_night.tscfg'; }),
+     act: p => p.evaluate(() => confirmRuleImport()), show: {inline: '#import-rule-result'}},
+    ...[['revision-conflict', '{"code":4,"error":"revision_conflict"}'], ['overwrite-required', '{"code":1,"error":"overwrite_required"}'], ['restart-pending', '{"code":4,"error":"restart_pending"}'],
+        ['dependency-missing', '{"code":1,"error":"dependency_missing","data":{"error_code":"dependency_missing"}}'], ['no-memory', '{"code":6,"error":"no_memory"}'],
+        ['commit-unknown', '{"code":4,"error":"commit_unknown"}'], ['no-answer', DROP]].map(([name, answer]) => ({
+        id: 'pack.import-rule.' + name, show: {inline: '#import-rule-result'}, device: {'automation/rules/import': answer},
+        setup: p => p.evaluate(() => { showImportRuleModal(); window._importRuleTscfg = '{}'; window._importRuleFilename = 'rule_night.tscfg';
+            rulePackPreview = {id: 'night-off', expected_revision: 4, expected_generation: 7, credential_generation: 4, package_digest: 'a'.repeat(64)}; }),
+        act: p => p.evaluate(() => confirmRuleImport())})),
+    {id: 'pack.verify-rule.untrusted', setup: p => p.evaluate(() => { showImportRuleModal(); const dt = new DataTransfer(); dt.items.add(new File(['{}'], 'rule_night.tscfg')); document.getElementById('import-rule-file').files = dt.files; }),
+     act: p => p.evaluate(() => previewRuleImport()), device: {'automation/rules/import': ok({valid: true, trusted: false, target_matches: true})}, show: {inline: '#import-rule-result'}},
+    {id: 'pack.verify-rule.wrong-device', setup: p => p.evaluate(() => { showImportRuleModal(); const dt = new DataTransfer(); dt.items.add(new File(['{}'], 'rule_night.tscfg')); document.getElementById('import-rule-file').files = dt.files; }),
+     act: p => p.evaluate(() => previewRuleImport()), device: {'automation/rules/import': '{"code":1,"error":"wrong_device"}'}, show: {inline: '#import-rule-result'}},
     {id: 'pack.import-action.no-file', setup: p => p.evaluate(() => { showImportActionModal(); window._importActionTscfg = null; }), act: p => p.evaluate(() => confirmActionImport())},
 
     // ---- lists the rule / data source forms read
@@ -392,7 +488,7 @@ scenarioTests('ssh-commands', [
     {id: 'command.save.bad-id', setup: (p) => openNewCommand(p, {id: '-bad id-'}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-edit-id'}},
     // ---- delete
     {id: 'command.delete.ok', setup: async p => { await onCommands(p); await page.sureToDelete(p); }, act: p => p.evaluate(() => deleteCommand(0)), device: commandsDevice({'ssh/commands/remove': '{"code":0,"message":"Command removed"}'})},
-    {id: 'command.delete.service-running', setup: async p => { await onCommands(p); await page.sureToDelete(p); }, act: p => p.evaluate(() => deleteCommand(0)), device: commandsDevice({'ssh/commands/remove': '{"code":4,"message":"service_delete_protected"}'})},
+    {id: 'command.delete.service-running', setup: async p => { await onCommands(p); await page.sureToDelete(p); }, act: p => p.evaluate(() => deleteCommand(0)), device: commandsDevice({'ssh/commands/remove': '{"code":4,"message":"service_delete_protected"}'}), show: {sheet: true}},
     {id: 'command.delete.no-answer', setup: async p => { await onCommands(p); await page.sureToDelete(p); }, act: p => p.evaluate(() => deleteCommand(0)), device: commandsDevice({'ssh/commands/remove': DROP})},
     // ---- run
     {id: 'command.run.busy', setup: onCommands, act: p => p.evaluate(() => executeCommand(0)), device: commandsDevice({'ssh/exec_stream': '{"code":4,"message":"ssh_exec_busy"}'})},

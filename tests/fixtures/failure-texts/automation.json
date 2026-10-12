@@ -1,4 +1,134 @@
 {
+  "action.delete.check-busy": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "自动化配置正在更新，本次未删除动作模板。请等待更新完成后再删除。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "The automation configuration is being updated. The action template was not deleted. Wait for the update to finish before deleting.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.check-failed": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "没能确认是否还有规则在使用这个动作模板，所以没有删除。请在「终端」页打开「系统日志」查看原因。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "Couldn't confirm whether any rule still uses this action template, so it was not deleted. Open “System Logs” on the Terminal page to see why.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.check-loading": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "规则配置仍在加载，本次未删除动作模板。请等待加载完成后再删除。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "The rule configuration is still loading. The action template was not deleted. Wait for loading to finish before deleting.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.check-recovery": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "规则配置需要恢复核对，本次未删除动作模板。请在「终端」页打开「系统日志」查看详情。",
+      "items": [],
+      "buttons": [
+        "关闭"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "The rule configuration needs a recovery check. The action template was not deleted. Open “System Logs” on the Terminal page for details.",
+      "items": [],
+      "buttons": [
+        "Close"
+      ]
+    }
+  },
+  "action.delete.in-use": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "动作模板“restart-agx”正被以下规则使用。请先把它从这些规则中移除，或删除不再需要的规则，再删除动作模板。",
+      "items": [
+        "Night off · night-off",
+        "Morning · morning"
+      ],
+      "buttons": [
+        "关闭",
+        "查看规则"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "Action template “restart-agx” is used by the rules below. Remove it from those rules, or delete rules you no longer need, before deleting the template.",
+      "items": [
+        "Night off · night-off",
+        "Morning · morning"
+      ],
+      "buttons": [
+        "Close",
+        "View rules"
+      ]
+    }
+  },
+  "action.delete.in-use-no-details": {
+    "zh-CN": {
+      "type": "sheet",
+      "title": "无法删除动作模板",
+      "text": "动作模板“restart-agx”仍被规则使用，无法删除。请先把它从使用它的规则中移除。",
+      "items": [],
+      "buttons": [
+        "关闭",
+        "查看规则"
+      ]
+    },
+    "en-US": {
+      "type": "sheet",
+      "title": "Can't delete action template",
+      "text": "Action template “restart-agx” is still used by rules, so it can't be deleted. Remove it from those rules first.",
+      "items": [],
+      "buttons": [
+        "Close",
+        "View rules"
+      ]
+    }
+  },
   "action.delete.no-answer": {
     "zh-CN": {
       "type": "warning",
@@ -25,14 +155,24 @@
   },
   "action.delete.protected": {
     "zh-CN": {
-      "type": "error",
-      "text": "删除动作模板“重启 AGX”失败：它绑定的服务还没有确认已停止，或有操作正在使用它。请先核验或停止服务，待操作完成后再试。",
-      "details": "原因代号：service_delete_protected\n接口：automation.actions.delete\n时间：<time>"
+      "type": "sheet",
+      "title": "无法删除动作模板“restart-agx”",
+      "text": "还没有确认指令“restart-agx”对应的服务是否已停止。请先在「指令」页点这条指令的刷新图标核验状态；如果它仍在运行，请先停止，再删除。",
+      "items": [],
+      "buttons": [
+        "关闭",
+        "查看指令"
+      ]
     },
     "en-US": {
-      "type": "error",
-      "text": "Failed to delete action template “Restart AGX”: its service is not confirmed to be stopped, or an operation is using it. Verify or stop the service first, then try again once the operation has finished.",
-      "details": "Reason code: service_delete_protected\nAPI: automation.actions.delete\nTime: <time>"
+      "type": "sheet",
+      "title": "Can't delete action template “restart-agx”",
+      "text": "It hasn't been confirmed that the service for command “restart-agx” has stopped. On the SSH Commands page, select the refresh icon for this command to verify its state. If it is still running, stop it before deleting.",
+      "items": [],
+      "buttons": [
+        "Close",
+        "View commands"
+      ]
     }
   },
   "action.delete.template-unreadable": {
@@ -527,16 +667,100 @@
       "details": null
     }
   },
-  "pack.import-rule.unavailable": {
+  "pack.import-rule.commit-unknown": {
     "zh-CN": {
       "type": "inline",
-      "text": "导入配置包“rule_night.tscfg”失败：规则配置包目前只能验证，还不能导入。请在自动化页手动创建这条规则。",
-      "details": "原因代号：rule_import_unavailable\n接口：automation.rules.import\n原始信息：encrypted rule import requires a recoverable writer\n时间：<time>"
+      "text": "导入配置包“rule_night.tscfg”的结果未确认。请重新读取并核对当前状态，不要重复提交。",
+      "details": "原因代号：commit_unknown\n接口：automation.rules.import\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
-      "text": "Failed to import the config pack “rule_night.tscfg”: a rule config pack can only be verified for now, not imported. Create the rule by hand on the Automation page.",
-      "details": "Reason code: rule_import_unavailable\nAPI: automation.rules.import\nOriginal text: encrypted rule import requires a recoverable writer\nTime: <time>"
+      "text": "The result of importing the config pack “rule_night.tscfg” is unconfirmed. Reload and check the current state before submitting again.",
+      "details": "Reason code: commit_unknown\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.dependency-missing": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：规则用到的动作模板、指令或主机，在这台设备上找不到。请先在设备上创建它们，再导入这条规则。",
+      "details": "原因代号：dependency_missing\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: an action template, command or host used by the rule does not exist on this device. Create them on the device first, then import the rule.",
+      "details": "Reason code: dependency_missing\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.no-answer": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”的结果未确认。请重新读取并核对当前状态，不要重复提交。",
+      "details": "原因代号：commit_unknown\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "The result of importing the config pack “rule_night.tscfg” is unconfirmed. Reload and check the current state before submitting again.",
+      "details": "Reason code: commit_unknown\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.no-memory": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：设备可用内存不足。请稍后再试；仍然失败请重启设备。",
+      "details": "原因代号：no_memory\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: the device is low on memory. Try again later; restart the device if it keeps failing.",
+      "details": "Reason code: no_memory\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.overwrite-required": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：设备上已经有同 ID 的规则。请核对预览里的内容，确认要替换就勾选“覆盖已存在的配置”。",
+      "details": "原因代号：overwrite_required\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: a rule with the same ID already exists on the device. Check the preview, and tick the overwrite option if you want to replace it.",
+      "details": "Reason code: overwrite_required\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.preview-required": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：还没有完成验证预览。请重新选择文件，验证通过后再导入。",
+      "details": null
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: the preview has not been completed. Choose the file again and import once the verification passes.",
+      "details": null
+    }
+  },
+  "pack.import-rule.restart-pending": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：有规则的保存结果要重启设备后才会生效。请先重启设备，再进行这项操作。",
+      "details": "原因代号：restart_pending\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: a saved rule change only takes effect after a restart. Restart the device first, then try again.",
+      "details": "Reason code: restart_pending\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.import-rule.revision-conflict": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "导入配置包“rule_night.tscfg”失败：设备上的这份配置刚被其他操作修改过。请刷新后确认最新内容，再重新操作。",
+      "details": "原因代号：revision_conflict\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to import the config pack “rule_night.tscfg”: the configuration on the device was just changed by another operation. Refresh, check the latest content, then try again.",
+      "details": "Reason code: revision_conflict\nAPI: automation.rules.import\nTime: <time>"
     }
   },
   "pack.import-source.no-answer": {
@@ -597,6 +821,30 @@
       "type": "inline",
       "text": "Failed to verify the config pack “rule_night.tscfg”: the signature of the config pack did not pass verification. The file may have been modified. Export it again, and only use config packs from a trusted source.",
       "details": "Reason code: pack_signature_invalid\nAPI: automation.rules.import\nOriginal text: Signature verification failed\nTime: <time>"
+    }
+  },
+  "pack.verify-rule.untrusted": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“rule_night.tscfg”失败：设备不信任这个配置包的签名者。请使用设备信任的签名者重新导出。",
+      "details": "原因代号：signer_untrusted\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “rule_night.tscfg”: the device does not trust the signer of this config pack. Export it again with a signer the device trusts.",
+      "details": "Reason code: signer_untrusted\nAPI: automation.rules.import\nTime: <time>"
+    }
+  },
+  "pack.verify-rule.wrong-device": {
+    "zh-CN": {
+      "type": "inline",
+      "text": "验证配置包“rule_night.tscfg”失败：这个配置包是为另一台设备生成的。请让导出方用这台设备的证书重新导出。",
+      "details": "原因代号：wrong_device\n接口：automation.rules.import\n时间：<time>"
+    },
+    "en-US": {
+      "type": "inline",
+      "text": "Failed to verify the config pack “rule_night.tscfg”: this config pack was made for another device. Ask for it to be exported again with this device’s certificate.",
+      "details": "Reason code: wrong_device\nAPI: automation.rules.import\nTime: <time>"
     }
   },
   "pack.verify-source.no-answer": {

@@ -26,7 +26,7 @@ async function open(language, respond = () => undefined, {viewport} = {}) {
             req.setEncoding('utf8');
             req.on('data', part => raw += part);
             req.on('end', () => {
-                const call = {endpoint: url.pathname.slice('/api/v1/'.length), method: req.method, params: req.method === 'GET' ? Object.fromEntries(url.searchParams) : (raw ? JSON.parse(raw) : {})};
+                const call = {endpoint: url.pathname.slice('/api/v1/'.length), method: req.method, params: req.method === 'GET' ? Object.fromEntries(url.searchParams) : (raw && /json/i.test(req.headers['content-type'] || '') ? JSON.parse(raw) : {})};
                 calls.push(call);
                 const out = respond(call);
                 if (out === DROP) { req.socket.destroy(); return; }

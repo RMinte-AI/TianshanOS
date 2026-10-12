@@ -152,7 +152,7 @@ static void r1_cases(const char *dir){
  assert(cJSON_IsNull(cJSON_GetObjectItem(first,"saved_revision"))&&cJSON_IsNull(cJSON_GetObjectItem(first,"saved_source"))&&cJSON_IsNull(cJSON_GetObjectItem(first,"package_digest")));
  assert(cJSON_GetObjectItem(first,"active_revision")->valueint==1);cJSON_Delete(view.data);free(view.message);
  unsigned triggers=s_rule_ctx.rules[0].trigger_count;bool triggered=true;
- assert(ts_rule_trigger("a")==ESP_ERR_INVALID_STATE);assert(execute_rule("a",false,&triggered)==ESP_OK&&!triggered);
+ assert(ts_rule_trigger("a")==ESP_ERR_INVALID_STATE);assert(execute_rule("a",false,&triggered,NULL)==ESP_OK&&!triggered);
  assert(action_calls==submitted&&s_rule_ctx.rules[0].trigger_count==triggers);
  assert(ts_rule_commit(&a,"a",0,&result)!=ESP_OK&&!strcmp(result.error_code,"restart_pending"));
  assert(ts_rule_commit(&a,"a",1,&result)!=ESP_OK&&!strcmp(result.error_code,"restart_pending"));
@@ -179,7 +179,7 @@ static void r1_cases(const char *dir){
  /* A3: deletion is published after snapshot preparation but before final admission. */
  seed_pair();submitted=action_calls;before_admission=confirm_delete;
  triggered=false;
- assert(execute_rule("a",false,&triggered)==ESP_OK&&!triggered&&action_calls==submitted);
+ assert(execute_rule("a",false,&triggered,NULL)==ESP_OK&&!triggered&&action_calls==submitted);
  assert(s_rule_ctx.meta[0].pending_delete&&s_rule_ctx.rules[0].trigger_count==0);
  assert(ts_rule_trigger("b")==ESP_OK&&action_calls==submitted+1);boot();
  puts("PASS A1-A3: confirmed deletion, unknown/old selector, unchanged active lease/admitted action, final admission barrier, union capacity, sibling edit and reboot");

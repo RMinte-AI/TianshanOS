@@ -84,7 +84,7 @@ for (const language of ['zh-CN', 'en-US']) {
         ['rule.disable', 'failed', {name}, {code: 1, rawMessage: 'execution_busy'}, null,
             zh ? '禁用规则“夜间关灯”失败：它正在执行中。等执行完成后再试。' : 'Failed to disable rule “Night off”: it is running right now. Wait for it to finish, then try again.'],
         ['rule.enable', 'failed', {name}, {code: 1, rawMessage: 'revision_conflict'}, null,
-            zh ? '启用规则“夜间关灯”失败：它刚被其他操作修改过。请刷新后确认最新内容，再重新操作。' : 'Failed to enable rule “Night off”: it was just changed by another operation. Refresh, check the latest content, then try again.'],
+            zh ? '启用规则“夜间关灯”失败：设备上的这份配置刚被其他操作修改过。请刷新后确认最新内容，再重新操作。' : 'Failed to enable rule “Night off”: the configuration on the device was just changed by another operation. Refresh, check the latest content, then try again.'],
         ['rule.enable', 'failed', {name}, {code: 1, rawMessage: 'service_busy'}, null,
             zh ? '启用规则“夜间关灯”失败：它绑定的服务正在运行，或状态还没有确认。请先核实并停止该服务。' : 'Failed to enable rule “Night off”: its bound service is running or its state is unconfirmed. Verify the service state and stop it first.'],
         ['rule.save', 'failed', {name}, {code: 1, rawMessage: 'capacity'}, null,
@@ -186,7 +186,7 @@ for (const language of ['zh-CN', 'en-US']) {
     test(`${language}: rules: a conflicting edit refreshes the list the user acted on`, async () => {
         await withPage(language, rulesDevice(() => fixture('wire-rule-revision-conflict.json')), async ({page, calls}) => {
             await (await rulesPage(page)).click();
-            await expectToast(page, 'error', zh ? '禁用规则“夜间关灯”失败：它刚被其他操作修改过。请刷新后确认最新内容，再重新操作。' : 'Failed to disable rule “Night off”: it was just changed by another operation. Refresh, check the latest content, then try again.');
+            await expectToast(page, 'error', zh ? '禁用规则“夜间关灯”失败：设备上的这份配置刚被其他操作修改过。请刷新后确认最新内容，再重新操作。' : 'Failed to disable rule “Night off”: the configuration on the device was just changed by another operation. Refresh, check the latest content, then try again.');
             await page.waitForFunction(() => true);
             assert.equal(calls.filter(c => c.endpoint === 'automation/rules/list').length, 2);
         });

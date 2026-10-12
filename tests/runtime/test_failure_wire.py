@@ -63,6 +63,8 @@ static const char *error_name(esp_err_t e) {
 static ts_rule_reject_t mock_why = TS_RULE_REJECT_NONE;
 static esp_err_t mock_ret = ESP_OK;
 esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why) {if(why)*why=mock_why;return mock_ret;}
+bool ts_rule_restart_pending(void) {return false;}
+void ts_rule_saved_status(const char *id, cJSON *object) {(void)id;(void)object;}
 static esp_err_t mock_engine = ESP_OK;
 static ts_automation_state_t mock_state = TS_AUTO_STATE_RUNNING;
 esp_err_t ts_automation_start(void) {return mock_engine;}

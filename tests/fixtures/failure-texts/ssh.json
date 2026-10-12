@@ -231,48 +231,48 @@
     "zh-CN": {
       "type": "inline",
       "text": "向“root@192.0.2.8:22”部署密钥“lab-key”失败：服务器没有接受部署公钥的命令。点“详情”可以看到服务器返回的信息；请确认这个账户有权限修改自己的 SSH 授权文件。",
-      "details": "原因代号：ssh_deploy_failed\n接口：ssh.copyid\n时间：<time>"
+      "details": "原因代号：ssh_deploy_failed\n接口：ssh.copyid\n原始信息：sh: 1: cannot create /root/.ssh/authorized_keys: Permission denied\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
       "text": "Failed to deploy key “lab-key” to “root@192.0.2.8:22”: the server did not accept the command that installs the public key. Click Details to see what the server returned, and make sure this account may change its own SSH authorization file.",
-      "details": "Reason code: ssh_deploy_failed\nAPI: ssh.copyid\nTime: <time>"
+      "details": "Reason code: ssh_deploy_failed\nAPI: ssh.copyid\nOriginal text: sh: 1: cannot create /root/.ssh/authorized_keys: Permission denied\nTime: <time>"
     }
   },
   "key.deploy.timeout": {
     "zh-CN": {
       "type": "inline",
       "text": "向“root@192.0.2.8:22”部署密钥“lab-key”失败：连接超时。请确认主机已开机、网络可达，且没有防火墙拦截。",
-      "details": "原因代号：ssh_connect_timeout\n接口：ssh.copyid\n时间：<time>"
+      "details": "原因代号：ssh_connect_timeout\n接口：ssh.copyid\n原始信息：SSH connection failed (code=263)\n阶段：timeout\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
       "text": "Failed to deploy key “lab-key” to “root@192.0.2.8:22”: the connection timed out. Make sure the host is on, reachable, and not blocked by a firewall.",
-      "details": "Reason code: ssh_connect_timeout\nAPI: ssh.copyid\nTime: <time>"
+      "details": "Reason code: ssh_connect_timeout\nAPI: ssh.copyid\nOriginal text: SSH connection failed (code=263)\nStage: timeout\nTime: <time>"
     }
   },
   "key.deploy.wrong-password": {
     "zh-CN": {
       "type": "inline",
       "text": "向“root@192.0.2.8:22”部署密钥“lab-key”失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
-      "details": "原因代号：ssh_auth_failed\n接口：ssh.copyid\n时间：<time>"
+      "details": "原因代号：ssh_auth_failed\n接口：ssh.copyid\n原始信息：SSH connection failed (code=259)\n阶段：auth\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
       "text": "Failed to deploy key “lab-key” to “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
-      "details": "Reason code: ssh_auth_failed\nAPI: ssh.copyid\nTime: <time>"
+      "details": "Reason code: ssh_auth_failed\nAPI: ssh.copyid\nOriginal text: SSH connection failed (code=259)\nStage: auth\nTime: <time>"
     }
   },
   "key.export-private.no-answer": {
     "zh-CN": {
       "type": "error",
       "text": "导出密钥“lab-key”的私钥失败：无法连接到设备。请检查这台电脑与设备之间的网络连接。",
-      "details": "原因代号：network_lost\n接口：key.exportPrivate\n原始信息：Failed to fetch\n时间：<time>"
+      "details": "原因代号：network_lost\n接口：key.export.private\n原始信息：Failed to fetch\n时间：<time>"
     },
     "en-US": {
       "type": "error",
       "text": "Failed to export the private key of “lab-key”: the device cannot be reached. Check the network connection between this computer and the device.",
-      "details": "Reason code: network_lost\nAPI: key.exportPrivate\nOriginal text: Failed to fetch\nTime: <time>"
+      "details": "Reason code: network_lost\nAPI: key.export.private\nOriginal text: Failed to fetch\nTime: <time>"
     }
   },
   "key.export-public.invalid-answer": {
@@ -327,24 +327,24 @@
     "zh-CN": {
       "type": "inline",
       "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”失败：服务器上的公钥没能删除。请稍后重试，或登录那台服务器手动删除。",
-      "details": "原因代号：ssh_revoke_failed\n接口：ssh.revoke\n时间：<time>"
+      "details": "原因代号：ssh_revoke_failed\n接口：ssh.revoke\n原始信息：exit status 1\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
       "text": "Failed to revoke key “lab-key” from “root@192.0.2.8:22”: the public key could not be removed from the server. Try again later, or log in to that server and remove it by hand.",
-      "details": "Reason code: ssh_revoke_failed\nAPI: ssh.revoke\nTime: <time>"
+      "details": "Reason code: ssh_revoke_failed\nAPI: ssh.revoke\nOriginal text: exit status 1\nTime: <time>"
     }
   },
   "key.revoke.wrong-password": {
     "zh-CN": {
       "type": "inline",
       "text": "从“root@192.0.2.8:22”撤销密钥“lab-key”失败：主机拒绝了用户“root”的登录。请检查用户名，以及密码或密钥是否正确。",
-      "details": "原因代号：ssh_auth_failed\n接口：ssh.revoke\n时间：<time>"
+      "details": "原因代号：ssh_auth_failed\n接口：ssh.revoke\n原始信息：SSH connection failed (code=259)\n阶段：auth\n时间：<time>"
     },
     "en-US": {
       "type": "inline",
       "text": "Failed to revoke key “lab-key” from “root@192.0.2.8:22”: the host rejected the login for user “root”. Check the username and that the password or key is correct.",
-      "details": "Reason code: ssh_auth_failed\nAPI: ssh.revoke\nTime: <time>"
+      "details": "Reason code: ssh_auth_failed\nAPI: ssh.revoke\nOriginal text: SSH connection failed (code=259)\nStage: auth\nTime: <time>"
     }
   },
   "known-host.list.no-answer": {
