@@ -5553,7 +5553,7 @@ async function loadFilePickerDirectory(path) {
                 listContainer.innerHTML = `<div class="tr" style="--cols:1fr auto;color:var(--ink-3)"><span>${t('filePage.dirNotExist')}</span><button class="btn sm" data-path="${escapeHtml(path)}" onclick="createAndOpenDir(this.dataset.path)">${t('filePage.createDir')}</button></div>`;
                 return;
             }
-            throw new Error(result.error);
+            throw new ApiOperationError(result, 'storage.list');
         }
         
         const files = result.data?.entries || [];
