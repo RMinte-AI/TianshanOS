@@ -13165,6 +13165,51 @@ let otaStep = 'idle'; // 'idle' | 'app' | 'www'
 let wwwOtaEnabled = true;  // 是否启用 WebUI 升级
 let sdcardOtaSource = '';  // SD卡升级时的文件路径，用于推导 www.bin 路径
 let sdcardWwwSource = '';  // SD卡升级时实际匹配到的 www.bin 路径
+// Keep the last attempt until a new one starts, so late replies cannot belong to
+// a later upgrade (or overwrite a finished upgrade's outcome).
+let otaUpgrade = null;
+let otaProgressRequest = null;
+
+function beginOtaUpgrade(mode) {
+    if (otaUpgrade && otaUpgrade.phase !== 'done') {
+        showToast(t('promptRepair.otaBusy'), 'warning');
+        return null;
+    }
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+    clearInterval(rebootCheckInterval);
+    rebootCheckInterval = null;
+    otaStep = 'idle';
+    sdcardOtaSource = '';
+    sdcardWwwSource = '';
+    otaUpgrade = { mode, phase: 'app', firmwareWritten: false, target: null };
+    return otaUpgrade;
+}
+
+function finishOtaUpgrade(upgrade) {
+    if (otaUpgrade !== upgrade) return;
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+    clearInterval(rebootCheckInterval);
+    rebootCheckInterval = null;
+    upgrade.phase = 'done';
+    otaStep = 'idle';
+}
+
+function showOtaUpgradeFailure(upgrade, spec, title = '') {
+    if (otaUpgrade !== upgrade || upgrade.phase === 'done') return;
+    const failure = reportFailure(spec);
+    const www = upgrade.firmwareWritten && (spec.op === 'ota.upgradewww' || spec.op === 'ota.startwww');
+    const stateEl = document.getElementById('ota-state-text');
+    if (stateEl) stateEl.textContent = title || (failure.uncertain
+        ? (www ? t('failure.ops.ota.upgradewww.unknown') : t('failure.ops.ota.upgrade.unknown'))
+        : (www ? t('failure.ops.ota.upgradewww.failed') : t('ui.upgradeFailed')));
+    const messageEl = document.getElementById('ota-message');
+    if (messageEl) messageEl.textContent = failure.message;
+    const abortBtn = document.getElementById('ota-abort-btn');
+    if (abortBtn) abortBtn.style.display = 'none';
+    finishOtaUpgrade(upgrade);
+}
 
 function inferSdcardWwwPath(source) {
     if (!source) return '';
@@ -13235,20 +13280,28 @@ async function resolveSdcardOtaPaths(input, includeWww) {
 
 async function refreshOtaProgress() {
     const pageCurrent = capturePageValidity();
+    const upgrade = otaUpgrade;
+    const step = otaStep;
+    const phase = upgrade?.phase;
+    if (upgrade?.mode === 'proxy' || phase === 'reboot' || phase === 'aborting' || phase === 'done') return;
+    if (otaProgressRequest?.upgrade === upgrade && otaProgressRequest.step === step) return;
+    const request = { upgrade, step };
+    otaProgressRequest = request;
+    const current = () => pageCurrent() && otaUpgrade === upgrade && otaStep === step && upgrade?.phase === phase;
     try {
         // 根据当前步骤获取不同的进度
         let result;
         if (otaStep === 'www') {
             result = await api.call('ota.www.progress');
-            if (!pageCurrent()) return;
         } else {
             result = await api.call('ota.progress');
-            if (!pageCurrent()) return;
         }
+        if (!current()) return;
         
         if (result.code === 0 && result.data) {
             const data = result.data;
             const state = data.state || 'idle';
+            const completed = state === 'pending_reboot' || state === 'completed';
             const percent = data.percent || 0;
             const received = data.received_size || data.received || 0;
             const total = data.total_size || data.total || 0;
@@ -13296,7 +13349,8 @@ async function refreshOtaProgress() {
                 }
                 
                 // 处理 App OTA 完成 - 开始 WWW OTA
-                if (otaStep === 'app' && (state === 'pending_reboot' || state === 'completed') && wwwOtaEnabled) {
+                if (upgrade?.mode === 'device' && otaStep === 'app' && completed && wwwOtaEnabled) {
+                    upgrade.firmwareWritten = true;
                     stateEl.textContent = typeof t === 'function' ? t('ui.firmwareUpgradeComplete') : '固件升级完成，准备升级 WebUI...';
                     await startWwwOta();
                     if (!pageCurrent()) return;
@@ -13304,37 +13358,14 @@ async function refreshOtaProgress() {
                 }
                 
                 // 处理 WWW OTA 完成或 App OTA 完成（无 www 升级）
-                if ((otaStep === 'www' && (state === 'pending_reboot' || state === 'completed')) ||
-                    (otaStep === 'app' && (state === 'pending_reboot' || state === 'completed') && !wwwOtaEnabled)) {
-                    clearInterval(refreshInterval);
-                    refreshInterval = null;
-                    otaStep = 'idle';
-                    
-                    // 显示重启倒计时
-                    stateEl.textContent = typeof t === 'function' ? t('ui.allUpgradeComplete') : '全部升级完成';
-                    document.getElementById('ota-message').innerHTML = `
-                        <div style="text-align:center">
-                            <p>${t('otaPage.upgradeCompleteRebooting')}</p>
-                            <p id="reboot-countdown" style="color:#9ca3af;margin-top:5px">${t('otaPage.triggeringReboot')}</p>
-                        </div>
-                    `;
-                    
-                    // 触发设备重启
-                    try {
-                        requireApiSuccess(await api.call('system.reboot', { delay: 1 }), 'call');
-                        if (!pageCurrent()) return;
-                    } catch (e) {
-                        if (!pageCurrent()) return;
-                        showToast(t('promptRepair.rebootUnknown'), 'warning', 10000);
-                    }
-                    
-                    // 开始检测设备重启
-                    startRebootDetection();
+                if (upgrade?.mode === 'device' && completed && ((otaStep === 'www' && data.running !== true) ||
+                    (otaStep === 'app' && !wwwOtaEnabled))) {
+                    upgrade.firmwareWritten = true;
+                    await completeOtaUpgrade(upgrade);
                 } else if (state === 'error') {
-                    reportFailure({ op: 'ota.upgrade', token: 'ota_failed', result: { code: 7, data: { detail: message } }, endpoint: 'ota.progress', write: true });
-                    clearInterval(refreshInterval);
-                    refreshInterval = null;
-                    otaStep = 'idle';
+                    const failure = { op: step === 'www' ? 'ota.upgradewww' : 'ota.upgrade', token: 'ota_failed', result: { code: 7, data: { detail: message } }, endpoint: step === 'www' ? 'ota.www.progress' : 'ota.progress', write: true };
+                    if (upgrade) showOtaUpgradeFailure(upgrade, failure);
+                    else reportFailure(failure);
                 }
             } else {
                 // 如果 app OTA 是 idle 但我们在 www 步骤，检查 www 进度
@@ -13344,13 +13375,17 @@ async function refreshOtaProgress() {
             }
         }
     } catch (error) {
-        if (!pageCurrent()) return;
+        if (!current()) return;
         console.error('Failed to get OTA status:', error);
+    } finally {
+        if (otaProgressRequest === request) otaProgressRequest = null;
     }
 }
 
 // 启动 WWW OTA（第二步）
 async function startWwwOta() {
+    let upgrade = otaUpgrade?.phase !== 'done' ? otaUpgrade : null;
+    if (upgrade && (upgrade.mode !== 'device' || upgrade.phase !== 'app')) return;
     try {
         let wwwSource = '';
         let isFromSdcard = false;
@@ -13386,6 +13421,19 @@ async function startWwwOta() {
             sdcardWwwSource = '';
             return;
         }
+
+        // A retry keeps the previously selected source, but owns a new attempt.
+        if (!upgrade) {
+            const firmwareSource = sdcardOtaSource;
+            upgrade = beginOtaUpgrade('device');
+            if (!upgrade) return;
+            if (isFromSdcard) {
+                sdcardOtaSource = firmwareSource;
+                sdcardWwwSource = wwwSource;
+            }
+        }
+        upgrade.firmwareWritten = true;
+        upgrade.phase = 'www';
         
         otaStep = 'www';
         
@@ -13408,14 +13456,10 @@ async function startWwwOta() {
                 skip_verify: skipVerify
             });
         }
+        if (otaUpgrade !== upgrade || upgrade.phase !== 'www') return;
         
         if (result.code !== 0) {
-            reportFailure({ op: 'ota.startwww', result, endpoint: 'ota.www.start', write: true });
-            otaStep = 'idle';
-            clearInterval(refreshInterval);
-            refreshInterval = null;
-            
-            document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.stateError') : '错误';
+            showOtaUpgradeFailure(upgrade, { op: 'ota.startwww', result, endpoint: isFromSdcard ? 'ota.www.start_sdcard' : 'ota.www.start', write: true });
             document.getElementById('ota-message').innerHTML = `
                 <div style="text-align:center">
                     <p>${t('promptRepair.wwwPartial')}</p>
@@ -13435,10 +13479,7 @@ async function startWwwOta() {
         await refreshOtaProgress();
     } catch (error) {
         console.error('Failed to start WWW OTA:', error);
-        otaStep = 'idle';
-        document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.stateError') : '错误';
-        document.getElementById('ota-message').textContent = failureText({ op: 'ota.startwww', error, endpoint: 'ota.www.start', write: true });
-        document.getElementById('ota-abort-btn').style.display = 'none';
+        if (upgrade) showOtaUpgradeFailure(upgrade, { op: 'ota.startwww', error, endpoint: 'ota.www.start', write: true });
     }
 }
 
@@ -13446,65 +13487,119 @@ async function startWwwOta() {
 let rebootCheckInterval = null;
 let rebootStartTime = null;
 
-function startRebootDetection() {
+async function completeOtaUpgrade(upgrade) {
+    if (otaUpgrade !== upgrade || upgrade.phase === 'reboot' || upgrade.phase === 'done') return;
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+    otaStep = 'idle';
+    upgrade.phase = 'reboot';
+
+    // The written inactive partition is the target for every source, including
+    // local files, downgrades and same-version reflashes. No server metadata is needed.
+    try {
+        const result = requireApiSuccess(await api.call('ota.partitions'), 'ota.partitions');
+        if (otaUpgrade !== upgrade || upgrade.phase !== 'reboot') return;
+        const next = result.data?.next;
+        if (!next?.is_bootable || !next.version || !next.label || next.label === result.data?.running?.label) {
+            throw pageFailure('ota_target_unavailable');
+        }
+        upgrade.target = { label: next.label, version: next.version, project: next.project };
+    } catch (error) {
+        showOtaUpgradeFailure(upgrade, { op: 'ota.verify', error, endpoint: 'ota.partitions', write: false }, t('promptRepair.otaWrittenNoReboot'));
+        return;
+    }
+
+    const stateEl = document.getElementById('ota-state-text');
+    if (stateEl) stateEl.textContent = t('promptRepair.otaConfirming');
+    const progressBar = document.getElementById('ota-progress-bar');
+    if (progressBar) progressBar.style.width = '100%';
+    const abortBtn = document.getElementById('ota-abort-btn');
+    if (abortBtn) abortBtn.style.display = 'none';
+    const messageEl = document.getElementById('ota-message');
+    if (messageEl) messageEl.innerHTML = `
+        <div style="text-align:center">
+            <p>${t('promptRepair.upgradeWritten')}</p>
+            <p id="reboot-countdown" style="color:#9ca3af;margin-top:5px">${t('otaPage.triggeringReboot')}</p>
+        </div>
+    `;
+
+    try {
+        // system.reboot's delay is in milliseconds.
+        requireApiSuccess(await api.call('system.reboot', { delay: 1000 }), 'system.reboot');
+    } catch (error) {
+        if (otaUpgrade !== upgrade || upgrade.phase !== 'reboot') return;
+        const failure = { op: 'device.reboot', error, endpoint: 'system.reboot', write: true };
+        if (!describeFailure(failure).uncertain) {
+            showOtaUpgradeFailure(upgrade, failure, t('promptRepair.otaRebootRefused'));
+            return;
+        }
+        showToast(t('promptRepair.rebootUnknown'), 'warning', 10000);
+    }
+    if (otaUpgrade === upgrade && upgrade.phase === 'reboot') startRebootDetection(upgrade);
+}
+
+function startRebootDetection(upgrade) {
+    clearInterval(rebootCheckInterval);
     rebootStartTime = Date.now();
-    let checkCount = 0;
+    let checking = false;
+    let lastRunning = null;
+    const current = () => otaUpgrade === upgrade && upgrade.phase === 'reboot';
     
     // 每 2 秒检测一次设备是否恢复
     rebootCheckInterval = setInterval(async () => {
-        checkCount++;
+        if (!current()) return;
         const elapsed = Math.floor((Date.now() - rebootStartTime) / 1000);
         const countdownEl = document.getElementById('reboot-countdown');
-        
+        if (elapsed >= 120) {
+            const detail = t('promptRepair.otaTargetDetails', { expected: upgrade.target.version, actual: lastRunning?.version || t('common.unknown') });
+            showOtaUpgradeFailure(upgrade, { op: 'ota.verify', token: 'result_unknown', endpoint: 'ota.partitions', write: true }, t('promptRepair.otaRebootUnconfirmed'));
+            const messageEl = document.getElementById('ota-message');
+            if (messageEl) messageEl.innerHTML = `
+                <span style="color:#d97706">${t('otaPage.waitTimeout')}</span>
+                <br><span>${escapeHtml(detail)}</span>
+                <br><button class="btn btn-service-style btn-small" onclick="window.location.reload()" style="margin-top:10px">${t('otaPage.refreshPage')}</button>
+            `;
+            return;
+        }
+        if (checking) return;
         if (countdownEl) {
             countdownEl.textContent = typeof t === 'function' ? t('ui.waitedSeconds', { elapsed }) : `已等待 ${elapsed} 秒...`;
         }
-        
+        checking = true;
         try {
-            // 尝试连接设备
-            const result = await api.call('ota.version');
-            if (result.code === 0) {
-                // 设备恢复了！
-                clearInterval(rebootCheckInterval);
-                rebootCheckInterval = null;
-                
-                const newVersion = result.data?.version || t('common.unknown');
-                
-                if (countdownEl) {
-                    countdownEl.innerHTML = `
-                        <span style="color:#059669">${t('otaPage.deviceRecovered')}</span>
-                        <br><span style="font-size:0.9em">${t('ota.currentVersion')}:  ${newVersion}</span>
-                    `;
-                }
-                
-                showToast(typeof t === 'function' ? t('toast.otaUpgradeSuccess', { version: newVersion }) : `OTA 升级成功！当前版本: ${newVersion}`, 'success');
-                
-                // 3 秒后刷新页面
-                setTimeout(() => {
-                    window.location.reload();
-                }, 3000);
+            const result = requireApiSuccess(await api.call('ota.partitions'), 'ota.partitions');
+            if (!current()) return;
+            const running = result.data?.running;
+            lastRunning = running || null;
+            // The partition change proves a reboot even if the disconnected
+            // interval was missed, or the uploaded image has the same version.
+            if (running?.label !== upgrade.target.label) return;
+            if (running.version !== upgrade.target.version || running.project !== upgrade.target.project) {
+                showOtaUpgradeFailure(upgrade, { op: 'ota.verify', token: 'ota_target_mismatch', params: { expected: upgrade.target.version, actual: running.version || t('common.unknown') }, endpoint: 'ota.partitions', write: false }, t('promptRepair.otaRebootMismatch'));
+                return;
             }
-        } catch (e) {
-            // 设备还在重启，继续等待
-            if (checkCount > 60) {
-                // 超过 2 分钟，提示用户手动检查
-                clearInterval(rebootCheckInterval);
-                rebootCheckInterval = null;
-                
-                if (countdownEl) {
-                    countdownEl.innerHTML = `
-                        <span style="color:#f43f5e">${typeof t === 'function' ? t('otaPage.waitTimeout') : '等待超时'}</span>
-                        <br><span style="font-size:0.9em">${typeof t === 'function' ? t('otaPage.checkDeviceManually') : '请手动检查设备状态并刷新页面'}</span>
-                        <br><button class="btn btn-service-style btn-small" onclick="window.location.reload()" 
-                            style="margin-top:10px">${typeof t === 'function' ? t('otaPage.refreshPage') : '刷新页面'}</button>
-                    `;
-                }
-            }
+            if (countdownEl) countdownEl.innerHTML = `
+                <span style="color:#059669">${t('otaPage.deviceRecovered')}</span>
+                <br><span style="font-size:0.9em">${t('ota.currentVersion')}: ${escapeHtml(running.version)}</span>
+            `;
+            const stateEl = document.getElementById('ota-state-text');
+            if (stateEl) stateEl.textContent = t('ui.allUpgradeComplete');
+            showToast(t('toast.otaUpgradeSuccess', { version: running.version }), 'success', 3000, { isCurrent: current });
+            finishOtaUpgrade(upgrade);
+            setTimeout(() => {
+                if (otaUpgrade === upgrade) window.location.reload();
+            }, 3000);
+        } catch (error) {
+            // An unavailable device during reboot is expected. The elapsed-time
+            // deadline also covers readable old firmware and malformed replies.
+        } finally {
+            checking = false;
         }
     }, 2000);
 }
 
 async function otaFromUrl() {
+    const pageCurrent = capturePageValidity();
     const url = document.getElementById('ota-url-input').value.trim();
     if (!url) {
         showToast(typeof t === 'function' ? t('toast.enterFirmwareUrl') : '请输入固件 URL', 'error');
@@ -13525,6 +13620,8 @@ async function otaFromUrl() {
         no_reboot: true,  // 不自动重启，由前端控制流程
         skip_verify: skipVerify
     };
+    const upgrade = beginOtaUpgrade('device');
+    if (!upgrade) return;
     
     // 设置 OTA 步骤
     otaStep = 'app';
@@ -13543,9 +13640,12 @@ async function otaFromUrl() {
     try {
         showToast(typeof t === 'function' ? t('toast.twoStepUpgrade') : '开始两步升级：固件 + WebUI', 'info');
         const result = await api.call('ota.upgrade_url', params);
+        if (otaUpgrade !== upgrade || upgrade.phase !== 'app') return;
         
         if (result.code === 0) {
             showToast(typeof t === 'function' ? t('toast.firmwareUpgradeStarted') : '固件升级已启动', 'success');
+            // The device task survives navigation; the next OTA page resumes polling.
+            if (!pageCurrent()) return;
             document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.downloading') : '下载中...';
             // 开始刷新进度
             if (!refreshInterval) {
@@ -13554,21 +13654,15 @@ async function otaFromUrl() {
             // 立即刷新一次
             await refreshOtaProgress();
         } else {
-            reportFailure({ op: 'ota.start', result, endpoint: 'ota.upgrade_url', write: true });
-            // 显示错误状态
-            document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.stateError') : '错误';
-            document.getElementById('ota-message').textContent = failureText({ op: 'ota.start', result, endpoint: 'ota.upgrade_url', write: true });
-            document.getElementById('ota-abort-btn').style.display = 'none';
+            showOtaUpgradeFailure(upgrade, { op: 'ota.start', result, endpoint: 'ota.upgrade_url', write: true });
         }
     } catch (error) {
-        reportFailure({ op: 'ota.start', error, endpoint: 'ota.upgrade_url', write: true });
-        document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.stateError') : '错误';
-        document.getElementById('ota-message').textContent = failureText({ op: 'ota.start', error, endpoint: 'ota.upgrade_url', write: true });
-        document.getElementById('ota-abort-btn').style.display = 'none';
+        showOtaUpgradeFailure(upgrade, { op: 'ota.start', error, endpoint: 'ota.upgrade_url', write: true });
     }
 }
 
 async function otaFromFile() {
+    const pageCurrent = capturePageValidity();
     const inputPath = document.getElementById('ota-file-input').value.trim();
     if (!inputPath) {
         showToast(typeof t === 'function' ? t('toast.enterFilePath') : '请输入文件路径', 'error');
@@ -13581,14 +13675,17 @@ async function otaFromFile() {
     try {
         paths = await resolveSdcardOtaPaths(inputPath, includeWww);
     } catch (error) {
-        reportFailure({ op: 'ota.path', error, write: false });
+        if (pageCurrent()) reportFailure({ op: 'ota.path', error, write: false });
         return;
     }
+    if (!pageCurrent()) return;
     
     const params = {
         file: paths.firmware,
         no_reboot: true  // 不自动重启，由前端控制流程
     };
+    const upgrade = beginOtaUpgrade('device');
+    if (!upgrade) return;
     
     // 设置 OTA 步骤
     otaStep = 'app';
@@ -13610,9 +13707,11 @@ async function otaFromFile() {
     try {
         showToast(typeof t === 'function' ? t('toast.startingFileUpgrade') : '开始从文件升级固件...', 'info');
         const result = await api.call('ota.upgrade_file', params);
+        if (otaUpgrade !== upgrade || upgrade.phase !== 'app') return;
         
         if (result.code === 0) {
             showToast(typeof t === 'function' ? t('toast.firmwareUpgradeStarted') : '固件升级已启动', 'success');
+            if (!pageCurrent()) return;
             document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.writing') : '写入中...';
             // 开始刷新进度
             if (!refreshInterval) {
@@ -13620,16 +13719,10 @@ async function otaFromFile() {
             }
             await refreshOtaProgress();
         } else {
-            reportFailure({ op: 'ota.start', result, endpoint: 'ota.upgrade_file', write: true });
-            document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.stateError') : '错误';
-            document.getElementById('ota-message').textContent = failureText({ op: 'ota.start', result, endpoint: 'ota.upgrade_file', write: true });
-            document.getElementById('ota-abort-btn').style.display = 'none';
+            showOtaUpgradeFailure(upgrade, { op: 'ota.start', result, endpoint: 'ota.upgrade_file', write: true });
         }
     } catch (error) {
-        reportFailure({ op: 'ota.start', error, endpoint: 'ota.upgrade_file', write: true });
-        document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.stateError') : '错误';
-        document.getElementById('ota-message').textContent = failureText({ op: 'ota.start', error, endpoint: 'ota.upgrade_file', write: true });
-        document.getElementById('ota-abort-btn').style.display = 'none';
+        showOtaUpgradeFailure(upgrade, { op: 'ota.start', error, endpoint: 'ota.upgrade_file', write: true });
     }
 }
 
@@ -13677,9 +13770,17 @@ async function rollbackOta() {
 }
 
 async function abortOta() {
+    const upgrade = otaUpgrade;
+    if (upgrade?.mode === 'proxy' || upgrade?.phase === 'reboot' || upgrade?.phase === 'aborting') {
+        showToast(t('promptRepair.otaBusy'), 'warning');
+        return;
+    }
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmAbortUpgrade') : '确认中止当前升级？', { primary: t('ui.abortUpgrade'), tone: 'neutral' })) {
         return;
     }
+    if (otaUpgrade !== upgrade || upgrade?.phase === 'reboot' || upgrade?.phase === 'done') return;
+    const previousPhase = upgrade?.phase;
+    if (upgrade) upgrade.phase = 'aborting';
     
     try {
         // 根据当前步骤中止相应的 OTA
@@ -13689,17 +13790,23 @@ async function abortOta() {
         } else {
             result = await api.call('ota.abort');
         }
+        if (otaUpgrade !== upgrade) return;
         
         if (result.code === 0) {
             showToast(typeof t === 'function' ? t('toast.upgradeAborted') : '升级已中止', 'info');
+            if (upgrade) finishOtaUpgrade(upgrade);
             otaStep = 'idle';
+            document.getElementById('ota-progress-section').style.display = 'none';
             await refreshOtaInfo();
             clearInterval(refreshInterval);
             refreshInterval = null;
         } else {
+            if (upgrade) upgrade.phase = previousPhase;
             reportFailure({ op: 'ota.abort', result, write: true });
         }
     } catch (error) {
+        if (otaUpgrade !== upgrade || (upgrade && upgrade.phase !== 'aborting')) return;
+        if (upgrade) upgrade.phase = previousPhase;
         reportFailure({ op: 'ota.abort', error: error, write: true });
     }
 }
@@ -13943,6 +14050,10 @@ async function upgradeFromServer() {
         showToast(typeof t === 'function' ? t('toast.otaServerNotSet') : 'OTA 服务器地址未设置', 'error');
         return;
     }
+    if (otaUpgrade && otaUpgrade.phase !== 'done') {
+        showToast(t('promptRepair.otaBusy'), 'warning');
+        return;
+    }
     
     // 立即显示进度区域，给用户即时反馈
     const progressSection = document.getElementById('ota-progress-section');
@@ -13968,6 +14079,8 @@ async function upgradeFromServer() {
  * 优势：ESP32 无需上网，只需要浏览器能访问 OTA 服务器
  */
 async function upgradeViaProxy(serverUrl) {
+    const upgrade = beginOtaUpgrade('proxy');
+    if (!upgrade) return;
     const includeWww = document.getElementById('ota-url-include-www')?.checked ?? true;
     
     // 获取进度区域元素（已在 upgradeFromServer 中显示）
@@ -13978,10 +14091,6 @@ async function upgradeViaProxy(serverUrl) {
     const progressSize = document.getElementById('ota-progress-size');
     const messageEl = document.getElementById('ota-message');
     const abortBtn = document.getElementById('ota-abort-btn');
-    
-    // 设置 OTA 步骤
-    otaStep = 'app';
-    wwwOtaEnabled = includeWww;
     
     // 计算总步骤数
     const totalSteps = includeWww ? 4 : 2;  // 下载固件、上传固件、[下载WebUI、上传WebUI]
@@ -14026,6 +14135,7 @@ async function upgradeViaProxy(serverUrl) {
         // 调用 ESP32 上传接口（复用现有的 /api/v1/ota/firmware）
         // 注意：不自动重启，等 www 也完成后再重启
         await uploadFirmwareToDevice(firmwareData, false);
+        upgrade.firmwareWritten = true;
         
         console.log('Proxy OTA: Firmware uploaded to device');
         showToast(typeof t === 'function' ? t('toast.firmwareWriteComplete') : '固件写入完成！', 'success');
@@ -14034,6 +14144,7 @@ async function upgradeViaProxy(serverUrl) {
         
         // ===== 第三步：处理 WebUI（如果启用）=====
         if (includeWww) {
+            upgrade.phase = 'www';
             updateStep(3, t('otaPage.downloadingWebUI'));
             const wwwUrl = serverUrl.replace(/\/$/, '') + '/www.bin';
             messageEl.textContent = typeof t === 'function' ? t('ui.downloadingFromServer') : '从 OTA 服务器下载';
@@ -14073,39 +14184,13 @@ async function upgradeViaProxy(serverUrl) {
             }
         }
         
-        // ===== 最终步骤：升级完成，触发重启 =====
-        stateEl.textContent = typeof t === 'function' ? t('ui.allUpgradeComplete') : '全部升级完成';
-        progressBar.style.width = '100%';
-        progressBar.style.background = 'linear-gradient(90deg, #059669, #10b981)';
-        progressPercent.textContent = '';
-        messageEl.innerHTML = `
-            <div style="text-align:center">
-                <p>${t('promptRepair.upgradeWritten')}</p>
-                <p id="reboot-countdown" style="color:#9ca3af;margin-top:5px">${t('otaPage.triggeringReboot')}</p>
-            </div>
-        `;
-        
-        otaStep = 'idle';
-        
-        // 触发设备重启
-        try {
-            requireApiSuccess(await api.call('system.reboot', { delay: 1 }), 'call');
-        } catch (e) {
-            showToast(t('promptRepair.rebootUnknown'), 'warning', 10000);
-        }
-        
-        // 检测设备重启
-        startRebootDetection();
+        await completeOtaUpgrade(upgrade);
         
     } catch (error) {
         console.error('Proxy OTA failed:', error);
-        stateEl.textContent = typeof t === 'function' ? t('ui.upgradeFailed') : '升级失败';
         const failure = { op: error.otaStage === 'www' ? 'ota.upgradewww' : 'ota.upgrade', error, endpoint: 'ota.proxy', write: true };
-        messageEl.textContent = failureText(failure);
-        progressBar.style.width = '0%';
         progressPercent.textContent = '';
-        otaStep = 'idle';
-        reportFailure(failure);
+        showOtaUpgradeFailure(upgrade, failure);
     }
 }
 
