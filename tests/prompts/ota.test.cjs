@@ -399,6 +399,47 @@ test('manual abort releases the upgrade and allows the next attempt', async () =
     assert.equal(d.count('system.reboot'), 1);
 });
 
+for (const includeWww of [true, false]) {
+    test(`a delayed abort refresh cannot stop the next ${includeWww ? 'two-image' : 'firmware-only'} upgrade`, async () => {
+        const d = await device('zh-CN', includeWww);
+        const refresh = deferred(), reached = deferred();
+        d.h.ctx.abortRefresh = () => { reached.resolve(); return refresh.promise; };
+        d.h.run('confirmAction = async () => true; refreshOtaInfo = abortRefresh');
+        await d.h.run('otaFromUrl()');
+        const oldTimer = d.h.run('refreshInterval');
+        const abort = d.h.run('abortOta()');
+        await reached.promise;
+        assert.equal(d.h.timers.has(oldTimer), false);
+        await d.h.run('otaFromFile()');
+        const nextTimer = d.h.run('refreshInterval');
+        assert(d.h.timers.has(nextTimer));
+        refresh.resolve();
+        await abort;
+        assert.equal(d.h.run('refreshInterval'), nextTimer);
+        assert(d.h.timers.has(nextTimer));
+        d.state.app = 'pending_reboot';
+        await d.h.advance(1000);
+        if (includeWww) {
+            assert.equal(d.count('ota.www.start_sdcard'), 1);
+            assert.equal(d.count('system.reboot'), 0);
+            d.state.www = 'completed';
+            d.state.wwwBusy = false;
+            await d.h.advance(1000);
+        } else assert.equal(d.count('ota.www.start_sdcard'), 0);
+        assert.equal(d.count('system.reboot'), 1);
+    });
+}
+
+test('abort without a local attempt still stops the existing page polling', async () => {
+    const d = await device();
+    d.h.run('confirmAction = async () => true; refreshOtaInfo = async () => {}; refreshInterval = setInterval(refreshOtaProgress, 1000)');
+    const timer = d.h.run('refreshInterval');
+    await d.h.run('abortOta()');
+    assert.equal(d.count('ota.abort'), 1);
+    assert.equal(d.h.timers.has(timer), false);
+    assert.equal(d.h.run('refreshInterval'), null);
+});
+
 test('WWW completion cannot reboot while the WWW writer is still running', async () => {
     const d = await device();
     await d.h.run('otaFromUrl()');

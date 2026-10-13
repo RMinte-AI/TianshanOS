@@ -1061,6 +1061,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         downloading: '下载中',
         installing: '安装中',
         progress: '进度',
+        upgradeProgress: '升级进度',
         upgradeSuccess: '升级成功，即将重启...',
         upgradeFailed: '升级失败',
         rollback: '回滚',

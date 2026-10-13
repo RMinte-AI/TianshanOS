@@ -1081,6 +1081,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         downloading: 'Downloading',
         installing: 'Installing',
         progress: 'Progress',
+        upgradeProgress: 'Upgrade Progress',
         upgradeSuccess: 'Upgrade successful, rebooting...',
         upgradeFailed: 'Upgrade Failed',
         rollback: 'Rollback',
