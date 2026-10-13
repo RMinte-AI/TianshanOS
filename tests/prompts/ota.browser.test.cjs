@@ -301,8 +301,10 @@ for (const language of ['zh-CN', 'en-US']) {
                 gate.resolve();
                 await page.evaluate(() => window.otaTestAbort);
                 assert.equal(await page.evaluate(() => refreshInterval), nextTimer);
+                const wwwReply = includeWww ? page.waitForResponse(response => response.url().endsWith('/api/v1/ota/www/start_sdcard')) : null;
                 state.app = 'pending_reboot';
                 if (includeWww) {
+                    await wwwReply;
                     await page.waitForFunction(() => otaUpgrade.phase === 'www');
                     assert.equal(calls.filter(call => call.endpoint === 'ota/www/start_sdcard').length, 1);
                     assert.equal(calls.filter(call => call.endpoint === 'system/reboot').length, 0);
