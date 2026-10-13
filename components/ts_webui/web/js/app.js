@@ -13004,6 +13004,17 @@ async function loadOtaPage() {
         <div class="page page-ota">
           <div class="ota-col">
             <h1 class="t-title">${t('ota.firmwareUpgrade')}</h1>
+
+            <!-- 升级进度区（动态显示） -->
+            <div class="card" id="ota-progress-section" style="display:none">
+                <h2 class="t-section" style="margin-bottom:12px">${t('ota.upgradeProgress')}</h2>
+                <div class="ota-prog">
+                    <div class="bar" style="flex:1"><i id="ota-progress-bar" style="width:0%"></i></div>
+                    <span class="t-value num" id="ota-progress-percent">0%</span>
+                    <button class="btn sm dg" id="ota-abort-btn" onclick="abortOta()"><svg class="i"><use href="#ri-stop-line"/></svg>${t('ota.abort')}</button>
+                </div>
+                <div class="t-note ota-prog-note"><span id="ota-state-text">${t('ota.preparing')}</span> · <span id="ota-progress-size">0 / 0</span> <span id="ota-message"></span></div>
+            </div>
             
             <!-- 核心信息区：版本 + OTA 服务器 -->
             <div class="card">
@@ -13056,16 +13067,6 @@ async function loadOtaPage() {
                         <div class="ota-opts">
                             <label><input type="checkbox" id="ota-file-include-www" checked>${t('ota.includeWww')}</label>
                         </div>
-                    </div>
-                    <!-- 升级进度区（动态显示） -->
-                    <div id="ota-progress-section" style="display:none">
-                        <hr class="sep" style="margin-bottom:12px">
-                        <div class="ota-prog">
-                            <div class="bar" style="flex:1"><i id="ota-progress-bar" style="width:0%"></i></div>
-                            <span class="t-value num" id="ota-progress-percent">0%</span>
-                            <button class="btn sm dg" id="ota-abort-btn" onclick="abortOta()"><svg class="i"><use href="#ri-stop-line"/></svg>${t('ota.abort')}</button>
-                        </div>
-                        <div class="t-note ota-prog-note"><span id="ota-state-text">${t('ota.preparing')}</span> · <span id="ota-progress-size">0 / 0</span> <span id="ota-message"></span></div>
                     </div>
                 </div>
             </details>
@@ -13330,7 +13331,7 @@ async function refreshOtaProgress() {
             stateEl.textContent = stepText + (stateMap[state] || state);
             
             if (state !== 'idle') {
-                progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
+                progressSection.style.display = 'block';
                 
                 // 更新进度条
                 document.getElementById('ota-progress-bar').style.width = percent + '%';
@@ -13629,7 +13630,7 @@ async function otaFromUrl() {
     
     // 立即显示进度区域，提供即时反馈
     const progressSection = document.getElementById('ota-progress-section');
-    progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
+    progressSection.style.display = 'block';
     document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('otaPage.step1Connecting') : '[1/2] 正在连接服务器...';
     document.getElementById('ota-progress-bar').style.width = '0%';
     document.getElementById('ota-progress-percent').textContent = '0%';
@@ -13695,7 +13696,7 @@ async function otaFromFile() {
     
     // 立即显示进度区域
     const progressSection = document.getElementById('ota-progress-section');
-    progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
+    progressSection.style.display = 'block';
     const stepText = includeWww ? '[1/2] ' : '';
     document.getElementById('ota-state-text').textContent = stepText + (typeof t === 'function' ? t('otaPage.readingFile') : '正在读取文件...');
     document.getElementById('ota-progress-bar').style.width = '0%';
@@ -13797,9 +13798,11 @@ async function abortOta() {
             if (upgrade) finishOtaUpgrade(upgrade);
             otaStep = 'idle';
             document.getElementById('ota-progress-section').style.display = 'none';
-            await refreshOtaInfo();
+            // Finish cleanup before refreshing: the refresh can outlive this
+            // attempt while the user starts another upgrade.
             clearInterval(refreshInterval);
             refreshInterval = null;
+            await refreshOtaInfo();
         } else {
             if (upgrade) upgrade.phase = previousPhase;
             reportFailure({ op: 'ota.abort', result, write: true });
@@ -14057,7 +14060,7 @@ async function upgradeFromServer() {
     
     // 立即显示进度区域，给用户即时反馈
     const progressSection = document.getElementById('ota-progress-section');
-    progressSection.style.display = 'block'; document.getElementById('ota-manual')?.setAttribute('open', '');
+    progressSection.style.display = 'block';
     document.getElementById('ota-state-text').textContent = typeof t === 'function' ? t('ui.preparingUpgrade') : 'Preparing upgrade...';
     document.getElementById('ota-progress-bar').style.width = '0%';
     document.getElementById('ota-progress-percent').textContent = '';
