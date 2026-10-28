@@ -34,6 +34,7 @@
 #include "mbedtls/error.h"
 
 #include "nvs_flash.h"
+#include "ts_config_partitions.h"
 #include "nvs.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -108,6 +109,7 @@ static esp_err_t info_from_crt(const mbedtls_x509_crt *crt, ts_cert_info_t *info
 
 static bool s_initialized = false;
 static nvs_handle_t s_nvs_handle = 0;
+static nvs_handle_t s_key_nvs_handle = 0;
 
 /* Cached credentials (loaded on init) */
 static char *s_private_key_pem = NULL;
@@ -158,10 +160,15 @@ static esp_err_t init_rng(void)
     return ESP_OK;
 }
 
+static nvs_handle_t credential_handle(const char *key)
+{
+    return !strcmp(key, NVS_KEY_PRIVKEY) ? s_key_nvs_handle : s_nvs_handle;
+}
+
 static esp_err_t nvs_read_string(const char *key, char **out_str)
 {
     size_t required_size = 0;
-    esp_err_t err = nvs_get_str(s_nvs_handle, key, NULL, &required_size);
+    esp_err_t err = nvs_get_str(credential_handle(key), key, NULL, &required_size);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         *out_str = NULL;
         return ESP_OK;
@@ -174,7 +181,7 @@ static esp_err_t nvs_read_string(const char *key, char **out_str)
     }
     if (!*out_str) return ESP_ERR_NO_MEM;
     
-    err = nvs_get_str(s_nvs_handle, key, *out_str, &required_size);
+    err = nvs_get_str(credential_handle(key), key, *out_str, &required_size);
     if (err != ESP_OK) { free(*out_str); *out_str = NULL; }
     return err;
 }
@@ -182,8 +189,8 @@ static esp_err_t nvs_read_string(const char *key, char **out_str)
 static esp_err_t nvs_write_string(const char *key, const char *str)
 {
     const char *stage = "set";
-    esp_err_t err = nvs_set_str(s_nvs_handle, key, str);
-    if (err == ESP_OK) { stage = "commit"; err = nvs_commit(s_nvs_handle); }
+    esp_err_t err = nvs_set_str(credential_handle(key), key, str);
+    if (err == ESP_OK) { stage = "commit"; err = nvs_commit(credential_handle(key)); }
     if (err != ESP_OK) {
         s_storage_error = true; /* Persistence uncertain: block future TLS loading. */
         ESP_LOGE(TAG, "NVS %s (%s): %s", stage, key, esp_err_to_name(err));
@@ -296,9 +303,13 @@ static esp_err_t ts_cert_init_locked(void)
 {
     if (s_initialized) return ESP_OK;
     
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &s_nvs_handle);
+    esp_err_t err = nvs_open_from_partition(TS_CONFIG_KEYS_PARTITION,
+        NVS_NAMESPACE, NVS_READWRITE, &s_key_nvs_handle);
+    if (err != ESP_OK) return err;
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &s_nvs_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(err));
+        nvs_close(s_key_nvs_handle);
+        s_key_nvs_handle = 0;
         return err;
     }
     
@@ -310,6 +321,7 @@ static esp_err_t ts_cert_init_locked(void)
         free(s_private_key_pem); free(s_certificate_pem); free(s_ca_chain_pem);
         s_private_key_pem = s_certificate_pem = s_ca_chain_pem = NULL;
         nvs_close(s_nvs_handle); s_nvs_handle = 0;
+        nvs_close(s_key_nvs_handle); s_key_nvs_handle = 0;
         s_storage_error = true;
         return err;
     }
@@ -343,6 +355,10 @@ static void ts_cert_deinit_locked(void)
     if (s_nvs_handle) {
         nvs_close(s_nvs_handle);
         s_nvs_handle = 0;
+    }
+    if (s_key_nvs_handle) {
+        nvs_close(s_key_nvs_handle);
+        s_key_nvs_handle = 0;
     }
     
     if (s_rng_initialized) {
@@ -435,8 +451,9 @@ static esp_err_t ts_cert_delete_keypair_locked(void)
     
     esp_err_t err = ESP_OK;
     if (err == ESP_OK) {
-        err = nvs_erase_key(s_nvs_handle, NVS_KEY_PRIVKEY);
+        err = nvs_erase_key(s_key_nvs_handle, NVS_KEY_PRIVKEY);
         if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        if (err == ESP_OK) err = nvs_commit(s_key_nvs_handle);
     }
     if (err == ESP_OK) {
         err = nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);
@@ -866,8 +883,9 @@ static esp_err_t ts_cert_factory_reset_locked(void)
     /* Erase all NVS keys */
     esp_err_t err = ESP_OK;
     if (err == ESP_OK) {
-        err = nvs_erase_key(s_nvs_handle, NVS_KEY_PRIVKEY);
+        err = nvs_erase_key(s_key_nvs_handle, NVS_KEY_PRIVKEY);
         if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        if (err == ESP_OK) err = nvs_commit(s_key_nvs_handle);
     }
     if (err == ESP_OK) {
         err = nvs_erase_key(s_nvs_handle, NVS_KEY_CERT);

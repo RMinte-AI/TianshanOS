@@ -195,6 +195,7 @@ typedef struct {
 
     ts_auto_value_t last_value;          /**< Last received value (deprecated) */
     int64_t last_update_ms;              /**< Last update timestamp */
+    uint64_t instance;                   /**< Runtime identity; never persisted */
 } ts_auto_source_t;
 
 /*===========================================================================*/
@@ -205,7 +206,7 @@ typedef struct {
  * @brief Variable flags
  */
 typedef enum {
-    TS_AUTO_VAR_PERSISTENT  = (1 << 0), /**< Persist to NVS */
+    TS_AUTO_VAR_PERSISTENT  = (1 << 0), /**< Definition belongs to saved configuration */
     TS_AUTO_VAR_READONLY    = (1 << 1), /**< Read-only (from source) */
     TS_AUTO_VAR_COMPUTED    = (1 << 2), /**< Computed from expression */
 } ts_auto_var_flags_t;
@@ -222,6 +223,8 @@ typedef struct {
     uint32_t flags;                      /**< Variable flags */
     int64_t last_change_ms;              /**< Last change timestamp */
     int64_t last_update_ms;              /**< Last update timestamp */
+    uint64_t definition_instance;        /**< Runtime ownership; never persisted */
+    uint64_t runtime_instance;          /**< Registration identity; never persisted */
 } ts_auto_variable_t;
 
 /*===========================================================================*/
@@ -452,6 +455,9 @@ typedef struct {
     /* Template reference (for rule actions) */
     bool runtime_snapshot; /**< Execution-only; never serialized. */
     void *runtime_binding; /**< Owned execution snapshot; never serialized. */
+    uint64_t runtime_epoch, runtime_template_instance;
+    uint32_t runtime_rule_instance;
+    uint64_t runtime_variables[3];
     char template_id[TS_AUTO_NAME_MAX_LEN]; /**< Source template ID (optional, for tracing) */
 
     union {
@@ -533,6 +539,20 @@ typedef struct {
     uint8_t grid_cols;                   /**< Grid columns */
     uint8_t refresh_rate_ms;             /**< UI refresh rate */
 } ts_auto_dashboard_t;
+
+/** Reusable action definition; runtime counters are not persisted. */
+typedef struct {
+    char id[TS_AUTO_NAME_MAX_LEN];       /**< Unique template ID */
+    char name[TS_AUTO_LABEL_MAX_LEN];    /**< Human-readable name */
+    char description[64];                 /**< Optional description */
+    ts_auto_action_t action;              /**< Action configuration */
+    bool enabled;                         /**< Is template enabled */
+    bool async;                           /**< Execute asynchronously (non-blocking) */
+    int64_t created_at;                   /**< Creation timestamp */
+    int64_t last_used_at;                 /**< Last execution timestamp */
+    uint32_t use_count;                   /**< Total execution count */
+} ts_action_template_t;
+#define TS_ACTION_TEMPLATE_MAX 32
 
 #ifdef __cplusplus
 }

@@ -556,35 +556,14 @@ esp_err_t ts_config_schemas_init(void)
         ESP_LOGW(TAG, "Failed to register SYSTEM module: %s", esp_err_to_name(ret));
     }
     
-    /* 注册无 Schema 的动态模块（使用独立的 JSON blob 存储） */
-    ret = ts_config_module_register(TS_CONFIG_MODULE_TEMP, "ts_temp", NULL);
-    if (ret != ESP_OK && ret != TS_CONFIG_ERR_ALREADY_REGISTERED) {
-        ESP_LOGW(TAG, "Failed to register TEMP module: %s", esp_err_to_name(ret));
-    }
-    
-    ret = ts_config_module_register(TS_CONFIG_MODULE_RULES, "ts_rules", NULL);
-    if (ret != ESP_OK && ret != TS_CONFIG_ERR_ALREADY_REGISTERED) {
-        ESP_LOGW(TAG, "Failed to register RULES module: %s", esp_err_to_name(ret));
-    }
-    
-    ret = ts_config_module_register(TS_CONFIG_MODULE_ACTIONS, "ts_actions", NULL);
-    if (ret != ESP_OK && ret != TS_CONFIG_ERR_ALREADY_REGISTERED) {
-        ESP_LOGW(TAG, "Failed to register ACTIONS module: %s", esp_err_to_name(ret));
-    }
-    
-    ret = ts_config_module_register(TS_CONFIG_MODULE_SOURCES, "ts_sources", NULL);
-    if (ret != ESP_OK && ret != TS_CONFIG_ERR_ALREADY_REGISTERED) {
-        ESP_LOGW(TAG, "Failed to register SOURCES module: %s", esp_err_to_name(ret));
-    }
-    
-    ESP_LOGI(TAG, "All configuration modules registered");
+    ESP_LOGI(TAG, "All system configuration modules registered");
     
     /* 加载所有模块配置 */
     ESP_LOGI(TAG, "Loading module configurations...");
     ret = ts_config_module_load(TS_CONFIG_MODULE_MAX);  /* TS_CONFIG_MODULE_MAX = 加载全部 */
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Some modules failed to load: %s", esp_err_to_name(ret));
-        /* 不是致命错误，继续 */
+        ESP_LOGE(TAG, "Failed to load system settings: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     /* 打印元信息 */

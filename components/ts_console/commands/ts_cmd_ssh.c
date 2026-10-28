@@ -15,6 +15,7 @@
  * @date 2026-01-18
  */
 
+#include "ts_storage.h"
 #include "ts_console.h"
 #include "ts_i18n.h"
 #include "ts_api.h"
@@ -1458,18 +1459,15 @@ static int do_ssh_keygen(const char *type_str, const char *output_path, const ch
     }
     
     /* 写入私钥文件 */
-    FILE *fp = fopen(output_path, "w");
-    if (!fp) {
-        ts_console_printf("FAILED\n");
-        ts_console_printf("  Error: Cannot create file %s\n", output_path);
-        free(private_pem);
+    ret = ts_storage_write_file(output_path, private_pem, strlen(private_pem));
+    free(private_pem);
+    if (ret != ESP_OK) {
+        ts_console_printf(ret == ESP_ERR_NOT_ALLOWED
+            ? "FAILED: This file belongs to Automation. Choose another output path.\n"
+            : "FAILED: Could not save the private key. Check the path and storage.\n");
         ts_crypto_keypair_free(keypair);
         return 1;
     }
-    
-    fprintf(fp, "%s", private_pem);
-    fclose(fp);
-    free(private_pem);
     ts_console_printf("OK\n");
     
     /* 导出公钥 (OpenSSH 格式) */
@@ -1496,17 +1494,15 @@ static int do_ssh_keygen(const char *type_str, const char *output_path, const ch
     char pub_path[256];
     snprintf(pub_path, sizeof(pub_path), "%s.pub", output_path);
     
-    fp = fopen(pub_path, "w");
-    if (!fp) {
-        ts_console_printf("FAILED\n");
-        ts_console_printf("  Error: Cannot create file %s\n", pub_path);
+    ret = ts_storage_write_file(pub_path, openssh_pub, strlen(openssh_pub));
+    if (ret != ESP_OK) {
+        ts_console_printf(ret == ESP_ERR_NOT_ALLOWED
+            ? "FAILED: This file belongs to Automation. Choose another output path.\n"
+            : "FAILED: Could not save the public key. Check the path and storage.\n");
         free(openssh_pub);
         ts_crypto_keypair_free(keypair);
         return 1;
     }
-    
-    fprintf(fp, "%s", openssh_pub);
-    fclose(fp);
     ts_console_printf("OK\n");
     
     /* 显示公钥指纹 */

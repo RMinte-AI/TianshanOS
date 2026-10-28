@@ -6,12 +6,13 @@ const slots=v=>[...new Set([...v.matchAll(/(?<!\$)\{(\w+)\}/g)].map(m=>m[1]))].s
 function walk(n,fn){if(!n||typeof n!=='object')return;fn(n);for(const v of Object.values(n))if(Array.isArray(v)){v.forEach(c=>walk(c,fn));}else if(v&&typeof v==='object')walk(v,fn);}
 function choices(n){if(n?.type==='Literal'&&typeof n.value==='string')return[n.value];if(n?.type==='ConditionalExpression')return[...choices(n.consequent),...choices(n.alternate)];return[];}
 const calls=[];
-for(const f of ['js/app.js','js/api.js','js/terminal.js','js/router.js'])walk(acorn.parse(read(f),{ecmaVersion:'latest',locations:true}),n=>{if(n.type==='CallExpression'&&['t','certText'].includes(n.callee.name))for(const key of choices(n.arguments[0]))calls.push({f,line:n.loc.start.line,key,params:n.arguments[n.callee.name==='certText'?2:1]});});
+const helperNamespaces={configText:'automationConfig.',serviceRunText:'serviceRuns.'};
+for(const f of ['js/app.js','js/api.js','js/terminal.js','js/router.js'])walk(acorn.parse(read(f),{ecmaVersion:'latest',locations:true}),n=>{if(n.type==='CallExpression'&&['t','certText',...Object.keys(helperNamespaces)].includes(n.callee.name))for(const key of choices(n.arguments[0]))calls.push({f,line:n.loc.start.line,key:(helperNamespaces[n.callee.name]||'')+key,params:n.arguments[n.callee.name==='certText'?2:1]});});
 const html=read('index.html');
 for(const f of ['index.html','js/app.js','js/terminal.js'])for(const m of read(f).matchAll(/data-i18n(?:-title|-placeholder)?="([^"]+)"/g))if(!m[1].includes('${'))calls.push({f,key:m[1]});
 for(const m of read('js/app.js').matchAll(/(?:labelKey|descKey): '([^']+)'/g))calls.push({f:'dynamic widget option',key:m[1]});
 // Explicit finite dynamic families; unknown names use neutral runtime fallbacks.
-for(const family of ['promptRepair','runtimeRepair','deleteProtection'])for(const key of Object.keys(langs['zh-CN'][family]))calls.push({f:'dynamic '+family,key:family+'.'+key,dynamic:true});
+for(const family of ['promptRepair','runtimeRepair','quickActionNotice','automationConfig','serviceRuns'])for(const key of Object.keys(langs['zh-CN'][family]))calls.push({f:'dynamic '+family,key:family+'.'+key,dynamic:true});
 // the failure catalogue is looked up by token / operation name: every leaf must exist in both languages with the same placeholders
 const leaves=(o,p)=>Object.entries(o).flatMap(([k,v])=>typeof v==='string'?[p+k]:leaves(v,p+k+'.'));
 for(const key of leaves(langs['zh-CN'].failure,'failure.'))calls.push({f:'dynamic failure catalogue',key,dynamic:true});

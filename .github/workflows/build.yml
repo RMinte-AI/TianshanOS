@@ -38,6 +38,7 @@ jobs:
           node-version: '22'
       - run: python3 -m unittest discover -s tests/ci -p 'test_*.py'
       - run: python3 tests/release/test_release.py
+      - run: python3 tests/release/test_serial_upgrade.py
       - name: Select checks and release eligibility
         id: scope
         run: python3 tools/ci/check_profile.py
@@ -77,12 +78,12 @@ jobs:
         with:
           python-version: '3.11'
       - run: python3 -m pip install -r tests/certificate/requirements.txt
-      - name: Fetch matching ESP-IDF cJSON and MbedTLS sources for host tests
+      - name: Fetch matching ESP-IDF host-test dependencies
         run: |
           export IDF_PATH="$RUNNER_TEMP/runtime-idf"
           echo "IDF_PATH=$IDF_PATH" >> "$GITHUB_ENV"
           git clone --depth 1 --branch "$IDF_VERSION" --filter=blob:none --sparse https://github.com/espressif/esp-idf.git "$IDF_PATH"
-          git -C "$IDF_PATH" sparse-checkout set components/json components/mbedtls
+          git -C "$IDF_PATH" sparse-checkout set components/json components/mbedtls components/nvs_flash
           git -C "$IDF_PATH" submodule update --init --recursive --depth 1 components/json/cJSON components/mbedtls/mbedtls
       - uses: actions/setup-node@v4
         with:
@@ -213,6 +214,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Package USB / serial partition upgrade
+        run: python3 tools/serial_upgrade.py package --build-dir build --output "build/tianshanos-serial-v$(cat version.txt)"
+
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -222,6 +226,7 @@ jobs:
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
             build/flasher_args.json
+            build/tianshanos-serial-*.zip
           retention-days: 30
 
       - name: Upload full build (for debugging)
@@ -315,6 +320,7 @@ jobs:
           files: |
             firmware/**/*.bin
             firmware/**/flasher_args.json
+            firmware/**/*.zip
           fail_on_unmatched_files: true
           target_commitish: ${{ needs.build.outputs.commit }}
           body_path: docs/releases/${{ steps.preflight.outputs.tag }}.md

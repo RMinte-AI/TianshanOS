@@ -5,6 +5,8 @@ idf_component_register(
     SRCS
         "src/ts_config.c"
         "src/ts_config_nvs.c"
+        "src/ts_config_partitions.c"
+        "src/ts_config_migrate.c"
         "src/ts_config_file.c"
         "src/ts_config_json.c"
         "src/ts_config_meta.c"
@@ -18,10 +20,12 @@ idf_component_register(
         fatfs
         json
         vfs
+        esp_partition
         ts_event
     PRIV_REQUIRES
         esp_system
         ts_config_pack
+        ts_cert
 )
 
 # 添加版本信息

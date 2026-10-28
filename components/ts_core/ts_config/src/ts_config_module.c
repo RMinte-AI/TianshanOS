@@ -3,9 +3,8 @@
  * @brief TianShanOS Unified Configuration Module System Implementation
  *
  * 统一配置模块系统实现
- * - SD卡优先，NVS 备份
- * - 双写同步机制
- * - pending_sync 热插拔处理
+ * System modules persist only in the default system NVS.
+ * SD import/export are explicit operations; legacy priority is migration-only.
  *
  * @author TianShanOS Team
  * @version 1.0.0
@@ -209,8 +208,9 @@ esp_err_t ts_config_module_load(ts_config_module_t module)
             if (s_mgr.modules[i].registered) {
                 esp_err_t ret = ts_config_module_load((ts_config_module_t)i);
                 if (ret != ESP_OK && ret != TS_CONFIG_ERR_MODULE_NOT_FOUND) {
-                    ESP_LOGW(TAG, "Failed to load module %s: %s", 
+                    ESP_LOGE(TAG, "Failed to load module %s: %s",
                              MODULE_NAMES[i], esp_err_to_name(ret));
+                    return ret;
                 }
             }
         }
@@ -225,74 +225,14 @@ esp_err_t ts_config_module_load(ts_config_module_t module)
     
     xSemaphoreTake(s_mgr.mutex, portMAX_DELAY);
     
-    esp_err_t ret = ESP_OK;
-    bool loaded_from_sdcard = false;
-    bool loaded_from_nvs = false;
-    
-    /* 检查 pending_sync 状态 */
-    bool has_pending = ts_config_meta_is_pending_sync(module);
-    bool sdcard_mounted = is_sdcard_mounted();
-    
-    if (has_pending && sdcard_mounted) {
-        /* 情况1: 有待同步 + SD卡已挂载 → NVS优先，然后同步到SD卡 */
-        ESP_LOGI(TAG, "Module %s has pending sync, loading from NVS first", MODULE_NAMES[module]);
-        ret = ts_config_module_load_from_nvs(module);
-        if (ret == ESP_OK) {
-            loaded_from_nvs = true;
-            /* 同步到SD卡 */
-            esp_err_t sync_ret = ts_config_module_export_to_sdcard(module);
-            if (sync_ret == ESP_OK) {
-                ts_config_meta_clear_pending_sync(module);
-                ESP_LOGI(TAG, "Module %s synced to SD card", MODULE_NAMES[module]);
-            }
-        }
-    } else if (sdcard_mounted) {
-        /* 情况2: SD卡已挂载 → 尝试从SD卡加载 */
-        char path[64];
-        snprintf(path, sizeof(path), "%s/%s", TS_CONFIG_SDCARD_PATH, MODULE_FILENAMES[module]);
-        
-        cJSON *root = NULL;
-        ret = read_json_file(path, &root);
-        if (ret == ESP_OK && root != NULL) {
-            /* 从SD卡加载成功 */
-            ret = json_to_module(module, root);
-            cJSON_Delete(root);
-            if (ret == ESP_OK) {
-                loaded_from_sdcard = true;
-                ESP_LOGI(TAG, "Module %s loaded from SD card", MODULE_NAMES[module]);
-            }
-        } else {
-            /* SD卡上没有配置文件，从NVS加载 */
-            ESP_LOGD(TAG, "SD card config not found for %s, trying NVS", MODULE_NAMES[module]);
-        }
-    }
-    
-    /* 如果未从SD卡加载，尝试NVS */
-    if (!loaded_from_sdcard && !loaded_from_nvs) {
-        ret = ts_config_module_load_from_nvs(module);
-        if (ret == ESP_OK) {
-            loaded_from_nvs = true;
-            
-            /* 如果SD卡已挂载但无配置文件，自动导出 */
-            if (sdcard_mounted) {
-                ESP_LOGI(TAG, "Auto-exporting module %s to SD card", MODULE_NAMES[module]);
-                ts_config_module_export_to_sdcard(module);
-            }
-        }
-    }
-    
-    /* 如果都没加载成功，使用Schema默认值 */
-    if (!loaded_from_sdcard && !loaded_from_nvs) {
-        ESP_LOGI(TAG, "Using schema defaults for module %s", MODULE_NAMES[module]);
+    esp_err_t ret = ts_config_module_load_from_nvs(module);
+    if (ret == TS_CONFIG_ERR_NOT_FOUND)
         ret = ts_config_module_reset(module, false);
-        
-        /* 使用默认值后也导出到 SD 卡（仅对有 Schema 的模块） */
-        if (sdcard_mounted && s_mgr.modules[module].schema != NULL) {
-            ESP_LOGI(TAG, "Auto-exporting module %s defaults to SD card", MODULE_NAMES[module]);
-            ts_config_module_export_to_sdcard(module);
-        }
+    if (ret != ESP_OK) {
+        xSemaphoreGive(s_mgr.mutex);
+        return ret;
     }
-    
+
     /* Schema版本迁移 */
     const ts_config_module_schema_t *schema = s_mgr.modules[module].schema;
     if (schema != NULL && schema->migrate != NULL) {
@@ -686,6 +626,7 @@ esp_err_t ts_config_module_persist(ts_config_module_t module)
     
     /* 1. 递增全局序列号 */
     uint32_t seq = ts_config_meta_increment_global_seq();
+    if (!seq) { xSemaphoreGive(s_mgr.mutex); return ESP_FAIL; }
     info->seq = seq;
     
     /* 2. 生成 JSON */
@@ -719,42 +660,13 @@ esp_err_t ts_config_module_persist(ts_config_module_t module)
         return ret;
     }
     
-    /* 写入 JSON blob，键名固定为 "config" */
     ret = nvs_set_blob(handle, "config", json_str, json_len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to write NVS blob for %s: %s", MODULE_NAMES[module], esp_err_to_name(ret));
-    } else {
-        nvs_commit(handle);
-        ESP_LOGD(TAG, "Module %s saved to NVS blob (%zu bytes)", MODULE_NAMES[module], json_len);
-    }
-    
+    if (ret == ESP_OK) ret = nvs_commit(handle);
     nvs_close(handle);
     free(json_str);
-    
-    /* 4. 写入SD卡（如果已挂载） */
-    if (is_sdcard_mounted()) {
-        ret = ts_config_module_export_to_sdcard(module);
-        if (ret == ESP_OK) {
-            /* 更新同步序列号 */
-            ts_config_meta_set_sync_seq(seq);
-            ts_config_meta_clear_pending_sync(module);
-        } else {
-            /* SD卡写入失败，标记待同步 */
-            ts_config_meta_set_pending_sync(module);
-            ESP_LOGW(TAG, "SD card write failed for %s, marked pending sync", MODULE_NAMES[module]);
-        }
-    } else {
-        /* SD卡未挂载，标记待同步 */
-        ts_config_meta_set_pending_sync(module);
-        ESP_LOGI(TAG, "SD card not mounted, %s marked pending sync", MODULE_NAMES[module]);
-    }
-    
-    info->dirty = false;
-    
+    if (ret == ESP_OK) info->dirty = false;
     xSemaphoreGive(s_mgr.mutex);
-    
-    ESP_LOGI(TAG, "Module %s persisted (seq=%lu)", MODULE_NAMES[module], (unsigned long)seq);
-    return ESP_OK;
+    return ret;
 }
 
 esp_err_t ts_config_module_export_to_sdcard(ts_config_module_t module)
@@ -814,9 +726,6 @@ esp_err_t ts_config_module_export_custom_json(ts_config_module_t module, const c
     }
     
     if (!is_sdcard_mounted()) {
-        /* SD卡未挂载，标记待同步 */
-        ts_config_meta_set_pending_sync(module);
-        ESP_LOGD(TAG, "SD card not mounted, %s marked pending sync", MODULE_NAMES[module]);
         return TS_CONFIG_ERR_SD_NOT_MOUNTED;
     }
     
@@ -841,10 +750,8 @@ esp_err_t ts_config_module_export_custom_json(ts_config_module_t module, const c
     cJSON_Delete(json_copy);
     
     if (ret == ESP_OK) {
-        ts_config_meta_clear_pending_sync(module);
         ESP_LOGI(TAG, "Module %s custom JSON exported to %s", MODULE_NAMES[module], path);
     } else {
-        ts_config_meta_set_pending_sync(module);
         ESP_LOGW(TAG, "Failed to export %s to SD card: %s", MODULE_NAMES[module], esp_err_to_name(ret));
     }
     
@@ -865,52 +772,6 @@ esp_err_t ts_config_module_import_from_sdcard(ts_config_module_t module)
     
     /* 持久化到NVS */
     return ts_config_module_persist(module);
-}
-
-/* ============================================================================
- * 同步
- * ========================================================================== */
-
-esp_err_t ts_config_module_sync_pending(void)
-{
-    if (!is_sdcard_mounted()) {
-        return TS_CONFIG_ERR_SD_NOT_MOUNTED;
-    }
-    
-    uint8_t pending = ts_config_meta_get_pending_sync();
-    if (pending == 0) {
-        ESP_LOGD(TAG, "No pending sync");
-        return ESP_OK;
-    }
-    
-    ESP_LOGI(TAG, "Syncing pending modules (mask=0x%02x)...", pending);
-    
-    for (int i = 0; i < TS_CONFIG_MODULE_MAX; i++) {
-        if ((pending & (1 << i)) && s_mgr.modules[i].registered) {
-            esp_err_t ret = ts_config_module_export_to_sdcard((ts_config_module_t)i);
-            if (ret == ESP_OK) {
-                ts_config_meta_clear_pending_sync((ts_config_module_t)i);
-                ESP_LOGI(TAG, "Module %s synced to SD card", MODULE_NAMES[i]);
-            } else {
-                ESP_LOGW(TAG, "Failed to sync %s: %s", MODULE_NAMES[i], esp_err_to_name(ret));
-            }
-        }
-    }
-    
-    /* 更新同步序列号 */
-    ts_config_meta_set_sync_seq(ts_config_meta_get_global_seq());
-    
-    return ESP_OK;
-}
-
-bool ts_config_module_has_pending_sync(void)
-{
-    return ts_config_meta_get_pending_sync() != 0;
-}
-
-uint8_t ts_config_module_get_pending_mask(void)
-{
-    return ts_config_meta_get_pending_sync();
 }
 
 /* ============================================================================

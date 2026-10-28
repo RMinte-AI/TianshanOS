@@ -6,39 +6,23 @@
  * - ui.widgets.get: 获取数据监控组件配置
  * - ui.widgets.set: 保存数据监控组件配置
  * 
- * 配置优先级：SD卡 > NVS > 默认值
- * 
- * 加载逻辑：
- * 1. SD卡有配置 → 使用 SD 卡配置
- * 2. SD卡没有但 NVS 有 → 使用 NVS 配置，并同步复制到 SD 卡
- * 3. 都没有 → 返回默认空配置
- * 
- * 保存逻辑：同时写入 SD卡 + NVS（双写，确保持久化）
- * 
- * 存储位置：
- * - SD卡: /sdcard/config/ui_widgets.json
- * - NVS: ts_ui 命名空间，key="widgets"
- * 
+ * 监控组件配置保存在系统 NVS：ts_ui / widgets。
+ * 升级时旧 SD 配置由系统迁移统一导入；此 API 不再同步 SD。
+ *
  * @author TianShanOS Team
  * @version 1.0.0
  */
 
 #include "ts_api.h"
 #include "ts_log.h"
-#include "ts_storage.h"
-#include "ts_config_pack.h"
-#include "nvs_flash.h"
 #include "nvs.h"
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include <string.h>
-#include <sys/stat.h>
-#include <errno.h>
 
 #define TAG "api_ui"
 
 /* 配置文件路径 */
-#define UI_WIDGETS_FILE     "/sdcard/config/ui_widgets.json"
 #define UI_WIDGETS_NVS_NS   "ts_ui"
 #define UI_WIDGETS_NVS_KEY  "widgets"
 
@@ -48,44 +32,6 @@
 /*===========================================================================*/
 /*                          Helper Functions                                  */
 /*===========================================================================*/
-
-/**
- * @brief 从 SD 卡加载 widgets 配置
- * 
- * 支持 .tscfg 加密配置优先加载
- * @return cJSON* 配置对象，失败返回 NULL（调用者负责释放）
- */
-static cJSON *load_widgets_from_sdcard(void)
-{
-    /* 使用 .tscfg 优先加载 */
-    char *content = NULL;
-    size_t content_len = 0;
-    bool used_tscfg = false;
-    
-    esp_err_t ret = ts_config_pack_load_with_priority(
-        UI_WIDGETS_FILE, &content, &content_len, &used_tscfg);
-    
-    if (ret != ESP_OK) {
-        TS_LOGD(TAG, "SD card file not found: %s", UI_WIDGETS_FILE);
-        return NULL;
-    }
-    
-    if (used_tscfg) {
-        TS_LOGI(TAG, "Loaded encrypted widgets from .tscfg");
-    }
-    
-    /* 解析 JSON */
-    cJSON *json = cJSON_Parse(content);
-    free(content);
-    
-    if (!json) {
-        TS_LOGW(TAG, "Failed to parse SD card config");
-        return NULL;
-    }
-    
-    TS_LOGI(TAG, "Loaded widgets from SD card");
-    return json;
-}
 
 /**
  * @brief 从 NVS 加载 widgets 配置
@@ -141,48 +87,6 @@ static cJSON *load_widgets_from_nvs(void)
 }
 
 /**
- * @brief 保存 widgets 配置到 SD 卡
- * @param json 配置 JSON
- * @return ESP_OK 成功
- */
-static esp_err_t save_widgets_to_sdcard(cJSON *json)
-{
-    /* 确保目录存在 */
-    struct stat st;
-    if (stat("/sdcard/config", &st) != 0) {
-        if (mkdir("/sdcard/config", 0755) != 0) {
-            TS_LOGW(TAG, "Failed to create config dir: %s", strerror(errno));
-            return ESP_FAIL;
-        }
-    }
-    
-    /* 生成 JSON 字符串 */
-    char *content = cJSON_PrintUnformatted(json);
-    if (!content) {
-        return ESP_ERR_NO_MEM;
-    }
-    
-    /* 写入文件 */
-    FILE *f = fopen(UI_WIDGETS_FILE, "w");
-    if (!f) {
-        TS_LOGW(TAG, "Failed to open file for writing: %s", strerror(errno));
-        cJSON_free(content);
-        return ESP_FAIL;
-    }
-    
-    size_t written = fwrite(content, 1, strlen(content), f);
-    fclose(f);
-    cJSON_free(content);
-    
-    if (written == 0) {
-        return ESP_FAIL;
-    }
-    
-    TS_LOGI(TAG, "Saved widgets to SD card (%zu bytes)", written);
-    return ESP_OK;
-}
-
-/**
  * @brief 保存 widgets 配置到 NVS
  * @param json 配置 JSON
  * @return ESP_OK 成功
@@ -234,13 +138,13 @@ static esp_err_t save_widgets_to_nvs(cJSON *json)
 /**
  * @brief ui.widgets.get - 获取数据监控组件配置
  * 
- * 加载优先级：SD卡 > NVS > 空配置
+ * 从系统 NVS 读取；首次使用返回空配置
  * 
  * @return JSON:
  * {
  *   "widgets": [...],
  *   "refresh_interval": 5000,
- *   "source": "sdcard" | "nvs" | "default"
+ *   "source": "nvs" | "default"
  * }
  */
 static esp_err_t api_ui_widgets_get(const cJSON *params, ts_api_result_t *result)
@@ -250,23 +154,9 @@ static esp_err_t api_ui_widgets_get(const cJSON *params, ts_api_result_t *result
     cJSON *config = NULL;
     const char *source = "default";
     
-    /* 配置优先级：SD卡 > NVS > 默认值 */
-    /* 1. 优先从 SD 卡加载 */
-    config = load_widgets_from_sdcard();
-    if (config) {
-        source = "sdcard";
-    } else {
-        /* 2. SD卡没有，尝试从 NVS 加载 */
-        config = load_widgets_from_nvs();
-        if (config) {
-            source = "nvs";
-            /* 同步 NVS 配置到 SD 卡，方便后续编辑 */
-            if (save_widgets_to_sdcard(config) == ESP_OK) {
-                TS_LOGI(TAG, "Synced NVS config to SD card");
-            }
-        }
-    }
-    
+    config = load_widgets_from_nvs();
+    if (config) source = "nvs";
+
     /* 构建响应 */
     cJSON *data = cJSON_CreateObject();
     
@@ -304,7 +194,7 @@ static esp_err_t api_ui_widgets_get(const cJSON *params, ts_api_result_t *result
 /**
  * @brief ui.widgets.set - 保存数据监控组件配置
  * 
- * 双写：SD卡 + NVS
+ * 保存到系统 NVS
  * 
  * @param params JSON:
  * {
@@ -338,27 +228,23 @@ static esp_err_t api_ui_widgets_set(const cJSON *params, ts_api_result_t *result
         cJSON_AddNumberToObject(config, "refresh_interval", 5000);
     }
     
-    /* 双写：SD卡 + NVS */
-    esp_err_t sd_ret = save_widgets_to_sdcard(config);
+    /* 系统设置只写系统配置区。 */
     esp_err_t nvs_ret = save_widgets_to_nvs(config);
     
     cJSON_Delete(config);
     
     /* 响应 */
     cJSON *data = cJSON_CreateObject();
-    cJSON_AddBoolToObject(data, "sdcard_saved", sd_ret == ESP_OK);
     cJSON_AddBoolToObject(data, "nvs_saved", nvs_ret == ESP_OK);
     
-    if (sd_ret != ESP_OK && nvs_ret != ESP_OK) {
+    if (nvs_ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to save config");
         cJSON_Delete(data);
         return ESP_FAIL;
     }
     
     ts_api_result_ok(result, data);
-    TS_LOGI(TAG, "Saved UI widgets config (sdcard=%s, nvs=%s)", 
-            sd_ret == ESP_OK ? "ok" : "fail",
-            nvs_ret == ESP_OK ? "ok" : "fail");
+    TS_LOGI(TAG, "Saved UI widgets config to system NVS");
     return ESP_OK;
 }
 

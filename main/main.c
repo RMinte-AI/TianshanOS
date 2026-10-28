@@ -150,6 +150,12 @@ void app_main(void)
         return;
     }
 
+    ret = ts_services_prepare_config();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Configuration migration failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
     // 注册所有核心服务
     ESP_LOGI(TAG, "Registering core services...");
     ret = ts_services_register_all();

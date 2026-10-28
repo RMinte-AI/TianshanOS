@@ -23,8 +23,11 @@ prefix=r'''
 #include "ts_keystore.h"
 #include "ts_crypto.h"
 #include "ts_api.h"
+#include "ts_config_partitions.h"
+#include "ts_storage.h"
 #include <stdatomic.h>
 #include <ctype.h>
+#include <sys/stat.h>
 #define CONFIG_TS_CONFIG_PACK_MAX_SIZE 65536
 #define TS_LOGI(...) ((void)0)
 #define TS_LOGE(...) ((void)0)
@@ -63,6 +66,10 @@ static bool fail_response_alloc;
 static void *always_fail(size_t n);
 static bool fail_partial,fail_restore;
 static atomic_int crypto_calls;
+esp_err_t ts_storage_write_file(const char *path,const void *data,size_t size)
+{ (void)path;(void)data;(void)size;assert(!"unexpected file export in keystore generation test");return ESP_FAIL; }
+esp_err_t ts_storage_open_write(const char *path,FILE **file)
+{ (void)path;(void)file;assert(!"unexpected file export in keystore generation test");return ESP_FAIL; }
 static int crypto_error,private_error,public_error,live_crypto;
 static bool private_empty;
 
@@ -79,7 +86,8 @@ static esp_err_t set(const char *key,const void *data,size_t len){
  entry *e=find(key);if(!e){for(int i=0;i<40;i++)if(!db[i].used){e=&db[i];break;}}assert(e&&len<=sizeof(e->data));e->used=true;strcpy(e->key,key);memcpy(e->data,data,len);e->len=len;
  return failed?ESP_ERR_NVS_NOT_ENOUGH_SPACE:ESP_OK;
 }
-esp_err_t nvs_open(const char *n,int mode,nvs_handle_t *h){*h=1;return ESP_OK;}
+esp_err_t nvs_open(const char *n,int mode,nvs_handle_t *h){assert(!"keystore must use the keys partition");return ESP_FAIL;}
+esp_err_t nvs_open_from_partition(const char *p,const char *n,int mode,nvs_handle_t *h){assert(!strcmp(p,TS_CONFIG_KEYS_PARTITION)&&!strcmp(n,KEYSTORE_NAMESPACE));*h=1;return ESP_OK;}
 void nvs_close(nvs_handle_t h){}
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *k,void *b,size_t *n){return get(k,b,n);}
 esp_err_t nvs_get_str(nvs_handle_t h,const char *k,char *b,size_t *n){return get(k,b,n);}
@@ -202,7 +210,7 @@ int main(int argc,char **argv){
 with tempfile.TemporaryDirectory(prefix='ts-keystore-') as tmp:
  p=Path(tmp);(p/'platform.h').write_text(platform);(p/'esp_err.h').write_text('#include "platform.h"\n');(p/'test.c').write_text(prefix+strict_json+body_complete+source+api_handler+web_handler+boundaries)
  env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
- subprocess.run(['cc','-std=c11','-g','-Wno-deprecated-declarations','-fsanitize=address,undefined','-I'+tmp,'-I'+str(root/'components/ts_security/include'),'-I'+str(root/'components/ts_api/include'),'-I'+str(idf/'components/json/cJSON'),str(p/'test.c'),str(idf/'components/json/cJSON/cJSON.c'),'-lm','-lpthread','-o',str(p/'test')],check=True,env=env)
+ subprocess.run(['cc','-std=c11','-g','-Wno-deprecated-declarations','-fsanitize=address,undefined','-I'+tmp,'-I'+str(root/'components/ts_security/include'),'-I'+str(root/'components/ts_api/include'),'-I'+str(root/'components/ts_core/ts_config/include'),'-I'+str(root/'components/ts_storage/include'),'-I'+str(idf/'components/json/cJSON'),str(p/'test.c'),str(idf/'components/json/cJSON/cJSON.c'),'-lm','-lpthread','-o',str(p/'test')],check=True,env=env)
  failures=[]
  for case in ['metadata','index','prefix','matrix','admission','concurrency','compatibility','api','allocations','lifecycle']:
   result=subprocess.run([str(p/'test'),case],env=env,capture_output=True,text=True)

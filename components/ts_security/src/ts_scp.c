@@ -8,6 +8,7 @@
  * 传输缓冲区优先分配到 PSRAM
  */
 
+#include "ts_storage.h"
 #include "ts_scp.h"
 #include "ts_ssh_client.h"
 #include "ts_core.h"  /* TS_MALLOC_PSRAM */
@@ -253,7 +254,8 @@ esp_err_t ts_scp_recv(ts_ssh_session_t ssh_session, const char *remote_path,
         return ESP_ERR_INVALID_STATE;
     }
     
-    esp_err_t ret = ESP_FAIL;
+    esp_err_t ret = ts_storage_check_write_path(local_path, false);
+    if (ret != ESP_OK) return ret;
     LIBSSH2_CHANNEL *channel = NULL;
     FILE *local_file = NULL;
     uint8_t *buffer = NULL;
@@ -283,13 +285,9 @@ esp_err_t ts_scp_recv(ts_ssh_session_t ssh_session, const char *remote_path,
              remote_path, (unsigned long long)file_size, local_path);
     
     /* 打开本地文件 */
-    local_file = fopen(local_path, "wb");
-    if (!local_file) {
-        ESP_LOGE(TAG, "Failed to create local file: %s", local_path);
-        ret = ESP_FAIL;
-        goto cleanup;
-    }
-    
+    ret = ts_storage_open_write(local_path, &local_file);
+    if (ret != ESP_OK) goto cleanup;
+
     /* 分配传输缓冲区 */
     buffer = TS_MALLOC_PSRAM(SCP_BUFFER_SIZE);
     if (!buffer) {
@@ -339,7 +337,7 @@ esp_err_t ts_scp_recv(ts_ssh_session_t ssh_session, const char *remote_path,
     
 cleanup:
     if (buffer) free(buffer);
-    if (local_file) fclose(local_file);
+    if (local_file && fclose(local_file) != 0 && ret == ESP_OK) ret = ESP_FAIL;
     if (channel) {
         libssh2_channel_free(channel);
     }

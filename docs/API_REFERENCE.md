@@ -1430,156 +1430,83 @@ POST /api/v1/ota/www/start_sdcard
 {
   "code": 0,
   "data": {
-    "sdcard_saved": true,
     "nvs_saved": true
   }
 }
 ```
 
-**存储位置**:
-- SD 卡: `/sdcard/config/ui_widgets.json`
-- NVS: namespace `ts_ui`, key `widgets`
+**存储位置**：系统 NVS，namespace `ts_ui`、key `widgets`。旧 SD 文件只在首次迁移时读取，保存与插卡不再双向同步。
 
 ---
 
+## 自动化配置与删除 API
+
+以下方法支持 `POST /api/v1/call` 的 `{ "method": "…", "params": { … } }` 格式；HTTP 路径使用 `/api/v1/automation/config/status` 这种斜线形式。需使用登录后的 Bearer token。
+
+所有配置修改携带当前 `active_version`。该版本从最新列表或 `automation.config.status` 读取；收到 `configuration_changed` 后重新读取并确认操作，不能直接重发旧修改。成功响应的 `data.saved` 说明是否实际保存，不能仅因 HTTP 请求完成就提示保存成功。
+
+| 方法 | 用途／主要参数 |
+|---|---|
+| `automation.config.status` | 当前来源、启停、内部副本、SD 可用性和 `active_version` |
+| `automation.config.backup` | 手动保存完整应急副本；`active_version` |
+| `automation.config.preview` | 来源切换／恢复预览；`operation`：`use_sd`、`save_to_sd`、`restore_internal` |
+| `automation.config.apply` | 确认预览；同一 `operation`、预览返回的 `active_version` 和 `target_version` |
+| `automation.config.enable` | 显式启用／暂停；`enabled`、`active_version` |
+
+操作在当前配置集合内处理规则、模板、命令、主机、数据源和用户变量，不修改另一份手动副本。`restore_internal` 恢复当前工作位置；`use_sd` 只切换来源，因此可以成功但 `saved=false`。`save_to_sd` 写卡成功、保存来源选择失败时会分别报告结果，不能把它提示为完整切换成功。
+
+`automation.rules.delete`、`automation.actions.delete`、`ssh.commands.remove` 使用目标 `id` 和 `active_version`：
+
+- `preview=true`：返回影响清单，不删除。
+- 无引用时可普通删除；Rule 直接移除。
+- 有引用时可用 `replacement_id` 替换引用，或 `mode="cascade"` 解除引用并停用受影响规则。
+- `force=true`：最终强删，不等待远端核验。删除命令后，关联模板保留为停用草稿并清空命令引用。
+- 影响范围无法确认时，确认后增加 `pause_automation=true`，暂停自动化并删除；重启不会自动取消此次暂停。
+
+以上删除均保留真实写入错误。独立后台服务记录由 `automation.services.list` 列出；核验和停止使用 `automation.services.status`（`verify=true`）、`automation.services.stop` 及 `run_id`，不再用命令 ID 代替服务实例。
+
+详见 [自动化配置使用与存储](AUTOMATION_STORAGE.md)。
+
 ## 自动化配置导入导出 API
 
-### automation.sources.export
-导出数据源配置为加密配置包。
+### 导出
 
-**请求**: `POST /api/v1/call`
-```json
-{
-  "method": "automation.sources.export",
-  "params": {
-    "id": "agx_monitor",
-    "recipient_cert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
-  }
-}
-```
+`automation.sources.export`、`automation.rules.export`、`automation.actions.export` 使用 `id` 和可选的 `recipient_cert`（PEM；省略时使用本机证书）。成功返回 `data.tscfg` 和 `data.filename`。
 
-**参数**:
-- `id`: 数据源 ID（必填）
-- `recipient_cert`: 目标设备证书 PEM（可选，留空使用本机证书）
-
-**响应**:
-```json
-{
-  "code": 0,
-  "data": {
-    "tscfg": "TSCFG01...(Base64编码的配置包)",
-    "filename": "source_agx_monitor.tscfg"
-  }
-}
-```
-
-### automation.sources.import
-导入数据源配置包。
-
-**请求**: `POST /api/v1/call`
-```json
-{
-  "method": "automation.sources.import",
-  "params": {
-    "tscfg": "TSCFG01...(Base64编码的配置包)",
-    "filename": "source_agx_monitor.tscfg",
-    "preview": true,
-    "overwrite": false
-  }
-}
-```
-
-**参数**:
-- `tscfg`: 配置包内容（必填）
-- `filename`: 原文件名，用于提取配置 ID（可选）
-- `preview`: 预览模式，只验证不导入（可选）
-- `overwrite`: 覆盖已存在的配置（可选）
-
-**响应（预览模式）**:
-```json
-{
-  "code": 0,
-  "data": {
-    "valid": true,
-    "type": "automation_source",
-    "id": "agx_monitor",
-    "exists": false,
-    "signer": "TIANSHAN-DEV-001",
-    "official": true,
-    "note": "Content will be decrypted on system restart"
-  }
-}
-```
-
-**响应（确认导入）**:
-```json
-{
-  "code": 0,
-  "data": {
-    "id": "agx_monitor",
-    "path": "/sdcard/config/sources/agx_monitor.tscfg",
-    "imported": true,
-    "overwritten": false,
-    "note": "Restart system to load the new config"
-  }
-}
-```
-
-### automation.rules.export
-导出规则配置为加密配置包。
-
-**请求**: `POST /api/v1/call`
-```json
-{
-  "method": "automation.rules.export",
-  "params": {
-    "id": "temp_alert",
-    "recipient_cert": "..."
-  }
-}
-```
-
-**响应**:
-```json
-{
-  "code": 0,
-  "data": {
-    "tscfg": "TSCFG01...",
-    "filename": "rule_temp_alert.tscfg"
-  }
-}
-```
-
-### automation.rules.import
-导入规则配置包（参数和响应格式同 sources.import）。
-
-### automation.actions.export
-导出动作模板配置为加密配置包。
-
-**请求**: `POST /api/v1/call`
 ```json
 {
   "method": "automation.actions.export",
-  "params": {
-    "id": "notify_slack",
-    "recipient_cert": "..."
-  }
+  "params": { "id": "notify_slack" }
 }
 ```
 
-**响应**:
+### 数据源、模板、SSH 主机和命令导入
+
+`automation.sources.import`、`automation.actions.import`、`ssh.hosts.import`、`ssh.commands.import` 先预览，再确认。包必须满足当前配置签名信任和设备解密策略；不能用 TLS CA 或普通 JSON 替代配置签名授权。
+
 ```json
 {
-  "code": 0,
-  "data": {
-    "tscfg": "TSCFG01...",
-    "filename": "action_notify_slack.tscfg"
-  }
+  "method": "automation.sources.import",
+  "params": { "tscfg": "TSCFG01…", "preview": true }
 }
 ```
 
-### automation.actions.import
-导入动作模板配置包（参数和响应格式同 sources.import）。
+预览会解密并校验候选配置及引用，返回 `valid`、`items`、`exists`、`unchanged`、`signer`、`official`、`package_digest`、`credential_generation`、`active_version`。命令包中携带的依赖主机一并显示。
+
+确认时使用同一个 `tscfg`，设置 `preview=false`，并提供：
+
+| 参数 | 值 |
+|---|---|
+| `active_version` | 预览返回的配置版本 |
+| `expected_digest` | 预览返回的 `package_digest` |
+| `expected_credential` | 预览返回的 `credential_generation` |
+| `overwrite` | 覆盖已有且内容不同的对象时为 `true` |
+
+导入保存到当前完整配置集合并立即生效；成功返回 `imported=true`、`overwritten`、`saved`、`restart_required=false`。不再将独立旧文件落卡后要求重启。
+
+### automation.rules.import
+
+规则包同样先以 `tscfg`、`preview=true` 预览。确认时携带同一个包、`active_version`、`overwrite`，以及预览返回的 `expected_revision`、`expected_generation`、`credential_generation`、`package_digest`。规则存在并变化时必须明确允许覆盖。凭据或配置变化会拒绝过期确认，需重新预览。
 
 ---
 

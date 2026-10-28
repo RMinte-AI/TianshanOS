@@ -53,7 +53,6 @@ function apiErrorMessage(result, operation = '') {
         'Source file not found': 'fileMissing', 'Cannot delete root directory': 'rootDirectory',
         'Failed to stat file': 'fileInfo', 'Memory allocation failed': 'memory',
         'Request timeout': 'timeout', 'Failed to fetch': 'connection',
-        'service_delete_protected': 'serviceDeleteProtected'
     };
     const codes = ['unknownError', 'invalidInput', 'notFound', 'permission', 'busy', 'timeout',
         'memory', 'internal', 'unsupported', 'hardware', 'connection', 'auth'];
@@ -127,7 +126,7 @@ const FAILURE_CODE_TOKEN = {1: 'invalid_request', 2: 'not_found', 3: 'no_permiss
     7: 'no_detail', 8: 'not_supported', 9: 'hardware_failed', 10: 'target_unreachable', 11: 'auth_required'};
 const FAILURE_CODE_NAME = {INVALID_ARG: 1, NOT_FOUND: 2, NO_PERMISSION: 3, BUSY: 4, TIMEOUT: 5, NO_MEM: 6, INTERNAL: 7,
     NOT_SUPPORTED: 8, HARDWARE: 9, CONNECTION: 10, AUTH: 11};
-const FAILURE_UNCONFIRMED = new Set(['result_unknown', 'commit_unknown']);
+const FAILURE_UNCONFIRMED = new Set(['result_unknown', 'save_outcome_unknown']);
 function describeFailure({op, phase = 'failed', params = {}, result = null, error = null, token = null, endpoint = '', write} = {}) {
     const ready = typeof i18n !== 'undefined' && typeof t === 'function';
     // numbers the device sends in `data` (e.g. an HTTP status) can fill the placeholders of the reason's text; the caller's params win
@@ -263,25 +262,8 @@ class TianShanAPI {
             try {
                 json = JSON.parse(text);
             } catch (parseErr) {
-                if (keyRequestId) throw parseErr;
                 if (!response.ok) throw new ApiOperationError({error: text}, endpoint, {httpStatus: response.status});
-                // 响应可能被 WebSocket 等数据污染（如 ~{"type"...），尝试从某处解析出带 code 的 API 格式
-                if (parseErr instanceof SyntaxError && text) {
-                    let idx = 0;
-                    while ((idx = text.indexOf('{', idx)) >= 0) {
-                        try {
-                            const parsed = JSON.parse(text.slice(idx));
-                            if (parsed != null && typeof parsed === 'object' && 'code' in parsed) {
-                                json = parsed;
-                                break;
-                            }
-                        } catch (_) {}
-                        idx += 1;
-                    }
-                    if (json === undefined) throw parseErr;
-                } else {
-                    throw parseErr;
-                }
+                throw parseErr;
             }
             
             traceKey('response_parsed', {code: typeof json?.code === 'number' ? json.code : null, generated: json?.data?.generated === true});
@@ -722,6 +704,7 @@ class TianShanAPI {
     async sshCopyid(host, user, password, keyid, port = 22, verify = true, options = {}) { 
         return this.call('ssh.copyid', { 
             host, user, password, keyid, port, verify,
+            active_version: options.active_version,
             trust_new: options.trust_new ?? true, // 部署沿用 0.5.1：首次自动信任新主机
             confirmed_fingerprint: options.confirmed_fingerprint,
             accept_changed: options.accept_changed ?? false

@@ -5,12 +5,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "ts_keystore.h"
 #include "ts_ssh_client.h"
-#include "ts_ssh_hosts_config.h"
 #include "ts_ssh_probe.h"
 #include "ts_ssh_service.h"
-#include "ts_variable.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,7 +47,7 @@ static void publish(watch_slot_t *slot, const char *status) {
     /* Generation/state is checked atomically with publication by service registry.
      * Cancellation alone never declares the remote process stopped. */
     if (!atomic_load(&slot->cancel))
-        ts_ssh_service_observe(cfg->command_id, cfg->run_generation, status, cfg->var_name);
+        ts_ssh_service_observe(cfg->run_id, cfg->run_generation, status);
 }
 
 static esp_err_t check_log(watch_slot_t *slot, const char *command, int *match) {
@@ -58,37 +55,16 @@ static esp_err_t check_log(watch_slot_t *slot, const char *command, int *match) 
     ts_ssh_session_t session = NULL;
     ts_ssh_exec_result_t result = {0};
     char *key = NULL;
-    size_t key_len = 0;
-    esp_err_t ret = ts_ssh_hosts_config_get(slot->config->host_id, &host);
-    if (ret != ESP_OK)
-        goto done;
-    if (!host.keyid[0]) {
-        ret = ESP_ERR_INVALID_STATE;
-        goto done;
-    }
-    ret = ts_keystore_load_private_key(host.keyid, &key, &key_len);
-    if (ret != ESP_OK)
-        goto done;
-    ts_ssh_config_t cfg = TS_SSH_DEFAULT_CONFIG();
-    cfg.host = host.host;
-    cfg.port = host.port;
-    cfg.username = host.username;
-    cfg.auth_method = TS_SSH_AUTH_PUBLICKEY;
-    cfg.auth.key.private_key = (const uint8_t *)key;
-    cfg.auth.key.private_key_len = key_len;
-    cfg.timeout_ms = 5000;
-    cfg.cancelled = cancelled;
-    cfg.cancel_context = slot;
-    cfg.max_output_bytes = 128;
-    ret = ts_ssh_session_create(&cfg, &session);
+    char log_file[256];
+    esp_err_t ret=ts_ssh_service_target(slot->config->run_id,slot->config->run_generation,&host,log_file);
+    if(ret!=ESP_OK)goto done;
+    ret=ts_ssh_service_connect(&host,&session,&key,cancelled,slot);
     if (ret == ESP_OK)
-        ret = ts_ssh_connect(session);
-    if (ret == ESP_OK)
-        ret = ts_ssh_service_verify_instance(slot->config->command_id, slot->config->run_generation, session);
+        ret = ts_ssh_service_verify_instance(slot->config->run_id, slot->config->run_generation, session);
     if (ret == ESP_OK)
         ret = ts_ssh_exec(session, command, &result);
     if (ret == ESP_OK)
-        ret = ts_ssh_service_verify_instance(slot->config->command_id, slot->config->run_generation, session);
+        ret = ts_ssh_service_verify_instance(slot->config->run_id, slot->config->run_generation, session);
     if (ret == ESP_OK) {
         if (result.exit_code != 0)
             ret = ESP_FAIL;
@@ -115,15 +91,10 @@ static void worker(void *context) {
     /* Creator registers the task handle and initial state before releasing gate. */
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     char *command = NULL;
-    if (slot->config->recovery_only) {
-        while (!cancelled(slot)) {
-            if (!ts_ssh_service_recover(slot->config->command_id, slot->config->run_generation)) break;
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(slot->config->check_interval_ms));
-        }
-        goto done;
-    }
+    ts_ssh_host_config_t host;char log_file[256];
+    if(ts_ssh_service_target(slot->config->run_id,slot->config->run_generation,&host,log_file)!=ESP_OK)goto done;
     command = heap_caps_malloc(3072, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!command || !ts_ssh_log_probe_command(slot->config->log_file, slot->config->ready_pattern,
+    if (!command || !ts_ssh_log_probe_command(log_file, slot->config->ready_pattern,
                                               slot->config->fail_pattern, command, 3072)) {
         publish(slot, "unknown");
         goto done;
@@ -154,10 +125,6 @@ done:
     slot->config = NULL;
     slot->task = NULL;
     xSemaphoreGive(mutex);
-    if (cfg->recovery_only)
-        ts_ssh_service_recovery_done(cfg->command_id, cfg->run_generation);
-    else
-        ts_ssh_service_recovery_kick(cfg->command_id);
     free(cfg);
     vTaskDelete(NULL); /* Only the resource-owning task deletes itself. */
 }
@@ -168,11 +135,10 @@ esp_err_t ts_ssh_log_watch_start(const ts_ssh_log_watch_config_t *cfg,
         *out = 0;
     if (!mutex)
         return ESP_ERR_INVALID_STATE;
-    if (!cfg || !cfg->host_id[0] || (!cfg->recovery_only && (!cfg->log_file[0] || !cfg->ready_pattern[0])) ||
-        !cfg->var_name[0] || !cfg->command_id[0] || !cfg->run_generation || !cfg->timeout_sec ||
-        !cfg->check_interval_ms)
+    if (!cfg || !cfg->ready_pattern[0] || !cfg->run_id[0] || !cfg->run_generation ||
+        !cfg->timeout_sec || !cfg->check_interval_ms)
         return ESP_ERR_INVALID_ARG;
-    if (!ts_ssh_service_observation_valid(cfg->command_id, cfg->run_generation))
+    if (!ts_ssh_service_observation_valid(cfg->run_id, cfg->run_generation))
         return ESP_ERR_INVALID_STATE;
     ts_ssh_log_watch_config_t *copy =
         heap_caps_malloc(sizeof(*copy), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -182,8 +148,7 @@ esp_err_t ts_ssh_log_watch_start(const ts_ssh_log_watch_config_t *cfg,
     xSemaphoreTake(mutex, portMAX_DELAY);
     int index = -1;
     for (int i = 0; i < CONFIG_TS_SSH_LOG_WATCH_MAX; i++) {
-        if (slots[i].config && (!strcmp(slots[i].config->var_name, cfg->var_name) ||
-                                !strcmp(slots[i].config->command_id, cfg->command_id))) {
+        if (slots[i].config && !strcmp(slots[i].config->run_id, cfg->run_id)) {
             xSemaphoreGive(mutex);
             free(copy);
             return ESP_ERR_INVALID_STATE;
@@ -213,7 +178,7 @@ esp_err_t ts_ssh_log_watch_start(const ts_ssh_log_watch_config_t *cfg,
     if (out)
         *out = (slot->generation << 8) | (index + 1);
     /* Publication before gate; worker never uses a partly registered slot. */
-    if (!cfg->recovery_only) publish(slot, "checking");
+    publish(slot, "checking");
     xTaskNotifyGive(slot->task);
     xSemaphoreGive(mutex);
     return ESP_OK;
@@ -233,7 +198,7 @@ esp_err_t ts_ssh_log_watch_stop(ts_ssh_log_watch_handle_t handle) {
     watch_slot_t *slot = find_handle(handle);
     if (slot) {
         atomic_store(&slot->cancel, true);
-        ts_ssh_service_cancel_observation(slot->config->command_id, slot->config->run_generation);
+        ts_ssh_service_cancel_observation(slot->config->run_id, slot->config->run_generation);
         xTaskNotifyGive(slot->task);
     }
     xSemaphoreGive(mutex);
@@ -258,14 +223,14 @@ bool ts_ssh_log_watch_is_running(const char *name) {
     xSemaphoreGive(mutex);
     return found;
 }
-esp_err_t ts_ssh_log_watch_cancel_name(const char *name) {
+esp_err_t ts_ssh_log_watch_cancel_run(const char *name) {
     if (!mutex || !name)
         return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(mutex, portMAX_DELAY);
     for (unsigned i = 0; i < CONFIG_TS_SSH_LOG_WATCH_MAX; i++)
-        if (slots[i].config && !strcmp(slots[i].config->var_name, name)) {
+        if (slots[i].config && !strcmp(slots[i].config->run_id, name)) {
             atomic_store(&slots[i].cancel, true);
-            ts_ssh_service_cancel_observation(slots[i].config->command_id,
+            ts_ssh_service_cancel_observation(slots[i].config->run_id,
                                               slots[i].config->run_generation);
             xTaskNotifyGive(slots[i].task);
         }
@@ -279,7 +244,7 @@ void ts_ssh_log_watch_stop_all(void) {
     for (unsigned i = 0; i < CONFIG_TS_SSH_LOG_WATCH_MAX; i++)
         if (slots[i].config) {
             atomic_store(&slots[i].cancel, true);
-            ts_ssh_service_cancel_observation(slots[i].config->command_id,
+            ts_ssh_service_cancel_observation(slots[i].config->run_id,
                                               slots[i].config->run_generation);
             xTaskNotifyGive(slots[i].task);
         }

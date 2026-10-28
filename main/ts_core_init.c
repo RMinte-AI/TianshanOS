@@ -11,7 +11,6 @@
 #include "ts_core.h"
 #include "ts_config_nvs.h"
 #include "ts_config_file.h"
-#include "ts_config_schemas.h"
 #include "ts_mempool.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -116,8 +115,8 @@ esp_err_t ts_core_init(void)
     // 注册 NVS 后端
     ret = ts_config_nvs_register();
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to register NVS backend: %s", esp_err_to_name(ret));
-        // 继续，NVS 不是必须的
+        ESP_LOGE(TAG, "Failed to initialize configuration partitions: %s", esp_err_to_name(ret));
+        return core_init_rollback(ret);
     }
 
     // 注册文件后端
@@ -141,20 +140,6 @@ esp_err_t ts_core_init(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize event: %s", esp_err_to_name(ret));
         return core_init_rollback(ret);
-    }
-
-    // 3.1 注册 config_file 事件监听器（依赖事件系统）
-    ret = ts_config_file_register_events();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to register config file events: %s", esp_err_to_name(ret));
-        // 不是致命错误，继续
-    }
-
-    // 3.2 初始化配置模块系统（注册所有模块 Schema 并加载配置）
-    ret = ts_config_schemas_init();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to init config schemas: %s", esp_err_to_name(ret));
-        // 不是致命错误，继续
     }
 
     // 4. 初始化服务管理
@@ -204,13 +189,6 @@ esp_err_t ts_core_start(void)
     }
 
     ESP_LOGI(TAG, "Starting TianShanOS...");
-
-    /*
-     * 配置文件加载说明：
-     * 不在此处直接调用 ts_config_file_load_all()，因为 SD 卡尚未挂载。
-     * ts_config_file 组件已注册存储事件监听器，当 SD 卡挂载后
-     * 会自动触发配置加载（见 ts_config_file.c 中的 storage_event_handler）。
-     */
 
     // 启动所有服务
     esp_err_t ret = ts_service_start_all();

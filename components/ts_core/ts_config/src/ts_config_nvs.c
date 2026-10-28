@@ -12,7 +12,7 @@
 #include <string.h>
 #include "ts_config.h"
 #include "ts_config_nvs.h"
-#include "nvs_flash.h"
+#include "ts_config_partitions.h"
 #include "nvs.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -48,14 +48,8 @@ static esp_err_t nvs_backend_init(void)
 
     ESP_LOGI(TAG, "Initializing NVS configuration backend...");
 
-    // 初始化 NVS Flash（如果尚未初始化）
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition needs to be erased");
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    
+    esp_err_t ret = ts_config_partitions_init();
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize NVS flash: %s", esp_err_to_name(ret));
         return ret;

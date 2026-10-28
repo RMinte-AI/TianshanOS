@@ -1,6 +1,8 @@
 #pragma once
 #include "ts_ssh_client.h"
 #include "ts_ssh_commands_config.h"
+#include "ts_ssh_hosts_config.h"
+#include "ts_automation_types.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -8,69 +10,70 @@
 extern "C" {
 #endif
 
-typedef enum { TS_SERVICE_START = 1, TS_SERVICE_VERIFY, TS_SERVICE_STOP } ts_service_operation_t;
+#define TS_SSH_RUNS_MAX 64
+#define TS_SSH_RUN_ID_MAX 32
 
+typedef enum { TS_SERVICE_START = 1, TS_SERVICE_VERIFY, TS_SERVICE_STOP } ts_service_operation_t;
+typedef enum { TS_SSH_RUN_GROUP, TS_SSH_RUN_LEGACY_GROUP, TS_SSH_RUN_LEGACY_PID } ts_ssh_run_kind_t;
 typedef struct {
     char state[16], last_known[16], source[16];
     uint32_t generation;
     int64_t confirmed_ms;
     bool busy;
     uint32_t operation_id;
-    char operation_phase[12];
-    char operation_kind[8];
+    char operation_phase[12], operation_kind[8];
     esp_err_t operation_error;
+    char operation_reason[48];
 } ts_ssh_service_status_t;
-esp_err_t ts_ssh_service_init(void);
-void ts_ssh_service_safe_name(const ts_ssh_command_config_t *cmd, char out[32]);
-/* reserve -> probe -> execute -> finish; network calls never hold registry lock */
-/* Pending controls own a reservation, separate from configuration pins. */
-esp_err_t ts_ssh_service_reserve_operation(const char *id, uint32_t registration,
-    ts_service_operation_t kind, uint32_t *operation_id);
-esp_err_t ts_ssh_service_operation_begin(const char *id, uint32_t operation_id);
-esp_err_t ts_ssh_service_execute_control(const char *id, uint32_t operation_id,
-    ts_service_operation_t kind, ts_ssh_service_status_t *out);
-/* Returns true only if this credential actually entered execution. */
-bool ts_ssh_service_complete_operation(const char *id, uint32_t operation_id, esp_err_t error);
-esp_err_t ts_ssh_service_begin_reserved(const ts_ssh_command_config_t *cmd, ts_ssh_session_t session,
-                                       uint32_t operation_id, uint32_t *generation);
-esp_err_t ts_ssh_service_begin(const ts_ssh_command_config_t *cmd, ts_ssh_session_t session,
-                               uint32_t *generation);
-bool ts_ssh_service_finish(const char *id, uint32_t generation, const char *receipt, ts_ssh_session_t session);
-void ts_ssh_service_observe(const char *id, uint32_t generation, const char *state, const char *var_name);
-esp_err_t ts_ssh_service_query(const char *id, ts_ssh_service_status_t *out);
-esp_err_t ts_ssh_service_stop(const char *id, ts_ssh_service_status_t *out);
-/* Conservative guard for mutation; unknown/active command bindings are protected. */
-bool ts_ssh_service_binding_busy(const char *id);
-bool ts_ssh_service_launch_command(const ts_ssh_command_config_t *cmd, const char *expanded,
-                                   char *out, size_t capacity);
+/* Persistent control ownership, independent of configuration definitions. */
+typedef struct {
+    char run_id[TS_SSH_RUN_ID_MAX], command_id[TS_SSH_CMD_ID_MAX], name[TS_SSH_CMD_NAME_MAX];
+    char rule[TS_AUTO_NAME_MAX_LEN], config_version[33];
+    ts_ssh_host_config_t host;
+    char variable[TS_SSH_CMD_VARNAME_MAX], locator[32], instance[96];
+    ts_ssh_run_kind_t kind;
+} ts_ssh_run_record_t;
+/* In-memory publication permission. Never restored from the persistent record. */
+typedef struct {
+    uint64_t epoch, command_instance, host_instance, template_instance, variables[2];
+    uint32_t rule_instance;
+    char rule[TS_AUTO_NAME_MAX_LEN], config_version[33];
+} ts_ssh_run_origin_t;
 
+esp_err_t ts_ssh_service_init(void);
 void ts_ssh_binding_lock(void);
-/* Nonblocking edit admission, same recursive gate as ordinary binding operations. */
 bool ts_ssh_binding_try_lock(void);
 void ts_ssh_binding_unlock(void);
-esp_err_t ts_ssh_service_pin(const ts_ssh_command_config_t *cmd, const char *host, uint16_t port, uint32_t *registration);
-void ts_ssh_service_unpin(const char *id, uint32_t registration);
-bool ts_ssh_service_start_admissible(const char *id);
-
-bool ts_ssh_service_command_protected(const char *id);
-bool ts_ssh_service_host_protected(const char *host_id);
-/* Missing-host recovery: inspect runtime ownership, not historical command references. */
-bool ts_ssh_service_host_runtime_protected(const char *host_id);
-
-void ts_ssh_service_cancel_observation(const char *id, uint32_t generation);
-bool ts_ssh_service_any_in_use(void);
-void ts_ssh_service_set_owner(const char *id, uint32_t registration, const char *rule);
-bool ts_ssh_service_rule_protected(const char *rule);
-/* Call deletion/forget while holding binding_gate; no network under that gate. */
-esp_err_t ts_ssh_service_delete_begin(const char *id, uint32_t *credential);
-void ts_ssh_service_delete_finish(const char *id, uint32_t credential, bool removed);
-void ts_ssh_service_forget_stopped(void);
-esp_err_t ts_ssh_service_cached(const char *id, ts_ssh_service_status_t *out);
-esp_err_t ts_ssh_service_verify_instance(const char *id, uint32_t generation, ts_ssh_session_t session);
-bool ts_ssh_service_observation_valid(const char *id, uint32_t generation);
-void ts_ssh_service_recovery_kick(const char *id);
-bool ts_ssh_service_recover(const char *id, uint32_t generation);
-void ts_ssh_service_recovery_done(const char *id, uint32_t generation);
+bool ts_ssh_service_start_admissible(const char *command_id);
+/* Saves the planned locator before returning a launch reservation. */
+esp_err_t ts_ssh_service_prepare(const ts_ssh_command_config_t *command,
+    const ts_ssh_host_config_t *host, const ts_ssh_run_origin_t *origin,
+    char run_id[TS_SSH_RUN_ID_MAX], uint32_t *operation_id, const char **reason);
+esp_err_t ts_ssh_service_import_legacy(const ts_ssh_command_config_t *command,
+    const ts_ssh_host_config_t *host);
+esp_err_t ts_ssh_service_reserve_operation(const char *run_id,
+    ts_service_operation_t kind, uint32_t *operation_id, const char **reason);
+esp_err_t ts_ssh_service_operation_begin(const char *run_id, uint32_t operation_id);
+void ts_ssh_service_set_operation_reason(const char *run_id, uint32_t operation_id, const char *reason);
+bool ts_ssh_service_complete_operation(const char *run_id, uint32_t operation_id, esp_err_t error);
+esp_err_t ts_ssh_service_begin_reserved(const char *run_id, ts_ssh_session_t session,
+    uint32_t operation_id, uint32_t *generation);
+esp_err_t ts_ssh_service_finish(const char *run_id, uint32_t generation,
+    const char *receipt, ts_ssh_session_t session);
+bool ts_ssh_service_launch_command(const char *run_id, const char *expanded, char *out, size_t capacity);
+esp_err_t ts_ssh_service_execute_control(const char *run_id, uint32_t operation_id,
+    ts_service_operation_t kind, ts_ssh_service_status_t *out);
+esp_err_t ts_ssh_service_cached(const char *run_id, ts_ssh_service_status_t *out);
+esp_err_t ts_ssh_service_get(unsigned slot, ts_ssh_run_record_t *record, ts_ssh_service_status_t *status);
+esp_err_t ts_ssh_service_target(const char *run_id, uint32_t generation,
+    ts_ssh_host_config_t *host, char log_file[256]);
+esp_err_t ts_ssh_service_verify_instance(const char *run_id, uint32_t generation, ts_ssh_session_t session);
+bool ts_ssh_service_observation_valid(const char *run_id, uint32_t generation);
+void ts_ssh_service_observe(const char *run_id, uint32_t generation, const char *state);
+void ts_ssh_service_cancel_observation(const char *run_id, uint32_t generation);
+/* Connect using the frozen target and key reference. Caller owns session/key. */
+esp_err_t ts_ssh_service_connect(const ts_ssh_host_config_t *host, ts_ssh_session_t *session,
+    char **key, bool (*cancelled)(void *), void *context);
 
 #ifdef __cplusplus
 }

@@ -16,6 +16,7 @@
  * @version 1.0.0
  */
 
+#include "ts_storage.h"
 #include "ts_console.h"
 #include "ts_cert.h"
 #include "ts_log.h"
@@ -321,22 +322,15 @@ static int cmd_pki_export_csr(const char *filepath)
     }
     
     /* Write to file */
-    FILE *f = fopen(filepath, "w");
-    if (!f) {
-        free(csr_buf);
-        ts_console_printf("Error: Cannot open file: %s\n", filepath);
-        return 1;
-    }
-    
-    size_t written = fwrite(csr_buf, 1, strlen(csr_buf), f);
-    fclose(f);
+    err = ts_storage_write_file(filepath, csr_buf, strlen(csr_buf));
     free(csr_buf);
-    
-    if (written == 0) {
-        ts_console_printf("Error: Failed to write CSR\n");
+    if (err != ESP_OK) {
+        ts_console_printf(err == ESP_ERR_NOT_ALLOWED
+            ? "This file belongs to Automation. Choose another export path.\n"
+            : "Could not save the CSR. Check the path and storage.\n");
         return 1;
     }
-    
+
     ts_console_printf("\033[32m✓ CSR exported to: %s\033[0m\n", filepath);
     return 0;
 }

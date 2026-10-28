@@ -1,8 +1,6 @@
+#include "ts_automation_runtime.h"
+#include "ts_automation_config.h"
 #include "ts_rule_codec.h"
-#include "ts_rule_store.h"
-#include "ts_rule_store_set.h"
-#include "ts_rule_pack.h"
-#include "ts_cert.h"
 #include "ts_ssh_hosts_config.h"
 #include "ts_ssh_commands_config.h"
 #include "ts_ssh_service.h"
@@ -21,33 +19,20 @@
 
 #include "ts_rule_engine.h"
 #include "ts_variable.h"
-#include "ts_config_module.h"
-#include "ts_config_pack.h"
-#include "ts_storage.h"
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
-#include "esp_http_client.h"
-#include "nvs_flash.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
 // 动作执行依赖
-#include "ts_led.h"
-#include "ts_hal_gpio.h"
-#include "ts_device_ctrl.h"
-#include "ts_ssh_client.h"
 #include "ts_action_manager.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <unistd.h>
-#include <errno.h>
 
 static const char *TAG = "ts_rule_engine";
 
@@ -56,24 +41,8 @@ static const char *TAG = "ts_rule_engine";
 /*===========================================================================*/
 
 #ifndef CONFIG_TS_AUTOMATION_MAX_RULES
-#define CONFIG_TS_AUTOMATION_MAX_RULES  32
+#define CONFIG_TS_AUTOMATION_MAX_RULES  64
 #endif
-#ifndef CONFIG_TS_CONFIG_PACK_MAX_SIZE
-#define CONFIG_TS_CONFIG_PACK_MAX_SIZE 65536
-#endif
-
-/** NVS namespace for rules */
-#define NVS_NAMESPACE_RULES         "auto_rules"
-
-/** NVS key for rule count */
-#define NVS_KEY_RULE_COUNT          "count"
-
-/** NVS key prefix for rules */
-#define NVS_KEY_RULE_PREFIX         "rule_"
-
-/** SD 卡独立文件目录 */
-#define RULES_SDCARD_DIR            "/sdcard/config/rules"
-
 /*===========================================================================*/
 /*                              内部状态                                      */
 /*===========================================================================*/
@@ -84,17 +53,12 @@ typedef struct {
     int capacity;                        // 最大容量
     SemaphoreHandle_t mutex;             // 访问互斥锁
     bool initialized;
-    bool loaded, recovery_error;
+    bool loaded;
+    bool config_enabled;
     const char *load_error;
-    int source;
     uint32_t next_instance;
     unsigned retired;
-    SemaphoreHandle_t transaction;
-    struct {
-        bool committing, executing, readonly;
-        bool pending_delete;
-        int source; /* Published version's source; -1 means legacy/unknown. */
-    } meta[CONFIG_TS_AUTOMATION_MAX_RULES];
+    struct { bool executing; } meta[CONFIG_TS_AUTOMATION_MAX_RULES];
     ts_rule_engine_stats_t stats;        // 统计信息
 } ts_rule_engine_ctx_t;
 
@@ -104,12 +68,8 @@ static ts_rule_engine_ctx_t s_rule_ctx = {
     .capacity = 0,
     .mutex = NULL,
     .initialized = false,
+    .config_enabled = true,
 };
-
-typedef enum {
-    RULE_SYNCED, RULE_PENDING_ADD, RULE_PENDING_UPDATE, RULE_PENDING_DELETE,
-    RULE_ABSENT, RULE_UNKNOWN
-} rule_state_t;
 
 typedef struct {
     unsigned refs;
@@ -117,6 +77,11 @@ typedef struct {
     ts_auto_condition_t *conditions;
     ts_auto_action_t *actions;
 } rule_payload_t;
+struct ts_rule_config_view {
+    bool keep_runtime;
+    ts_auto_rule_t *rules;
+    int count;
+};
 static void payload_free(rule_payload_t *p) {
     if (p) {
         free(p->conditions);
@@ -186,7 +151,7 @@ void ts_rule_resolve_presentation(ts_auto_rule_t *r) {
 
 /**
  * @brief 执行历史环形缓冲区上下文
- * 
+ *
  * 使用固定大小数组避免动态内存分配
  * 内存占用：16 × 96 = 1536 字节
  */
@@ -203,10 +168,10 @@ static ts_rule_exec_history_t s_exec_history = {
 
 /**
  * @brief 记录一条规则执行结果
- * 
+ *
  * @note 调用者需持有 mutex
  */
-static void record_execution(const char *rule_id, 
+static void record_execution(const char *rule_id,
                              ts_rule_exec_status_t status,
                              ts_rule_trigger_source_t source,
                              const char *message,
@@ -214,7 +179,7 @@ static void record_execution(const char *rule_id,
                              uint8_t failed_count)
 {
     ts_rule_exec_record_t *rec = &s_exec_history.records[s_exec_history.head];
-    
+
     // 填充记录
     memset(rec, 0, sizeof(*rec));
     strncpy(rec->rule_id, rule_id, sizeof(rec->rule_id) - 1);
@@ -226,7 +191,7 @@ static void record_execution(const char *rule_id,
     }
     rec->action_count = action_count;
     rec->failed_count = failed_count;
-    
+
     // 移动 head
     s_exec_history.head = (s_exec_history.head + 1) % TS_RULE_EXEC_HISTORY_SIZE;
     if (s_exec_history.count < TS_RULE_EXEC_HISTORY_SIZE) {
@@ -240,13 +205,6 @@ static void record_execution(const char *rule_id,
 
 static int find_rule_index(const char *id);
 static int compare_values(const ts_auto_value_t *a, const ts_auto_value_t *b);
-static esp_err_t execute_led_action(const ts_auto_action_t *action);
-static esp_err_t execute_gpio_action(const ts_auto_action_t *action);
-static esp_err_t execute_device_action(const ts_auto_action_t *action);
-static esp_err_t execute_ssh_action(const ts_auto_action_t *action);
-static esp_err_t execute_ssh_ref_action(const ts_auto_action_t *action);
-static esp_err_t execute_cli_action(const ts_auto_action_t *action);
-static esp_err_t execute_webhook_action(const ts_auto_action_t *action);
 static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int count,
                                              int *success_count, int *fail_count);
 
@@ -277,21 +235,21 @@ static int compare_values(const ts_auto_value_t *a, const ts_auto_value_t *b)
     if (a->type != b->type) {
         // 简化处理：都转为 float 比较
         double va = 0, vb = 0;
-        
+
         switch (a->type) {
             case TS_AUTO_VAL_INT: va = a->int_val; break;
             case TS_AUTO_VAL_FLOAT: va = a->float_val; break;
             case TS_AUTO_VAL_BOOL: va = a->bool_val ? 1 : 0; break;
             default: return 0;
         }
-        
+
         switch (b->type) {
             case TS_AUTO_VAL_INT: vb = b->int_val; break;
             case TS_AUTO_VAL_FLOAT: vb = b->float_val; break;
             case TS_AUTO_VAL_BOOL: vb = b->bool_val ? 1 : 0; break;
             default: return 0;
         }
-        
+
         if (fabs(va - vb) < 0.0001) return 0;
         return (va < vb) ? -1 : 1;
     }
@@ -299,20 +257,20 @@ static int compare_values(const ts_auto_value_t *a, const ts_auto_value_t *b)
     // 同类型比较
     switch (a->type) {
         case TS_AUTO_VAL_BOOL:
-            return (a->bool_val == b->bool_val) ? 0 : 
+            return (a->bool_val == b->bool_val) ? 0 :
                    (a->bool_val ? 1 : -1);
-        
+
         case TS_AUTO_VAL_INT:
             if (a->int_val == b->int_val) return 0;
             return (a->int_val < b->int_val) ? -1 : 1;
-        
+
         case TS_AUTO_VAL_FLOAT:
             if (fabs(a->float_val - b->float_val) < 0.0001) return 0;
             return (a->float_val < b->float_val) ? -1 : 1;
-        
+
         case TS_AUTO_VAL_STRING:
             return strcmp(a->str_val, b->str_val);
-        
+
         default:
             return 0;
     }
@@ -351,9 +309,7 @@ esp_err_t ts_rule_engine_init(void)
     // 创建互斥锁
     if (!s_rule_ctx.mutex)
         s_rule_ctx.mutex = xSemaphoreCreateMutex();
-    if (!s_rule_ctx.transaction)
-        s_rule_ctx.transaction = xSemaphoreCreateRecursiveMutex();
-    if (!s_rule_ctx.mutex || !s_rule_ctx.transaction) {
+    if (!s_rule_ctx.mutex) {
         free(s_rule_ctx.rules);
         s_rule_ctx.rules = NULL;
         ESP_LOGE(TAG, "Failed to create mutex");
@@ -362,63 +318,13 @@ esp_err_t ts_rule_engine_init(void)
 
     memset(&s_rule_ctx.stats, 0, sizeof(s_rule_ctx.stats));
     s_rule_ctx.count = 0;
-    s_rule_ctx.loaded = s_rule_ctx.recovery_error = false;
+    s_rule_ctx.loaded = false;
+    s_rule_ctx.config_enabled = false;
     s_rule_ctx.load_error = "config_loading";
     s_rule_ctx.initialized = true;
 
-    // 延迟加载规则（等待 SD 卡挂载，避免栈溢出）
-    extern void ts_rule_deferred_load_task(void *arg);
-    BaseType_t task_ret = xTaskCreateWithCaps(
-        ts_rule_deferred_load_task,
-        "rule_load",
-        8192,               // 8KB 栈用于 SD 卡 I/O
-        NULL,
-        tskIDLE_PRIORITY + 1,
-        NULL,
-        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
-    );
-    if (task_ret != pdPASS) {
-        ESP_LOGW(TAG, "Failed to create deferred load task, loading synchronously");
-        ts_rules_load();
-    }
-
-    ESP_LOGI(TAG, "Rule engine initialized (loading deferred)");
+    ESP_LOGI(TAG, "Rule engine initialized");
     return ESP_OK;
-}
-
-/**
- * @brief 延迟加载任务 - 等待 SD 卡挂载后加载规则
- */
-void ts_rule_deferred_load_task(void *arg)
-{
-    (void)arg;
-    
-    // 等待 3 秒，确保 SD 卡和 NVS 都已就绪
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    
-    if (!s_rule_ctx.initialized) {
-        ESP_LOGW(TAG, "Rule engine not initialized, skip deferred load");
-        vTaskDelete(NULL);
-        return;
-    }
-    
-    ESP_LOGI(TAG, "Deferred rule loading started");
-    esp_err_t previous = ESP_OK;
-    while (s_rule_ctx.initialized) {
-        /* Readiness is explicit. The sampling interval is not evidence of ready. */
-        esp_err_t ret = ts_rules_load();
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "Deferred rule loading complete: %d rules", s_rule_ctx.count);
-            break;
-        }
-        if (ret != previous) ESP_LOGE(TAG, "Rule loading failed: %s", esp_err_to_name(ret));
-        previous = ret;
-        /* A later credential/time/material/dependency change can make loading possible.
-         * Do not publish a partial set or permanently abandon boot initialization. */
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    
-    vTaskDelete(NULL);
 }
 
 esp_err_t ts_rule_engine_deinit(void)
@@ -426,13 +332,6 @@ esp_err_t ts_rule_engine_deinit(void)
     if (!s_rule_ctx.initialized)
         return ESP_ERR_INVALID_STATE;
     ts_ssh_binding_lock();
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction, portMAX_DELAY);
-    /* Deinit/init is an in-process reload, not the required device restart. */
-    if (s_rule_ctx.loaded && ts_rule_restart_pending()) {
-        xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-        ts_ssh_binding_unlock();
-        return ESP_ERR_INVALID_STATE;
-    }
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     bool busy = s_rule_ctx.retired != 0;
     for (int i = 0; i < s_rule_ctx.count; ++i)
@@ -440,7 +339,6 @@ esp_err_t ts_rule_engine_deinit(void)
                 s_rule_ctx.meta[i].executing;
     if (busy) {
         xSemaphoreGive(s_rule_ctx.mutex);
-        xSemaphoreGiveRecursive(s_rule_ctx.transaction);
         ts_ssh_binding_unlock();
         return ESP_ERR_INVALID_STATE;
     }
@@ -452,7 +350,6 @@ esp_err_t ts_rule_engine_deinit(void)
     s_rule_ctx.rules = NULL;
     s_rule_ctx.count = 0;
     s_rule_ctx.loaded = false;
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
     ts_ssh_binding_unlock();
     /* Retain small mutexes for late rejected callers. */
     return ESP_OK;
@@ -505,330 +402,129 @@ static bool same_config(const ts_auto_rule_t *a, const ts_auto_rule_t *b) {
            (!a->action_count ||
             !memcmp(a->actions, b->actions, a->action_count * sizeof(ts_auto_action_t)));
 }
-static bool protected_bindings(const ts_auto_rule_t *old, const ts_auto_rule_t *next) {
-    bool actions_changed = !next || old->action_count != next->action_count ||
-        (old->action_count && memcmp(old->actions, next->actions, old->action_count * sizeof(*old->actions)));
-    if (actions_changed && ts_ssh_service_rule_protected(old->id)) return true;
-    for (unsigned i = 0; i < old->action_count; i++) {
-        const ts_auto_action_t *a = &old->actions[i];
-        bool retained = false;
-        if (next)
-            for (unsigned n = 0; n < next->action_count; n++) {
-                const ts_auto_action_t *b = &next->actions[n];
-                if (a->template_id[0])
-                    retained |= !strcmp(a->template_id, b->template_id);
-                else if (a->type == TS_AUTO_ACT_SSH_CMD_REF)
-                    retained |= b->type == a->type && !strcmp(a->ssh_ref.cmd_id, b->ssh_ref.cmd_id);
+void ts_rule_config_discard(ts_rule_config_view_t *view)
+{
+    if (!view) return;
+    for (int i = 0; i < view->count; ++i) {
+        if (view->rules[i].lease) payload_free(view->rules[i].lease);
+        else ts_rule_dispose(&view->rules[i]);
+    }
+    free(view->rules);
+    free(view);
+}
+
+esp_err_t ts_rule_config_prepare(const ts_auto_rule_t *rules, int count, bool keep_runtime, ts_rule_config_view_t **out)
+{
+    if (!out || count < 0 || (count && !rules)) return ESP_ERR_INVALID_ARG;
+    *out = NULL;
+    if (!s_rule_ctx.initialized) return ESP_ERR_INVALID_STATE;
+    if (count > s_rule_ctx.capacity) return ESP_ERR_INVALID_SIZE;
+    ts_rule_config_view_t *view = heap_caps_calloc(1, sizeof(*view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!view) return ESP_ERR_NO_MEM;
+    view->rules = heap_caps_calloc(s_rule_ctx.capacity, sizeof(*view->rules),
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!view->rules) { free(view); return ESP_ERR_NO_MEM; }
+    view->count = count;view->keep_runtime=keep_runtime;
+    for (int i = 0; i < count; ++i) {
+        ts_auto_rule_t *rule = &view->rules[i];
+        *rule = rules[i];
+        rule->lease = NULL;
+        rule->conditions.conditions = NULL;
+        rule->actions = NULL;
+        rule->last_trigger_ms = rule->trigger_count = rule->instance = 0;
+        size_t conditions = rule->conditions.count * sizeof(*rule->conditions.conditions);
+        size_t actions = rule->action_count * sizeof(*rule->actions);
+        if (conditions) {
+            rule->conditions.conditions = heap_caps_malloc(conditions, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!rule->conditions.conditions) goto oom;
+            memcpy(rule->conditions.conditions, rules[i].conditions.conditions, conditions);
+        }
+        if (actions) {
+            rule->actions = heap_caps_malloc(actions, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!rule->actions) goto oom;
+            memcpy(rule->actions, rules[i].actions, actions);
+        }
+        if (!payload_adopt(rule)) goto oom;
+    }
+    *out = view;
+    return ESP_OK;
+oom:
+    ts_rule_config_discard(view);
+    return ESP_ERR_NO_MEM;
+}
+
+void ts_rule_config_publish(ts_rule_config_view_t *view, bool enabled)
+{
+    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
+    __typeof__(s_rule_ctx.meta) metadata = {0};
+    for (int i = 0; i < view->count; ++i) {
+        ts_auto_rule_t *next = &view->rules[i];
+        int old = find_rule_index(next->id);
+        if (view->keep_runtime && old >= 0) {
+            next->last_trigger_ms = s_rule_ctx.rules[old].last_trigger_ms;
+            next->trigger_count = s_rule_ctx.rules[old].trigger_count;
+            if (same_config(&s_rule_ctx.rules[old], next)) {
+                next->instance = s_rule_ctx.rules[old].instance;
+                metadata[i].executing = s_rule_ctx.meta[old].executing;
             }
-        if (retained)
-            continue;
-        ts_action_template_t *tpl = NULL;
-        if (a->template_id[0]) {
-            tpl = heap_caps_malloc(sizeof(*tpl), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!tpl)
-                return true;
-            esp_err_t lookup = ts_action_template_get(a->template_id, tpl);
-            if (lookup != ESP_OK) {
-                free(tpl);
-                /* Missing configuration is not proof that a remote service ended.
-                 * Without the old binding, conservatively consult independent runs. */
-                if (lookup != ESP_ERR_NOT_FOUND || ts_ssh_service_any_in_use()) return true;
-                continue;
-            }
-            a = &tpl->action;
         }
-        bool busy = a->type == TS_AUTO_ACT_SSH_CMD_REF &&
-                    ts_ssh_service_command_protected(a->ssh_ref.cmd_id);
-        free(tpl);
-        if (busy)
-            return true;
+        if (!next->instance) next->instance = ++s_rule_ctx.next_instance;
     }
-    return false;
-}
-/* Historical missing references may remain, but a write cannot introduce or multiply them. */
-static esp_err_t validate_new_template_refs(const ts_auto_rule_t *candidate,
-                                           const ts_auto_rule_t *old,
-                                           ts_rule_commit_result_t *result) {
-    ts_action_template_t *tpl = NULL;
-    esp_err_t ret = ESP_OK;
-    for (unsigned i = 0; i < candidate->action_count; ++i) {
-        const char *id = candidate->actions[i].template_id;
-        if (!id[0]) continue;
-        unsigned prior = 0, current = 0;
-        if (old)
-            for (unsigned k = 0; k < old->action_count; ++k)
-                prior += !strcmp(old->actions[k].template_id, id);
-        for (unsigned k = 0; k <= i; ++k)
-            current += !strcmp(candidate->actions[k].template_id, id);
-        if (current <= prior) continue;
-        if (!tpl) tpl = heap_caps_malloc(sizeof(*tpl), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!tpl) { ret = ESP_ERR_NO_MEM; result->error_code = "no_memory"; break; }
-        ret = ts_action_template_get(id, tpl);
-        if (ret != ESP_OK) {
-            result->error_code = ret == ESP_ERR_NOT_FOUND ? "action_missing" :
-                                 ret == ESP_ERR_NO_MEM ? "no_memory" : "template_lookup_failed";
-            if (ret == ESP_ERR_NOT_FOUND)
-                memcpy(result->missing_template_id, id, sizeof(result->missing_template_id));
-            break;
-        }
-    }
-    free(tpl);
-    return ret;
-}
-/* Caller holds the configuration transaction and the short runtime mutex.
- * This reads only confirmed in-memory metadata, never decrypts/re-encodes rules. */
-static rule_state_t classify_rule_state(const char *id, int active_index, bool confirmed,
-                                        ts_rule_saved_info_t *info) {
-    if (!confirmed) return RULE_UNKNOWN;
-    if (!ts_rule_store_set_present()) return active_index < 0 ? RULE_ABSENT : RULE_SYNCED;
-    esp_err_t e=ts_rule_store_set_info(id,info);
-    if(e==ESP_ERR_NOT_FOUND) return active_index < 0 ? RULE_ABSENT : RULE_PENDING_DELETE;
-    if(e!=ESP_OK) return RULE_UNKNOWN;
-    if(active_index<0) return RULE_PENDING_ADD;
-    return info->revision!=s_rule_ctx.rules[active_index].revision ||
-        (s_rule_ctx.meta[active_index].source>=0 && s_rule_ctx.meta[active_index].source!=(int)info->source)
-        ? RULE_PENDING_UPDATE : RULE_SYNCED;
-}
-static bool state_pending(rule_state_t state) {
-    return state==RULE_PENDING_ADD||state==RULE_PENDING_UPDATE||state==RULE_PENDING_DELETE;
-}
-static bool pending_id(const char *id, int active_index) {
-    ts_rule_saved_info_t info={0};
-    return state_pending(classify_rule_state(id,active_index,
-        s_rule_ctx.loaded&&!s_rule_ctx.recovery_error,&info));
-}
-static int rule_union_count_locked(void) {
-    int count=s_rule_ctx.count;
-    for(int i=0;i<ts_rule_store_set_count();++i){
-        ts_rule_saved_info_t info={0};
-        if(ts_rule_store_set_info_at(i,&info)!=ESP_OK)return -1;
-        if(find_rule_index(info.id)<0)++count;
-    }
-    return count;
-}
-static esp_err_t rebuild_rule_states(void) {
-    bool deleted[CONFIG_TS_AUTOMATION_MAX_RULES]={0};
-    esp_err_t ret=ESP_OK;
-    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
-    for(int i=0;i<s_rule_ctx.count;++i){
-        ts_rule_saved_info_t info={0};
-        rule_state_t state=classify_rule_state(s_rule_ctx.rules[i].id,i,true,&info);
-        if(state==RULE_UNKNOWN){ret=ESP_ERR_INVALID_STATE;break;}
-        deleted[i]=state==RULE_PENDING_DELETE;
-    }
-    if(ret==ESP_OK)for(int i=0;i<s_rule_ctx.count;++i)s_rule_ctx.meta[i].pending_delete=deleted[i];
-    xSemaphoreGive(s_rule_ctx.mutex);
-    return ret;
-}
-static esp_err_t rule_commit_impl(const ts_auto_rule_t *input, const char *id, uint32_t expected,
-                         ts_rule_commit_result_t *result) {
-    ts_rule_commit_result_t local = {.error_code = "invalid_argument"};
-    if (!result)
-        result = &local;
-    *result = local;
-    if (!ts_rule_id_valid(id) || !s_rule_ctx.initialized)
-        return ESP_ERR_INVALID_ARG;
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction, portMAX_DELAY);
-    ts_auto_rule_t candidate = {0};
-    if (input) {
-        cJSON *j = ts_rule_encode(input);
-        if (!j) {
-            xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-            return ESP_ERR_NO_MEM;
-        }
-        esp_err_t ret = ts_rule_decode(j, &candidate);
-        cJSON_Delete(j);
-        if (ret != ESP_OK) {
-            xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-            return ret;
-        }
-        ts_rule_resolve_presentation(&candidate);
-        if (strcmp(candidate.id, id)) {
-            ts_rule_dispose(&candidate);
-            xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-            return ESP_ERR_INVALID_ARG;
-        }
-        if (!payload_adopt(&candidate)) {
-            ts_rule_dispose(&candidate);
-            xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-            return ESP_ERR_NO_MEM;
-        }
-    }
-    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    int i = find_rule_index(id);
-    int occupied = i < 0 ? rule_union_count_locked() : s_rule_ctx.count;
-    esp_err_t ret = ESP_OK;
-    if (!s_rule_ctx.initialized || !s_rule_ctx.loaded || s_rule_ctx.recovery_error) {
-        ret = ESP_ERR_INVALID_STATE;
-        result->error_code = "recovery_required";
-    } else if (pending_id(id, i)) {
-        ret = ESP_ERR_INVALID_STATE;
-        result->error_code = "restart_pending";
-    } else if ((i < 0 && expected != 0) || (i >= 0 && expected != s_rule_ctx.rules[i].revision)) {
-        ret = ESP_ERR_INVALID_STATE;
-        result->error_code = "revision_conflict";
-    } else if (i < 0 && !input) {
-        ret = ESP_ERR_NOT_FOUND;
-    } else if (occupied < 0) {
-        ret = ESP_ERR_INVALID_STATE;
-        result->error_code = "recovery_required";
-    } else if (i < 0 && occupied >= s_rule_ctx.capacity) {
-        ret = ESP_ERR_NO_MEM;
-        result->error_code = "capacity";
-    } else if (i >= 0 && s_rule_ctx.meta[i].readonly) {
-        ret = ESP_ERR_NOT_SUPPORTED;
-        result->error_code = "source_read_only";
-    } else if (i >= 0 && s_rule_ctx.retired &&
-               ((rule_payload_t *)s_rule_ctx.rules[i].lease)->refs) {
-        ret = ESP_ERR_INVALID_STATE;
-        result->error_code = "busy_retired_config";
-    } else if (i >= 0 && !input && s_rule_ctx.meta[i].executing) {
-        ret = ESP_ERR_INVALID_STATE;
-        result->error_code = "execution_busy";
-    } else if (i >= 0 && input && same_config(&candidate, &s_rule_ctx.rules[i])) {
-        result->applied = result->durable = 1;
-        result->mirror_synced = -1;
-        result->revision = s_rule_ctx.rules[i].revision;
-        result->error_code = "no_change";
-        xSemaphoreGive(s_rule_ctx.mutex);
-        goto done;
-    }
-    if (ret != ESP_OK) {
-        xSemaphoreGive(s_rule_ctx.mutex);
-        goto done;
-    }
-    if (i >= 0)
-        s_rule_ctx.meta[i].committing = true;
-    if (i >= 0 && s_rule_ctx.rules[i].revision == UINT32_MAX) {
-        s_rule_ctx.meta[i].committing = false;
-        result->error_code = "revision_exhausted";
-        ret = ESP_ERR_INVALID_STATE;
-        xSemaphoreGive(s_rule_ctx.mutex);
-        goto done;
-    }
-    candidate.revision = i >= 0 ? s_rule_ctx.rules[i].revision + 1 : 1;
-    xSemaphoreGive(s_rule_ctx.mutex);
-    if (input && (ret = validate_new_template_refs(&candidate, i >= 0 ? &s_rule_ctx.rules[i] : NULL, result)) != ESP_OK) {
-        xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-        if (i >= 0) s_rule_ctx.meta[i].committing = false;
-        xSemaphoreGive(s_rule_ctx.mutex);
-        goto done;
-    }
-    if (i >= 0 && protected_bindings(&s_rule_ctx.rules[i], input ? &candidate : NULL)) {
-        xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-        s_rule_ctx.meta[i].committing = false;
-        xSemaphoreGive(s_rule_ctx.mutex);
-        result->error_code = "service_busy";
-        ret = ESP_ERR_INVALID_STATE;
-        goto done;
-    }
-    /* The edit gate keeps payloads alive; copy scalar metadata under the rule
-     * lock so cold presentation resolution cannot race the durable snapshot. */
-    ts_auto_rule_t *persisted = s_rule_ctx.count
-                                    ? heap_caps_malloc(s_rule_ctx.count * sizeof(*persisted),
-                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-                                    : NULL;
-    if (s_rule_ctx.count && !persisted) {
-        xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-        if (i >= 0)
-            s_rule_ctx.meta[i].committing = false;
-        xSemaphoreGive(s_rule_ctx.mutex);
-        result->error_code = "no_memory";
-        ret = ESP_ERR_NO_MEM;
-        goto done;
-    }
-    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    if (persisted)
-        memcpy(persisted, s_rule_ctx.rules, s_rule_ctx.count * sizeof(*persisted));
-    xSemaphoreGive(s_rule_ctx.mutex);
-    ts_rule_commit_t stored;
-    if (ts_rule_store_set_present())
-        ret = ts_rule_store_set_commit(input ? &candidate : NULL, id, expected,
-            ts_rule_store_set_generation(), NULL, 0, NULL, &stored);
-    else
-        ret = ts_rule_store_commit(persisted, s_rule_ctx.count, input ? &candidate : NULL, id,
-                                   s_rule_ctx.source, &stored);
-    free(persisted);
-    result->applied = stored.applied;
-    result->durable = stored.durable;
-    result->mirror_synced = stored.mirror_synced;
-    result->error_code = stored.error_code;
-    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    if (stored.applied < 0)
-        s_rule_ctx.recovery_error = true;
-    rule_payload_t *old = NULL;
-    if (ret == ESP_OK) {
-        if (i >= 0) {
-            old = s_rule_ctx.rules[i].lease;
-            candidate.last_trigger_ms = s_rule_ctx.rules[i].last_trigger_ms;
-            candidate.trigger_count = s_rule_ctx.rules[i].trigger_count;
-            candidate.instance = s_rule_ctx.rules[i].instance;
-        } else {
-            i = s_rule_ctx.count++;
-            memset(&s_rule_ctx.meta[i], 0, sizeof(s_rule_ctx.meta[i]));
-            candidate.instance = ++s_rule_ctx.next_instance;
-        }
-        if (input) {
-            s_rule_ctx.rules[i] = candidate;
-            ts_rule_saved_info_t info={0};
-            s_rule_ctx.meta[i].source=ts_rule_store_set_info(id,&info)==ESP_OK?(int)info.source:-1;
-            s_rule_ctx.meta[i].pending_delete=false;
-            candidate.lease = NULL;
-            result->revision = s_rule_ctx.rules[i].revision;
-        } else {
-            memmove(s_rule_ctx.rules + i, s_rule_ctx.rules + i + 1,
-                    (s_rule_ctx.count - i - 1) * sizeof(ts_auto_rule_t));
-            memmove(s_rule_ctx.meta + i, s_rule_ctx.meta + i + 1,
-                    (s_rule_ctx.count - i - 1) * sizeof(s_rule_ctx.meta[0]));
-            --s_rule_ctx.count;
-            i = -1;
-        }
-        if (old && old->refs) {
+    ts_auto_rule_t *old_rules = s_rule_ctx.rules;
+    for (int i = 0; i < s_rule_ctx.count; ++i) {
+        rule_payload_t *old = old_rules[i].lease;
+        if (old->refs) {
             old->retired = true;
             ++s_rule_ctx.retired;
-            old = NULL;
-        }
+        } else payload_free(old);
     }
-    if (i >= 0)
-        s_rule_ctx.meta[i].committing = false;
+    s_rule_ctx.rules = view->rules;
+    s_rule_ctx.count = view->count;
+    memcpy(s_rule_ctx.meta, metadata, sizeof(metadata));
+    s_rule_ctx.loaded = true;
+    s_rule_ctx.config_enabled = enabled;
+    s_rule_ctx.load_error = enabled ? NULL : "automation_paused";
     xSemaphoreGive(s_rule_ctx.mutex);
-    payload_free(old);
-done:
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-    payload_free(candidate.lease);
-    return ret;
+    free(old_rules);
+    view->rules = NULL;
+    view->count = 0;
+    free(view);
 }
-esp_err_t ts_rule_commit(const ts_auto_rule_t *input, const char *id, uint32_t expected,
-                         ts_rule_commit_result_t *result) {
-    ts_ssh_binding_lock();
-    esp_err_t ret = rule_commit_impl(input, id, expected, result);
-    ts_ssh_binding_unlock();
-    return ret;
+
+void ts_rule_config_clear(void)
+{
+    if(!s_rule_ctx.initialized)return;
+    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+    ts_auto_rule_t *previous=s_rule_ctx.rules;
+    for(int i=0;i<s_rule_ctx.count;++i){
+        rule_payload_t *payload=previous[i].lease;
+        if(payload->refs){payload->retired=true;++s_rule_ctx.retired;}
+        else payload_free(payload);
+    }
+    s_rule_ctx.rules=NULL;s_rule_ctx.count=0;s_rule_ctx.loaded=false;s_rule_ctx.config_enabled=false;
+    memset(s_rule_ctx.meta,0,sizeof(s_rule_ctx.meta));
+    s_rule_ctx.load_error="automation_paused";
+    xSemaphoreGive(s_rule_ctx.mutex);free(previous);
 }
-esp_err_t ts_rule_register(const ts_auto_rule_t *r) {
-    return r ? ts_rule_commit(r, r->id, r->revision, NULL) : ESP_ERR_INVALID_ARG;
+
+bool ts_rule_instance_current(uint32_t instance)
+{
+    if(!instance||!s_rule_ctx.initialized)return false;
+    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+    bool current=false;
+    for(int i=0;s_rule_ctx.loaded&&s_rule_ctx.config_enabled&&i<s_rule_ctx.count;++i)
+        current|=s_rule_ctx.rules[i].enabled&&s_rule_ctx.rules[i].instance==instance;
+    xSemaphoreGive(s_rule_ctx.mutex);return current;
 }
-esp_err_t ts_rule_unregister(const char *id) {
-    ts_auto_rule_t r;
-    esp_err_t e = ts_rule_acquire(id, &r);
-    if (e != ESP_OK)
-        return e;
-    uint32_t v = r.revision;
-    ts_rule_release(&r);
-    return ts_rule_commit(NULL, id, v, NULL);
+
+void ts_rule_config_pause(void)
+{
+    if (!s_rule_ctx.initialized) return;
+    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
+    s_rule_ctx.config_enabled = false;
+    s_rule_ctx.load_error = "automation_paused";
+    xSemaphoreGive(s_rule_ctx.mutex);
 }
-static esp_err_t set_enabled(const char *id, bool enabled) {
-    ts_auto_rule_t r;
-    esp_err_t e = ts_rule_acquire(id, &r);
-    if (e != ESP_OK)
-        return e;
-    r.enabled = enabled;
-    e = ts_rule_commit(&r, id, r.revision, NULL);
-    ts_rule_release(&r);
-    return e;
-}
-esp_err_t ts_rule_enable(const char *id) { return set_enabled(id, true); }
-esp_err_t ts_rule_disable(const char *id) { return set_enabled(id, false); }
 
 int ts_rule_count(void)
 {
@@ -874,22 +570,22 @@ bool ts_rule_eval_condition(const ts_auto_condition_t *condition)
     switch (condition->op) {
         case TS_AUTO_OP_EQ:
             return (cmp == 0);
-        
+
         case TS_AUTO_OP_NE:
             return (cmp != 0);
-        
+
         case TS_AUTO_OP_LT:
             return (cmp < 0);
-        
+
         case TS_AUTO_OP_LE:
             return (cmp <= 0);
-        
+
         case TS_AUTO_OP_GT:
             return (cmp > 0);
-        
+
         case TS_AUTO_OP_GE:
             return (cmp >= 0);
-        
+
         case TS_AUTO_OP_CONTAINS:
             // 仅字符串支持
             if (var_value.type == TS_AUTO_VAL_STRING &&
@@ -897,15 +593,15 @@ bool ts_rule_eval_condition(const ts_auto_condition_t *condition)
                 return (strstr(var_value.str_val, condition->value.str_val) != NULL);
             }
             return false;
-        
+
         case TS_AUTO_OP_CHANGED:
             // TODO: 需要保存上一次的值来比较
             return false;
-        
+
         case TS_AUTO_OP_CHANGED_TO:
             // TODO: 需要保存上一次的值来比较
             return false;
-        
+
         default:
             return false;
     }
@@ -944,7 +640,7 @@ static esp_err_t refuse(ts_rule_reject_t *why, ts_rule_reject_t reason) {
     if (why) *why = reason;
     return ESP_ERR_INVALID_STATE;
 }
-static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_rule_reject_t *why) {
+static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_rule_reject_t *why, const char *active_version) {
     if (why) *why = TS_RULE_REJECT_NONE;
     if (!ts_action_manager_accepting()) return refuse(why, TS_RULE_REJECT_NOT_ACCEPTING);
     *triggered = false;
@@ -965,11 +661,9 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
     }
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     int preliminary = find_rule_index(id);
-    ts_rule_reject_t busy = preliminary < 0 ? TS_RULE_REJECT_CHANGED
+    ts_rule_reject_t busy = !s_rule_ctx.config_enabled ? TS_RULE_REJECT_PAUSED
+                          : preliminary < 0 ? TS_RULE_REJECT_CHANGED
                           : !s_rule_ctx.loaded ? TS_RULE_REJECT_NOT_LOADED
-                          : s_rule_ctx.recovery_error ? TS_RULE_REJECT_RECOVERY
-                          : s_rule_ctx.meta[preliminary].pending_delete ? TS_RULE_REJECT_PENDING_DELETE
-                          : s_rule_ctx.meta[preliminary].committing ? TS_RULE_REJECT_CONFIG_BUSY
                           : s_rule_ctx.meta[preliminary].executing ? TS_RULE_REJECT_RUNNING : TS_RULE_REJECT_NONE;
     bool unavailable = busy != TS_RULE_REJECT_NONE ||
                        (!manual && r.cooldown_ms && r.last_trigger_ms &&
@@ -978,13 +672,6 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
     if (unavailable) {
         ts_rule_release(&r);
         return manual ? refuse(why, busy) : ESP_OK;
-    }
-    for (unsigned n = 0; n < r.action_count; n++) {
-        if (r.actions[n].type == TS_AUTO_ACT_SSH_CMD_REF &&
-            !ts_ssh_service_start_admissible(r.actions[n].ssh_ref.cmd_id)) {
-            ts_rule_release(&r);
-            return manual ? refuse(why, TS_RULE_REJECT_SERVICE_STATE) : ESP_OK;
-        }
     }
     /* Freeze all referenced actions/SSH bindings once at admission. No allocation
      * on unmatched evaluations; queue entries retain their own binding lease. */
@@ -995,11 +682,29 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
         return ESP_ERR_NO_MEM;
     }
     ts_ssh_binding_lock();
+    if(active_version){
+        ts_auto_config_status_t status;ts_auto_config_status(&status);
+        if(strcmp(active_version,status.active_version)){
+            ts_ssh_binding_unlock();free(frozen);ts_rule_release(&r);
+            return refuse(why,TS_RULE_REJECT_CONFIG_VERSION);
+        }
+    }
     unsigned prepared = 0;
     for (; prepared < r.action_count; ++prepared) {
         ret = ts_action_snapshot(&r.actions[prepared], &frozen[prepared]);
         if (ret != ESP_OK)
             break;
+    }
+    bool service_blocked = false;
+    if (ret == ESP_OK) {
+        for (unsigned n = 0; n < prepared; ++n) {
+            if (frozen[n].type == TS_AUTO_ACT_SSH_CMD_REF &&
+                !ts_ssh_service_start_admissible(frozen[n].ssh_ref.cmd_id)) {
+                service_blocked = true;
+                ret = ESP_ERR_INVALID_STATE;
+                break;
+            }
+        }
     }
     if (ret != ESP_OK) {
         ts_ssh_binding_unlock();
@@ -1007,21 +712,21 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
             ts_action_snapshot_release(&frozen[n]);
         free(frozen);
         ts_rule_release(&r);
+        if (service_blocked)
+            return manual ? refuse(why, TS_RULE_REJECT_SERVICE_STATE) : ESP_OK;
         return ret;
     }
     int64_t now = esp_timer_get_time() / 1000;
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     int i = find_rule_index(id);
-    bool valid = i >= 0 && !s_rule_ctx.recovery_error && s_rule_ctx.loaded &&
-                 !s_rule_ctx.meta[i].pending_delete &&
-                 !s_rule_ctx.meta[i].committing && !s_rule_ctx.meta[i].executing &&
+    bool valid = i >= 0 && s_rule_ctx.config_enabled && s_rule_ctx.loaded &&
+                 !s_rule_ctx.meta[i].executing &&
                  s_rule_ctx.rules[i].revision == r.revision &&
                  s_rule_ctx.rules[i].instance == r.instance;
     ts_rule_reject_t late = valid ? TS_RULE_REJECT_NONE
+                          : !s_rule_ctx.config_enabled ? TS_RULE_REJECT_PAUSED
                           : i < 0 ? TS_RULE_REJECT_CHANGED
                           : !s_rule_ctx.loaded ? TS_RULE_REJECT_NOT_LOADED
-                          : s_rule_ctx.recovery_error ? TS_RULE_REJECT_RECOVERY
-                          : s_rule_ctx.meta[i].committing ? TS_RULE_REJECT_CONFIG_BUSY
                           : s_rule_ctx.meta[i].executing ? TS_RULE_REJECT_RUNNING : TS_RULE_REJECT_CHANGED;
     if (valid && !manual && r.cooldown_ms && s_rule_ctx.rules[i].last_trigger_ms &&
         now - s_rule_ctx.rules[i].last_trigger_ms < r.cooldown_ms)
@@ -1030,7 +735,7 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
         s_rule_ctx.meta[i].executing = true;
     xSemaphoreGive(s_rule_ctx.mutex);
     if (valid)
-        for (unsigned n = 0; n < r.action_count; ++n) ts_action_snapshot_owner(&frozen[n], r.id);
+        for (unsigned n = 0; n < r.action_count; ++n) ts_action_snapshot_owner(&frozen[n], r.id, r.instance);
     ts_ssh_binding_unlock();
     if (!valid) {
         for (unsigned n = 0; n < r.action_count; n++)
@@ -1063,7 +768,7 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
 esp_err_t ts_rule_evaluate(const char *id, bool *triggered) {
     if (!triggered)
         return ESP_ERR_INVALID_ARG;
-    return execute_rule(id, false, triggered, NULL);
+    return execute_rule(id, false, triggered, NULL, NULL);
 }
 
 int ts_rule_evaluate_all(void)
@@ -1084,16 +789,16 @@ int ts_rule_evaluate_all(void)
 
     for (int i = 0; i < count; i++) {
         xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-        
+
         if (i >= s_rule_ctx.count) {
             xSemaphoreGive(s_rule_ctx.mutex);
             break;  // 规则可能被删除
         }
-        
+
         char id[TS_AUTO_NAME_MAX_LEN];
         strncpy(id, s_rule_ctx.rules[i].id, sizeof(id) - 1);
         id[sizeof(id) - 1] = '\0';
-        
+
         xSemaphoreGive(s_rule_ctx.mutex);
 
         bool was_triggered = false;
@@ -1108,7 +813,12 @@ int ts_rule_evaluate_all(void)
 
 esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why) {
     bool triggered;
-    return execute_rule(id, true, &triggered, why);
+    return execute_rule(id, true, &triggered, why, NULL);
+}
+
+esp_err_t ts_rule_trigger_versioned(const char *id,const char *active_version,ts_rule_reject_t *why) {
+    bool triggered;
+    return execute_rule(id,true,&triggered,why,active_version);
 }
 
 esp_err_t ts_rule_trigger(const char *id) {
@@ -1119,461 +829,15 @@ esp_err_t ts_rule_trigger(const char *id) {
 /*                          Action 执行器实现                                 */
 /*===========================================================================*/
 
-/**
- * @brief 解析 LED 设备名称（支持简短别名）
- */
-static const char *resolve_led_device_name(const char *name)
-{
-    if (!name) return NULL;
-    
-    /* 支持简短别名 */
-    if (strcmp(name, "touch") == 0) return "led_touch";
-    if (strcmp(name, "board") == 0) return "led_board";
-    if (strcmp(name, "matrix") == 0) return "led_matrix";
-    
-    /* 也支持完整名 */
-    return name;
-}
-
-/**
- * @brief 执行 LED 动作
- * @note Reserved for automation LED action feature
- */
-__attribute__((unused))
-static esp_err_t execute_led_action(const ts_auto_action_t *action)
-{
-    if (!action || action->type != TS_AUTO_ACT_LED) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // 解析设备名称
-    const char *device_name = resolve_led_device_name(action->led.device);
-
-    ESP_LOGI(TAG, "LED action: device=%s, index=%d, color=#%02X%02X%02X, effect=%s",
-             device_name, action->led.index,
-             action->led.r, action->led.g, action->led.b,
-             action->led.effect[0] ? action->led.effect : "(none)");
-
-    // 获取设备句柄
-    ts_led_device_t device = ts_led_device_get(device_name);
-    if (!device) {
-        ESP_LOGW(TAG, "LED device '%s' not found", device_name);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    // 获取默认 layer
-    ts_led_layer_t layer = ts_led_layer_get(device, 0);
-    if (!layer) {
-        ESP_LOGW(TAG, "LED layer not found for device '%s'", device_name);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    // 如果有效果名，启动效果动画
-    if (action->led.effect[0]) {
-        const ts_led_animation_def_t *anim = ts_led_animation_get_builtin(action->led.effect);
-        if (anim) {
-            ESP_LOGI(TAG, "Starting effect '%s' on device '%s'", action->led.effect, device_name);
-            return ts_led_animation_start(layer, anim);
-        } else {
-            ESP_LOGW(TAG, "Effect '%s' not found", action->led.effect);
-            // 继续尝试设置颜色
-        }
-    }
-
-    ts_led_rgb_t color = TS_LED_RGB(action->led.r, action->led.g, action->led.b);
-
-    // index = 0xFF 表示填充整个设备（根据 ts_automation_types.h）
-    if (action->led.index == 0xFF) {
-        return ts_led_fill(layer, color);
-    }
-
-    // 设置单个像素
-    return ts_led_device_set_pixel(device, (uint16_t)action->led.index, color);
-}
-
-/**
- * @brief 执行 GPIO 动作
- */
-static esp_err_t execute_gpio_action(const ts_auto_action_t *action)
-{
-    if (!action || action->type != TS_AUTO_ACT_GPIO) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_LOGI(TAG, "GPIO action: pin=%d, level=%d, pulse=%dms",
-             action->gpio.pin, action->gpio.level, action->gpio.pulse_ms);
-
-    // 使用 raw GPIO 方式（直接操作物理引脚）
-    ts_gpio_handle_t handle = ts_gpio_create_raw(action->gpio.pin, "automation");
-    if (!handle) {
-        ESP_LOGE(TAG, "Failed to create GPIO handle for pin %d", action->gpio.pin);
-        return ESP_ERR_NO_MEM;
-    }
-
-    // 配置为输出
-    ts_gpio_config_t cfg = TS_GPIO_CONFIG_DEFAULT();
-    cfg.direction = TS_GPIO_DIR_OUTPUT;
-    esp_err_t ret = ts_gpio_configure(handle, &cfg);
-    if (ret != ESP_OK) {
-        ts_gpio_destroy(handle);
-        return ret;
-    }
-
-    // 设置电平
-    ret = ts_gpio_set_level(handle, action->gpio.level);
-
-    // 如果是脉冲模式
-    if (ret == ESP_OK && action->gpio.pulse_ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(action->gpio.pulse_ms));
-        ret = ts_gpio_set_level(handle, !action->gpio.level);
-    }
-
-    ts_gpio_destroy(handle);
-    return ret;
-}
-
-/**
- * @brief 执行 SSH 命令引用动作
- * 
- * 通过 cmd_id 查找已注册的 SSH 命令并通过队列异步执行
- * 避免在 HTTP 任务中直接执行 SSH 操作导致栈溢出
- */
-static esp_err_t execute_ssh_ref_action(const ts_auto_action_t *action)
-{
-    if (!action || action->type != TS_AUTO_ACT_SSH_CMD_REF) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const char *cmd_id = action->ssh_ref.cmd_id;
-    ESP_LOGI(TAG, "SSH command ref action: cmd_id=%s (queued)", cmd_id);
-
-    if (!cmd_id || cmd_id[0] == '\0') {
-        ESP_LOGE(TAG, "Empty SSH command ID");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // 通过 action_manager 队列异步执行，避免栈溢出
-    esp_err_t ret = ts_action_queue(action, NULL, NULL, 5);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to queue SSH action: %s", esp_err_to_name(ret));
-    }
-
-    return ret;
-}
-
-/**
- * @brief 执行 CLI 命令动作
- * 
- * 通过队列异步执行 TianShanOS CLI 命令
- */
-static esp_err_t execute_cli_action(const ts_auto_action_t *action)
-{
-    if (!action || action->type != TS_AUTO_ACT_CLI) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const char *command = action->cli.command;
-    ESP_LOGD(TAG, "CLI action queued (%u bytes)", (unsigned)strlen(command));
-
-    if (!command || command[0] == '\0') {
-        ESP_LOGE(TAG, "Empty CLI command");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // 通过 action_manager 队列异步执行
-    esp_err_t ret = ts_action_queue(action, NULL, NULL, 5);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to queue CLI action: %s", esp_err_to_name(ret));
-    }
-
-    return ret;
-}
-
-/**
- * @brief 执行设备控制动作
- */
-static esp_err_t execute_device_action(const ts_auto_action_t *action)
-{
-    if (!action || action->type != TS_AUTO_ACT_DEVICE_CTRL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_LOGI(TAG, "Device action: device=%s, action=%s",
-             action->device.device, action->device.action);
-
-    // 解析设备 ID
-    ts_device_id_t dev_id = TS_DEVICE_MAX;
-    if (strcasecmp(action->device.device, "agx") == 0 ||
-        strcasecmp(action->device.device, "AGX") == 0) {
-        dev_id = TS_DEVICE_AGX;
-    } else if (strcasecmp(action->device.device, "lpmu") == 0 ||
-               strcasecmp(action->device.device, "LPMU") == 0) {
-        dev_id = TS_DEVICE_LPMU;
-    } else {
-        ESP_LOGW(TAG, "Unknown device: %s", action->device.device);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    // 执行动作
-    const char *act = action->device.action;
-    
-    if (strcasecmp(act, "power_on") == 0 || strcasecmp(act, "on") == 0) {
-        return ts_device_power_on(dev_id);
-    } else if (strcasecmp(act, "power_off") == 0 || strcasecmp(act, "off") == 0) {
-        return ts_device_power_off(dev_id);
-    } else if (strcasecmp(act, "force_off") == 0) {
-        return ts_device_force_off(dev_id);
-    } else if (strcasecmp(act, "reset") == 0 || strcasecmp(act, "reboot") == 0) {
-        return ts_device_reset(dev_id);
-    } else if (strcasecmp(act, "recovery") == 0) {
-        return ts_device_enter_recovery(dev_id);
-    } else {
-        ESP_LOGW(TAG, "Unknown device action: %s", act);
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-}
-
-/**
- * @brief 执行 SSH 命令动作
- */
-static esp_err_t execute_ssh_action(const ts_auto_action_t *action)
-{
-    if (!action || action->type != TS_AUTO_ACT_SSH_CMD) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_LOGI(TAG, "SSH action: host=%s, cmd=%s",
-             action->ssh.host_ref, action->ssh.command);
-
-    // 从变量系统获取主机配置
-    // host_ref 格式: "hosts.<name>" 或直接 IP
-    char host[64] = {0};
-    uint16_t port = 22;
-    char username[32] = {0};
-    char password[64] = {0};
-
-    // 尝试从变量获取主机配置
-    char var_name[96];  // 足够容纳 "hosts.<name>.password"
-    
-    // 获取 host
-    snprintf(var_name, sizeof(var_name), "hosts.%s.ip", action->ssh.host_ref);
-    ts_auto_value_t val;
-    if (ts_variable_get(var_name, &val) == ESP_OK && val.type == TS_AUTO_VAL_STRING) {
-        strncpy(host, val.str_val, sizeof(host) - 1);
-    } else {
-        // 直接使用 host_ref 作为 IP
-        strncpy(host, action->ssh.host_ref, sizeof(host) - 1);
-    }
-
-    // 获取 port
-    snprintf(var_name, sizeof(var_name), "hosts.%s.port", action->ssh.host_ref);
-    if (ts_variable_get(var_name, &val) == ESP_OK && val.type == TS_AUTO_VAL_INT) {
-        port = (uint16_t)val.int_val;
-    }
-
-    // 获取 username
-    snprintf(var_name, sizeof(var_name), "hosts.%s.username", action->ssh.host_ref);
-    if (ts_variable_get(var_name, &val) == ESP_OK && val.type == TS_AUTO_VAL_STRING) {
-        strncpy(username, val.str_val, sizeof(username) - 1);
-    } else {
-        strncpy(username, "root", sizeof(username) - 1);  // 默认
-    }
-
-    // 获取 password（可选）
-    snprintf(var_name, sizeof(var_name), "hosts.%s.password", action->ssh.host_ref);
-    if (ts_variable_get(var_name, &val) == ESP_OK && val.type == TS_AUTO_VAL_STRING) {
-        strncpy(password, val.str_val, sizeof(password) - 1);
-    }
-
-    // 配置 SSH
-    ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
-    config.host = host;
-    config.port = port;
-    config.username = username;
-    config.auth_method = TS_SSH_AUTH_PASSWORD;
-    config.auth.password = password;
-    config.timeout_ms = action->ssh.timeout_ms > 0 ? action->ssh.timeout_ms : 10000;
-
-    // 执行命令
-    ts_ssh_exec_result_t result = {0};
-    esp_err_t ret = ts_ssh_exec_simple(&config, action->ssh.command, &result);
-
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "SSH command exit code: %d", result.exit_code);
-        if (result.stdout_data && result.stdout_len > 0) {
-            ESP_LOGD(TAG, "SSH stdout bytes: %u", (unsigned)result.stdout_len);
-        }
-        if (result.stderr_data && result.stderr_len > 0) {
-            ESP_LOGW(TAG, "SSH stderr bytes: %u", (unsigned)result.stderr_len);
-        }
-
-        // 存储 exit_code 到变量（使用 host_ref 作为变量前缀）
-        char result_var[TS_AUTO_NAME_MAX_LEN + 16];
-        snprintf(result_var, sizeof(result_var), "ssh.%s.exit_code", action->ssh.host_ref);
-        ts_auto_value_t res_val = {
-            .type = TS_AUTO_VAL_INT,
-            .int_val = result.exit_code
-        };
-        ts_variable_set(result_var, &res_val);
-        
-        // 非零 exit_code 视为执行失败
-        if (result.exit_code != 0) {
-            ESP_LOGW(TAG, "SSH command failed with exit code %d", result.exit_code);
-            ret = ESP_FAIL;
-        }
-    } else {
-        ESP_LOGE(TAG, "SSH command failed: %s", esp_err_to_name(ret));
-    }
-
-    ts_ssh_exec_result_free(&result);
-    return ret;
-}
-
-/**
- * @brief 执行 Webhook 动作
- */
-static esp_err_t execute_webhook_action(const ts_auto_action_t *action)
-{
-    if (!action || action->type != TS_AUTO_ACT_WEBHOOK) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_LOGI(TAG, "Webhook action: url=%s, method=%s",
-             action->webhook.url, action->webhook.method);
-
-    esp_http_client_config_t config = {
-        .url = action->webhook.url,
-        .timeout_ms = 5000,  // 默认 5 秒超时
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "Failed to create HTTP client");
-        return ESP_ERR_NO_MEM;
-    }
-
-    // 设置方法
-    if (strcasecmp(action->webhook.method, "POST") == 0) {
-        esp_http_client_set_method(client, HTTP_METHOD_POST);
-    } else if (strcasecmp(action->webhook.method, "PUT") == 0) {
-        esp_http_client_set_method(client, HTTP_METHOD_PUT);
-    } else {
-        esp_http_client_set_method(client, HTTP_METHOD_GET);
-    }
-
-    // 设置 Content-Type (对于 POST/PUT)
-    if (strcasecmp(action->webhook.method, "POST") == 0 ||
-        strcasecmp(action->webhook.method, "PUT") == 0) {
-        esp_http_client_set_header(client, "Content-Type", "application/json");
-    }
-
-    // 设置 body（使用 body_template）
-    if (action->webhook.body_template[0] != '\0') {
-        esp_http_client_set_post_field(client, action->webhook.body_template, 
-                                       strlen(action->webhook.body_template));
-    }
-
-    esp_err_t ret = esp_http_client_perform(client);
-    if (ret == ESP_OK) {
-        int status = esp_http_client_get_status_code(client);
-        ESP_LOGI(TAG, "Webhook response: %d", status);
-        
-        if (status < 200 || status >= 300) {
-            ret = ESP_FAIL;  // 非 2xx 视为失败
-        }
-    } else {
-        ESP_LOGE(TAG, "Webhook request failed: %s", esp_err_to_name(ret));
-    }
-
-    esp_http_client_cleanup(client);
-    return ret;
-}
-
-/*===========================================================================*/
-/*                              动作执行                                      */
-/*===========================================================================*/
-
 esp_err_t ts_action_execute(const ts_auto_action_t *action)
 {
-    if (!action) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    esp_err_t ret = ESP_OK;
-    ts_action_result_t result = {0};
-
-    if (action->runtime_snapshot) {
-        return ts_action_submit_prepared(action);
-    }
-    /* 如果有 template_id，使用模板执行（模板包含完整的动作数据） */
-    if (action->template_id[0] != '\0') {
-        ESP_LOGD(TAG, "Executing action via template: %s", action->template_id);
-        ret = ts_action_template_execute(action->template_id, &result);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Template action failed: %s (code=%d)", action->template_id, ret);
-        }
-        s_rule_ctx.stats.total_actions++;
-        if (ret != ESP_OK) {
-            s_rule_ctx.stats.failed_actions++;
-        }
-        return ret;
-    }
-
-    /* 内联动作（无模板引用） */
-    ESP_LOGD(TAG, "Executing inline action type: %d", action->type);
-
-    switch (action->type) {
-        case TS_AUTO_ACT_LED:
-            // 使用 ts_action_manager 的完整实现（支持所有 ctrl_type）
-            ret = ts_action_exec_led(&action->led, &result);
-            if (ret != ESP_OK) {
-                ESP_LOGW(TAG, "LED action failed: %s", result.output);
-            }
-            break;
-
-        case TS_AUTO_ACT_SSH_CMD:
-            ret = execute_ssh_action(action);
-            break;
-
-        case TS_AUTO_ACT_GPIO:
-            ret = execute_gpio_action(action);
-            break;
-
-        case TS_AUTO_ACT_WEBHOOK:
-            ret = execute_webhook_action(action);
-            break;
-
-        case TS_AUTO_ACT_LOG:
-            ESP_LOG_LEVEL((esp_log_level_t)action->log.level, TAG, 
-                          "Rule log: %s", action->log.message);
-            break;
-
-        case TS_AUTO_ACT_SET_VAR:
-            ret = ts_variable_set(action->set_var.variable, &action->set_var.value);
-            break;
-
-        case TS_AUTO_ACT_DEVICE_CTRL:
-            ret = execute_device_action(action);
-            break;
-
-        case TS_AUTO_ACT_SSH_CMD_REF:
-            ret = execute_ssh_ref_action(action);
-            break;
-
-        case TS_AUTO_ACT_CLI:
-            ret = execute_cli_action(action);
-            break;
-
-        default:
-            ESP_LOGW(TAG, "Unknown action type: %d", action->type);
-            ret = ESP_ERR_NOT_SUPPORTED;
-    }
-
+    if(!action)return ESP_ERR_INVALID_ARG;
+    if(action->runtime_snapshot)return ts_action_submit_prepared(action);
+    ts_action_result_t result={0};
+    esp_err_t ret=action->template_id[0]?ts_action_template_execute(action->template_id,&result):
+        action->async?ts_action_queue(action,NULL,NULL,5):ts_action_manager_execute(action,&result);
     s_rule_ctx.stats.total_actions++;
-    if (ret != ESP_OK) {
-        s_rule_ctx.stats.failed_actions++;
-    }
-
+    if(ret!=ESP_OK)s_rule_ctx.stats.failed_actions++;
     return ret;
 }
 
@@ -1585,22 +849,22 @@ static bool check_action_condition(const ts_auto_action_t *action)
     if (!action->condition.has_condition) {
         return true;  // 没有条件，直接执行
     }
-    
+
     // 构造条件结构并评估
     ts_auto_condition_t cond = {
         .op = action->condition.op,
         .value = action->condition.value,
     };
     strncpy(cond.variable, action->condition.variable, sizeof(cond.variable) - 1);
-    
+
     bool result = ts_rule_eval_condition(&cond);
-    
+
     ESP_LOGD(TAG, "Action condition check: %s %d %s -> %s",
              action->condition.variable, action->condition.op,
-             action->condition.value.type == TS_AUTO_VAL_STRING ? 
+             action->condition.value.type == TS_AUTO_VAL_STRING ?
                  action->condition.value.str_val : "(numeric)",
              result ? "PASS" : "SKIP");
-    
+
     return result;
 }
 
@@ -1608,27 +872,27 @@ static bool check_action_condition(const ts_auto_action_t *action)
  * @brief Execute a single action with repeat support
  */
 /* Delays/repeat waits cooperate with stop without abandoning rule ownership. */
-static bool rule_wait(uint32_t ms) {
-    while (ms && ts_action_manager_accepting()) {
+static bool rule_wait(const ts_auto_action_t *action,uint32_t ms) {
+    while (ms && ts_action_manager_accepting() && ts_action_snapshot_current(action)) {
         uint32_t slice = ms > 100 ? 100 : ms;
         vTaskDelay(pdMS_TO_TICKS(slice));
         ms -= slice;
     }
-    return ts_action_manager_accepting();
+    return ts_action_manager_accepting() && ts_action_snapshot_current(action);
 }
 static esp_err_t execute_action_with_repeat(const ts_auto_action_t *action,
                                              ts_action_result_cb_t callback,
                                              void *user_data)
 {
     esp_err_t ret = ESP_OK;
-    if (!ts_action_manager_accepting()) return ESP_ERR_INVALID_STATE;
-    
+    if (!ts_action_manager_accepting() || !ts_action_snapshot_current(action)) return ESP_ERR_INVALID_STATE;
+
     // 先检查动作级别的条件
     if (!check_action_condition(action)) {
         ESP_LOGI(TAG, "Action skipped: condition not met");
         return ESP_OK;  // 条件不满足，跳过执行
     }
-    
+
     switch (action->repeat_mode) {
         case TS_AUTO_REPEAT_ONCE:
         default:
@@ -1638,66 +902,66 @@ static esp_err_t execute_action_with_repeat(const ts_auto_action_t *action,
                 callback(action, ret, user_data);
             }
             break;
-            
+
         case TS_AUTO_REPEAT_COUNT: {
             // 指定次数重复
             uint8_t count = action->repeat_count > 0 ? action->repeat_count : 1;
             uint16_t interval = action->repeat_interval_ms > 0 ? action->repeat_interval_ms : 1000;
-            
+
             ESP_LOGI(TAG, "Repeat action %d times, interval=%dms", count, interval);
-            
+
             for (uint8_t i = 0; i < count; i++) {
-                if (!ts_action_manager_accepting()) return ESP_ERR_INVALID_STATE;
+                if (!ts_action_manager_accepting() || !ts_action_snapshot_current(action)) return ESP_ERR_INVALID_STATE;
                 // 每次重复前检查条件
                 if (!check_action_condition(action)) {
                     ESP_LOGI(TAG, "Repeat stopped: condition no longer met");
                     break;
                 }
-                
+
                 ret = ts_action_execute(action);
                 if (callback) {
                     callback(action, ret, user_data);
                 }
-                
+
                 // 最后一次不需要等待
                 if (i < count - 1 && interval > 0) {
-                    if (!rule_wait(interval)) return ESP_ERR_INVALID_STATE;
+                    if (!rule_wait(action,interval)) return ESP_ERR_INVALID_STATE;
                 }
             }
             break;
         }
-        
+
         case TS_AUTO_REPEAT_WHILE_TRUE: {
             // 条件持续时重复
             uint16_t interval = action->repeat_interval_ms > 0 ? action->repeat_interval_ms : 1000;
             uint8_t max_iterations = 100;  // 安全限制，防止无限循环
             uint8_t iterations = 0;
-            
+
             ESP_LOGI(TAG, "Repeat while condition true, interval=%dms, max=%d", interval, max_iterations);
-            
-            while (ts_action_manager_accepting() && check_action_condition(action) && iterations < max_iterations) {
+
+            while (ts_action_manager_accepting() && ts_action_snapshot_current(action) && check_action_condition(action) && iterations < max_iterations) {
                 ret = ts_action_execute(action);
                 if (callback) {
                     callback(action, ret, user_data);
                 }
                 iterations++;
-                
-                if (!rule_wait(interval)) return ESP_ERR_INVALID_STATE;
+
+                if (!rule_wait(action,interval)) return ESP_ERR_INVALID_STATE;
             }
-            
+
             if (iterations >= max_iterations) {
                 ESP_LOGW(TAG, "Repeat stopped: max iterations reached (%d)", max_iterations);
             }
             break;
         }
     }
-    
+
     return ret;
 }
 
 /**
  * @brief 执行动作数组并统计成功/失败数量
- * 
+ *
  * @param actions 动作数组
  * @param count 动作数量
  * @param success_count 成功动作计数（输出）
@@ -1710,23 +974,23 @@ static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int
     if (!actions || count <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     int success = 0, fail = 0;
     esp_err_t ret = ESP_OK;
 
     ESP_LOGI(TAG, "Executing %d actions sequentially", count);
 
     for (int i = 0; i < count; i++) {
-        if (!ts_action_manager_accepting()) { fail += count - i; ret = ESP_ERR_INVALID_STATE; break; }
-        ESP_LOGI(TAG, "Action [%d/%d]: type=%d, template=%s, delay=%dms", 
-                 i + 1, count, actions[i].type, 
+        if (!ts_action_manager_accepting() || !ts_action_snapshot_current(&actions[i])) { fail += count - i; ret = ESP_ERR_INVALID_STATE; break; }
+        ESP_LOGI(TAG, "Action [%d/%d]: type=%d, template=%s, delay=%dms",
+                 i + 1, count, actions[i].type,
                  actions[i].template_id[0] ? actions[i].template_id : "(inline)",
                  actions[i].delay_ms);
-        
+
         // 动作前延迟
         if (actions[i].delay_ms > 0) {
             ESP_LOGI(TAG, "  Waiting %dms before action", actions[i].delay_ms);
-            if (!rule_wait(actions[i].delay_ms)) { fail += count - i; ret = ESP_ERR_INVALID_STATE; break; }
+            if (!rule_wait(&actions[i],actions[i].delay_ms)) { fail += count - i; ret = ESP_ERR_INVALID_STATE; break; }
         }
 
         esp_err_t action_ret = execute_action_with_repeat(&actions[i], NULL, NULL);
@@ -1736,15 +1000,15 @@ static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int
             fail++;
             ret = action_ret;  // 记录最后一个错误
         }
-        
+
         // LED Matrix 动作后自动添加延迟，确保渲染完成
         // 这对于连续的 LED 操作（如 image + filter）很重要
         if (actions[i].type == TS_AUTO_ACT_LED) {
             const ts_auto_action_led_t *led = &actions[i].led;
             ESP_LOGI(TAG, "  LED action: device=%s, ctrl_type=%d", led->device, led->ctrl_type);
-            
+
             // Matrix 设备的渲染操作需要等待
-            if (strcmp(led->device, "matrix") == 0 || 
+            if (strcmp(led->device, "matrix") == 0 ||
                 strcmp(led->device, "led_matrix") == 0) {
                 int delay_after = 0;
                 switch (led->ctrl_type) {
@@ -1763,17 +1027,17 @@ static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int
                 }
                 if (delay_after > 0) {
                     ESP_LOGI(TAG, "  Auto delay %dms after LED Matrix action", delay_after);
-                    rule_wait(delay_after);
+                    rule_wait(&actions[i],delay_after);
                 }
             }
         }
     }
-    
+
     if (success_count) *success_count = success;
     if (fail_count) *fail_count = fail;
-    
+
     ESP_LOGI(TAG, "All %d actions executed (success=%d, fail=%d)", count, success, fail);
-    
+
     return (fail == 0) ? ESP_OK : ret;
 }
 
@@ -1857,31 +1121,31 @@ const char *ts_rule_exec_status_str(ts_rule_exec_status_t status)
     }
 }
 
-esp_err_t ts_rule_get_exec_history(ts_rule_exec_record_t *records, 
+esp_err_t ts_rule_get_exec_history(ts_rule_exec_record_t *records,
                                     int max_count, int *actual_count)
 {
     if (!records || max_count <= 0 || !actual_count) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     if (!s_rule_ctx.initialized) {
         *actual_count = 0;
         return ESP_ERR_INVALID_STATE;
     }
 
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    
+
     int count = (max_count < s_exec_history.count) ? max_count : s_exec_history.count;
     *actual_count = count;
-    
+
     // 从最新到最旧返回（逆序）
     for (int i = 0; i < count; i++) {
         // head 指向下一个写入位置，所以最新的是 head-1
-        int idx = (s_exec_history.head - 1 - i + TS_RULE_EXEC_HISTORY_SIZE) 
+        int idx = (s_exec_history.head - 1 - i + TS_RULE_EXEC_HISTORY_SIZE)
                   % TS_RULE_EXEC_HISTORY_SIZE;
         records[i] = s_exec_history.records[idx];
     }
-    
+
     xSemaphoreGive(s_rule_ctx.mutex);
     return ESP_OK;
 }
@@ -1893,28 +1157,28 @@ esp_err_t ts_rule_get_exec_history_by_id(const char *rule_id,
     if (!rule_id || !records || max_count <= 0 || !actual_count) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     if (!s_rule_ctx.initialized) {
         *actual_count = 0;
         return ESP_ERR_INVALID_STATE;
     }
 
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    
+
     int out_count = 0;
-    
+
     // 从最新到最旧遍历
     for (int i = 0; i < s_exec_history.count && out_count < max_count; i++) {
-        int idx = (s_exec_history.head - 1 - i + TS_RULE_EXEC_HISTORY_SIZE) 
+        int idx = (s_exec_history.head - 1 - i + TS_RULE_EXEC_HISTORY_SIZE)
                   % TS_RULE_EXEC_HISTORY_SIZE;
-        
+
         if (strcmp(s_exec_history.records[idx].rule_id, rule_id) == 0) {
             records[out_count++] = s_exec_history.records[idx];
         }
     }
-    
+
     *actual_count = out_count;
-    
+
     xSemaphoreGive(s_rule_ctx.mutex);
     return ESP_OK;
 }
@@ -1930,569 +1194,7 @@ esp_err_t ts_rule_clear_exec_history(void)
     s_exec_history.count = 0;
     memset(s_exec_history.records, 0, sizeof(s_exec_history.records));
     xSemaphoreGive(s_rule_ctx.mutex);
-    
+
     ESP_LOGI(TAG, "Execution history cleared");
     return ESP_OK;
-}
-
-/*===========================================================================*/
-/*                              NVS 持久化                                    */
-/*===========================================================================*/
-
-/**
- * @brief 操作符转字符串
- */
-static esp_err_t decode_text(const char *text, ts_auto_rule_t *r) {
-    cJSON *j = cJSON_Parse(text);
-    if (!j)
-        return ESP_ERR_INVALID_ARG;
-    esp_err_t e =
-        ts_rule_decode(cJSON_HasObjectItem(j, "rule") ? cJSON_GetObjectItem(j, "rule") : j, r);
-    cJSON_Delete(j);
-    return e;
-}
-static esp_err_t load_one(const char *path, ts_auto_rule_t *r, bool *encrypted) {
-    char pack_path[192];
-    size_t n = strlen(path);
-    if (n < 5 || n - 5 + 7 > sizeof pack_path) return ESP_ERR_INVALID_ARG;
-    memcpy(pack_path, path, n - 5); strcpy(pack_path + n - 5, ".tscfg");
-    struct stat st;
-    if (stat(pack_path, &st) == 0) {
-        if (st.st_size <= 0 || st.st_size > CONFIG_TS_CONFIG_PACK_MAX_SIZE) return ESP_ERR_INVALID_SIZE;
-        FILE *f = fopen(pack_path, "rb"); if (!f) return ESP_FAIL;
-        char *bytes = heap_caps_malloc(st.st_size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        bool ok = bytes && fread(bytes, 1, st.st_size, f) == (size_t)st.st_size && !ferror(f);
-        if (fclose(f)) ok = false;
-        if (!ok) { free(bytes); return ESP_FAIL; }
-        bytes[st.st_size] = 0;
-        ts_config_pack_t *pack = NULL;
-        ts_config_pack_acceptance_t accepted = {0};
-        ts_config_pack_result_t got = ts_config_pack_load_verified_mem(bytes, st.st_size, NULL,
-            &pack, &accepted, NULL);
-        free(bytes);
-        if (got != TS_CONFIG_PACK_OK) { s_rule_ctx.load_error=ts_rule_pack_error(got); return ESP_ERR_INVALID_STATE; }
-        esp_err_t e = ts_rule_pack_decode(pack->content, pack->content_len, r);
-        ts_config_pack_free(pack);
-        if (e == ESP_OK) {
-            *encrypted = true;
-            e = ts_rule_store_set_seed(r, pack_path, true, &accepted);
-            if (e != ESP_OK) ts_rule_dispose(r);
-        }
-        return e;
-    }
-    if (errno != ENOENT) return ESP_FAIL;
-    char *text = NULL;
-    size_t len = 0;
-    esp_err_t e = ts_config_pack_load_with_priority(path, &text, &len, encrypted);
-    if (e == ESP_OK) {
-        e = decode_text(text, r);
-        if (e == ESP_OK) {
-            e = ts_rule_store_set_seed(r, path, false, NULL);
-            if (e != ESP_OK) ts_rule_dispose(r);
-        }
-    }
-    free(text);
-    return e;
-}
-static esp_err_t load_directory(ts_auto_rule_t *rules, int *count, bool *readonly) {
-    DIR *dir = opendir(RULES_SDCARD_DIR);
-    if (!dir)
-        return ESP_ERR_NOT_FOUND;
-    esp_err_t e = ESP_OK;
-    struct dirent *entry;
-    *count = 0;
-    while ((entry = readdir(dir))) {
-        size_t n = strlen(entry->d_name);
-        bool enc = n > 6 && !strcmp(entry->d_name + n - 6, ".tscfg");
-        bool json = n > 5 && !strcmp(entry->d_name + n - 5, ".json");
-        if (!enc && !json)
-            continue;
-        char path[160], id[TS_AUTO_NAME_MAX_LEN];
-        size_t idlen = n - (enc ? 6 : 5);
-        if (idlen >= sizeof(id)) {
-            e = ESP_ERR_INVALID_SIZE;
-            break;
-        }
-        memcpy(id, entry->d_name, idlen);
-        id[idlen] = 0;
-        if (!ts_rule_id_valid(id)) {
-            e = ESP_ERR_INVALID_ARG;
-            break;
-        }
-        if (json) {
-            snprintf(path, sizeof(path), RULES_SDCARD_DIR "/%s.tscfg", id);
-            struct stat st;
-            if (stat(path, &st) == 0)
-                continue;
-        }
-        if (*count >= s_rule_ctx.capacity) {
-            e = ESP_ERR_NO_MEM;
-            break;
-        }
-        snprintf(path, sizeof(path), RULES_SDCARD_DIR "/%s.json", id);
-        bool encrypted = false;
-        e = load_one(path, &rules[*count], &encrypted);
-        if (e != ESP_OK)
-            break;
-        readonly[*count] = encrypted || strcmp(id, rules[*count].id) != 0;
-        ++*count;
-    }
-    closedir(dir);
-    return e == ESP_OK && !*count ? ESP_ERR_NOT_FOUND : e;
-}
-static esp_err_t load_legacy_file(const char *path, ts_auto_rule_t *rules, int *count) {
-    char *text = NULL;
-    size_t len;
-    bool encrypted;
-    esp_err_t e = ts_config_pack_load_with_priority(path, &text, &len, &encrypted);
-    if (e != ESP_OK)
-        return e;
-    cJSON *root = cJSON_Parse(text);
-    free(text);
-    cJSON *array = cJSON_GetObjectItemCaseSensitive(root, "rules");
-    if (!cJSON_IsArray(array) || cJSON_GetArraySize(array) > s_rule_ctx.capacity) {
-        cJSON_Delete(root);
-        return ESP_ERR_INVALID_ARG;
-    }
-    *count = 0;
-    const cJSON *j;
-    cJSON_ArrayForEach(j, array) {
-        e = ts_rule_decode(j, &rules[*count]);
-        if (e != ESP_OK)
-            break;
-        ++*count;
-    }
-    cJSON_Delete(root);
-    return e;
-}
-static esp_err_t load_legacy_nvs(ts_auto_rule_t *rules, int *count) {
-    nvs_handle_t h;
-    esp_err_t e = nvs_open(NVS_NAMESPACE_RULES, NVS_READONLY, &h);
-    *count = 0;
-    if (e == ESP_ERR_NVS_NOT_FOUND)
-        return ESP_OK;
-    if (e != ESP_OK)
-        return e;
-    uint8_t n = 0;
-    e = nvs_get_u8(h, NVS_KEY_RULE_COUNT, &n);
-    if (e == ESP_ERR_NVS_NOT_FOUND) {
-        nvs_close(h);
-        return ESP_OK;
-    }
-    if (e != ESP_OK || n > s_rule_ctx.capacity) {
-        nvs_close(h);
-        return ESP_FAIL;
-    }
-    for (unsigned i = 0; i < n; ++i) {
-        char key[16];
-        snprintf(key, sizeof(key), NVS_KEY_RULE_PREFIX "%u", i);
-        size_t len = 0;
-        e = nvs_get_str(h, key, NULL, &len);
-        if (e != ESP_OK || !len || len > 4000) {
-            e = ESP_FAIL;
-            break;
-        }
-        char *text = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!text) {
-            e = ESP_ERR_NO_MEM;
-            break;
-        }
-        e = nvs_get_str(h, key, text, &len);
-        if (e == ESP_OK)
-            e = decode_text(text, &rules[*count]);
-        free(text);
-        if (e != ESP_OK)
-            break;
-        ++*count;
-    }
-    nvs_close(h);
-    return e;
-}
-static esp_err_t load_rules(const char *file) {
-    if (!s_rule_ctx.initialized)
-        return ESP_ERR_INVALID_STATE;
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction, portMAX_DELAY);
-    if (s_rule_ctx.loaded && ts_rule_restart_pending()) {
-        xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-        return ESP_ERR_INVALID_STATE;
-    }
-    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    bool busy = s_rule_ctx.retired != 0;
-    for (int i = 0; i < s_rule_ctx.count; ++i)
-        busy |= ((rule_payload_t *)s_rule_ctx.rules[i].lease)->refs != 0 ||
-                s_rule_ctx.meta[i].executing;
-    if (busy) {
-        xSemaphoreGive(s_rule_ctx.mutex);
-        xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-        return ESP_ERR_INVALID_STATE;
-    }
-    s_rule_ctx.loaded = false;
-    s_rule_ctx.load_error="recovery_required";
-    xSemaphoreGive(s_rule_ctx.mutex);
-    ts_auto_rule_t *rules =
-        heap_caps_calloc(s_rule_ctx.capacity, sizeof(*rules), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    bool readonly[CONFIG_TS_AUTOMATION_MAX_RULES] = {0};
-    int count = 0, source = TS_RULE_SOURCE_NVS;
-    esp_err_t e = rules ? ESP_OK : ESP_ERR_NO_MEM;
-    bool staging = false, require_sd = false;
-    bool managed = false;
-    if (e == ESP_OK && !file) {
-        e = ts_rule_store_set_load(ts_storage_sd_mounted(), rules, readonly, s_rule_ctx.capacity, &count);
-        managed = e == ESP_OK;
-        if(e!=ESP_OK&&e!=ESP_ERR_NOT_FOUND)s_rule_ctx.load_error=ts_rule_store_set_error();
-        if (e == ESP_ERR_NOT_FOUND) e = ESP_OK;
-    } else if (e == ESP_OK) ts_rule_store_set_reset();
-    if (e == ESP_OK && !managed)
-        e = ts_rule_store_recover(ts_storage_sd_mounted(), &staging, &require_sd);
-    if (e == ESP_OK && !managed) {
-        if (file) {
-            source = TS_RULE_SOURCE_READONLY;
-            e = load_legacy_file(file, rules, &count);
-        } else if (staging) {
-            e = ts_rule_store_load_bank(rules, s_rule_ctx.capacity, &count);
-            source = require_sd ? TS_RULE_SOURCE_READONLY : TS_RULE_SOURCE_NVS;
-        } else {
-            e = ESP_ERR_NOT_FOUND;
-            if (ts_storage_sd_mounted()) {
-                e = load_directory(rules, &count, readonly);
-                if (e == ESP_OK || require_sd)
-                    source = TS_RULE_SOURCE_SD;
-                if (e == ESP_ERR_NOT_FOUND && !require_sd) {
-                    e = load_legacy_file("/sdcard/config/rules.json", rules, &count);
-                    if (e == ESP_OK)
-                        source = TS_RULE_SOURCE_READONLY;
-                }
-            }
-            if (e == ESP_ERR_NOT_FOUND && !require_sd)
-                e = load_legacy_nvs(rules, &count);
-            else if (e == ESP_ERR_NOT_FOUND &&
-                     require_sd) { /* Committed empty SD directory remains authoritative. */
-                DIR *d = opendir(RULES_SDCARD_DIR);
-                if (d) {
-                    closedir(d);
-                    e = ESP_OK;
-                }
-            }
-        }
-    }
-    if (e == ESP_OK && !managed)
-        e = ts_rule_store_set_adopt(rules, count, source, readonly);
-    if (e == ESP_OK) {
-        ts_ssh_binding_lock();
-        for (int i = 0; i < count && e == ESP_OK; ++i) {
-            ts_rule_saved_info_t info={0};
-            e=ts_rule_store_set_info(rules[i].id,&info);
-            if(e!=ESP_OK)break;
-            if(info.source!=TS_RULE_SET_SD_PACK)continue;
-            const char *reason = NULL;
-            e = ts_rule_pack_dependencies(&rules[i], &reason, NULL);
-            if(e!=ESP_OK)s_rule_ctx.load_error=reason;
-        }
-        ts_ssh_binding_unlock();
-    }
-    if (e == ESP_OK && !managed)
-        e = ts_rule_store_set_migrate();
-    if (e == ESP_OK)
-        for (int i = 0; i < count; ++i) {
-            for (int k = 0; k < i; ++k)
-                if (!strcmp(rules[k].id, rules[i].id)) {
-                    e = ESP_ERR_INVALID_ARG;
-                    break;
-                }
-            if (e != ESP_OK)
-                break;
-            ts_rule_resolve_presentation(&rules[i]);
-            if (!rules[i].revision)
-                rules[i].revision = 1;
-            if (!payload_adopt(&rules[i])) {
-                e = ESP_ERR_NO_MEM;
-                break;
-            }
-            rules[i].instance = ++s_rule_ctx.next_instance;
-        }
-    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    if (e == ESP_OK) {
-        ts_auto_rule_t *old = s_rule_ctx.rules;
-        int oldcount = s_rule_ctx.count;
-        s_rule_ctx.rules = rules;
-        s_rule_ctx.count = count;
-        s_rule_ctx.source = source;
-        memset(s_rule_ctx.meta, 0, sizeof(s_rule_ctx.meta));
-        for (int i = 0; i < count; ++i) {
-            s_rule_ctx.meta[i].readonly = readonly[i];
-            ts_rule_saved_info_t info={0};
-            s_rule_ctx.meta[i].source=source!=TS_RULE_SOURCE_READONLY&&ts_rule_store_set_info(rules[i].id,&info)==ESP_OK?(int)info.source:-1;
-        }
-        s_rule_ctx.loaded = true;
-        s_rule_ctx.load_error="ok";
-        s_rule_ctx.recovery_error = false;
-        xSemaphoreGive(s_rule_ctx.mutex);
-        for (int i = 0; i < oldcount; ++i)
-            payload_free(old[i].lease);
-        free(old);
-    } else {
-        s_rule_ctx.recovery_error = true;
-        xSemaphoreGive(s_rule_ctx.mutex);
-        for (int i = 0; i < count; ++i) {
-            if (rules[i].lease)
-                payload_free(rules[i].lease);
-            else
-                ts_rule_dispose(&rules[i]);
-        }
-        free(rules);
-    }
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-    return e;
-}
-esp_err_t ts_rules_load(void) {
-    ts_ssh_binding_lock(); esp_err_t ret = load_rules(NULL); ts_ssh_binding_unlock(); return ret;
-}
-esp_err_t ts_rules_load_from_file(const char *path) {
-    if (!path) return ESP_ERR_INVALID_ARG;
-    ts_ssh_binding_lock(); esp_err_t ret = load_rules(path); ts_ssh_binding_unlock(); return ret;
-}
-/* Ordinary mutations persist through ts_rule_commit; boot may migrate legacy authority. */
-esp_err_t ts_rules_save(void) {
-    return s_rule_ctx.loaded && !s_rule_ctx.recovery_error ? ESP_OK : ESP_ERR_INVALID_STATE;
-}
-
-bool ts_rule_edit_begin(void) {
-    if (!s_rule_ctx.initialized) return false;
-    if (!ts_ssh_binding_try_lock()) return false;
-    if (xSemaphoreTakeRecursive(s_rule_ctx.transaction, 0) == pdTRUE) return true;
-    ts_ssh_binding_unlock(); return false;
-}
-void ts_rule_edit_end(void) { xSemaphoreGiveRecursive(s_rule_ctx.transaction); ts_ssh_binding_unlock(); }
-void ts_rule_config_status(bool *loaded, bool *recovery) {
-    if (!s_rule_ctx.initialized) {
-        *loaded = false;
-        *recovery = false;
-        return;
-    }
-    xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    *loaded = s_rule_ctx.loaded;
-    *recovery = s_rule_ctx.recovery_error;
-    xSemaphoreGive(s_rule_ctx.mutex);
-}
-
-bool ts_rule_restart_pending(void) {
-    if (!s_rule_ctx.initialized) return false;
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
-    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
-    bool confirmed=s_rule_ctx.loaded&&!s_rule_ctx.recovery_error, pending=false;
-    for(int i=0;i<s_rule_ctx.count&&!pending;++i){
-        ts_rule_saved_info_t info={0};
-        pending=state_pending(classify_rule_state(s_rule_ctx.rules[i].id,i,confirmed,&info));
-    }
-    for(int i=0;i<ts_rule_store_set_count()&&!pending&&confirmed;++i){
-        ts_rule_saved_info_t info={0};
-        if(ts_rule_store_set_info_at(i,&info)!=ESP_OK)break;
-        pending=state_pending(classify_rule_state(info.id,find_rule_index(info.id),confirmed,&info));
-    }
-    xSemaphoreGive(s_rule_ctx.mutex);
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-    return pending;
-}
-const char *ts_rule_load_error(void){return s_rule_ctx.load_error?s_rule_ctx.load_error:"config_loading";}
-esp_err_t ts_rule_refresh_saved(void) {
-    if(!s_rule_ctx.initialized||!s_rule_ctx.loaded)return ESP_ERR_INVALID_STATE;
-    ts_ssh_binding_lock();xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
-    esp_err_t ret=ESP_OK;
-    if(s_rule_ctx.recovery_error){
-        ret=ts_rule_store_set_refresh(ts_storage_sd_mounted());
-        if(ret==ESP_OK)ret=rebuild_rule_states();
-        xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
-        if(ret==ESP_OK){s_rule_ctx.recovery_error=false;s_rule_ctx.load_error="ok";}
-        else s_rule_ctx.load_error="recovery_required";
-        xSemaphoreGive(s_rule_ctx.mutex);
-    }
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);ts_ssh_binding_unlock();return ret;
-}
-void ts_rule_saved_status(const char *id,cJSON *object) {
-    if (!s_rule_ctx.initialized) return;
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
-    ts_rule_saved_info_t info={0};
-    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
-    int i=find_rule_index(id);uint32_t active=i<0?0:s_rule_ctx.rules[i].revision;
-    bool confirmed=s_rule_ctx.loaded&&!s_rule_ctx.recovery_error;
-    rule_state_t state=classify_rule_state(id,i,confirmed,&info);
-    bool exists=state==RULE_SYNCED||state==RULE_PENDING_ADD||state==RULE_PENDING_UPDATE;
-    bool readonly=(exists&&info.readonly)||(i>=0&&s_rule_ctx.meta[i].readonly);
-    xSemaphoreGive(s_rule_ctx.mutex);
-    const char *change=state==RULE_PENDING_ADD?"add":state==RULE_PENDING_UPDATE?"update":
-        state==RULE_PENDING_DELETE?"delete":state==RULE_UNKNOWN?"unknown":"none";
-    cJSON_AddStringToObject(object,"pending_change",change);
-    if(state==RULE_UNKNOWN)cJSON_AddNullToObject(object,"saved_exists");
-    else cJSON_AddBoolToObject(object,"saved_exists",exists);
-    if(exists)cJSON_AddNumberToObject(object,"saved_revision",info.revision);
-    else cJSON_AddNullToObject(object,"saved_revision");
-    if(confirmed)cJSON_AddNumberToObject(object,"saved_generation",ts_rule_store_set_generation());
-    else cJSON_AddNullToObject(object,"saved_generation");
-    cJSON_AddNumberToObject(object,"active_revision",active);
-    cJSON_AddBoolToObject(object,"runtime_active",i>=0);
-    cJSON_AddBoolToObject(object,"restart_required",state_pending(state));
-    cJSON_AddBoolToObject(object,"readonly",readonly);
-    if(exists){
-        cJSON_AddStringToObject(object,"saved_source",info.source==TS_RULE_SET_SD_PACK?"encrypted_pack":info.source==TS_RULE_SET_SD_JSON?"sd_json":"nvs_json");
-        cJSON_AddStringToObject(object,"package_digest",info.digest);
-    }else{
-        cJSON_AddNullToObject(object,"saved_source");cJSON_AddNullToObject(object,"package_digest");
-    }
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-}
-cJSON *ts_rule_pending_list(void) {
-    cJSON *array=cJSON_CreateArray();
-    if(!array || !s_rule_ctx.initialized) return array;
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
-    if(!s_rule_ctx.loaded||s_rule_ctx.recovery_error){
-        xSemaphoreGiveRecursive(s_rule_ctx.transaction);return array;
-    }
-    for(int i=0;i<ts_rule_store_set_count();++i){
-        ts_rule_saved_info_t info={0};
-        if(ts_rule_store_set_info_at(i,&info)!=ESP_OK){cJSON_Delete(array);array=NULL;break;}
-        xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
-        bool absent=find_rule_index(info.id)<0;
-        xSemaphoreGive(s_rule_ctx.mutex);
-        if(absent){
-            cJSON *item=cJSON_CreateObject();
-            cJSON_AddStringToObject(item,"id",info.id);cJSON_AddStringToObject(item,"name",info.name);
-            cJSON_AddStringToObject(item,"icon",info.icon);cJSON_AddBoolToObject(item,"saved_enabled",info.enabled);
-            cJSON_AddBoolToObject(item,"enabled",false);cJSON_AddNumberToObject(item,"revision",0);
-            cJSON_AddNumberToObject(item,"conditions_count",info.conditions_count);
-            cJSON_AddNumberToObject(item,"actions_count",info.actions_count);
-            ts_rule_saved_status(info.id,item);
-            if(!item || !cJSON_AddItemToArray(array,item)){cJSON_Delete(item);cJSON_Delete(array);array=NULL;break;}
-        }
-    }
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-    return array;
-}
-static const char *pack_reason(ts_config_pack_result_t reason) {
-    return ts_rule_pack_error(reason);
-}
-esp_err_t ts_rule_import_pack(const char *bytes,size_t length,bool preview,bool overwrite,
-    uint32_t expected_revision,uint32_t expected_generation,uint32_t expected_credential,
-    const char *expected_digest,cJSON **data,const char **reason) {
-    *data=NULL;*reason="invalid_pack";
-    if(!s_rule_ctx.initialized)return ESP_ERR_INVALID_STATE;
-    if(!ts_storage_sd_mounted()){*reason="source_unavailable";return ESP_ERR_INVALID_STATE;}
-    ts_config_pack_t *pack=NULL;
-    ts_config_pack_acceptance_t acceptance={0},known={0};uint32_t credential=0;
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
-    bool previously_accepted=ts_rule_store_set_acceptance(bytes,length,&known)==ESP_OK;
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-    ts_config_pack_result_t validated=ts_config_pack_load_verified_mem(bytes,length,
-        previously_accepted?&known:NULL,&pack,&acceptance,&credential);
-    if(validated!=TS_CONFIG_PACK_OK){*reason=pack_reason(validated);return ESP_ERR_INVALID_ARG;}
-    if(!preview&&(credential!=expected_credential||!expected_digest||
-        strcmp(expected_digest,acceptance.package_sha256))) {
-        ts_config_pack_free(pack);*reason="credential_changed";return ESP_ERR_INVALID_STATE;
-    }
-    ts_auto_rule_t rule={0};
-    esp_err_t ret=ts_rule_pack_decode(pack->content,pack->content_len,&rule);
-    ts_config_pack_free(pack);
-    if(ret!=ESP_OK){*reason="invalid_rule_pack";return ret;}
-    ts_ssh_binding_lock();
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
-    cJSON *warnings=NULL;
-    if(!s_rule_ctx.initialized||!s_rule_ctx.loaded||s_rule_ctx.recovery_error){
-        *reason="recovery_required";ret=ESP_ERR_INVALID_STATE;goto done;
-    }
-    if(!ts_rule_store_set_available()){*reason="source_read_only";ret=ESP_ERR_INVALID_STATE;goto done;}
-    ts_rule_saved_info_t old={0};
-    bool exists=ts_rule_store_set_info(rule.id,&old)==ESP_OK;
-    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
-    int active=find_rule_index(rule.id);
-    rule_state_t state=classify_rule_state(rule.id,active,true,&old);
-    int occupied=rule_union_count_locked();
-    xSemaphoreGive(s_rule_ctx.mutex);
-    if(state==RULE_PENDING_DELETE){*reason="restart_pending";ret=ESP_ERR_INVALID_STATE;goto done;}
-    if(state==RULE_UNKNOWN||occupied<0){*reason="recovery_required";ret=ESP_ERR_INVALID_STATE;goto done;}
-    if(!exists&&active<0&&occupied>=s_rule_ctx.capacity){*reason="capacity";ret=ESP_ERR_NO_MEM;goto done;}
-    ret=ts_rule_pack_dependencies(&rule,reason,&warnings);
-    if(ret!=ESP_OK)goto done;
-    if(active>=0&&protected_bindings(&s_rule_ctx.rules[active],&rule)){
-        *reason="service_busy";ret=ESP_ERR_INVALID_STATE;goto done;
-    }
-    uint32_t saved_generation=ts_rule_store_set_generation();
-    *data=cJSON_CreateObject();
-    if(!*data){*reason="no_memory";ret=ESP_ERR_NO_MEM;goto done;}
-    cJSON *rule_json=ts_rule_encode(&rule);
-    bool reply_ok=rule_json&&cJSON_AddStringToObject(*data,"id",rule.id)&&cJSON_AddStringToObject(*data,"name",rule.name)&&
-        cJSON_AddStringToObject(*data,"type","automation_rule")&&cJSON_AddBoolToObject(*data,"valid",true)&&
-        cJSON_AddBoolToObject(*data,"trusted",true)&&cJSON_AddBoolToObject(*data,"target_matches",true)&&
-        cJSON_AddBoolToObject(*data,"exists",exists)&&cJSON_AddBoolToObject(*data,"official",true)&&
-        cJSON_AddStringToObject(*data,"signer",acceptance.signer_sha256)&&
-        cJSON_AddStringToObject(*data,"package_digest",acceptance.package_sha256)&&
-        cJSON_AddNumberToObject(*data,"expected_revision",exists?old.revision:0)&&
-        cJSON_AddNumberToObject(*data,"expected_generation",saved_generation)&&
-        cJSON_AddNumberToObject(*data,"credential_generation",credential)&&cJSON_AddItemToObject(*data,"rule",rule_json);
-    if(reply_ok)rule_json=NULL;
-    cJSON_Delete(rule_json);
-    if(reply_ok&&warnings){reply_ok=cJSON_AddItemToObject(*data,"warnings",warnings);if(reply_ok)warnings=NULL;}
-    if(!reply_ok){cJSON_Delete(*data);*data=NULL;*reason="no_memory";ret=ESP_ERR_NO_MEM;goto done;}
-    if(exists){
-        /* Old saved identity is distinct from the selected package's digest.
-         * Never emit duplicate JSON keys: C and browser parsers choose differently. */
-        cJSON_AddStringToObject(*data,"current_saved_digest",old.digest);
-        cJSON_AddStringToObject(*data,"saved_source",old.source==TS_RULE_SET_SD_PACK?"encrypted_pack":old.source==TS_RULE_SET_SD_JSON?"sd_json":"nvs_json");
-        cJSON_AddBoolToObject(*data,"saved_readonly",old.readonly);
-    }
-    cJSON_AddNumberToObject(*data,"active_revision",active<0?0:s_rule_ctx.rules[active].revision);
-    cJSON_AddBoolToObject(*data,"runtime_active",active>=0);
-    if(preview){*reason="ok";goto done;}
-    bool identical=exists&&old.source==TS_RULE_SET_SD_PACK&&!strcmp(old.digest,acceptance.package_sha256);
-    if(exists&&!overwrite&&!identical){*reason="overwrite_required";ret=ESP_ERR_INVALID_STATE;goto done;}
-    if(!identical&&(expected_revision!=(exists?old.revision:0)||expected_generation!=saved_generation)){
-        *reason="revision_conflict";ret=ESP_ERR_INVALID_STATE;goto done;
-    }
-    if(!ts_cert_material_begin(credential)){*reason="credential_changed";ret=ESP_ERR_INVALID_STATE;goto done;}
-    ts_rule_commit_t commit;
-    ret=ts_rule_store_set_commit(&rule,rule.id,identical?old.revision:expected_revision,
-                                identical?saved_generation:expected_generation,
-                                bytes,length,&acceptance,&commit);
-    ts_cert_material_end();
-    *reason=commit.error_code;
-    if(commit.applied<0){s_rule_ctx.recovery_error=true;cJSON_AddBoolToObject(*data,"result_unknown",true);}
-    if(ret==ESP_OK){
-        cJSON_AddBoolToObject(*data,"imported",true);cJSON_AddBoolToObject(*data,"saved",true);
-        cJSON_AddBoolToObject(*data,"durable",true);cJSON_AddBoolToObject(*data,"runtime_applied",false);
-        cJSON_AddBoolToObject(*data,"restart_required",active<0||s_rule_ctx.rules[active].revision!=commit.revision);
-        cJSON_AddNumberToObject(*data,"saved_revision",commit.revision);
-        cJSON_AddNumberToObject(*data,"saved_generation",ts_rule_store_set_generation());
-        cJSON_AddBoolToObject(*data,"cleanup_pending",!commit.mirror_synced);
-    }
-done:
-    cJSON_Delete(warnings);ts_rule_dispose(&rule);
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);ts_ssh_binding_unlock();
-    return ret;
-}
-
-static esp_err_t dependency_change_rule(const ts_auto_rule_t *rule,ts_rule_dependency_t kind,
-                                        const char *id,const void *next) {
-    const char *reason=NULL;
-    return ts_rule_pack_dependency_change(rule,kind,id,next,&reason);
-}
-esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind,const char *id,const void *next) {
-    /* Bootstrap loaders must be able to read their own persisted dependencies.
-     * Retained running versions after a failed reload still keep protection. */
-    if(!s_rule_ctx.initialized||(!s_rule_ctx.loaded&&!s_rule_ctx.count))return ESP_OK;
-    xSemaphoreTakeRecursive(s_rule_ctx.transaction,portMAX_DELAY);
-    esp_err_t ret=ESP_OK;
-    if(s_rule_ctx.recovery_error)ret=ESP_ERR_INVALID_STATE;
-    for(int i=0;i<s_rule_ctx.count&&ret==ESP_OK;++i){
-        if(s_rule_ctx.meta[i].source!=TS_RULE_SET_SD_PACK||s_rule_ctx.meta[i].pending_delete)continue;
-        ts_auto_rule_t rule={0};ret=ts_rule_get_by_index(i,&rule);
-        if(ret==ESP_OK){ret=dependency_change_rule(&rule,kind,id,next);ts_rule_release(&rule);}
-    }
-    for(int i=0;i<ts_rule_store_set_count()&&ret==ESP_OK;++i){
-        ts_auto_rule_t rule={0};ts_rule_saved_info_t info={0};
-        ret=ts_rule_store_set_info_at(i,&info);
-        if(ret!=ESP_OK)break;
-        if(info.source!=TS_RULE_SET_SD_PACK)continue;
-        ret=ts_rule_store_set_get(i,&rule,&info);
-        if(ret==ESP_OK){ret=dependency_change_rule(&rule,kind,id,next);ts_rule_dispose(&rule);}
-    }
-    xSemaphoreGiveRecursive(s_rule_ctx.transaction);
-    return ret;
 }

@@ -171,7 +171,7 @@ static int do_nat_save(bool json_output)
         return 1;
     }
     
-    /* 同时使用统一配置模块进行双写 */
+    /* 同时保存模块化的系统配置 */
     ret = ts_config_module_persist(TS_CONFIG_MODULE_NAT);
     
     if (json_output) {
@@ -179,11 +179,7 @@ static int do_nat_save(bool json_output)
     } else {
         if (ret == ESP_OK) {
             ts_console_success("Configuration saved to NVS");
-            if (ts_config_module_has_pending_sync()) {
-                ts_console_printf(" (SD card sync pending)\n");
-            } else {
-                ts_console_printf(" and SD card\n");
-            }
+            ts_console_printf("\n");
         } else {
             ts_console_success("Configuration saved to NVS\n");
         }

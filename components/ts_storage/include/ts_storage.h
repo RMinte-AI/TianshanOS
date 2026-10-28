@@ -156,6 +156,12 @@ typedef struct {
  * 
  * @return ESP_OK on success
  */
+/* Dedicated automation copy region. Independent of storage/www mounts. */
+esp_err_t ts_storage_mount_auto(void);
+esp_err_t ts_storage_unmount_auto(void);
+bool ts_storage_auto_mounted(void);
+esp_err_t ts_storage_auto_info(size_t *total, size_t *used);
+
 esp_err_t ts_storage_init(void);
 
 /**
@@ -209,6 +215,14 @@ esp_err_t ts_storage_format_spiffs(void);
 /*===========================================================================*/
 /*                           SD Card Operations                               */
 /*===========================================================================*/
+
+/* Mount, unmount, format and automation commits share this recursive gate.
+ * Acquire the automation writer before this gate when both are needed. */
+void ts_storage_sd_lock(void);
+void ts_storage_sd_unlock(void);
+uint64_t ts_storage_sd_generation(void);
+/* Explicit one-shot driver check / mount. No background card polling. */
+esp_err_t ts_storage_sd_refresh(void);
 
 /**
  * @brief Mount SD card
@@ -311,14 +325,15 @@ ssize_t ts_storage_read_file(const char *path, void *buf, size_t max_size);
  */
 char *ts_storage_read_string(const char *path);
 
-/**
- * @brief Write buffer to file
- * 
- * @param path File path
- * @param data Data to write
- * @param size Size of data
- * @return ESP_OK on success
- */
+/* Generic file mutations cannot replace the automation owner's files or roots.
+ * include_children also checks directory moves/removals of their parents. */
+esp_err_t ts_storage_check_write_path(const char *path, bool include_children);
+
+/* Open a streamed download destination under the same ownership check.
+ * The caller writes/closes the stream; network transfer does not hold the SD gate. */
+esp_err_t ts_storage_open_write(const char *path, FILE **file);
+
+/** Write a complete buffer to a file. */
 esp_err_t ts_storage_write_file(const char *path, const void *data, size_t size);
 
 /**

@@ -217,6 +217,15 @@ static esp_err_t verify_default_credential(nvs_handle_t handle,
 
 static void reset_auth_credentials(void)
 {
+    const esp_partition_t *system = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs");
+    const esp_partition_t *keys = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "keys_nvs");
+    if (!system || system->address != 0x9B0000 || system->size != 0x20000 ||
+        !keys || keys->address != 0x9000 || keys->size != 0xC000) {
+        ESP_LOGE(TAG, "Install the matching storage-v2 serial package before using this RootReset image");
+        halt_forever();
+    }
     ESP_LOGI(TAG, "Initializing NVS");
     esp_err_t ret = nvs_flash_init();
     if (ret != ESP_OK) {

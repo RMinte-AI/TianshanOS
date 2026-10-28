@@ -6,7 +6,7 @@ TianshanOS Web 资源优化脚本
 纯 Python 实现，不依赖 Node.js / terser / csso。
 
 用法:
-    python3 tools/minify_web.py <web_dir> [--gzip]
+    python3 tools/minify_web.py <web_dir> [--gzip] [--stamp-assets]
     
 例如:
     python3 tools/minify_web.py components/ts_webui/web --gzip
@@ -17,6 +17,8 @@ import re
 import sys
 import glob
 import gzip as gzip_module
+import hashlib
+from pathlib import Path
 
 
 def minify_js(source: str) -> str:
@@ -166,6 +168,37 @@ def process_directory(web_dir: str) -> None:
     print(f"\n  Total saved: {total_saved:,} bytes ({total_saved / 1024:.1f} KB)")
 
 
+def asset_index_version(source: str, version: str) -> str:
+    """One build identity for static URLs and the dynamic language/vendor loader."""
+    source = re.sub(r"((?:src|href)=[\"']/[^\"'?#]+\?v=)[^\"'&]+",
+                    lambda match: match[1] + version, source)
+    source, count = re.subn(r"(window\.TS_ASSET_VERSION\s*=\s*)'[^']*'",
+                            lambda match: match[1] + "'" + version + "'", source)
+    if count != 1:
+        raise ValueError('index.html must declare exactly one TS_ASSET_VERSION')
+    return source
+
+
+def stamp_assets(web_dir: str) -> str:
+    """Hash packaged content; ignore existing compression and the stamp itself."""
+    root = Path(web_dir)
+    index = root / 'index.html'
+    source = index.read_text(encoding='utf-8')
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob('*')):
+        if not path.is_file() or path.name.startswith('.') or path.suffix == '.gz':
+            continue
+        content = (asset_index_version(source, '__ASSET_VERSION__').encode('utf-8')
+                   if path == index else path.read_bytes())
+        digest.update(path.relative_to(root).as_posix().encode('utf-8') + b'\0')
+        digest.update(len(content).to_bytes(8, 'big'))
+        digest.update(content)
+    version = digest.hexdigest()[:16]
+    index.write_text(asset_index_version(source, version), encoding='utf-8')
+    print(f"  Asset version: {version}")
+    return version
+
+
 def gzip_directory(web_dir: str) -> None:
     """对 web 目录下所有 JS/CSS/HTML 文件生成 .gz 副本"""
     if not os.path.isdir(web_dir):
@@ -202,7 +235,7 @@ def gzip_directory(web_dir: str) -> None:
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <web_dir> [--gzip]")
+        print(f"Usage: {sys.argv[0]} <web_dir> [--gzip] [--stamp-assets]")
         sys.exit(1)
     
     web_dir = sys.argv[1]
@@ -211,6 +244,9 @@ if __name__ == '__main__':
     print(f"Minifying web resources in {web_dir}...")
     process_directory(web_dir)
     
+    if '--stamp-assets' in sys.argv:
+        stamp_assets(web_dir)
+
     if do_gzip:
         print(f"\nGzipping web resources in {web_dir}...")
         gzip_directory(web_dir)

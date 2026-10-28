@@ -1498,7 +1498,8 @@ static esp_err_t api_led_cc_export(const cJSON *params, ts_api_result_t *result)
     
     esp_err_t ret = ts_led_cc_save_to_sdcard(path);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to export configuration");
+        ts_api_result_error(result, ret == ESP_ERR_NOT_ALLOWED ? TS_API_ERR_NO_PERMISSION : TS_API_ERR_INTERNAL,
+            ret == ESP_ERR_NOT_ALLOWED ? "automation_configuration_managed" : "Failed to export configuration");
         return ESP_OK;
     }
     
@@ -1527,12 +1528,9 @@ static esp_err_t api_led_cc_import(const cJSON *params, ts_api_result_t *result)
     
     esp_err_t ret = ts_led_cc_load_from_sdcard(path);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Failed to import configuration");
+        ts_api_result_error(result, ret == ESP_ERR_NOT_FOUND ? TS_API_ERR_NOT_FOUND : TS_API_ERR_INTERNAL, "Failed to import configuration");
         return ESP_OK;
     }
-    
-    /* Save imported config to NVS as well */
-    ts_led_cc_save_to_nvs();
     
     cJSON *data = ts_led_cc_config_to_json();
     if (!data) {

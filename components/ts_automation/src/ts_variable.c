@@ -5,22 +5,25 @@
  * 提供层级化的变量存储系统：
  * - 支持 bool/int/float/string 类型
  * - 变量变化通过事件总线通知
- * - 可选持久化到 NVS
+ * - 用户定义与初始值由统一配置保存，观测值只在运行时更新
  *
  * @author TianShanOS Team
  * @version 1.0.0
  */
 
 #include "ts_variable.h"
-#include "ts_event.h"
+#include "ts_automation_runtime.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <inttypes.h>
 
 static const char *TAG = "ts_variable";
 
@@ -51,6 +54,18 @@ static ts_variable_ctx_t s_var_ctx = {
     .mutex = NULL,
     .initialized = false,
 };
+
+static StaticSemaphore_t registration_storage;
+static SemaphoreHandle_t registration;
+static uint64_t next_definition_instance;
+
+struct ts_variable_config_view {
+    ts_auto_variable_t *variables;
+    int count;
+};
+
+void ts_variable_registration_begin(void) { xSemaphoreTakeRecursive(registration, portMAX_DELAY); }
+void ts_variable_registration_end(void) { xSemaphoreGiveRecursive(registration); }
 
 /*===========================================================================*/
 /*                              辅助函数                                      */
@@ -107,15 +122,6 @@ static void notify_change(const char *name,
     (void)old_val;  // 暂未使用，预留接口
     (void)new_val;  // 暂未使用，预留接口
 
-    // TODO: 通过事件总线通知（事件系统扩展后启用）
-    // ts_variable_change_event_t event = {
-    //     .name = name,
-    //     .old_value = *old_val,
-    //     .new_value = *new_val,
-    // };
-    // ts_event_post(TS_EVENT_BASE_AUTOMATION, TS_EVENT_VAR_CHANGED, 
-    //               &event, sizeof(event), 0);
-
     ESP_LOGD(TAG, "Variable '%s' changed", name);
 }
 
@@ -160,6 +166,7 @@ esp_err_t ts_variable_init(void)
     }
 
     s_var_ctx.count = 0;
+    if (!registration) registration = xSemaphoreCreateRecursiveMutexStatic(&registration_storage);
     s_var_ctx.initialized = true;
 
     ESP_LOGD(TAG, "Variable storage initialized");
@@ -204,7 +211,9 @@ bool ts_variable_is_initialized(void)
 /*                              变量注册                                      */
 /*===========================================================================*/
 
-esp_err_t ts_variable_register(const ts_auto_variable_t *var)
+static bool same_definition(const ts_auto_variable_t *a,const ts_auto_variable_t *b);
+
+static esp_err_t register_variable(const ts_auto_variable_t *var)
 {
     if (!var || !var->name[0]) {
         ESP_LOGE(TAG, "ts_variable_register: invalid arg (var=%p, name=%s)", 
@@ -223,6 +232,10 @@ esp_err_t ts_variable_register(const ts_auto_variable_t *var)
     // 检查是否已存在
     int idx = find_variable_index(var->name);
     if (idx >= 0) {
+        if (s_var_ctx.variables[idx].definition_instance) {
+            xSemaphoreGive(s_var_ctx.mutex);
+            return ESP_ERR_INVALID_STATE;
+        }
         // 更新现有变量
         int64_t last_change_ms = s_var_ctx.variables[idx].last_change_ms;
         int64_t last_update_ms = s_var_ctx.variables[idx].last_update_ms;
@@ -230,7 +243,9 @@ esp_err_t ts_variable_register(const ts_auto_variable_t *var)
             last_change_ms = now_ms;
             last_update_ms = 0;
         }
+        uint64_t identity=same_definition(&s_var_ctx.variables[idx],var)?s_var_ctx.variables[idx].runtime_instance:++next_definition_instance;
         memcpy(&s_var_ctx.variables[idx], var, sizeof(ts_auto_variable_t));
+        s_var_ctx.variables[idx].runtime_instance=identity;
         s_var_ctx.variables[idx].last_change_ms = last_change_ms;
         s_var_ctx.variables[idx].last_update_ms = last_update_ms;
         xSemaphoreGive(s_var_ctx.mutex);
@@ -248,6 +263,7 @@ esp_err_t ts_variable_register(const ts_auto_variable_t *var)
 
     // 添加新变量
     memcpy(&s_var_ctx.variables[s_var_ctx.count], var, sizeof(ts_auto_variable_t));
+    s_var_ctx.variables[s_var_ctx.count].runtime_instance=++next_definition_instance;
     s_var_ctx.variables[s_var_ctx.count].last_change_ms = now_ms;
     s_var_ctx.variables[s_var_ctx.count].last_update_ms = 0;
     s_var_ctx.count++;
@@ -259,7 +275,7 @@ esp_err_t ts_variable_register(const ts_auto_variable_t *var)
     return ESP_OK;
 }
 
-esp_err_t ts_variable_upsert(const ts_auto_variable_t *var)
+static esp_err_t upsert_variable(const ts_auto_variable_t *var)
 {
     if (!var || !var->name[0]) {
         return ESP_ERR_INVALID_ARG;
@@ -278,6 +294,11 @@ esp_err_t ts_variable_upsert(const ts_auto_variable_t *var)
 
     int idx = find_variable_index(var->name);
     if (idx >= 0) {
+        if (s_var_ctx.variables[idx].definition_instance &&
+            (!var->source_id[0] || strcmp(var->source_id, s_var_ctx.variables[idx].source_id))) {
+            xSemaphoreGive(s_var_ctx.mutex);
+            return ESP_ERR_INVALID_STATE;
+        }
         existed = true;
         old_value = s_var_ctx.variables[idx].value;
         changed = !value_equal(&old_value, &var->value);
@@ -285,7 +306,11 @@ esp_err_t ts_variable_upsert(const ts_auto_variable_t *var)
         int64_t last_change_ms = changed
                                  ? now_ms
                                  : s_var_ctx.variables[idx].last_change_ms;
-        memcpy(&s_var_ctx.variables[idx], var, sizeof(ts_auto_variable_t));
+        uint64_t identity=s_var_ctx.variables[idx].runtime_instance;
+        if (s_var_ctx.variables[idx].definition_instance)
+            s_var_ctx.variables[idx].value = var->value;
+        else memcpy(&s_var_ctx.variables[idx], var, sizeof(ts_auto_variable_t));
+        s_var_ctx.variables[idx].runtime_instance=identity;
         s_var_ctx.variables[idx].last_change_ms = last_change_ms;
         s_var_ctx.variables[idx].last_update_ms = now_ms;
     } else {
@@ -295,6 +320,7 @@ esp_err_t ts_variable_upsert(const ts_auto_variable_t *var)
         }
 
         memcpy(&s_var_ctx.variables[s_var_ctx.count], var, sizeof(ts_auto_variable_t));
+        s_var_ctx.variables[s_var_ctx.count].runtime_instance=++next_definition_instance;
         s_var_ctx.variables[s_var_ctx.count].last_change_ms = now_ms;
         s_var_ctx.variables[s_var_ctx.count].last_update_ms = now_ms;
         s_var_ctx.count++;
@@ -309,7 +335,7 @@ esp_err_t ts_variable_upsert(const ts_auto_variable_t *var)
     return ESP_OK;
 }
 
-esp_err_t ts_variable_unregister(const char *name)
+static esp_err_t unregister_variable(const char *name)
 {
     if (!name) {
         return ESP_ERR_INVALID_ARG;
@@ -326,6 +352,10 @@ esp_err_t ts_variable_unregister(const char *name)
         xSemaphoreGive(s_var_ctx.mutex);
         return ESP_ERR_NOT_FOUND;
     }
+    if (s_var_ctx.variables[idx].definition_instance) {
+        xSemaphoreGive(s_var_ctx.mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
 
     // 移动后续元素
     if (idx < s_var_ctx.count - 1) {
@@ -341,7 +371,7 @@ esp_err_t ts_variable_unregister(const char *name)
     return ESP_OK;
 }
 
-int ts_variable_unregister_by_source(const char *source_id)
+static int unregister_source(const char *source_id)
 {
     if (!source_id || !s_var_ctx.initialized) {
         return 0;
@@ -352,7 +382,8 @@ int ts_variable_unregister_by_source(const char *source_id)
     int removed = 0;
     // 从后向前遍历，避免删除时索引混乱
     for (int i = s_var_ctx.count - 1; i >= 0; i--) {
-        if (strcmp(s_var_ctx.variables[i].source_id, source_id) == 0) {
+        if (!s_var_ctx.variables[i].definition_instance &&
+            strcmp(s_var_ctx.variables[i].source_id, source_id) == 0) {
             // 移动后续元素
             if (i < s_var_ctx.count - 1) {
                 memmove(&s_var_ctx.variables[i],
@@ -745,62 +776,196 @@ esp_err_t ts_variable_iterate(ts_variable_iterate_ctx_t *ctx, ts_auto_variable_t
     return ESP_OK;
 }
 
-/*===========================================================================*/
-/*                              持久化                                        */
-/*===========================================================================*/
 
-esp_err_t ts_variable_save_all(void)
+/* Configuration publication owns definitions; ordinary producers own runtime
+ * observations. Registration is serialized with the prepared replacement so a
+ * save cannot consume capacity that a source discovers during file I/O. */
+esp_err_t ts_variable_register(const ts_auto_variable_t *value)
 {
-    if (!s_var_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (!registration || !s_var_ctx.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTakeRecursive(registration, portMAX_DELAY);
+    esp_err_t ret = value && value->definition_instance ? ESP_ERR_INVALID_ARG : register_variable(value);
+    xSemaphoreGiveRecursive(registration);
+    return ret;
+}
+esp_err_t ts_variable_upsert(const ts_auto_variable_t *value)
+{
+    if (!registration || !s_var_ctx.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTakeRecursive(registration, portMAX_DELAY);
+    esp_err_t ret = value && value->definition_instance ? ESP_ERR_INVALID_ARG : upsert_variable(value);
+    xSemaphoreGiveRecursive(registration);
+    return ret;
+}
+esp_err_t ts_variable_unregister(const char *name)
+{
+    if (!registration || !s_var_ctx.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTakeRecursive(registration, portMAX_DELAY);
+    esp_err_t ret = unregister_variable(name);
+    xSemaphoreGiveRecursive(registration);
+    return ret;
+}
+int ts_variable_unregister_by_source(const char *source)
+{
+    if (!registration || !s_var_ctx.initialized) return 0;
+    xSemaphoreTakeRecursive(registration, portMAX_DELAY);
+    int count = unregister_source(source);
+    xSemaphoreGiveRecursive(registration);
+    return count;
+}
+
+static bool same_definition(const ts_auto_variable_t *a, const ts_auto_variable_t *b)
+{
+    bool same_initial = a->default_value.type == TS_AUTO_VAL_FLOAT ?
+        b->default_value.type == TS_AUTO_VAL_FLOAT && a->default_value.float_val == b->default_value.float_val :
+        value_equal(&a->default_value, &b->default_value);
+    return same_initial && a->flags == b->flags && !strcmp(a->source_id, b->source_id) &&
+           !strcmp(a->expression, b->expression);
+}
+
+static esp_err_t stage_variable(ts_variable_config_view_t *view, const ts_auto_variable_t *value, bool shared, bool keep_runtime)
+{
+    for (int i = 0; i < view->count; ++i) {
+        ts_auto_variable_t *existing = &view->variables[i];
+        if (strcmp(existing->name, value->name)) continue;
+        return shared && existing->definition_instance && same_definition(existing, value) ?
+            ESP_OK : ESP_ERR_INVALID_ARG;
     }
-
-    ESP_LOGD(TAG, "Saving persistent variables to NVS");
-
-    // TODO: 实现 NVS 持久化
-    // 遍历所有带 TS_AUTO_VAR_PERSISTENT 标志的变量
-    // 保存到 NVS "ts_var" 命名空间
-
+    if (view->count == s_var_ctx.capacity) return ESP_ERR_INVALID_SIZE;
+    ts_auto_variable_t *next = &view->variables[view->count++];
+    *next = *value;
+    next->value = next->default_value;
+    next->definition_instance = ++next_definition_instance;
+    next->runtime_instance=next->definition_instance;
+    next->last_update_ms = 0;
+    next->last_change_ms = esp_timer_get_time() / 1000;
+    int old = find_variable_index(value->name);
+    if (keep_runtime && old >= 0 && s_var_ctx.variables[old].definition_instance &&
+        same_definition(value, &s_var_ctx.variables[old])) {
+        *next = s_var_ctx.variables[old];
+    }
     return ESP_OK;
 }
 
-esp_err_t ts_variable_load_all(void)
+static const ts_ssh_host_config_t *definition_host(const ts_auto_document_t *document,const char *id)
 {
-    if (!s_var_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
+    for(int i=0;document&&i<document->host_count;++i)if(!strcmp(document->hosts[i].id,id))return &document->hosts[i];
+    return NULL;
+}
+static bool command_group_same(const ts_auto_document_t *next,const ts_auto_document_t *previous,const char *prefix)
+{
+    if(!previous)return false;
+    int before=0,after=0;
+    for(int i=0;i<previous->command_count;++i)before+=!strcmp(previous->commands[i].var_name,prefix);
+    for(int i=0;i<next->command_count;++i){
+        const ts_ssh_command_config_t *command=&next->commands[i];
+        if(strcmp(command->var_name,prefix))continue;
+        ++after;bool matched=false;
+        for(int j=0;j<previous->command_count;++j){
+            const ts_ssh_command_config_t *old=&previous->commands[j];
+            if(memcmp(command,old,offsetof(ts_ssh_command_config_t,last_exec_time)))continue;
+            const ts_ssh_host_config_t *a=definition_host(next,command->host_id),*b=definition_host(previous,old->host_id);
+            matched=a&&b&&!memcmp(a,b,sizeof(*a));break;
+        }
+        if(!matched)return false;
     }
+    return before==after;
+}
 
-    ESP_LOGD(TAG, "Loading persistent variables from NVS");
-
-    // TODO: 实现 NVS 加载
-
+esp_err_t ts_variable_config_prepare(const ts_auto_document_t *document, const ts_source_config_view_t *sources, const ts_auto_document_t *previous,
+                                     ts_variable_config_view_t **out)
+{
+    if (!document || !out) return ESP_ERR_INVALID_ARG;
+    *out = NULL;
+    if (!s_var_ctx.initialized) return ESP_ERR_INVALID_STATE;
+    ts_variable_config_view_t *view = heap_caps_calloc(1, sizeof(*view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!view) return ESP_ERR_NO_MEM;
+    view->variables = heap_caps_calloc(s_var_ctx.capacity, sizeof(*view->variables), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!view->variables) { free(view); return ESP_ERR_NO_MEM; }
+    xSemaphoreTakeRecursive(registration, portMAX_DELAY);
+    xSemaphoreTake(s_var_ctx.mutex, portMAX_DELAY);
+    for (int i = 0; i < s_var_ctx.count; ++i) {
+        if (!s_var_ctx.variables[i].definition_instance &&
+            ts_source_config_keeps_variables(sources, s_var_ctx.variables[i].source_id))
+            view->variables[view->count++] = s_var_ctx.variables[i];
+    }
+    esp_err_t ret = ESP_OK;
+    for (int i = 0; ret == ESP_OK && i < document->variable_count; ++i)
+        ret = stage_variable(view, &document->variables[i], false, previous!=NULL);
+    const struct { const char *suffix; ts_auto_value_type_t type; } fields[] = {
+        {"status", TS_AUTO_VAL_STRING}, {"exit_code", TS_AUTO_VAL_INT}, {"extracted", TS_AUTO_VAL_STRING},
+        {"expect_matched", TS_AUTO_VAL_BOOL}, {"fail_matched", TS_AUTO_VAL_BOOL},
+        {"host", TS_AUTO_VAL_STRING}, {"timestamp", TS_AUTO_VAL_INT}
+    };
+    for (int i = 0; ret == ESP_OK && i < document->command_count; ++i) {
+        const char *prefix = document->commands[i].var_name;
+        if (!prefix[0]) continue;
+        bool shared=false;
+        for(int n=0;n<i;++n)if(!strcmp(document->commands[n].var_name,prefix)){shared=true;break;}
+        if(shared)continue;
+        bool keep_values=command_group_same(document,previous,prefix);
+        ts_auto_variable_t value = {0};
+        strcpy(value.source_id, prefix);
+        for (unsigned j = 0; ret == ESP_OK && j < sizeof(fields) / sizeof(fields[0]); ++j) {
+            snprintf(value.name, sizeof(value.name), "%s.%s", prefix, fields[j].suffix);
+            value.default_value.type = fields[j].type;
+            bool user_defined = false;
+            for (int n = 0; n < document->variable_count; ++n)
+                user_defined |= !strcmp(document->variables[n].name, value.name);
+            ret = user_defined ? ESP_ERR_INVALID_ARG : stage_variable(view, &value, true, keep_values);
+        }
+    }
+    xSemaphoreGive(s_var_ctx.mutex);
+    if (ret != ESP_OK) { ts_variable_config_discard(view); return ret; }
+    *out = view;
     return ESP_OK;
 }
 
-/*===========================================================================*/
-/*                              JSON 导入导出                                  */
-/*===========================================================================*/
-
-int ts_variable_export_json(char *buffer, size_t buffer_size)
+void ts_variable_config_discard(ts_variable_config_view_t *view)
 {
-    if (!buffer || buffer_size == 0 || !s_var_ctx.initialized) {
-        return -1;
-    }
-
-    // TODO: 实现完整的 JSON 导出
-    // 格式: {"variables":[{"name":"xxx","value":123,"type":"int"},...]}
-
-    int written = snprintf(buffer, buffer_size, "{\"variables\":[]}");
-    return (written < (int)buffer_size) ? written : -1;
+    if (!view) return;
+    free(view->variables); free(view);
+    xSemaphoreGiveRecursive(registration);
 }
 
-esp_err_t ts_variable_import_json(const char *json)
+void ts_variable_config_publish(ts_variable_config_view_t *view)
 {
-    if (!json || !s_var_ctx.initialized) {
-        return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_var_ctx.mutex, portMAX_DELAY);
+    for (int i = 0; i < view->count; ++i) {
+        ts_auto_variable_t *next = &view->variables[i];
+        int old = find_variable_index(next->name);
+        if (old < 0 || next->definition_instance != s_var_ctx.variables[old].definition_instance) continue;
+        next->value = s_var_ctx.variables[old].value;
+        next->last_change_ms = s_var_ctx.variables[old].last_change_ms;
+        next->last_update_ms = s_var_ctx.variables[old].last_update_ms;
     }
+    ts_auto_variable_t *previous = s_var_ctx.variables;
+    s_var_ctx.variables = view->variables;
+    s_var_ctx.count = view->count;
+    xSemaphoreGive(s_var_ctx.mutex);
+    free(previous); free(view);
+    xSemaphoreGiveRecursive(registration);
+}
 
-    // TODO: 实现 JSON 导入
+void ts_variable_config_clear(const ts_auto_document_t *previous)
+{
+    if(!s_var_ctx.initialized)return;
+    ts_variable_registration_begin();xSemaphoreTake(s_var_ctx.mutex,portMAX_DELAY);
+    int retained=0;
+    for(int i=0;i<s_var_ctx.count;++i){
+        ts_auto_variable_t *value=&s_var_ctx.variables[i];
+        bool removed=value->definition_instance!=0;
+        for(int n=0;!removed&&previous&&n<previous->source_count;++n)
+            removed=!strcmp(value->source_id,previous->sources[n].id);
+        if(!removed)s_var_ctx.variables[retained++]=*value;
+    }
+    memset(s_var_ctx.variables+retained,0,(s_var_ctx.count-retained)*sizeof(*s_var_ctx.variables));
+    s_var_ctx.count=retained;xSemaphoreGive(s_var_ctx.mutex);ts_variable_registration_end();
+}
 
-    return ESP_OK;
+uint64_t ts_variable_instance(const char *name)
+{
+    if(!name||!s_var_ctx.initialized)return 0;
+    xSemaphoreTake(s_var_ctx.mutex,portMAX_DELAY);
+    int index=find_variable_index(name);uint64_t instance=index<0?0:s_var_ctx.variables[index].runtime_instance;
+    xSemaphoreGive(s_var_ctx.mutex);return instance;
 }

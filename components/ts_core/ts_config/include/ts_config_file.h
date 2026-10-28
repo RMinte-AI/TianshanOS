@@ -84,16 +84,6 @@ const ts_config_backend_ops_t *ts_config_file_get_ops(void);
  */
 esp_err_t ts_config_file_load_encrypted(void);
 
-/**
- * @brief 注册存储事件监听器
- * 
- * 在事件系统初始化后调用，监听 SD 卡挂载事件以自动加载配置。
- * 由 ts_core 在初始化完成后调用。
- * 
- * @return ESP_OK 成功
- */
-esp_err_t ts_config_file_register_events(void);
-
 #ifdef __cplusplus
 }
 #endif

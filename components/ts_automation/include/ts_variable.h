@@ -5,7 +5,7 @@
  * Provides variable storage with:
  * - Hierarchical namespacing (e.g., "agx.power", "lpmu.0.status")
  * - Change notification via event bus
- * - Optional NVS persistence
+ * - Saved user definitions with runtime observations
  * - Expression evaluation for computed variables
  *
  * @author TianShanOS Team
@@ -23,6 +23,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+uint64_t ts_variable_instance(const char *name);
 
 /*===========================================================================*/
 /*                           Event Definitions                                */
@@ -305,44 +307,9 @@ typedef struct {
  */
 esp_err_t ts_variable_iterate(ts_variable_iterate_ctx_t *ctx, ts_auto_variable_t *var);
 
-/*===========================================================================*/
-/*                           Persistence                                      */
-/*===========================================================================*/
-
-/**
- * @brief Save all persistent variables to NVS
- *
- * @return ESP_OK on success
- */
-esp_err_t ts_variable_save_all(void);
-
-/**
- * @brief Load all persistent variables from NVS
- *
- * @return ESP_OK on success
- */
-esp_err_t ts_variable_load_all(void);
-
-/*===========================================================================*/
-/*                           JSON Export/Import                               */
-/*===========================================================================*/
-
-/**
- * @brief Export all variables to JSON
- *
- * @param buffer Output buffer
- * @param buffer_size Buffer size
- * @return JSON length, or -1 on error
- */
-int ts_variable_export_json(char *buffer, size_t buffer_size);
-
-/**
- * @brief Import variables from JSON
- *
- * @param json JSON string
- * @return ESP_OK on success
- */
-esp_err_t ts_variable_import_json(const char *json);
+/* Bracket identity checks and writes against registry removal/recreation. */
+void ts_variable_registration_begin(void);
+void ts_variable_registration_end(void);
 
 #ifdef __cplusplus
 }

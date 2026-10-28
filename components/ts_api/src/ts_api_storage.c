@@ -172,6 +172,18 @@ static esp_err_t api_storage_list(const cJSON *params, ts_api_result_t *result)
  * @brief storage.delete - Delete file or directory
  * @param params { "path": "/sdcard/file.txt" }
  */
+static esp_err_t storage_mutation_failure(ts_api_result_t *result, esp_err_t ret, const char *message)
+{
+    if (ret == ESP_ERR_NOT_ALLOWED) {
+        ts_api_result_error(result, TS_API_ERR_NO_PERMISSION, "automation_configuration_managed");
+    } else if (ret == ESP_ERR_INVALID_ARG) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "storage_path_invalid");
+    } else {
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, message);
+    }
+    return ret;
+}
+
 static esp_err_t api_storage_delete(const cJSON *params, ts_api_result_t *result)
 {
     if (!params) {
@@ -193,12 +205,13 @@ static esp_err_t api_storage_delete(const cJSON *params, ts_api_result_t *result
         return ESP_ERR_INVALID_ARG;
     }
     
+    esp_err_t ret = ts_storage_check_write_path(path, true);
+    if (ret != ESP_OK) return storage_mutation_failure(result, ret, "Failed to delete");
     if (!ts_storage_exists(path)) {
         ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "File not found");
         return ESP_ERR_NOT_FOUND;
     }
     
-    esp_err_t ret;
     if (ts_storage_is_dir(path)) {
         ret = ts_storage_rmdir_r(path);
     } else {
@@ -206,8 +219,7 @@ static esp_err_t api_storage_delete(const cJSON *params, ts_api_result_t *result
     }
     
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to delete");
-        return ret;
+        return storage_mutation_failure(result, ret, "Failed to delete");
     }
     
     cJSON *data = cJSON_CreateObject();
@@ -238,8 +250,7 @@ static esp_err_t api_storage_mkdir(const cJSON *params, ts_api_result_t *result)
     
     esp_err_t ret = ts_storage_mkdir_p(path);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to create directory");
-        return ret;
+        return storage_mutation_failure(result, ret, "Failed to create directory");
     }
     
     cJSON *data = cJSON_CreateObject();
@@ -271,15 +282,17 @@ static esp_err_t api_storage_rename(const cJSON *params, ts_api_result_t *result
     const char *from = from_param->valuestring;
     const char *to = to_param->valuestring;
     
+    esp_err_t ret = ts_storage_check_write_path(from, true);
+    if (ret == ESP_OK) ret = ts_storage_check_write_path(to, true);
+    if (ret != ESP_OK) return storage_mutation_failure(result, ret, "Failed to rename");
     if (!ts_storage_exists(from)) {
         ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Source file not found");
         return ESP_ERR_NOT_FOUND;
     }
     
-    esp_err_t ret = ts_storage_rename(from, to);
+    ret = ts_storage_rename(from, to);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to rename");
-        return ret;
+        return storage_mutation_failure(result, ret, "Failed to rename");
     }
     
     cJSON *data = cJSON_CreateObject();

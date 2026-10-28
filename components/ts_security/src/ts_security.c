@@ -6,6 +6,7 @@
  */
 
 #include "ts_security.h"
+#include "ts_config_partitions.h"
 #include "ts_crypto.h"
 #include "ts_ssh_hosts_config.h"
 #include "ts_ssh_commands_config.h"
@@ -27,6 +28,7 @@ typedef struct {
 } session_slot_t;
 
 static nvs_handle_t s_nvs;
+static nvs_handle_t s_keys_nvs;
 static session_slot_t s_sessions[MAX_SESSIONS];
 static bool s_initialized = false;
 
@@ -40,6 +42,9 @@ esp_err_t ts_security_init(void)
         return ret;
     }
     
+    ret = nvs_open_from_partition(TS_CONFIG_KEYS_PARTITION, NVS_NAMESPACE, NVS_READWRITE, &s_keys_nvs);
+    if (ret != ESP_OK) { nvs_close(s_nvs); return ret; }
+
     memset(s_sessions, 0, sizeof(s_sessions));
     
     // 初始化 SSH 主机配置模块
@@ -70,6 +75,7 @@ esp_err_t ts_security_deinit(void)
     if (!s_initialized) return ESP_OK;
     
     nvs_close(s_nvs);
+    nvs_close(s_keys_nvs);
     s_initialized = false;
     return ESP_OK;
 }
@@ -115,7 +121,7 @@ esp_err_t ts_security_load_key(const char *name, void *key, size_t *key_len)
     char nvs_key[32];
     snprintf(nvs_key, sizeof(nvs_key), "key_%s", name);
     
-    return nvs_get_blob(s_nvs, nvs_key, key, key_len);
+    return nvs_get_blob(s_keys_nvs, nvs_key, key, key_len);
 }
 
 esp_err_t ts_security_store_key(const char *name, const void *key, size_t key_len)
@@ -125,9 +131,9 @@ esp_err_t ts_security_store_key(const char *name, const void *key, size_t key_le
     char nvs_key[32];
     snprintf(nvs_key, sizeof(nvs_key), "key_%s", name);
     
-    esp_err_t ret = nvs_set_blob(s_nvs, nvs_key, key, key_len);
+    esp_err_t ret = nvs_set_blob(s_keys_nvs, nvs_key, key, key_len);
     if (ret == ESP_OK) {
-        nvs_commit(s_nvs);
+        ret = nvs_commit(s_keys_nvs);
     }
     return ret;
 }
@@ -139,9 +145,9 @@ esp_err_t ts_security_delete_key(const char *name)
     char nvs_key[32];
     snprintf(nvs_key, sizeof(nvs_key), "key_%s", name);
     
-    esp_err_t ret = nvs_erase_key(s_nvs, nvs_key);
+    esp_err_t ret = nvs_erase_key(s_keys_nvs, nvs_key);
     if (ret == ESP_OK) {
-        nvs_commit(s_nvs);
+        ret = nvs_commit(s_keys_nvs);
     }
     return ret;
 }

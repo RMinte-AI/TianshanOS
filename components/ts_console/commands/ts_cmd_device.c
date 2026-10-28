@@ -335,11 +335,7 @@ static int do_device_save(void)
     esp_err_t ret = ts_config_module_persist(TS_CONFIG_MODULE_DEVICE);
     if (ret == ESP_OK) {
         ts_console_success("Device configuration saved to NVS");
-        if (ts_config_module_has_pending_sync()) {
-            ts_console_printf(" (SD card sync pending)\n");
-        } else {
-            ts_console_printf(" and SD card\n");
-        }
+        ts_console_printf("\n");
         return 0;
     } else {
         ts_console_error("Failed to save configuration: %s\n", esp_err_to_name(ret));

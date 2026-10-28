@@ -1,5 +1,7 @@
 # 图标清单（remixicon → 内联 SVG 精灵）
 
+> 当前实现：2026-10-03 起使用 Phosphor Regular，82 个 symbol 的对应关系见 `tests/macos27-r2/phosphor-map.json`，生成入口为 `icons_from_phosphor.py`。Phosphor 使用 256 栅格的填充轮廓路径，不受外层 CSS `stroke-width` 控制；保留自绘图标使用 16 栅格。以下 107 个、16×16 / 1.35 描边是迁移前的历史方案，不能用它覆盖后续定稿。图标容器应通过 Flex/Grid 对齐，不能用逐图标位移修复文字基线。
+
 来源：web/index.html + web/js/*.js 静态扫描。实际用到 **107** 个图标（已排除 `ri-xxx`、`ri-arrow-`、`ri-text` 三个非图标字符串）。
 运行时拼接：`ri-${isReading ? 'stop' : 'play'}-line`（app.js 3386、3777），即 `ri-stop-line` / `ri-play-line`，已计入。
 

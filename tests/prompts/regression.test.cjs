@@ -2,6 +2,12 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {harness}=require('./harness.cjs');
 async function setup(lang){const h=harness(lang);await h.ready();h.load();h.ctx.confirmSheet=async()=>h.ctx.confirm();return h;}
+function deploymentForm(h) {
+ const modal=h.el('deploy-key-modal');
+ modal.querySelector=selector=>h.el(selector.slice(1));
+ modal._configuration={keyId:'key',version:'shown',ready:Promise.resolve(),current:()=>true,busy:false};
+ h.el('deploy-password').value='fixture';
+}
 for(const lang of ['zh-CN','en-US']) {
  test(`${lang}: first deployment sends automatic first trust once, with no confirmation and factual registration result`,async()=>{
     const h=await setup(lang),requests=[];let confirmations=0;
@@ -12,13 +18,13 @@ for(const lang of ['zh-CN','en-US']) {
         requests.push({url,method:options.method,params:JSON.parse(options.body)});
         return {ok:true,status:200,text:async()=>JSON.stringify({code:0,data:{deployed:true,verified:true,registered:true}})};
     };
-    h.run("currentDeployKeyId='key';refreshSshHostsList=async()=>({hosts:[]});");
-    await h.run('deployKey()');
+    h.run("refreshSshHostsList=async()=>({hosts:[]});");
+    deploymentForm(h);await h.run('deployKey()');
     assert.equal(confirmations,0);assert.equal(requests.length,1);
     assert.equal(requests[0].url,'/api/v1/ssh/copyid');assert.equal(requests[0].method,'POST');
-    assert.deepEqual(requests[0].params,{host:'fixture',user:'fixture',password:'fixture',keyid:'key',port:2222,verify:true,trust_new:true,accept_changed:false});
-    assert(h.el('deploy-result').classList.contains('success'));assert.equal(h.el('deploy-btn').disabled,false);
-    assert.equal(h.el('deploy-result').textContent,h.ctx.t('promptRepair.keyVerified',{id:'key',target:'fixture@fixture'}));
+    assert.deepEqual(requests[0].params,{host:'fixture',user:'fixture',password:'fixture',keyid:'key',port:2222,verify:true,trust_new:true,accept_changed:false,active_version:'shown'});
+    assert(h.el('deploy-result').classList.contains('success'));assert.equal(h.el('deploy-btn').disabled,true);assert.equal(h.el('deploy-password').value,'');
+    assert.equal(h.el('deploy-result').textContent,h.ctx.t('promptRepair.keyVerified',{id:'key',target:'fixture@fixture:2222'}));
  });
  test(`${lang}: deployment honors explicit first-trust opt-out and does not change other SSH defaults`,async()=>{
     const h=await setup(lang),requests=[];
@@ -31,6 +37,12 @@ for(const lang of ['zh-CN','en-US']) {
  });
 }
 for(const lang of ['zh-CN','en-US']) {
+ test(`${lang}: mixed text cannot turn an invalid save response into success`,async()=>{
+  const h=await setup(lang);let reads=0;
+  h.ctx.fetch=async()=>{reads++;return {ok:true,status:200,text:async()=>'diagnostic text {"code":0,"data":{"saved":true}}'};};
+  await assert.rejects(h.run("api.request('/automation/rules/update','POST',{id:'rule'})"),error=>error.kind==='format'&&error.uncertain===true);
+  assert.equal(reads,1);
+ });
  test(`${lang}: actual inline translator, cold language, missing/objects/parameters and confirmations`, async()=>{
     const h=await setup(lang),{ctx,run}=h;
     assert.equal(ctx.getLanguage(),lang);
@@ -120,10 +132,10 @@ for(const lang of ['zh-CN','en-US']) {
     assert.equal(h.el('toast').textContent,h.ctx.t('promptRepair.sshFailureOutput'));
  });
  test(`${lang}: background command timeout is unconfirmed and never resubmitted`,async()=>{
-    const h=await setup(lang);for(const id of ['exec-result','exec-result-section','cancel-exec-btn','nohup-actions'])h.el(id);
-    h.run("selectedHostId='test';sshCommands={test:[{id:'id',name:'name',command:'echo test',nohup:true}]};window._cmdHostsList=[{id:'test',username:'user',host:'fixture',port:22}];window.calls=0;api.call=async()=>{window.calls++;throw new ApiOperationError({},'ssh.exec_stream',{kind:'timeout',uncertain:true});};");
-    await h.run('executeCommand(0)');assert.equal(h.ctx.calls,1);assert(h.el('exec-result').textContent.includes(h.ctx.t('promptRepair.sshSubmissionUnknown')));
-    h.run("api.call=async()=>{window.calls++;return {code:5,error:'timeout'};};");await h.run('executeCommand(0)');assert.equal(h.ctx.calls,2);assert(h.el('exec-result').textContent.includes(h.ctx.t('promptRepair.sshSubmissionUnknown')));
+    const h=await setup(lang);for(const id of ['exec-result','exec-result-section','cancel-exec-btn','nohup-actions','toast'])h.el(id);
+    h.run("recordConfigurationList('commands',{active_version:'shown'},[]);selectedHostId='test';sshCommands={test:[{id:'id',name:'name',command:'echo test',nohup:true}]};window._cmdHostsList=[{id:'test',username:'user',host:'fixture',port:22}];window.calls=0;api.call=async()=>{window.calls++;throw new ApiOperationError({},'ssh.services.start',{kind:'timeout',uncertain:true});};");
+    await h.run('executeCommand(0)');assert.equal(h.ctx.calls,1);assert.match(h.el('exec-result').textContent,/未确认|unconfirmed|not confirmed|could not be confirmed/);await h.advance(10000);assert.equal(h.ctx.calls,1);
+    h.run("api.call=async()=>{window.calls++;return {code:5,error:'timeout'};};");await h.run('executeCommand(0)');assert.equal(h.ctx.calls,2);assert(!h.el('toast').classList.contains('toast-success'));
  });
  test(`${lang}: terminal restoration waits for acknowledgement; timeout/failure stay distinct`,async()=>{
     const h=await setup(lang);h.run("window.term=new WebTerminal('test');term.writeln=()=>{};term.writePrompt=()=>{};window.sent=[];term.ws={readyState:1,send:v=>sent.push(v)};");
@@ -162,10 +174,10 @@ for(const lang of ['zh-CN','en-US']) {
  });
  test(`${lang}: key deployment requires successful business code and distinguishes verification`,async()=>{
   const h=await setup(lang);for(const id of ['deploy-host','deploy-user','deploy-port','deploy-password','deploy-result','deploy-btn'])h.el(id).value='fixture';
-  h.run("currentDeployKeyId='key';refreshSshHostsList=async()=>({ok:true,hosts:[]});");
-  for(const [result,key]of [[{code:0,data:{deployed:true,verified:true,registered:true}},'keyVerified'],[{code:0,data:{deployed:true,verified:false,registered:true}},'keyUnverified'],[{code:3,error:'denied',data:{deployed:true,verified:true}},null]]){
-   h.ctx.fixture=result;h.run('api.sshCopyid=async()=>fixture;');await h.run('deployKey()');
-   if(key)assert.equal(h.el('deploy-result').textContent,h.ctx.t('promptRepair.'+key,{id:'key',target:'fixture@fixture'}));
+  h.run("refreshSshHostsList=async()=>({ok:true,hosts:[]});");
+  for(const [result,key]of [[{code:0,data:{deployed:true,verified:true,registered:true}},'keyVerified'],[{code:0,data:{deployed:true,verified:false,registered:true}},'keyUnverified'],[{code:3,error:'denied',data:{deployed:false,verified:false}},null]]){
+   deploymentForm(h);h.ctx.fixture=result;h.run('api.sshCopyid=async()=>fixture;');await h.run('deployKey()');
+   if(key)assert.equal(h.el('deploy-result').textContent,h.ctx.t('promptRepair.'+key,{id:'key',target:'fixture@fixture:22'}));
    else assert(h.el('deploy-result').classList.contains('error'));
   }
  });
@@ -186,14 +198,7 @@ for(const lang of ['zh-CN','en-US']) {
   assert(await h.ctx.confirmAction(h.ctx.t('ui.confirmDeleteCmd',{name:'file{my_name}'})));
   for(const phase of ['PLATFORM','HAL','DRIVER','NETWORK','UNKNOWN'])assert(!h.ctx.servicePhaseLabel(phase).includes('promptRepair.'));
  });
- test(`${lang}: unknown asynchronous stop never retries or escalates`,async()=>{
-  const h=await setup(lang);for(const id of ['exec-result-section','exec-result','cancel-exec-btn','nohup-actions'])h.el(id);
-  h.run("selectedHostId='test';sshCommands={test:[{id:'fixture',name:'fixture'}]};window.calls=[];api.call=async(name,args)=>{calls.push({name,args});return {code:0,data:{operation_id:31,operation_phase:'unconfirmed',state:'unknown'}};};");
-  await h.run("stopServiceProcess(0)");
-  assert.equal(h.ctx.calls.filter(c=>c.name==='automation.services.stop').length,1);
-  assert(h.ctx.calls.every(c=>c.name!=='ssh.exec'&&c.name!=='ssh.exec_stream'));
-  assert(!h.el('toast').classList.contains('toast-success'));
- });
+
 }
 
 for (const lang of ['zh-CN','en-US']) {

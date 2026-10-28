@@ -38,12 +38,14 @@
 #include "ts_power_policy.h"
 #include "ts_automation.h"
 #include "ts_device_ctrl.h"
-#include "ts_config_file.h"
+#include "ts_config_partitions.h"
+#include "ts_config_schemas.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "ts_https_retry.h"
 
 static const char *TAG = "ts_services";
+static bool s_storage_prepared;
 
 /* ============================================================================
  * 服务句柄
@@ -115,6 +117,7 @@ static esp_err_t storage_service_init(ts_service_handle_t handle, void *user_dat
     
     ESP_LOGI(TAG, "Initializing storage service...");
     
+    if (s_storage_prepared) return ESP_OK;
     esp_err_t ret = ts_storage_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init storage: %s", esp_err_to_name(ret));
@@ -134,6 +137,8 @@ static esp_err_t storage_service_start(ts_service_handle_t handle, void *user_da
     
     ESP_LOGI(TAG, "Starting storage service...");
     
+    if (s_storage_prepared) return ESP_OK;
+
     // 挂载 SPIFFS
     ts_spiffs_config_t spiffs_config = TS_SPIFFS_DEFAULT_CONFIG();
     esp_err_t ret = ts_storage_mount_spiffs(&spiffs_config);
@@ -168,6 +173,12 @@ static esp_err_t storage_service_start(ts_service_handle_t handle, void *user_da
         // ESP_ERR_NOT_FOUND 表示没有 recovery 目录，正常情况
     }
     
+    /* Failure disables internal configuration, not networking or base cooling. */
+    ret = ts_storage_mount_auto();
+    if (ret != ESP_OK)
+        ESP_LOGW(TAG, "Internal automation copy is unavailable: %s", esp_err_to_name(ret));
+
+    s_storage_prepared = true;
     return ESP_OK;
 }
 
@@ -178,10 +189,18 @@ static esp_err_t storage_service_stop(ts_service_handle_t handle, void *user_dat
     
     ESP_LOGI(TAG, "Stopping storage service...");
     
-    ts_storage_unmount_sd();
-    ts_storage_unmount_spiffs();
-    
-    return ESP_OK;
+    esp_err_t ret = ts_storage_deinit();
+    if (ret == ESP_OK) s_storage_prepared = false;
+    return ret;
+}
+
+esp_err_t ts_services_prepare_config(void)
+{
+    esp_err_t ret = storage_service_init(NULL, NULL);
+    if (ret == ESP_OK) ret = storage_service_start(NULL, NULL);
+    if (ret == ESP_OK) ret = ts_config_migrate_system(ts_storage_sd_mounted());
+    if (ret == ESP_OK) ret = ts_config_schemas_init();
+    return ret;
 }
 
 static bool storage_service_health(ts_service_handle_t handle, void *user_data)
@@ -563,13 +582,6 @@ static esp_err_t security_service_start(ts_service_handle_t handle, void *user_d
         ESP_LOGI(TAG, "Certificate status: %s, time validity: %s",
                  ts_cert_status_to_str(cert_status.status),
                  ts_cert_validity_to_str(cert_status.cert_info.validity));
-    }
-    
-    /* 证书已就绪，现在加载加密的配置文件 (.tscfg) */
-    ret = ts_config_file_load_encrypted();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to load encrypted configs: %s", esp_err_to_name(ret));
-        /* 不是致命错误，继续 */
     }
     
     return ESP_OK;  /* Security 在 init 时已启动 */
@@ -1164,7 +1176,7 @@ static const ts_service_def_t s_automation_service_def = {
     .name = "automation",
     .phase = TS_SERVICE_PHASE_SERVICE,
     .capabilities = TS_SERVICE_CAP_RESTARTABLE | TS_SERVICE_CAP_CONFIGURABLE,
-    .dependencies = {"storage", "hal", "network", NULL},  /* 依赖 storage、HAL 和 network */
+    .dependencies = {"storage", "hal", "network", "security", "drivers", NULL},  /* Storage, PKI and SDK variables precede configuration. */
     .init = automation_service_init,
     .start = automation_service_start,
     .stop = automation_service_stop,

@@ -1,3 +1,4 @@
+#include "ts_api_auto_config.h"
 /**
  * @file ts_api_ssh.c
  * @brief SSH API Handlers
@@ -29,6 +30,7 @@
 #include "ts_keystore.h"
 #include "ts_known_hosts.h"
 #include "ts_ssh_hosts_config.h"
+#include "ts_ssh_config_codec.h"
 #include "ts_ssh_commands_config.h"
 #include "ts_config_pack.h"
 #include "ts_api_pack.h"
@@ -284,6 +286,7 @@ static esp_err_t connect_verified(ts_ssh_session_t session, const cJSON *params,
  * @brief ssh.exec - Execute remote command
  * 
  * Params: { 
+ *   "active_version": "from automation.config.status",
  *   "host": "192.168.1.100", 
  *   "user": "root",
  *   "password": "xxx" | "keyid": "default" | "keypath": "/sdcard/id_rsa",
@@ -703,9 +706,9 @@ static esp_err_t api_ssh_test(const cJSON *params, ts_api_result_t *result)
  * 2. 验证主机指纹（Known Hosts）
  * 3. 部署公钥到 authorized_keys
  * 4. 使用公钥认证验证部署是否成功
- * 5. 登记主机到 NVS；登记失败保留 deployed/verified 并返回业务错误
+ * 5. 登记主机到当前自动化配置；登记失败保留 deployed/verified 并返回业务错误
  *
- * Result data adds host_id, registered (NVS committed), registration_error (on failure).
+ * Result data adds host_id, registered (configuration committed), registration_error (on failure).
  * 
  * Params: { 
  *   "host": "192.168.1.100", 
@@ -754,6 +757,12 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     int ssh_port = cJSON_IsNumber(port) ? port->valueint : 22;
     bool do_verify = cJSON_IsBool(verify) ? cJSON_IsTrue(verify) : true;
     
+    const char *version=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(params,"active_version"));
+    ts_auto_config_error_t registration_error={0};
+    esp_err_t checked=ts_auto_config_edit_begin(version,&registration_error);
+    if(checked!=ESP_OK){ts_api_result_error(result,TS_API_ERR_INVALID_ARG,registration_error.reason);return ESP_OK;}
+    ts_auto_config_edit_end();
+
     /* 加载公钥 */
     char *pubkey_data = NULL;
     size_t pubkey_len = 0;
@@ -881,13 +890,8 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     char auto_id[TS_SSH_HOST_ID_MAX];
     {
         /* 生成主机 ID：user@host:port */
-        if (ssh_port == 22) {
-            snprintf(auto_id, sizeof(auto_id), "%s@%s", 
-                     user->valuestring, host->valuestring);
-        } else {
-            snprintf(auto_id, sizeof(auto_id), "%s@%s:%d", 
-                     user->valuestring, host->valuestring, ssh_port);
-        }
+        int id_length=ssh_port==22?snprintf(auto_id,sizeof(auto_id),"%s@%s",user->valuestring,host->valuestring):
+            snprintf(auto_id,sizeof(auto_id),"%s@%s:%d",user->valuestring,host->valuestring,ssh_port);
         
         ts_ssh_host_config_t host_config = {
             .port = (uint16_t)ssh_port,
@@ -899,7 +903,21 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
         strncpy(host_config.username, user->valuestring, sizeof(host_config.username) - 1);
         strncpy(host_config.keyid, keyid->valuestring, sizeof(host_config.keyid) - 1);
         
-        add_ret = ts_ssh_hosts_config_add(&host_config);
+        if(id_length<0||(size_t)id_length>=sizeof(auto_id)||strlen(host->valuestring)>=sizeof(host_config.host)||
+            strlen(user->valuestring)>=sizeof(host_config.username)||strlen(keyid->valuestring)>=sizeof(host_config.keyid)){
+            add_ret=ESP_ERR_INVALID_ARG;registration_error.reason="configuration_invalid";
+        }else{
+            add_ret=ts_auto_config_edit_begin(version,&registration_error);
+            if(add_ret==ESP_OK){
+                ts_ssh_host_config_t old;
+                if(ts_ssh_hosts_config_get(auto_id,&old)==ESP_OK)host_config.created_time=old.created_time;
+                else{time_t now=time(NULL);host_config.created_time=now>0?now:0;}
+                cJSON *row=ts_ssh_host_encode(&host_config);
+                if(row)add_ret=ts_auto_config_set(TS_AUTO_CONFIG_HOST,row,NULL,&registration_error);
+                else{add_ret=ESP_ERR_NO_MEM;registration_error.reason="out_of_memory";}
+                cJSON_Delete(row);ts_auto_config_edit_end();
+            }
+        }
         if (add_ret == ESP_OK) {
             TS_LOGI(TAG, "Auto-registered SSH host: %s", auto_id);
         } else {
@@ -922,7 +940,7 @@ static esp_err_t api_ssh_copyid(const cJSON *params, ts_api_result_t *result)
     if (add_ret == ESP_OK) {
         ts_api_result_ok(result, data);
     } else {
-        cJSON_AddStringToObject(data, "registration_error", esp_err_to_name(add_ret));
+        cJSON_AddStringToObject(data, "registration_error", registration_error.reason?registration_error.reason:"configuration_unavailable");
         ts_api_result_code_t code = add_ret == ESP_ERR_INVALID_STATE ? TS_API_ERR_BUSY
                                  : add_ret == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM
                                  : TS_API_ERR_INTERNAL;
@@ -1232,38 +1250,11 @@ static esp_err_t api_ssh_keygen(const cJSON *params, ts_api_result_t *result)
 /**
  * @brief 迭代器回调用户数据结构（hosts）
  */
-typedef struct {
-    cJSON *hosts_arr;
-} host_list_ctx_t;
 
 /**
  * @brief 迭代器回调函数 - 将主机添加到 JSON 数组
  */
-static bool host_list_iterator_cb(const ts_ssh_host_config_t *config,
-                                   size_t index, void *user_data)
-{
-    (void)index;
-    host_list_ctx_t *ctx = (host_list_ctx_t *)user_data;
-    
-    cJSON *item = cJSON_CreateObject();
-    if (!item) return true;
-    
-    cJSON_AddStringToObject(item, "id", config->id);
-    cJSON_AddStringToObject(item, "host", config->host);
-    cJSON_AddNumberToObject(item, "port", config->port);
-    cJSON_AddStringToObject(item, "username", config->username);
-    cJSON_AddStringToObject(item, "auth_type", 
-        config->auth_type == TS_SSH_HOST_AUTH_KEY ? "key" : "password");
-    if (config->keyid[0]) {
-        cJSON_AddStringToObject(item, "keyid", config->keyid);
-    }
-    cJSON_AddBoolToObject(item, "enabled", config->enabled);
-    cJSON_AddNumberToObject(item, "created", config->created_time);
-    cJSON_AddNumberToObject(item, "last_used", config->last_used_time);
-    
-    cJSON_AddItemToArray(ctx->hosts_arr, item);
-    return true;  /* 继续遍历 */
-}
+
 
 /**
  * @brief ssh.hosts.list - 列出所有 SSH 主机配置（支持分页）
@@ -1275,36 +1266,8 @@ static bool host_list_iterator_cb(const ts_ssh_host_config_t *config,
  *   "limit": 0    (可选，每页数量，0 表示不限制，默认不限制)
  * }
  */
-static esp_err_t api_ssh_hosts_list(const cJSON *params, ts_api_result_t *result)
-{
-    const cJSON *offset_j = params ? cJSON_GetObjectItem(params, "offset") : NULL;
-    const cJSON *limit_j = params ? cJSON_GetObjectItem(params, "limit") : NULL;
-    
-    size_t offset = (offset_j && cJSON_IsNumber(offset_j)) ? (size_t)offset_j->valueint : 0;
-    size_t limit = (limit_j && cJSON_IsNumber(limit_j)) ? (size_t)limit_j->valueint : 0;
-    
-    cJSON *data = cJSON_CreateObject();
-    cJSON *hosts_arr = cJSON_AddArrayToObject(data, "hosts");
-    
-    host_list_ctx_t ctx = { .hosts_arr = hosts_arr };
-    size_t total_count = 0;
-    
-    esp_err_t ret = ts_ssh_hosts_config_iterate(
-        host_list_iterator_cb, &ctx,
-        offset, limit, &total_count);
-    
-    if (ret != ESP_OK) {
-        cJSON_Delete(data);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to list hosts");
-        return ESP_OK;
-    }
-    
-    cJSON_AddNumberToObject(data, "count", cJSON_GetArraySize(hosts_arr));
-    cJSON_AddNumberToObject(data, "total", (int)total_count);
-    
-    ts_api_result_ok(result, data);
-    return ESP_OK;
-}
+static esp_err_t api_ssh_hosts_list(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_list(TS_AUTO_CONFIG_HOST,params,"hosts",result); }
 
 /**
  * @brief ssh.hosts.add - 添加 SSH 主机配置
@@ -1318,143 +1281,20 @@ static esp_err_t api_ssh_hosts_list(const cJSON *params, ts_api_result_t *result
  *   "keyid": "default" (如果 auth_type=key)
  * }
  */
-static esp_err_t api_ssh_hosts_add(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *id = cJSON_GetObjectItem(params, "id");
-    const cJSON *host = cJSON_GetObjectItem(params, "host");
-    const cJSON *port = cJSON_GetObjectItem(params, "port");
-    const cJSON *username = cJSON_GetObjectItem(params, "username");
-    const cJSON *auth_type = cJSON_GetObjectItem(params, "auth_type");
-    const cJSON *keyid = cJSON_GetObjectItem(params, "keyid");
-    
-    if (!id || !cJSON_IsString(id) || !id->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'id' parameter");
-        return ESP_OK;
-    }
-    if (!host || !cJSON_IsString(host) || !host->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'host' parameter");
-        return ESP_OK;
-    }
-    if (!username || !cJSON_IsString(username) || !username->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'username' parameter");
-        return ESP_OK;
-    }
-    
-    ts_ssh_host_config_t config = {
-        .port = (port && cJSON_IsNumber(port)) ? (uint16_t)port->valueint : 22,
-        .auth_type = TS_SSH_HOST_AUTH_KEY, /* 默认密钥认证 */
-        .enabled = true,
-    };
-    
-    strncpy(config.id, id->valuestring, sizeof(config.id) - 1);
-    strncpy(config.host, host->valuestring, sizeof(config.host) - 1);
-    strncpy(config.username, username->valuestring, sizeof(config.username) - 1);
-    
-    if (auth_type && cJSON_IsString(auth_type)) {
-        if (strcmp(auth_type->valuestring, "password") == 0) {
-            config.auth_type = TS_SSH_HOST_AUTH_PASSWORD;
-        }
-    }
-    
-    if (keyid && cJSON_IsString(keyid)) {
-        strncpy(config.keyid, keyid->valuestring, sizeof(config.keyid) - 1);
-    }
-    
-    esp_err_t ret = ts_ssh_hosts_config_add(&config);
-    
-    if (ret == ESP_OK) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddBoolToObject(data, "added", true);
-        cJSON_AddStringToObject(data, "id", config.id);
-        ts_api_result_ok(result, data);
-    } else if (ret == ESP_ERR_NO_MEM) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "host_capacity");
-    } else {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to add host");
-    }
-    
-    return ESP_OK;
-}
+static esp_err_t api_ssh_hosts_add(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_HOST,params,TS_API_AUTO_UPSERT,result); }
 
 /**
  * @brief ssh.hosts.remove - 删除 SSH 主机配置
  */
-static esp_err_t api_ssh_hosts_remove(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *id = cJSON_GetObjectItem(params, "id");
-    if (!id || !cJSON_IsString(id)) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'id' parameter");
-        return ESP_OK;
-    }
-    
-    esp_err_t ret = ts_ssh_hosts_config_remove(id->valuestring);
-    
-    if (ret == ESP_OK) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddBoolToObject(data, "removed", true);
-        cJSON_AddStringToObject(data, "id", id->valuestring);
-        ts_api_result_ok(result, data);
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Host not found");
-    } else {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to remove host");
-    }
-    
-    return ESP_OK;
-}
+static esp_err_t api_ssh_hosts_remove(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_delete(TS_AUTO_CONFIG_HOST,params,result); }
 
 /**
  * @brief ssh.hosts.get - 获取 SSH 主机配置
  */
-static esp_err_t api_ssh_hosts_get(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *id = cJSON_GetObjectItem(params, "id");
-    if (!id || !cJSON_IsString(id)) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'id' parameter");
-        return ESP_OK;
-    }
-    
-    ts_ssh_host_config_t config;
-    esp_err_t ret = ts_ssh_hosts_config_get(id->valuestring, &config);
-    
-    if (ret == ESP_OK) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddStringToObject(data, "id", config.id);
-        cJSON_AddStringToObject(data, "host", config.host);
-        cJSON_AddNumberToObject(data, "port", config.port);
-        cJSON_AddStringToObject(data, "username", config.username);
-        cJSON_AddStringToObject(data, "auth_type", 
-            config.auth_type == TS_SSH_HOST_AUTH_KEY ? "key" : "password");
-        if (config.keyid[0]) {
-            cJSON_AddStringToObject(data, "keyid", config.keyid);
-        }
-        cJSON_AddBoolToObject(data, "enabled", config.enabled);
-        cJSON_AddNumberToObject(data, "created", config.created_time);
-        cJSON_AddNumberToObject(data, "last_used", config.last_used_time);
-        ts_api_result_ok(result, data);
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Host not found");
-    } else {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get host");
-    }
-    
-    return ESP_OK;
-}
+static esp_err_t api_ssh_hosts_get(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_get(TS_AUTO_CONFIG_HOST,params,result); }
 
 /**
  * @brief ssh.hosts.export - 导出单个 SSH 主机配置为 .tscfg
@@ -1592,130 +1432,8 @@ static esp_err_t api_ssh_hosts_export(const cJSON *params, ts_api_result_t *resu
  *   "imported": true
  * }
  */
-static esp_err_t api_ssh_hosts_import(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *tscfg = cJSON_GetObjectItem(params, "tscfg");
-    const cJSON *filename = cJSON_GetObjectItem(params, "filename");
-    if (!tscfg || !cJSON_IsString(tscfg) || !tscfg->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'tscfg' parameter");
-        return ESP_OK;
-    }
-    
-    const cJSON *overwrite = cJSON_GetObjectItem(params, "overwrite");
-    const cJSON *preview = cJSON_GetObjectItem(params, "preview");
-    bool do_overwrite = overwrite && cJSON_IsTrue(overwrite);
-    bool do_preview = preview && cJSON_IsTrue(preview);
-    
-    /* 轻量级验证：只验证签名和目标设备，不解密内容 */
-    ts_config_pack_sig_info_t sig_info = {0};
-    ts_config_pack_result_t pack_result = ts_config_pack_verify_mem(
-        tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
-    
-    if (pack_result != TS_CONFIG_PACK_OK) {
-        pack_failure(result, pack_result);
-        return ESP_OK;
-    }
-    
-    /* 从文件名推断配置 ID（格式：xxx.tscfg） */
-    char config_id[64] = {0};
-    if (filename && cJSON_IsString(filename) && filename->valuestring[0]) {
-        const char *name = filename->valuestring;
-        const char *dot = strrchr(name, '.');
-        if (dot && strcmp(dot, ".tscfg") == 0) {
-            size_t len = dot - name;
-            if (len > sizeof(config_id) - 1) len = sizeof(config_id) - 1;
-            strncpy(config_id, name, len);
-        } else {
-            strncpy(config_id, name, sizeof(config_id) - 1);
-        }
-    } else {
-        /* 没有文件名，生成一个基于时间戳的 ID */
-        snprintf(config_id, sizeof(config_id), "host_%lld", (long long)time(NULL));
-    }
-    
-    /* 检查是否已存在（通过检查 .tscfg 或 .json 文件） */
-    char filepath[128];
-    snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", TS_SSH_HOSTS_SDCARD_DIR, config_id);
-    struct stat st;
-    bool exists = (stat(filepath, &st) == 0);
-    if (!exists) {
-        snprintf(filepath, sizeof(filepath), "%s/%s.json", TS_SSH_HOSTS_SDCARD_DIR, config_id);
-        exists = (stat(filepath, &st) == 0);
-    }
-    
-    /* 预览模式：只返回验证结果，不保存 */
-    if (do_preview) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddBoolToObject(data, "valid", true);
-        cJSON_AddStringToObject(data, "id", config_id);
-        cJSON_AddBoolToObject(data, "exists", exists);
-        cJSON_AddStringToObject(data, "signer", sig_info.signer_cn[0] ? sig_info.signer_cn : "unknown");
-        cJSON_AddBoolToObject(data, "official", sig_info.is_official);
-        cJSON_AddStringToObject(data, "note", "Content will be decrypted on system restart");
-        
-        ts_api_result_ok(result, data);
-        return ESP_OK;
-    }
-    
-    if (exists && !do_overwrite) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddStringToObject(data, "id", config_id);
-        cJSON_AddBoolToObject(data, "exists", true);
-        cJSON_AddStringToObject(data, "message", "Host config already exists, set overwrite=true to replace");
-        ts_api_result_ok(result, data);
-        return ESP_OK;
-    }
-    
-    /* 确保目录存在 */
-    if (stat(TS_SSH_HOSTS_SDCARD_DIR, &st) != 0) {
-        if (mkdir(TS_SSH_HOSTS_SDCARD_DIR, 0755) != 0) {
-            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
-            return ESP_OK;
-        }
-    }
-    
-    /* 直接保存 .tscfg 文件到 SD 卡 */
-    snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", TS_SSH_HOSTS_SDCARD_DIR, config_id);
-    FILE *f = fopen(filepath, "w");
-    if (!f) {
-        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
-        return ESP_OK;
-    }
-    
-    size_t written = fwrite(tscfg->valuestring, 1, strlen(tscfg->valuestring), f);
-    fclose(f);
-    
-    if (written != strlen(tscfg->valuestring)) {
-        unlink(filepath);
-        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
-        return ESP_OK;
-    }
-    
-    /* 如果覆盖，删除旧的 .json 文件（如果存在） */
-    if (do_overwrite) {
-        char json_path[128];
-        snprintf(json_path, sizeof(json_path), "%s/%s.json", TS_SSH_HOSTS_SDCARD_DIR, config_id);
-        unlink(json_path);  /* 忽略错误，可能本来就不存在 */
-    }
-    
-    ESP_LOGI(TAG, "SSH host config imported: %s (will be loaded on restart)", filepath);
-    
-    /* 返回结果 */
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddStringToObject(data, "id", config_id);
-    cJSON_AddStringToObject(data, "path", filepath);
-    cJSON_AddBoolToObject(data, "imported", true);
-    cJSON_AddBoolToObject(data, "overwritten", exists && do_overwrite);
-    cJSON_AddStringToObject(data, "note", "Restart system to load the new config");
-    
-    ts_api_result_ok(result, data);
-    return ESP_OK;
-}
+static esp_err_t api_ssh_hosts_import(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_pack_import(TS_AUTO_CONFIG_HOST,params,result); }
 
 /*===========================================================================*/
 /*                       SSH Command Config APIs                              */
@@ -1724,94 +1442,23 @@ static esp_err_t api_ssh_hosts_import(const cJSON *params, ts_api_result_t *resu
 /**
  * @brief 迭代器回调用户数据结构
  */
-typedef struct {
-    cJSON *commands_arr;
-} cmd_list_ctx_t;
 
 /**
  * @brief 检查主机 ID 是否存在
  */
-static bool is_host_exists(const char *host_id)
-{
-    if (!host_id || !host_id[0]) return false;
-    
-    ts_ssh_host_config_t config;
-    return ts_ssh_hosts_config_get(host_id, &config) == ESP_OK;
-}
+
 
 /**
  * @brief 将单个命令配置转换为 JSON 对象
  * 
  * 自动检测孤儿命令（引用了不存在的主机）
  */
-static cJSON *cmd_config_to_json(const ts_ssh_command_config_t *cfg)
-{
-    cJSON *item = cJSON_CreateObject();
-    if (!item) return NULL;
-    
-    cJSON_AddStringToObject(item, "id", cfg->id);
-    cJSON_AddStringToObject(item, "host_id", cfg->host_id);
-    cJSON_AddStringToObject(item, "name", cfg->name);
-    cJSON_AddStringToObject(item, "command", cfg->command);
-    cJSON_AddStringToObject(item, "desc", cfg->desc);
-    cJSON_AddStringToObject(item, "icon", cfg->icon);
-    
-    /* 检查是否为孤儿命令（引用的主机不存在） */
-    bool orphan = !is_host_exists(cfg->host_id);
-    cJSON_AddBoolToObject(item, "orphan", orphan);
-    
-    if (cfg->expect_pattern[0]) {
-        cJSON_AddStringToObject(item, "expectPattern", cfg->expect_pattern);
-    }
-    if (cfg->fail_pattern[0]) {
-        cJSON_AddStringToObject(item, "failPattern", cfg->fail_pattern);
-    }
-    if (cfg->extract_pattern[0]) {
-        cJSON_AddStringToObject(item, "extractPattern", cfg->extract_pattern);
-    }
-    if (cfg->var_name[0]) {
-        cJSON_AddStringToObject(item, "varName", cfg->var_name);
-    }
-    cJSON_AddNumberToObject(item, "timeout", cfg->timeout_sec);
-    cJSON_AddBoolToObject(item, "stopOnMatch", cfg->stop_on_match);
-    cJSON_AddBoolToObject(item, "nohup", cfg->nohup);
-    cJSON_AddBoolToObject(item, "enabled", cfg->enabled);
-    /* 服务模式字段 */
-    cJSON_AddBoolToObject(item, "serviceMode", cfg->service_mode);
-    if (cfg->ready_pattern[0]) {
-        cJSON_AddStringToObject(item, "readyPattern", cfg->ready_pattern);
-    }
-    if (cfg->service_fail_pattern[0]) {
-        cJSON_AddStringToObject(item, "serviceFailPattern", cfg->service_fail_pattern);
-    }
-    if (cfg->ready_timeout_sec > 0) {
-        cJSON_AddNumberToObject(item, "readyTimeout", cfg->ready_timeout_sec);
-    }
-    if (cfg->ready_check_interval_ms > 0) {
-        cJSON_AddNumberToObject(item, "readyInterval", cfg->ready_check_interval_ms);
-    }
-    cJSON_AddNumberToObject(item, "created", cfg->created_time);
-    cJSON_AddNumberToObject(item, "lastExec", cfg->last_exec_time);
-    
-    return item;
-}
+
 
 /**
  * @brief 迭代器回调函数 - 将命令添加到 JSON 数组
  */
-static bool cmd_list_iterator_cb(const ts_ssh_command_config_t *config,
-                                  size_t index, void *user_data)
-{
-    (void)index;
-    cmd_list_ctx_t *ctx = (cmd_list_ctx_t *)user_data;
-    
-    cJSON *item = cmd_config_to_json(config);
-    if (item) {
-        cJSON_AddItemToArray(ctx->commands_arr, item);
-    }
-    
-    return true;  /* 继续遍历 */
-}
+
 
 /**
  * @brief ssh.commands.list - 列出所有 SSH 指令配置（支持分页）
@@ -1832,303 +1479,26 @@ static bool cmd_list_iterator_cb(const ts_ssh_command_config_t *config,
  *   "limit": 20         // 当前限制
  * }
  */
-static esp_err_t api_ssh_commands_list(const cJSON *params, ts_api_result_t *result)
-{
-    const cJSON *host_id = params ? cJSON_GetObjectItem(params, "host_id") : NULL;
-    const cJSON *offset_j = params ? cJSON_GetObjectItem(params, "offset") : NULL;
-    const cJSON *limit_j = params ? cJSON_GetObjectItem(params, "limit") : NULL;
-    
-    /* 分页参数 */
-    size_t offset = (offset_j && cJSON_IsNumber(offset_j)) ? (size_t)offset_j->valueint : 0;
-    size_t limit = (limit_j && cJSON_IsNumber(limit_j)) ? (size_t)limit_j->valueint : 20;
-    
-    cJSON *data = cJSON_CreateObject();
-    cJSON *commands_arr = cJSON_AddArrayToObject(data, "commands");
-    
-    cmd_list_ctx_t ctx = { .commands_arr = commands_arr };
-    size_t total_count = 0;
-    esp_err_t ret;
-    
-    /* 使用流式迭代器，只分配单条命令的临时内存 */
-    if (host_id && cJSON_IsString(host_id) && host_id->valuestring[0]) {
-        ret = ts_ssh_commands_config_iterate_by_host(
-            host_id->valuestring,
-            cmd_list_iterator_cb, &ctx,
-            offset, limit, &total_count);
-    } else {
-        ret = ts_ssh_commands_config_iterate(
-            cmd_list_iterator_cb, &ctx,
-            offset, limit, &total_count);
-    }
-    
-    if (ret != ESP_OK) {
-        cJSON_Delete(data);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to list commands");
-        return ESP_OK;
-    }
-    
-    /* 返回分页信息 */
-    cJSON_AddNumberToObject(data, "count", cJSON_GetArraySize(commands_arr));
-    cJSON_AddNumberToObject(data, "total", (int)total_count);
-    cJSON_AddNumberToObject(data, "offset", (int)offset);
-    cJSON_AddNumberToObject(data, "limit", (int)limit);
-    
-    ts_api_result_ok(result, data);
-    return ESP_OK;
-}
+static esp_err_t api_ssh_commands_list(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_list(TS_AUTO_CONFIG_COMMAND,params,"commands",result); }
 
 /**
  * @brief ssh.commands.add - 添加 SSH 指令配置
  */
-static esp_err_t api_ssh_commands_add(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *id = cJSON_GetObjectItem(params, "id");
-    const cJSON *host_id = cJSON_GetObjectItem(params, "host_id");
-    const cJSON *name = cJSON_GetObjectItem(params, "name");
-    const cJSON *command = cJSON_GetObjectItem(params, "command");
-    
-    /* ID 是必填参数，必须由前端提供格式正确的语义化 ID */
-    if (!id || !cJSON_IsString(id) || !id->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, 
-            "Missing 'id' parameter (required: letters, numbers, _, -)");
-        return ESP_OK;
-    }
-    
-    /* 验证 ID 格式：只允许字母、数字、下划线、连字符 */
-    const char *id_str = id->valuestring;
-    size_t id_len = strlen(id_str);
-    if (id_len > 31) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, 
-            "ID too long (max 31 characters)");
-        return ESP_OK;
-    }
-    if (id_str[0] == '_' || id_str[0] == '-' || 
-        id_str[id_len - 1] == '_' || id_str[id_len - 1] == '-') {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, 
-            "ID cannot start or end with _ or -");
-        return ESP_OK;
-    }
-    for (size_t i = 0; i < id_len; i++) {
-        char c = id_str[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || 
-              (c >= '0' && c <= '9') || c == '_' || c == '-')) {
-            ts_api_result_error(result, TS_API_ERR_INVALID_ARG, 
-                "Invalid ID format (allowed: a-z, A-Z, 0-9, _, -)");
-            return ESP_OK;
-        }
-    }
-    
-    if (!host_id || !cJSON_IsString(host_id) || !host_id->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'host_id' parameter");
-        return ESP_OK;
-    }
-    if (!name || !cJSON_IsString(name) || !name->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'name' parameter");
-        return ESP_OK;
-    }
-    if (!command || !cJSON_IsString(command) || !command->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'command' parameter");
-        return ESP_OK;
-    }
-    
-    ts_ssh_command_config_t config = {
-        .timeout_sec = 30,
-        .stop_on_match = false,
-        .enabled = true,
-    };
-    
-    /* ID 是必填参数 */
-    strncpy(config.id, id->valuestring, sizeof(config.id) - 1);
-    
-    strncpy(config.host_id, host_id->valuestring, sizeof(config.host_id) - 1);
-    strncpy(config.name, name->valuestring, sizeof(config.name) - 1);
-    strncpy(config.command, command->valuestring, sizeof(config.command) - 1);
-    
-    /* 可选字段 */
-    const cJSON *desc = cJSON_GetObjectItem(params, "desc");
-    const cJSON *icon = cJSON_GetObjectItem(params, "icon");
-    const cJSON *expect_pattern = cJSON_GetObjectItem(params, "expectPattern");
-    const cJSON *fail_pattern = cJSON_GetObjectItem(params, "failPattern");
-    const cJSON *extract_pattern = cJSON_GetObjectItem(params, "extractPattern");
-    const cJSON *var_name = cJSON_GetObjectItem(params, "varName");
-    const cJSON *timeout = cJSON_GetObjectItem(params, "timeout");
-    const cJSON *stop_on_match = cJSON_GetObjectItem(params, "stopOnMatch");
-    const cJSON *nohup = cJSON_GetObjectItem(params, "nohup");
-    
-    if (desc && cJSON_IsString(desc)) {
-        strncpy(config.desc, desc->valuestring, sizeof(config.desc) - 1);
-    }
-    if (icon && cJSON_IsString(icon)) {
-        strncpy(config.icon, icon->valuestring, sizeof(config.icon) - 1);
-    } else {
-        strncpy(config.icon, "🚀", sizeof(config.icon) - 1);
-    }
-    if (expect_pattern && cJSON_IsString(expect_pattern)) {
-        strncpy(config.expect_pattern, expect_pattern->valuestring, sizeof(config.expect_pattern) - 1);
-    }
-    if (fail_pattern && cJSON_IsString(fail_pattern)) {
-        strncpy(config.fail_pattern, fail_pattern->valuestring, sizeof(config.fail_pattern) - 1);
-    }
-    if (extract_pattern && cJSON_IsString(extract_pattern)) {
-        strncpy(config.extract_pattern, extract_pattern->valuestring, sizeof(config.extract_pattern) - 1);
-    }
-    if (var_name && cJSON_IsString(var_name)) {
-        strncpy(config.var_name, var_name->valuestring, sizeof(config.var_name) - 1);
-    }
-    if (timeout && cJSON_IsNumber(timeout)) {
-        config.timeout_sec = (uint16_t)timeout->valueint;
-    }
-    if (stop_on_match && cJSON_IsBool(stop_on_match)) {
-        config.stop_on_match = cJSON_IsTrue(stop_on_match);
-    }
-    if (nohup && cJSON_IsBool(nohup)) {
-        config.nohup = cJSON_IsTrue(nohup);
-    }
-    
-    /* 服务模式字段 */
-    const cJSON *service_mode = cJSON_GetObjectItem(params, "serviceMode");
-    const cJSON *ready_pattern = cJSON_GetObjectItem(params, "readyPattern");
-    const cJSON *service_fail_pattern = cJSON_GetObjectItem(params, "serviceFailPattern");
-    const cJSON *ready_timeout = cJSON_GetObjectItem(params, "readyTimeout");
-    const cJSON *ready_interval = cJSON_GetObjectItem(params, "readyInterval");
-    
-    if (service_mode && cJSON_IsBool(service_mode)) {
-        config.service_mode = cJSON_IsTrue(service_mode);
-    }
-    if (ready_pattern && cJSON_IsString(ready_pattern)) {
-        strncpy(config.ready_pattern, ready_pattern->valuestring, sizeof(config.ready_pattern) - 1);
-    }
-    if (service_fail_pattern && cJSON_IsString(service_fail_pattern)) {
-        strncpy(config.service_fail_pattern, service_fail_pattern->valuestring, sizeof(config.service_fail_pattern) - 1);
-    }
-    if (ready_timeout && cJSON_IsNumber(ready_timeout)) {
-        config.ready_timeout_sec = (uint16_t)ready_timeout->valueint;
-    }
-    if (ready_interval && cJSON_IsNumber(ready_interval)) {
-        config.ready_check_interval_ms = (uint16_t)ready_interval->valueint;
-    }
-    
-    char out_id[TS_SSH_CMD_ID_MAX] = {0};
-    esp_err_t ret = ts_ssh_commands_config_add(&config, out_id, sizeof(out_id));
-    
-    if (ret == ESP_OK) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddStringToObject(data, "id", out_id);
-        cJSON_AddStringToObject(data, "name", config.name);
-        ts_api_result_ok(result, data);
-    } else if (ret == ESP_ERR_NO_MEM) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "command_capacity");
-    } else {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to add command");
-    }
-    
-    return ESP_OK;
-}
+static esp_err_t api_ssh_commands_add(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_COMMAND,params,TS_API_AUTO_UPSERT,result); }
 
 /**
  * @brief ssh.commands.remove - 删除 SSH 指令配置
  */
-static esp_err_t api_ssh_commands_remove(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *id = cJSON_GetObjectItem(params, "id");
-    if (!id || !cJSON_IsString(id) || !id->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'id' parameter");
-        return ESP_OK;
-    }
-    
-    esp_err_t ret = ts_ssh_commands_config_remove(id->valuestring);
-    
-    if (ret == ESP_OK) {
-        ts_api_result_ok(result, NULL);
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Command not found");
-    } else if (ret == ESP_ERR_INVALID_STATE) {
-        ts_api_result_error(result, TS_API_ERR_BUSY, "service_delete_protected");
-    } else {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to remove command");
-    }
-    
-    return ESP_OK;
-}
+static esp_err_t api_ssh_commands_remove(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_delete(TS_AUTO_CONFIG_COMMAND,params,result); }
 
 /**
  * @brief ssh.commands.get - 获取 SSH 指令配置
  */
-static esp_err_t api_ssh_commands_get(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *id = cJSON_GetObjectItem(params, "id");
-    if (!id || !cJSON_IsString(id) || !id->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'id' parameter");
-        return ESP_OK;
-    }
-    
-    ts_ssh_command_config_t config;
-    esp_err_t ret = ts_ssh_commands_config_get(id->valuestring, &config);
-    
-    if (ret == ESP_OK) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddStringToObject(data, "id", config.id);
-        cJSON_AddStringToObject(data, "host_id", config.host_id);
-        cJSON_AddStringToObject(data, "name", config.name);
-        cJSON_AddStringToObject(data, "command", config.command);
-        cJSON_AddStringToObject(data, "desc", config.desc);
-        cJSON_AddStringToObject(data, "icon", config.icon);
-        if (config.expect_pattern[0]) {
-            cJSON_AddStringToObject(data, "expectPattern", config.expect_pattern);
-        }
-        if (config.fail_pattern[0]) {
-            cJSON_AddStringToObject(data, "failPattern", config.fail_pattern);
-        }
-        if (config.extract_pattern[0]) {
-            cJSON_AddStringToObject(data, "extractPattern", config.extract_pattern);
-        }
-        if (config.var_name[0]) {
-            cJSON_AddStringToObject(data, "varName", config.var_name);
-        }
-        cJSON_AddNumberToObject(data, "timeout", config.timeout_sec);
-        cJSON_AddBoolToObject(data, "stopOnMatch", config.stop_on_match);
-        cJSON_AddBoolToObject(data, "nohup", config.nohup);
-        cJSON_AddBoolToObject(data, "enabled", config.enabled);
-        /* 服务模式字段 */
-        cJSON_AddBoolToObject(data, "serviceMode", config.service_mode);
-        if (config.ready_pattern[0]) {
-            cJSON_AddStringToObject(data, "readyPattern", config.ready_pattern);
-        }
-        if (config.service_fail_pattern[0]) {
-            cJSON_AddStringToObject(data, "serviceFailPattern", config.service_fail_pattern);
-        }
-        if (config.ready_timeout_sec > 0) {
-            cJSON_AddNumberToObject(data, "readyTimeout", config.ready_timeout_sec);
-        }
-        if (config.ready_check_interval_ms > 0) {
-            cJSON_AddNumberToObject(data, "readyInterval", config.ready_check_interval_ms);
-        }
-        cJSON_AddNumberToObject(data, "created", config.created_time);
-        cJSON_AddNumberToObject(data, "lastExec", config.last_exec_time);
-        ts_api_result_ok(result, data);
-    } else if (ret == ESP_ERR_NOT_FOUND) {
-        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Command not found");
-    } else {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get command");
-    }
-    
-    return ESP_OK;
-}
+static esp_err_t api_ssh_commands_get(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_get(TS_AUTO_CONFIG_COMMAND,params,result); }
 
 /**
  * @brief ssh.commands.export - 导出单个 SSH 指令配置为 .tscfg
@@ -2313,162 +1683,44 @@ static esp_err_t api_ssh_commands_export(const cJSON *params, ts_api_result_t *r
  *   "host_id": "agx0"
  * }
  */
-static esp_err_t api_ssh_commands_import(const cJSON *params, ts_api_result_t *result)
-{
-    if (!params) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing parameters");
-        return ESP_OK;
-    }
-    
-    const cJSON *tscfg = cJSON_GetObjectItem(params, "tscfg");
-    const cJSON *filename = cJSON_GetObjectItem(params, "filename");
-    if (!tscfg || !cJSON_IsString(tscfg) || !tscfg->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Missing 'tscfg' parameter");
-        return ESP_OK;
-    }
-    
-    const cJSON *overwrite = cJSON_GetObjectItem(params, "overwrite");
-    const cJSON *preview = cJSON_GetObjectItem(params, "preview");
-    bool do_overwrite = overwrite && cJSON_IsTrue(overwrite);
-    bool do_preview = preview && cJSON_IsTrue(preview);
-    
-    /* 轻量级验证：只验证签名和目标设备，不解密内容 */
-    ts_config_pack_sig_info_t sig_info = {0};
-    ts_config_pack_result_t pack_result = ts_config_pack_verify_mem(
-        tscfg->valuestring, strlen(tscfg->valuestring), &sig_info);
-    
-    if (pack_result != TS_CONFIG_PACK_OK) {
-        pack_failure(result, pack_result);
-        return ESP_OK;
-    }
-    
-    /* 从文件名推断配置 ID（格式：xxx.tscfg） */
-    char config_id[64] = {0};
-    if (filename && cJSON_IsString(filename) && filename->valuestring[0]) {
-        const char *name = filename->valuestring;
-        const char *dot = strrchr(name, '.');
-        if (dot && strcmp(dot, ".tscfg") == 0) {
-            size_t len = dot - name;
-            if (len > sizeof(config_id) - 1) len = sizeof(config_id) - 1;
-            strncpy(config_id, name, len);
-        } else {
-            strncpy(config_id, name, sizeof(config_id) - 1);
-        }
-    } else {
-        /* 没有文件名，生成一个基于时间戳的 ID */
-        snprintf(config_id, sizeof(config_id), "cmd_%lld", (long long)time(NULL));
-    }
-    
-    /* 检查是否已存在（通过检查 .tscfg 或 .json 文件） */
-    char filepath[128];
-    snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", TS_SSH_COMMANDS_SDCARD_DIR, config_id);
-    struct stat st;
-    bool exists = (stat(filepath, &st) == 0);
-    if (!exists) {
-        snprintf(filepath, sizeof(filepath), "%s/%s.json", TS_SSH_COMMANDS_SDCARD_DIR, config_id);
-        exists = (stat(filepath, &st) == 0);
-    }
-    
-    /* 预览模式：只返回验证结果，不保存 */
-    if (do_preview) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddBoolToObject(data, "valid", true);
-        cJSON_AddStringToObject(data, "type", "ssh_command");
-        cJSON_AddStringToObject(data, "id", config_id);
-        cJSON_AddBoolToObject(data, "exists", exists);
-        cJSON_AddStringToObject(data, "signer", sig_info.signer_cn[0] ? sig_info.signer_cn : "unknown");
-        cJSON_AddBoolToObject(data, "official", sig_info.is_official);
-        cJSON_AddStringToObject(data, "note", "Content will be decrypted on system restart");
-        
-        ts_api_result_ok(result, data);
-        return ESP_OK;
-    }
-    
-    if (exists && !do_overwrite) {
-        cJSON *data = cJSON_CreateObject();
-        cJSON_AddStringToObject(data, "id", config_id);
-        cJSON_AddBoolToObject(data, "exists", true);
-        cJSON_AddStringToObject(data, "message", "Command config already exists, set overwrite=true to replace");
-        ts_api_result_ok(result, data);
-        return ESP_OK;
-    }
-    
-    /* 确保目录存在 */
-    if (stat(TS_SSH_COMMANDS_SDCARD_DIR, &st) != 0) {
-        if (mkdir(TS_SSH_COMMANDS_SDCARD_DIR, 0755) != 0) {
-            ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
-            return ESP_OK;
-        }
-    }
-    
-    /* 直接保存 .tscfg 文件到 SD 卡 */
-    snprintf(filepath, sizeof(filepath), "%s/%s.tscfg", TS_SSH_COMMANDS_SDCARD_DIR, config_id);
-    FILE *f = fopen(filepath, "w");
-    if (!f) {
-        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", strerror(errno));
-        return ESP_OK;
-    }
-    
-    size_t written = fwrite(tscfg->valuestring, 1, strlen(tscfg->valuestring), f);
-    fclose(f);
-    
-    if (written != strlen(tscfg->valuestring)) {
-        unlink(filepath);
-        ts_api_result_reason(result, TS_API_ERR_INTERNAL, "storage_failed", "short write");
-        return ESP_OK;
-    }
-    
-    /* 如果覆盖，删除旧的 .json 文件（如果存在） */
-    if (do_overwrite) {
-        char json_path[128];
-        snprintf(json_path, sizeof(json_path), "%s/%s.json", TS_SSH_COMMANDS_SDCARD_DIR, config_id);
-        unlink(json_path);  /* 忽略错误，可能本来就不存在 */
-    }
-    
-    ESP_LOGI(TAG, "SSH command config imported: %s (will be loaded on restart)", filepath);
-    
-    /* 返回结果 */
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddStringToObject(data, "id", config_id);
-    cJSON_AddStringToObject(data, "path", filepath);
-    cJSON_AddBoolToObject(data, "imported", true);
-    cJSON_AddBoolToObject(data, "overwritten", exists && do_overwrite);
-    cJSON_AddStringToObject(data, "note", "Restart system to load the new config");
-    
-    ts_api_result_ok(result, data);
-    return ESP_OK;
-}
+static esp_err_t api_ssh_commands_import(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_pack_import(TS_AUTO_CONFIG_COMMAND,params,result); }
 
 /*===========================================================================*/
 /*                          Registration                                      */
 /*===========================================================================*/
 
 esp_err_t ts_api_service_control(const cJSON *params, ts_api_result_t *result, ts_service_operation_t kind) {
-    const cJSON *id = cJSON_GetObjectItemCaseSensitive(params, "command_id");
-    if (!cJSON_IsString(id) || !id->valuestring[0]) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "command_id required");
+    const char *field=kind==TS_SERVICE_START?"command_id":"run_id";
+    const char *id=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(params,field));
+    if(!id||!id[0]){
+        ts_api_result_error(result,TS_API_ERR_INVALID_ARG,kind==TS_SERVICE_START?"command_id_required":"run_id_required");
         return ESP_ERR_INVALID_ARG;
     }
-    cJSON *data = cJSON_CreateObject();
-    if (!data) return ESP_ERR_NO_MEM;
-    cJSON *operation = cJSON_AddNumberToObject(data, "operation_id", 0);
-    if (!operation) { cJSON_Delete(data); return ESP_ERR_NO_MEM; }
-    uint32_t operation_id = 0;
-    esp_err_t ret = ts_action_service_control(id->valuestring, kind, &operation_id);
-    if (ret != ESP_OK) {
+    cJSON *data=cJSON_CreateObject();if(!data)return ESP_ERR_NO_MEM;
+    cJSON *operation=cJSON_AddNumberToObject(data,"operation_id",0);
+    cJSON *run=cJSON_AddStringToObject(data,"run_id","0000000000000000000000000000000");
+    if(!operation||!run){cJSON_Delete(data);return ESP_ERR_NO_MEM;}
+    uint32_t operation_id=0;char run_id[TS_SSH_RUN_ID_MAX];
+    const char *reason=NULL;
+    esp_err_t ret=ts_action_service_control(id,kind,run_id,&operation_id,&reason);
+    if(ret!=ESP_OK){
         cJSON_Delete(data);
-        ts_api_result_error(result, ret == ESP_ERR_INVALID_STATE ? TS_API_ERR_BUSY :
-            ret == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM : TS_API_ERR_INTERNAL,
-            ret == ESP_ERR_INVALID_STATE ? "service_not_admissible" : ret == ESP_ERR_NO_MEM ? "no_memory" : esp_err_to_name(ret));
+        ts_api_result_error(result,ret==ESP_ERR_INVALID_STATE?TS_API_ERR_BUSY:
+            ret==ESP_ERR_NO_MEM?TS_API_ERR_NO_MEM:ret==ESP_ERR_NOT_FOUND?TS_API_ERR_NOT_FOUND:
+            ret==ESP_ERR_INVALID_ARG?TS_API_ERR_INVALID_ARG:ret==ESP_ERR_NOT_SUPPORTED?TS_API_ERR_NOT_SUPPORTED:TS_API_ERR_INTERNAL,reason);
         return ret;
     }
-    cJSON_SetNumberValue(operation, operation_id);
-    ts_api_result_ok(result, data);
-    return ESP_OK;
+    cJSON_SetNumberValue(operation,operation_id);strcpy(run->valuestring,run_id);
+    ts_api_result_ok(result,data);return ESP_OK;
 }
 
 static esp_err_t api_ssh_service_start(const cJSON *params, ts_api_result_t *result) {
-    return ts_api_service_control(params, result, TS_SERVICE_START);
+    ts_auto_config_error_t error={0};
+    esp_err_t ret=ts_auto_config_edit_begin(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(params,"active_version")),&error);
+    if(ret!=ESP_OK){ts_api_result_error(result,TS_API_ERR_INVALID_ARG,error.reason);return ESP_OK;}
+    ret=ts_api_service_control(params,result,TS_SERVICE_START);
+    ts_auto_config_edit_end();return ret;
 }
 
 static const ts_api_endpoint_t ssh_endpoints[] = {

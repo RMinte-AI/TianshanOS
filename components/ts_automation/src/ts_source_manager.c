@@ -1,3 +1,4 @@
+#include "ts_action_codec.h"
 /**
  * @file ts_source_manager.c
  * @brief TianShanOS 自动化引擎 - 数据源管理器实现
@@ -14,22 +15,18 @@
  */
 
 #include "ts_source_manager.h"
+#include "ts_source_runtime.h"
+#include "ts_automation_runtime.h"
 #include "ts_variable.h"
 #include "ts_jsonpath.h"
-#include "ts_config_module.h"
-#include "ts_config_pack.h"
-// ts_var.h 已废弃，统一使用 ts_variable.h（ts_automation 变量系统）
 
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "esp_system.h"
-#include "esp_random.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-
-// HAL 组件（用于 builtin 源）
-#include "ts_hal.h"
+#include "freertos/task.h"
+#include "freertos/idf_additions.h"
 
 // HTTP 客户端（用于 REST 源）
 #include "esp_http_client.h"
@@ -40,31 +37,11 @@
 // API 层（用于本地 API 调用）
 #include "ts_api.h"
 
-// 网络状态检查
-#include "ts_net_manager.h"
-
-// NVS 持久化
-#include "nvs_flash.h"
-#include "nvs.h"
-
-// SD 卡状态检查
-#include "ts_storage.h"
-
 #include <string.h>
 #include <stdlib.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <unistd.h>
+#include <stdatomic.h>
 
 static const char *TAG = "ts_source_mgr";
-
-// NVS 命名空间和键
-#define NVS_NAMESPACE       "ts_auto_src"
-#define NVS_KEY_COUNT       "count"
-#define NVS_KEY_PREFIX      "src_"
-
-// SD 卡独立文件目录
-#define SOURCES_SDCARD_DIR  "/sdcard/config/sources"
 
 /*===========================================================================*/
 /*                          Socket.IO 协议常量                                */
@@ -76,7 +53,7 @@ static const char *TAG = "ts_source_mgr";
 #define SIO_PONG_MSG            "3"
 #define SIO_EVENT_PREFIX        "42"
 #define SIO_SID_MAX_LEN         64
-#define SIO_MAX_CONNECTIONS     4
+#define SIO_MAX_CONNECTIONS     TS_SOURCE_MAX_SIO_CONNECTIONS
 
 /*===========================================================================*/
 /*                              配置常量                                      */
@@ -90,25 +67,6 @@ static const char *TAG = "ts_source_mgr";
 /*                              内部状态                                      */
 /*===========================================================================*/
 
-typedef struct {
-    ts_auto_source_t *sources;           // 源数组
-    int count;                           // 当前源数量
-    int capacity;                        // 最大容量
-    SemaphoreHandle_t mutex;             // 访问互斥锁
-    bool initialized;                    // 初始化标志
-    bool running;                        // 运行标志
-    ts_source_manager_stats_t stats;     // 统计信息
-} ts_source_manager_ctx_t;
-
-static ts_source_manager_ctx_t s_src_ctx = {
-    .sources = NULL,
-    .count = 0,
-    .capacity = 0,
-    .mutex = NULL,
-    .initialized = false,
-    .running = false,
-};
-
 /*===========================================================================*/
 /*                          Socket.IO 连接上下文                              */
 /*===========================================================================*/
@@ -121,11 +79,13 @@ typedef struct {
     char source_id[TS_AUTO_NAME_MAX_LEN];   // 关联的数据源 ID
     esp_websocket_client_handle_t client;    // WebSocket 客户端
     char session_id[SIO_SID_MAX_LEN];        // Socket.IO session ID
-    bool connected;                          // WebSocket 已连接
-    bool upgraded;                           // Socket.IO 升级完成
-    int64_t last_message_ms;                 // 最后消息时间
+    atomic_bool connected;                   // WebSocket 已连接
+    atomic_bool upgraded;                    // Socket.IO 升级完成
+    atomic_uint last_message_ms;            // 最近消息毫秒值，按无符号差计算超时
     TaskHandle_t task_handle;                // 连接任务句柄
-    bool should_stop;                        // 停止标志
+    atomic_bool should_stop;                 // 停止标志
+    atomic_bool allocated;
+    uint64_t source_instance;
     // 消息分片缓冲
     char *msg_buf;                           // 消息缓冲区（动态分配）
     size_t msg_buf_len;                      // 当前缓冲长度
@@ -138,9 +98,24 @@ typedef struct {
 /** Socket.IO 连接管理 */
 static struct {
     sio_connection_t connections[SIO_MAX_CONNECTIONS];
-    int count;
     SemaphoreHandle_t mutex;
+    atomic_bool activation_pending;
 } s_sio_ctx = {0};
+
+/* Caller holds the source mutex. An old transport cannot address a recreated ID. */
+static int find_source_index(const char *id);
+static int current_source_index(const char *id, uint64_t instance)
+{
+    int index = find_source_index(id);
+    return !ts_source_runtime.closing && index >= 0 && ts_source_runtime.sources[index].enabled &&
+        ts_source_runtime.sources[index].instance == instance ? index : -1;
+}
+
+static int current_connection_index(const sio_connection_t *conn)
+{
+    return ts_source_runtime.running && !conn->should_stop ?
+        current_source_index(conn->source_id, conn->source_instance) : -1;
+}
 
 /*===========================================================================*/
 /*                              辅助函数                                      */
@@ -151,8 +126,8 @@ static struct {
  */
 static int find_source_index(const char *id)
 {
-    for (int i = 0; i < s_src_ctx.count; i++) {
-        if (strcmp(s_src_ctx.sources[i].id, id) == 0) {
+    for (int i = 0; i < ts_source_runtime.count; i++) {
+        if (strcmp(ts_source_runtime.sources[i].id, id) == 0) {
             return i;
         }
     }
@@ -160,674 +135,8 @@ static int find_source_index(const char *id)
 }
 
 /*===========================================================================*/
-/*                              NVS 持久化                                    */
-/*===========================================================================*/
-
-/**
- * 将数据源序列化为 JSON
- */
-static char *source_to_json(const ts_auto_source_t *src)
-{
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return NULL;
-
-    cJSON_AddStringToObject(root, "id", src->id);
-    cJSON_AddStringToObject(root, "label", src->label);
-    cJSON_AddNumberToObject(root, "type", src->type);
-    cJSON_AddBoolToObject(root, "enabled", src->enabled);
-    cJSON_AddBoolToObject(root, "auto_discover", src->auto_discover);
-    cJSON_AddNumberToObject(root, "poll_interval_ms", src->poll_interval_ms);
-
-    switch (src->type) {
-        case TS_AUTO_SRC_WEBSOCKET:
-            cJSON_AddStringToObject(root, "ws_uri", src->websocket.uri);
-            cJSON_AddStringToObject(root, "ws_path", src->websocket.path);
-            cJSON_AddNumberToObject(root, "reconnect_ms", src->websocket.reconnect_ms);
-            break;
-        case TS_AUTO_SRC_SOCKETIO:
-            cJSON_AddStringToObject(root, "sio_url", src->socketio.url);
-            cJSON_AddStringToObject(root, "sio_event", src->socketio.event);
-            cJSON_AddNumberToObject(root, "reconnect_ms", src->socketio.reconnect_ms);
-            break;
-        case TS_AUTO_SRC_REST:
-            cJSON_AddStringToObject(root, "rest_url", src->rest.url);
-            cJSON_AddStringToObject(root, "rest_path", src->rest.path);
-            cJSON_AddStringToObject(root, "rest_method", src->rest.method);
-            cJSON_AddStringToObject(root, "rest_auth", src->rest.auth_header);
-            break;
-        case TS_AUTO_SRC_VARIABLE:
-            cJSON_AddStringToObject(root, "var_name", src->variable.var_name);
-            cJSON_AddStringToObject(root, "var_prefix", src->variable.var_prefix);
-            cJSON_AddBoolToObject(root, "var_watch_all", src->variable.watch_all);
-            // SSH 命令模式相关字段
-            if (src->variable.ssh_host_id[0] != '\0') {
-                cJSON_AddStringToObject(root, "ssh_host_id", src->variable.ssh_host_id);
-            }
-            if (src->variable.ssh_command[0] != '\0') {
-                cJSON_AddStringToObject(root, "ssh_command", src->variable.ssh_command);
-            }
-            if (src->variable.expect_pattern[0] != '\0') {
-                cJSON_AddStringToObject(root, "expect_pattern", src->variable.expect_pattern);
-            }
-            if (src->variable.fail_pattern[0] != '\0') {
-                cJSON_AddStringToObject(root, "fail_pattern", src->variable.fail_pattern);
-            }
-            if (src->variable.extract_pattern[0] != '\0') {
-                cJSON_AddStringToObject(root, "extract_pattern", src->variable.extract_pattern);
-            }
-            if (src->variable.timeout_sec > 0) {
-                cJSON_AddNumberToObject(root, "timeout_sec", src->variable.timeout_sec);
-            }
-            break;
-        default:
-            break;
-    }
-
-    // 序列化映射
-    if (src->mapping_count > 0) {
-        cJSON *mappings = cJSON_CreateArray();
-        for (uint8_t i = 0; i < src->mapping_count && i < TS_AUTO_MAX_MAPPINGS; i++) {
-            cJSON *mapping = cJSON_CreateObject();
-            cJSON_AddStringToObject(mapping, "path", src->mappings[i].json_path);
-            cJSON_AddStringToObject(mapping, "var", src->mappings[i].var_name);
-            if (src->mappings[i].transform[0] != '\0') {
-                cJSON_AddStringToObject(mapping, "transform", src->mappings[i].transform);
-            }
-            cJSON_AddItemToArray(mappings, mapping);
-        }
-        cJSON_AddItemToObject(root, "mappings", mappings);
-    }
-
-    char *json_str = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    return json_str;
-}
-
-/* Forward declarations for SD card loading */
-static esp_err_t json_to_source(const char *json_str, ts_auto_source_t *src);
-
-/*===========================================================================*/
-/*                          SD 卡独立文件操作                                  */
-/*===========================================================================*/
-
-/**
- * @brief 确保 sources 目录存在
- */
-static esp_err_t ensure_sources_dir(void)
-{
-    struct stat st;
-    
-    /* 确保 /sdcard/config 存在 */
-    if (stat("/sdcard/config", &st) != 0) {
-        if (mkdir("/sdcard/config", 0755) != 0) {
-            ESP_LOGE(TAG, "Failed to create /sdcard/config");
-            return ESP_FAIL;
-        }
-    }
-    
-    /* 确保 /sdcard/config/sources 存在 */
-    if (stat(SOURCES_SDCARD_DIR, &st) != 0) {
-        if (mkdir(SOURCES_SDCARD_DIR, 0755) != 0) {
-            ESP_LOGE(TAG, "Failed to create %s", SOURCES_SDCARD_DIR);
-            return ESP_FAIL;
-        }
-    }
-    
-    return ESP_OK;
-}
-
-/**
- * @brief 导出单个数据源到独立文件
- */
-static esp_err_t export_source_to_file(const ts_auto_source_t *src)
-{
-    if (!src || !src->id[0]) return ESP_ERR_INVALID_ARG;
-    
-    char filepath[128];
-    snprintf(filepath, sizeof(filepath), "%s/%s.json", SOURCES_SDCARD_DIR, src->id);
-    
-    char *json = source_to_json(src);
-    if (!json) return ESP_ERR_NO_MEM;
-    
-    FILE *fp = fopen(filepath, "w");
-    if (!fp) {
-        free(json);
-        ESP_LOGE(TAG, "Failed to open file: %s", filepath);
-        return ESP_FAIL;
-    }
-    
-    fprintf(fp, "%s\n", json);
-    fclose(fp);
-    free(json);
-    
-    ESP_LOGD(TAG, "Exported source to %s", filepath);
-    return ESP_OK;
-}
-
-/**
- * @brief 删除单个数据源的独立文件
- * @note 备用函数，当前删除操作在 API 层直接实现
- */
-static esp_err_t __attribute__((unused)) delete_source_file(const char *id)
-{
-    if (!id || !id[0]) return ESP_ERR_INVALID_ARG;
-    
-    char filepath[128];
-    snprintf(filepath, sizeof(filepath), "%s/%s.json", SOURCES_SDCARD_DIR, id);
-    
-    if (unlink(filepath) == 0) {
-        ESP_LOGD(TAG, "Deleted source file: %s", filepath);
-        return ESP_OK;
-    }
-    
-    return ESP_OK;  /* 文件不存在也算成功 */
-}
-
-/**
- * @brief 从独立文件目录加载所有数据源
- * 
- * 支持 .tscfg 加密配置优先加载
- */
-static esp_err_t load_sources_from_dir(void)
-{
-    DIR *dir = opendir(SOURCES_SDCARD_DIR);
-    if (!dir) {
-        ESP_LOGD(TAG, "Sources directory not found: %s", SOURCES_SDCARD_DIR);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    int loaded = 0;
-    struct dirent *entry;
-    
-    while ((entry = readdir(dir)) != NULL) {
-        /* 跳过非 .json 和非 .tscfg 文件 */
-        size_t len = strlen(entry->d_name);
-        bool is_json = (len >= 6 && strcmp(entry->d_name + len - 5, ".json") == 0);
-        bool is_tscfg = (len >= 7 && strcmp(entry->d_name + len - 6, ".tscfg") == 0);
-        
-        if (!is_json && !is_tscfg) {
-            continue;
-        }
-        
-        /* 对于 .json 文件，检查是否存在对应的 .tscfg（跳过以使用加密版本） */
-        if (is_json) {
-            char tscfg_name[128];
-            snprintf(tscfg_name, sizeof(tscfg_name), "%.*s.tscfg", (int)(len - 5), entry->d_name);
-            char tscfg_path[192];
-            snprintf(tscfg_path, sizeof(tscfg_path), "%s/%s", SOURCES_SDCARD_DIR, tscfg_name);
-            struct stat st;
-            if (stat(tscfg_path, &st) == 0) {
-                ESP_LOGD(TAG, "Skipping %s (will use .tscfg)", entry->d_name);
-                continue;
-            }
-        }
-        
-        /* 限制文件名长度避免缓冲区溢出 */
-        if (len > 60) {
-            continue;
-        }
-        
-        char filepath[128];
-        if (is_tscfg) {
-            snprintf(filepath, sizeof(filepath), "%s/%.*s.json", 
-                     SOURCES_SDCARD_DIR, (int)(len - 6), entry->d_name);
-        } else {
-            snprintf(filepath, sizeof(filepath), "%s/%.60s", SOURCES_SDCARD_DIR, entry->d_name);
-        }
-        
-        /* 使用 .tscfg 优先加载 */
-        char *content = NULL;
-        size_t content_len = 0;
-        bool used_tscfg = false;
-        
-        esp_err_t ret = ts_config_pack_load_with_priority(
-            filepath, &content, &content_len, &used_tscfg);
-        
-        if (ret != ESP_OK) {
-            continue;
-        }
-        
-        /* 解析并添加 */
-        ts_auto_source_t *src = heap_caps_malloc(sizeof(ts_auto_source_t), MALLOC_CAP_SPIRAM);
-        if (!src) src = malloc(sizeof(ts_auto_source_t));
-        if (src) {
-            memset(src, 0, sizeof(ts_auto_source_t));
-            if (json_to_source(content, src) == ESP_OK && src->id[0]) {
-                if (s_src_ctx.count < s_src_ctx.capacity) {
-                    memcpy(&s_src_ctx.sources[s_src_ctx.count], src, sizeof(ts_auto_source_t));
-                    s_src_ctx.count++;
-                    loaded++;
-                    ESP_LOGD(TAG, "Loaded source from file: %s%s", src->id,
-                             used_tscfg ? " (encrypted)" : "");
-                }
-            }
-            free(src);
-        }
-        free(content);
-    }
-    
-    closedir(dir);
-    
-    if (loaded > 0) {
-        ESP_LOGI(TAG, "Loaded %d sources from directory: %s", loaded, SOURCES_SDCARD_DIR);
-        return ESP_OK;
-    }
-    
-    return ESP_ERR_NOT_FOUND;
-}
-
-/**
- * @brief 导出所有数据源到独立文件目录
- */
-static esp_err_t export_all_sources_to_dir(void)
-{
-    if (!ts_storage_sd_mounted()) {
-        ESP_LOGD(TAG, "SD card not mounted, skip export");
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    esp_err_t ret = ensure_sources_dir();
-    if (ret != ESP_OK) return ret;
-    
-    int exported = 0;
-    for (int i = 0; i < s_src_ctx.count; i++) {
-        if (export_source_to_file(&s_src_ctx.sources[i]) == ESP_OK) {
-            exported++;
-        }
-    }
-    
-    ESP_LOGI(TAG, "Exported %d sources to directory: %s", exported, SOURCES_SDCARD_DIR);
-    return ESP_OK;
-}
-
-/**
- * 从 JSON 反序列化数据源
- */
-static esp_err_t json_to_source(const char *json_str, ts_auto_source_t *src)
-{
-    cJSON *root = cJSON_Parse(json_str);
-    if (!root) return ESP_ERR_INVALID_ARG;
-
-    memset(src, 0, sizeof(ts_auto_source_t));
-
-    cJSON *item;
-    if ((item = cJSON_GetObjectItem(root, "id")) && cJSON_IsString(item)) {
-        strncpy(src->id, item->valuestring, sizeof(src->id) - 1);
-    }
-    if ((item = cJSON_GetObjectItem(root, "label")) && cJSON_IsString(item)) {
-        strncpy(src->label, item->valuestring, sizeof(src->label) - 1);
-    }
-    if ((item = cJSON_GetObjectItem(root, "type")) && cJSON_IsNumber(item)) {
-        src->type = (ts_auto_source_type_t)item->valueint;
-    }
-    if ((item = cJSON_GetObjectItem(root, "enabled"))) {
-        src->enabled = cJSON_IsTrue(item);
-    }
-    if ((item = cJSON_GetObjectItem(root, "auto_discover"))) {
-        src->auto_discover = cJSON_IsTrue(item);
-    } else {
-        src->auto_discover = true;  // 默认启用自动发现（兼容旧配置）
-    }
-    if ((item = cJSON_GetObjectItem(root, "poll_interval_ms")) && cJSON_IsNumber(item)) {
-        src->poll_interval_ms = (uint32_t)item->valueint;
-    }
-
-    switch (src->type) {
-        case TS_AUTO_SRC_WEBSOCKET:
-            if ((item = cJSON_GetObjectItem(root, "ws_uri")) && cJSON_IsString(item)) {
-                strncpy(src->websocket.uri, item->valuestring, sizeof(src->websocket.uri) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "ws_path")) && cJSON_IsString(item)) {
-                strncpy(src->websocket.path, item->valuestring, sizeof(src->websocket.path) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "reconnect_ms")) && cJSON_IsNumber(item)) {
-                src->websocket.reconnect_ms = (uint16_t)item->valueint;
-            }
-            break;
-        case TS_AUTO_SRC_SOCKETIO:
-            if ((item = cJSON_GetObjectItem(root, "sio_url")) && cJSON_IsString(item)) {
-                strncpy(src->socketio.url, item->valuestring, sizeof(src->socketio.url) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "sio_event")) && cJSON_IsString(item)) {
-                strncpy(src->socketio.event, item->valuestring, sizeof(src->socketio.event) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "reconnect_ms")) && cJSON_IsNumber(item)) {
-                src->socketio.reconnect_ms = (uint16_t)item->valueint;
-            }
-            break;
-        case TS_AUTO_SRC_REST:
-            if ((item = cJSON_GetObjectItem(root, "rest_url")) && cJSON_IsString(item)) {
-                strncpy(src->rest.url, item->valuestring, sizeof(src->rest.url) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "rest_path")) && cJSON_IsString(item)) {
-                strncpy(src->rest.path, item->valuestring, sizeof(src->rest.path) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "rest_method")) && cJSON_IsString(item)) {
-                strncpy(src->rest.method, item->valuestring, sizeof(src->rest.method) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "rest_auth")) && cJSON_IsString(item)) {
-                strncpy(src->rest.auth_header, item->valuestring, sizeof(src->rest.auth_header) - 1);
-            }
-            break;
-        case TS_AUTO_SRC_VARIABLE:
-            if ((item = cJSON_GetObjectItem(root, "var_name")) && cJSON_IsString(item)) {
-                strncpy(src->variable.var_name, item->valuestring, sizeof(src->variable.var_name) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "var_prefix")) && cJSON_IsString(item)) {
-                strncpy(src->variable.var_prefix, item->valuestring, sizeof(src->variable.var_prefix) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "var_watch_all"))) {
-                src->variable.watch_all = cJSON_IsTrue(item);
-            }
-            // SSH 命令模式相关字段
-            if ((item = cJSON_GetObjectItem(root, "ssh_host_id")) && cJSON_IsString(item)) {
-                strncpy(src->variable.ssh_host_id, item->valuestring, sizeof(src->variable.ssh_host_id) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "ssh_command")) && cJSON_IsString(item)) {
-                strncpy(src->variable.ssh_command, item->valuestring, sizeof(src->variable.ssh_command) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "expect_pattern")) && cJSON_IsString(item)) {
-                strncpy(src->variable.expect_pattern, item->valuestring, sizeof(src->variable.expect_pattern) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "fail_pattern")) && cJSON_IsString(item)) {
-                strncpy(src->variable.fail_pattern, item->valuestring, sizeof(src->variable.fail_pattern) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "extract_pattern")) && cJSON_IsString(item)) {
-                strncpy(src->variable.extract_pattern, item->valuestring, sizeof(src->variable.extract_pattern) - 1);
-            }
-            if ((item = cJSON_GetObjectItem(root, "timeout_sec")) && cJSON_IsNumber(item)) {
-                src->variable.timeout_sec = (uint16_t)item->valueint;
-            }
-            break;
-        default:
-            break;
-    }
-
-    // 反序列化映射
-    cJSON *mappings = cJSON_GetObjectItem(root, "mappings");
-    if (mappings && cJSON_IsArray(mappings)) {
-        int count = cJSON_GetArraySize(mappings);
-        src->mapping_count = (count > TS_AUTO_MAX_MAPPINGS) ? TS_AUTO_MAX_MAPPINGS : count;
-
-        for (int i = 0; i < src->mapping_count; i++) {
-            cJSON *mapping = cJSON_GetArrayItem(mappings, i);
-            if (!mapping) continue;
-
-            cJSON *path_item = cJSON_GetObjectItem(mapping, "path");
-            cJSON *var_item = cJSON_GetObjectItem(mapping, "var");
-            cJSON *transform_item = cJSON_GetObjectItem(mapping, "transform");
-
-            if (path_item && cJSON_IsString(path_item)) {
-                strncpy(src->mappings[i].json_path, path_item->valuestring, 
-                        sizeof(src->mappings[i].json_path) - 1);
-            }
-            if (var_item && cJSON_IsString(var_item)) {
-                strncpy(src->mappings[i].var_name, var_item->valuestring, 
-                        sizeof(src->mappings[i].var_name) - 1);
-            }
-            if (transform_item && cJSON_IsString(transform_item)) {
-                strncpy(src->mappings[i].transform, transform_item->valuestring, 
-                        sizeof(src->mappings[i].transform) - 1);
-            }
-        }
-    }
-
-    cJSON_Delete(root);
-    return ESP_OK;
-}
-
-/**
- * 保存所有数据源到 NVS 和 SD 卡
- */
-static esp_err_t save_sources_to_nvs(void)
-{
-    nvs_handle_t handle;
-    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // 先清除所有旧数据
-    nvs_erase_all(handle);
-
-    // 保存数量
-    ret = nvs_set_u8(handle, NVS_KEY_COUNT, (uint8_t)s_src_ctx.count);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to save count: %s", esp_err_to_name(ret));
-        nvs_close(handle);
-        return ret;
-    }
-
-    // 保存每个数据源到 NVS
-    for (int i = 0; i < s_src_ctx.count; i++) {
-        char key[16];
-        snprintf(key, sizeof(key), "%s%d", NVS_KEY_PREFIX, i);
-
-        char *json = source_to_json(&s_src_ctx.sources[i]);
-        if (!json) {
-            ESP_LOGW(TAG, "Failed to serialize source %d", i);
-            continue;
-        }
-
-        // 保存到 NVS
-        ret = nvs_set_str(handle, key, json);
-        free(json);
-
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to save source %d: %s", i, esp_err_to_name(ret));
-        }
-    }
-
-    ret = nvs_commit(handle);
-    nvs_close(handle);
-
-    // 同时导出到 SD 卡独立文件目录
-    if (ts_storage_sd_mounted()) {
-        export_all_sources_to_dir();
-    }
-
-    ESP_LOGI(TAG, "Saved %d sources to NVS and SD card", s_src_ctx.count);
-    return ret;
-}
-
-/* Forward declaration for SD card loading */
-static esp_err_t load_sources_from_file(const char *filepath);
-
-/**
- * 从存储加载数据源
- * 
- * Priority: SD card directory > SD card single file > NVS > empty
- * 当从 NVS 加载后，自动导出到 SD 卡（如果 SD 卡已挂载）
- */
-static esp_err_t load_sources_from_nvs(void)
-{
-    esp_err_t ret;
-    bool loaded_from_sdcard = false;
-    
-    /* 1. 优先从 SD 卡独立文件目录加载 */
-    if (ts_storage_sd_mounted()) {
-        ret = load_sources_from_dir();
-        if (ret == ESP_OK && s_src_ctx.count > 0) {
-            ESP_LOGI(TAG, "Loaded %d sources from SD card directory", s_src_ctx.count);
-            loaded_from_sdcard = true;
-            goto save_to_nvs;
-        }
-        
-        /* 2. 尝试从单一文件加载（兼容旧格式） */
-        ret = load_sources_from_file("/sdcard/config/sources.json");
-        if (ret == ESP_OK && s_src_ctx.count > 0) {
-            ESP_LOGI(TAG, "Loaded %d sources from SD card file", s_src_ctx.count);
-            loaded_from_sdcard = true;
-            /* 迁移到独立文件格式 */
-            export_all_sources_to_dir();
-            goto save_to_nvs;
-        }
-    }
-    
-    /* 3. SD 卡无配置，从 NVS 加载 */
-    uint8_t count = 0;
-    nvs_handle_t handle;
-    ret = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    
-    if (ret != ESP_OK) {
-        ESP_LOGI(TAG, "No saved sources found");
-        return ESP_OK;
-    }
-    
-    ret = nvs_get_u8(handle, NVS_KEY_COUNT, &count);
-    if (ret != ESP_OK || count == 0) {
-        nvs_close(handle);
-        ESP_LOGI(TAG, "No saved sources found");
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "Loading %d sources from NVS", count);
-
-    // 加载每个数据源
-    for (int i = 0; i < count && s_src_ctx.count < s_src_ctx.capacity; i++) {
-        char key[16];
-        snprintf(key, sizeof(key), "%s%d", NVS_KEY_PREFIX, i);
-
-        // 先获取字符串长度
-        size_t len = 0;
-        ret = nvs_get_str(handle, key, NULL, &len);
-        if (ret != ESP_OK || len == 0) {
-            continue;
-        }
-
-        // 分配并读取（优先使用 PSRAM）
-        char *json = heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
-        if (!json) json = malloc(len);
-        if (!json) continue;
-
-        ret = nvs_get_str(handle, key, json, &len);
-        if (ret == ESP_OK) {
-            // 使用堆分配避免栈溢出（ts_auto_source_t ~1KB+）
-            ts_auto_source_t *src = heap_caps_malloc(sizeof(ts_auto_source_t), MALLOC_CAP_SPIRAM);
-            if (!src) {
-                src = malloc(sizeof(ts_auto_source_t));  // Fallback to DRAM
-            }
-            if (src) {
-                memset(src, 0, sizeof(ts_auto_source_t));
-                if (json_to_source(json, src) == ESP_OK && src->id[0]) {
-                    memcpy(&s_src_ctx.sources[s_src_ctx.count], src, sizeof(ts_auto_source_t));
-                    s_src_ctx.count++;
-                    ESP_LOGD(TAG, "Loaded source: %s", src->id);
-                }
-                free(src);
-            }
-        }
-        free(json);
-    }
-
-    nvs_close(handle);
-    ESP_LOGI(TAG, "Loaded %d sources from NVS", s_src_ctx.count);
-    
-    /* 从 NVS 加载后，导出到 SD 卡（如果 SD 卡已挂载且有数据） */
-    if (s_src_ctx.count > 0 && ts_storage_sd_mounted()) {
-        ESP_LOGI(TAG, "Exporting NVS sources to SD card...");
-        export_all_sources_to_dir();
-    }
-    
-    return ESP_OK;
-
-save_to_nvs:
-    /* 从 SD 卡加载后，保存到 NVS */
-    if (loaded_from_sdcard && s_src_ctx.count > 0) {
-        save_sources_to_nvs();
-    }
-    return ESP_OK;
-}
-
-/**
- * Load sources from SD card JSON file
- * 
- * 支持 .tscfg 加密配置优先加载
- */
-static esp_err_t load_sources_from_file(const char *filepath)
-{
-    if (!filepath) return ESP_ERR_INVALID_ARG;
-    
-    /* 使用 .tscfg 优先加载 */
-    char *content = NULL;
-    size_t content_len = 0;
-    bool used_tscfg = false;
-    
-    esp_err_t ret = ts_config_pack_load_with_priority(
-        filepath, &content, &content_len, &used_tscfg);
-    
-    if (ret != ESP_OK) {
-        ESP_LOGD(TAG, "Cannot open file: %s", filepath);
-        return ret;
-    }
-    
-    if (used_tscfg) {
-        ESP_LOGI(TAG, "Loaded encrypted sources from .tscfg");
-    }
-    
-    cJSON *root = cJSON_Parse(content);
-    free(content);
-    
-    if (!root) {
-        ESP_LOGW(TAG, "Failed to parse JSON: %s", filepath);
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    cJSON *sources = cJSON_GetObjectItem(root, "sources");
-    if (!sources || !cJSON_IsArray(sources)) {
-        cJSON_Delete(root);
-        ESP_LOGW(TAG, "No 'sources' array in file");
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    int loaded = 0;
-    cJSON *item;
-    cJSON_ArrayForEach(item, sources) {
-        if (s_src_ctx.count >= s_src_ctx.capacity) break;
-        
-        char *json_str = cJSON_PrintUnformatted(item);
-        if (!json_str) continue;
-        
-        ts_auto_source_t *src = heap_caps_malloc(sizeof(ts_auto_source_t), MALLOC_CAP_SPIRAM);
-        if (!src) src = malloc(sizeof(ts_auto_source_t));
-        if (src) {
-            memset(src, 0, sizeof(ts_auto_source_t));
-            if (json_to_source(json_str, src) == ESP_OK && src->id[0]) {
-                memcpy(&s_src_ctx.sources[s_src_ctx.count], src, sizeof(ts_auto_source_t));
-                s_src_ctx.count++;
-                loaded++;
-            }
-            free(src);
-        }
-        cJSON_free(json_str);
-    }
-    
-    cJSON_Delete(root);
-    
-    if (loaded > 0) {
-        ESP_LOGI(TAG, "Loaded %d sources from SD card: %s", loaded, filepath);
-        save_sources_to_nvs();  /* Save to NVS for next boot */
-    }
-    
-    return ESP_OK;
-}
-
-/*===========================================================================*/
 /*                              辅助函数                                      */
 /*===========================================================================*/
-
-/**
- * 更新源关联的变量
- */
-static void update_source_variable(const ts_auto_source_t *src)
-{
-    // 查找关联此源的变量并更新
-    // 这里简化处理，假设变量名格式为 "category.source_id_suffix"
-    // 实际应该通过变量的 source_id 字段关联
-
-    // 暂时不实现，留给配置加载器处理映射
-}
 
 /**
  * 从 JSON 中按路径提取值
@@ -890,7 +199,7 @@ static esp_err_t extract_json_value(cJSON *json, const char *path, ts_auto_value
                 p++;
             }
             if (*p == ']') p++;  // 跳过 ']'
-            
+
             if (cJSON_IsArray(current)) {
                 current = cJSON_GetArrayItem(current, index);
             } else {
@@ -1022,7 +331,7 @@ static int process_source_mappings(ts_auto_source_t *src, cJSON *json_data);
  * @param create_new 是否创建新变量（false 时只更新已存在的变量）
  * @return 成功创建/更新的变量数量
  */
-static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data, 
+static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data,
                                      const char *prefix, int max_depth, bool create_new)
 {
     if (!src || !json_data || max_depth <= 0) {
@@ -1031,7 +340,7 @@ static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data,
 
     int count = 0;
     char var_name[96];  /* 增大缓冲区以容纳完整变量名 */
-    
+
     if (cJSON_IsObject(json_data)) {
         cJSON *item;
         cJSON_ArrayForEach(item, json_data) {
@@ -1041,12 +350,12 @@ static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data,
             } else {
                 snprintf(var_name, sizeof(var_name), "%s.%s", src->id, item->string);
             }
-            
+
             // 只处理叶子节点（数值、布尔、字符串）
             if (cJSON_IsBool(item) || cJSON_IsNumber(item) || cJSON_IsString(item)) {
                 ts_auto_value_t value = {0};
                 cjson_to_value(item, &value);
-                
+
                 // 尝试更新变量
                 esp_err_t ret = ts_variable_set(var_name, &value);
                 if (ret == ESP_ERR_NOT_FOUND && create_new) {
@@ -1056,7 +365,7 @@ static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data,
                     strncpy(new_var.source_id, src->id, sizeof(new_var.source_id) - 1);
                     new_var.value = value;
                     new_var.flags = 0;
-                    
+
                     ret = ts_variable_upsert(&new_var);
                     if (ret == ESP_OK) {
                         ESP_LOGD(TAG, "Auto-discovered variable: %s", var_name);
@@ -1075,16 +384,16 @@ static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data,
         // 对数组，只处理前几个元素
         int arr_size = cJSON_GetArraySize(json_data);
         int max_elements = (arr_size > 4) ? 4 : arr_size;  // 最多处理4个元素
-        
+
         for (int i = 0; i < max_elements; i++) {
             cJSON *item = cJSON_GetArrayItem(json_data, i);
             char arr_prefix[64];
             snprintf(arr_prefix, sizeof(arr_prefix), "%s[%d]", prefix, i);
-            
+
             if (cJSON_IsBool(item) || cJSON_IsNumber(item) || cJSON_IsString(item)) {
                 ts_auto_value_t value = {0};
                 cjson_to_value(item, &value);
-                
+
                 esp_err_t ret = ts_variable_set(arr_prefix, &value);
                 if (ret == ESP_ERR_NOT_FOUND && create_new) {
                     ts_auto_variable_t new_var = {0};
@@ -1092,7 +401,7 @@ static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data,
                     strncpy(new_var.source_id, src->id, sizeof(new_var.source_id) - 1);
                     new_var.value = value;
                     new_var.flags = 0;
-                    
+
                     ret = ts_variable_upsert(&new_var);
                     if (ret == ESP_OK) {
                         count++;
@@ -1105,7 +414,7 @@ static int auto_discover_json_fields(ts_auto_source_t *src, cJSON *json_data,
             }
         }
     }
-    
+
     return count;
 }
 
@@ -1144,7 +453,7 @@ static int process_source_mappings(ts_auto_source_t *src, cJSON *json_data)
         if (cJSON_IsArray(result) || cJSON_IsObject(result)) {
             // 使用 auto_discover 函数来展开，变量名前缀为 mapping->var_name
             int expanded = auto_discover_json_fields(src, result, mapping->var_name, 3, true);
-            ESP_LOGD(TAG, "Mapping %d: expanded '%s' into %d variables", 
+            ESP_LOGD(TAG, "Mapping %d: expanded '%s' into %d variables",
                      i, mapping->json_path, expanded);
             processed += expanded;
             cJSON_Delete(result);
@@ -1158,7 +467,7 @@ static int process_source_mappings(ts_auto_source_t *src, cJSON *json_data)
 
         // 尝试更新变量
         esp_err_t ret = ts_variable_set(mapping->var_name, &value);
-        
+
         // 如果变量不存在，自动创建
         if (ret == ESP_ERR_NOT_FOUND) {
             ts_auto_variable_t new_var = {0};
@@ -1166,21 +475,21 @@ static int process_source_mappings(ts_auto_source_t *src, cJSON *json_data)
             strncpy(new_var.source_id, src->id, sizeof(new_var.source_id) - 1);
             new_var.value = value;
             new_var.flags = 0;  // 可读写
-            
+
             ret = ts_variable_upsert(&new_var);
             if (ret == ESP_OK) {
                 ESP_LOGD(TAG, "Auto-created variable '%s' from mapping", mapping->var_name);
                 processed++;
             } else {
-                ESP_LOGW(TAG, "Failed to create variable '%s': %s", 
+                ESP_LOGW(TAG, "Failed to create variable '%s': %s",
                          mapping->var_name, esp_err_to_name(ret));
             }
         } else if (ret == ESP_OK) {
             processed++;
-            ESP_LOGD(TAG, "Mapping %d: %s -> %s (type=%d)", 
+            ESP_LOGD(TAG, "Mapping %d: %s -> %s (type=%d)",
                      i, mapping->json_path, mapping->var_name, value.type);
         } else {
-            ESP_LOGW(TAG, "Failed to set variable '%s': %s", 
+            ESP_LOGW(TAG, "Failed to set variable '%s': %s",
                      mapping->var_name, esp_err_to_name(ret));
         }
     }
@@ -1242,7 +551,7 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
     ESP_LOGD(TAG, "Reading REST source: %s, path: %s", url, path);
 
     // 检测是否是本地 API 调用
-    bool is_local = (strstr(url, "://127.0.0.1") != NULL || 
+    bool is_local = (strstr(url, "://127.0.0.1") != NULL ||
                      strstr(url, "://localhost") != NULL);
 
     cJSON *response_json = NULL;
@@ -1284,7 +593,7 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
         if (ret == ESP_OK && api_result.code == TS_API_OK && api_result.data) {
             response_json = cJSON_Duplicate(api_result.data, true);
         } else {
-            ESP_LOGW(TAG, "Local API call failed: %s, code=%d", 
+            ESP_LOGW(TAG, "Local API call failed: %s, code=%d",
                      api_result.message ? api_result.message : "unknown", api_result.code);
             ret = ESP_FAIL;
         }
@@ -1357,10 +666,20 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
 
     // 处理 JSON 响应
     if (ret == ESP_OK && response_json) {
+        ts_variable_registration_begin();
+        xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+        int index = current_source_index(src->id, src->instance);
+        if (index < 0) {
+            xSemaphoreGive(ts_source_runtime.mutex);
+            ts_variable_registration_end();
+            cJSON_Delete(response_json);
+            return ESP_ERR_INVALID_STATE;
+        }
+        src->auto_discovered = ts_source_runtime.sources[index].auto_discovered;
         // 方式 1：使用映射（推荐）- 与 Socket.IO 一致
         if (src->mapping_count > 0) {
             int mapped = process_source_mappings(src, response_json);
-            ESP_LOGD(TAG, "REST source '%s': processed %d/%d mappings", 
+            ESP_LOGD(TAG, "REST source '%s': processed %d/%d mappings",
                      src->id, mapped, src->mapping_count);
         }
 
@@ -1382,13 +701,13 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
         // 方式 3：使用单一路径（向后兼容，仅当无 mapping 和无 auto_discover 时）
         if (path[0] != '\0' && value && src->mapping_count == 0 && !src->auto_discover) {
             const char *actual_path = path;
-            
+
             // 对于本地 API，response_json 已经是 data 对象
             if (is_local && strncmp(path, "data.", 5) == 0) {
                 actual_path = path + 5;
                 ESP_LOGD(TAG, "Local API: stripped 'data.' prefix, using path: %s", actual_path);
             }
-            
+
             // 使用 JSONPath 提取
             cJSON *result = ts_jsonpath_get(response_json, actual_path);
             if (result) {
@@ -1411,6 +730,9 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
                 free(str);
             }
         }
+        ts_source_runtime.sources[index].auto_discovered = src->auto_discovered;
+        xSemaphoreGive(ts_source_runtime.mutex);
+        ts_variable_registration_end();
         cJSON_Delete(response_json);
     }
 
@@ -1419,9 +741,9 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
 
 /**
  * 读取变量数据源
- * 
+ *
  * 统一使用 ts_automation 变量系统（ts_variable API）
- * 
+ *
  * 两种模式：
  * 1. 监视指令变量：基于前缀读取 SSH 命令执行结果
  * 2. 读取单个变量：直接获取指定变量的值
@@ -1437,7 +759,7 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
     // SSH 指令由其他机制触发执行（手动、定时任务等）
     if (var_prefix[0] != '\0') {
         int count = 0;
-        
+
         // 从 var_prefix 提取命令别名（去掉末尾的 "."）
         char alias[TS_AUTO_NAME_MAX_LEN];
         strncpy(alias, var_prefix, sizeof(alias) - 1);
@@ -1446,14 +768,14 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
         if (len > 0 && alias[len - 1] == '.') {
             alias[len - 1] = '\0';
         }
-        
+
         // 读取 SSH 命令执行后产生的标准变量（使用 ts_automation 系统）
-        const char *suffixes[] = {"status", "exit_code", "extracted", "expect_matched", 
+        const char *suffixes[] = {"status", "exit_code", "extracted", "expect_matched",
                                    "fail_matched", "host", "timestamp", "output"};
         for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
             char full_name[96];
             snprintf(full_name, sizeof(full_name), "%s.%s", alias, suffixes[i]);
-            
+
             // 直接从 ts_automation 变量系统读取
             ts_auto_value_t var_value = {0};
             if (ts_variable_get(full_name, &var_value) == ESP_OK) {
@@ -1466,10 +788,10 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
                 count++;
             }
         }
-        
+
         ESP_LOGD(TAG, "Variable source '%s': read %d variables from prefix '%s'",
                  src->id, count, alias);
-        
+
         if (count > 0) {
             // 返回主要状态变量
             char status_var[96];
@@ -1483,7 +805,7 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
             }
             return ESP_OK;
         }
-        
+
         // 变量不存在（指令可能尚未执行）
         ESP_LOGD(TAG, "Variable source '%s': no variables found for prefix '%s' (command may not have been executed yet)",
                  src->id, alias);
@@ -1494,15 +816,15 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
     if (var_name[0] != '\0') {
         ts_auto_value_t var_value = {0};
         esp_err_t ret = ts_variable_get(var_name, &var_value);
-        
+
         if (ret == ESP_OK) {
             *value = var_value;
-            
+
             // 同时更新自动化变量（如果有映射）
             if (src->mapping_count > 0) {
                 ts_variable_set(src->mappings[0].var_name, &var_value);
             }
-            
+
             return ESP_OK;
         }
         return ret;
@@ -1511,11 +833,11 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
     // 模式 3：监视前缀下的所有变量（使用 ts_automation 枚举）
     if (watch_all && var_prefix[0] != '\0') {
         int count = 0;
-        
+
         // 使用 ts_variable_enumerate 遍历所有匹配前缀的变量
         ts_variable_iterate_ctx_t ctx = {0};
         ts_auto_variable_t var;
-        
+
         while (ts_variable_iterate(&ctx, &var) == ESP_OK) {
             // 检查变量名是否以 var_prefix 开头
             if (strncmp(var.name, var_prefix, strlen(var_prefix)) == 0) {
@@ -1529,10 +851,10 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
                 count++;
             }
         }
-        
+
         ESP_LOGD(TAG, "Variable source '%s': synced %d variables from prefix '%s'",
                  src->id, count, var_prefix);
-        
+
         if (count > 0) {
             value->type = TS_AUTO_VAL_INT;
             value->int_val = count;
@@ -1549,369 +871,33 @@ static esp_err_t read_variable_source(ts_auto_source_t *src, ts_auto_value_t *va
 
 esp_err_t ts_source_manager_init(void)
 {
-    if (s_src_ctx.initialized) {
-        ESP_LOGW(TAG, "Already initialized");
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "Initializing source manager (max %d)", 
-             CONFIG_TS_AUTOMATION_MAX_SOURCES);
-
-    // 分配源数组（使用 PSRAM）
-    s_src_ctx.capacity = CONFIG_TS_AUTOMATION_MAX_SOURCES;
-    size_t alloc_size = s_src_ctx.capacity * sizeof(ts_auto_source_t);
-
-    s_src_ctx.sources = heap_caps_malloc(alloc_size, MALLOC_CAP_SPIRAM);
-    if (!s_src_ctx.sources) {
-        s_src_ctx.sources = malloc(alloc_size);
-        if (!s_src_ctx.sources) {
-            ESP_LOGE(TAG, "Failed to allocate source storage");
-            return ESP_ERR_NO_MEM;
-        }
-        ESP_LOGW(TAG, "Using DRAM for source storage");
-    }
-
-    memset(s_src_ctx.sources, 0, alloc_size);
-
-    // 创建互斥锁
-    s_src_ctx.mutex = xSemaphoreCreateMutex();
-    if (!s_src_ctx.mutex) {
-        free(s_src_ctx.sources);
-        s_src_ctx.sources = NULL;
-        ESP_LOGE(TAG, "Failed to create mutex");
-        return ESP_ERR_NO_MEM;
-    }
-
-    memset(&s_src_ctx.stats, 0, sizeof(s_src_ctx.stats));
-    s_src_ctx.count = 0;
-    s_src_ctx.running = false;
-    s_src_ctx.initialized = true;
-
-    // 延迟加载数据源（等待 SD 卡挂载，避免栈溢出）
-    // load_sources_from_nvs() 在延迟任务中执行
-    extern void ts_source_deferred_load_task(void *arg);
-    BaseType_t task_ret = xTaskCreateWithCaps(
-        ts_source_deferred_load_task,
-        "src_load",
-        8192,               // 8KB 栈用于 SD 卡 I/O
-        NULL,
-        tskIDLE_PRIORITY + 1,
-        NULL,
-        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
-    );
-    if (task_ret != pdPASS) {
-        ESP_LOGW(TAG, "Failed to create deferred load task, loading synchronously");
-        load_sources_from_nvs();
-    }
-
-    ESP_LOGI(TAG, "Source manager initialized (loading deferred)");
+    esp_err_t ret = ts_source_runtime_init();
+    if (ret != ESP_OK) return ret;
+    if (!s_sio_ctx.mutex) s_sio_ctx.mutex = xSemaphoreCreateMutex();
+    if (!s_sio_ctx.mutex) { ts_source_runtime_deinit();return ESP_ERR_NO_MEM; }
     return ESP_OK;
-}
-
-/**
- * @brief 延迟加载任务 - 等待 SD 卡挂载后加载数据源并启动
- */
-void ts_source_deferred_load_task(void *arg)
-{
-    (void)arg;
-    
-    // 等待 2.5 秒，确保 SD 卡和 NVS 都已就绪
-    vTaskDelay(pdMS_TO_TICKS(2500));
-    
-    if (!s_src_ctx.initialized) {
-        ESP_LOGW(TAG, "Source manager not initialized, skip deferred load");
-        vTaskDelete(NULL);
-        return;
-    }
-    
-    ESP_LOGI(TAG, "Deferred source loading started");
-    load_sources_from_nvs();
-    ESP_LOGI(TAG, "Deferred source loading complete: %d sources", s_src_ctx.count);
-    
-    // 加载完成后，启动所有已启用的数据源连接
-    if (s_src_ctx.count > 0) {
-        ESP_LOGI(TAG, "Starting loaded data sources...");
-        ts_source_start_all();
-    }
-    
-    vTaskDelete(NULL);
 }
 
 esp_err_t ts_source_manager_deinit(void)
 {
-    if (!s_src_ctx.initialized) {
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "Deinitializing source manager");
-
-    // 先停止
+    if (!ts_source_runtime.initialized) return ESP_OK;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    ts_source_runtime.closing = true;
+    xSemaphoreGive(ts_source_runtime.mutex);
     ts_source_stop_all();
-
-    if (s_src_ctx.mutex) {
-        vSemaphoreDelete(s_src_ctx.mutex);
-        s_src_ctx.mutex = NULL;
-    }
-
-    if (s_src_ctx.sources) {
-        if (heap_caps_get_allocated_size(s_src_ctx.sources) > 0) {
-            heap_caps_free(s_src_ctx.sources);
-        } else {
-            free(s_src_ctx.sources);
-        }
-        s_src_ctx.sources = NULL;
-    }
-
-    s_src_ctx.count = 0;
-    s_src_ctx.capacity = 0;
-    s_src_ctx.initialized = false;
-
+    bool pending;
+    do {
+        pending = false;
+        for (int i = 0; i < SIO_MAX_CONNECTIONS; ++i) pending |= atomic_load(&s_sio_ctx.connections[i].allocated);
+        xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+        pending |= ts_source_runtime.active_polls != 0;
+        xSemaphoreGive(ts_source_runtime.mutex);
+        if (pending) vTaskDelay(pdMS_TO_TICKS(10));
+    } while (pending);
+    vSemaphoreDelete(s_sio_ctx.mutex);s_sio_ctx.mutex = NULL;
+    s_sio_ctx.activation_pending = false;
+    ts_source_runtime_deinit();
     return ESP_OK;
-}
-
-/*===========================================================================*/
-/*                              源管理                                        */
-/*===========================================================================*/
-
-esp_err_t ts_source_register(const ts_auto_source_t *source)
-{
-    if (!source || !source->id[0]) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (!s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    // 检查是否已存在
-    int idx = find_source_index(source->id);
-    if (idx >= 0) {
-        // 更新现有源，但保留运行时状态
-        bool prev_auto_discovered = s_src_ctx.sources[idx].auto_discovered;
-        memcpy(&s_src_ctx.sources[idx], source, sizeof(ts_auto_source_t));
-        s_src_ctx.sources[idx].auto_discovered = prev_auto_discovered;  // 保留发现状态
-        xSemaphoreGive(s_src_ctx.mutex);
-        ESP_LOGD(TAG, "Updated source: %s", source->id);
-        // 保存到 NVS
-        save_sources_to_nvs();
-        return ESP_OK;
-    }
-
-    // 检查容量
-    if (s_src_ctx.count >= s_src_ctx.capacity) {
-        xSemaphoreGive(s_src_ctx.mutex);
-        ESP_LOGE(TAG, "Source storage full");
-        return ESP_ERR_NO_MEM;
-    }
-
-    // 添加新源
-    memcpy(&s_src_ctx.sources[s_src_ctx.count], source, sizeof(ts_auto_source_t));
-    s_src_ctx.sources[s_src_ctx.count].auto_discovered = false;  // 新源始终从未发现开始
-    s_src_ctx.count++;
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    // 保存到 NVS
-    save_sources_to_nvs();
-
-    ESP_LOGI(TAG, "Registered source: %s (%s, interval %"PRIu32"ms)",
-             source->id, source->label, source->poll_interval_ms);
-
-    // 如果是 Socket.IO 源且已启用，自动连接
-    if (source->type == TS_AUTO_SRC_SOCKETIO && source->enabled) {
-        ESP_LOGI(TAG, "Auto-connecting Socket.IO source: %s", source->id);
-        ts_source_sio_connect(source->id);
-    }
-
-    return ESP_OK;
-}
-
-esp_err_t ts_source_unregister(const char *id)
-{
-    if (!id) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (!s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    int idx = find_source_index(id);
-    if (idx < 0) {
-        xSemaphoreGive(s_src_ctx.mutex);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    // 获取类型，用于后续断开连接
-    ts_auto_source_type_t type = s_src_ctx.sources[idx].type;
-
-    // 移动后续元素
-    if (idx < s_src_ctx.count - 1) {
-        memmove(&s_src_ctx.sources[idx],
-                &s_src_ctx.sources[idx + 1],
-                (s_src_ctx.count - idx - 1) * sizeof(ts_auto_source_t));
-    }
-    s_src_ctx.count--;
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    // 如果是 Socket.IO 源，断开连接
-    if (type == TS_AUTO_SRC_SOCKETIO) {
-        ESP_LOGI(TAG, "Disconnecting Socket.IO source before unregister: %s", id);
-        ts_source_sio_disconnect(id);
-    }
-
-    // 删除该数据源关联的所有变量
-    int removed = ts_variable_unregister_by_source(id);
-    ESP_LOGI(TAG, "Removed %d variables associated with source: %s", removed, id);
-
-    // 保存到 NVS
-    save_sources_to_nvs();
-
-    ESP_LOGI(TAG, "Unregistered source: %s", id);
-    return ESP_OK;
-}
-
-esp_err_t ts_source_enable(const char *id)
-{
-    if (!id || !s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    int idx = find_source_index(id);
-    if (idx < 0) {
-        xSemaphoreGive(s_src_ctx.mutex);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    s_src_ctx.sources[idx].enabled = true;
-    ts_auto_source_type_t type = s_src_ctx.sources[idx].type;
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    // 如果是 Socket.IO 源，自动连接
-    if (type == TS_AUTO_SRC_SOCKETIO) {
-        ESP_LOGI(TAG, "Auto-connecting Socket.IO source: %s", id);
-        ts_source_sio_connect(id);
-    }
-
-    return ESP_OK;
-}
-
-esp_err_t ts_source_disable(const char *id)
-{
-    if (!id || !s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    int idx = find_source_index(id);
-    if (idx < 0) {
-        xSemaphoreGive(s_src_ctx.mutex);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    s_src_ctx.sources[idx].enabled = false;
-    ts_auto_source_type_t type = s_src_ctx.sources[idx].type;
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    // 如果是 Socket.IO 源，断开连接
-    if (type == TS_AUTO_SRC_SOCKETIO) {
-        ESP_LOGI(TAG, "Disconnecting Socket.IO source: %s", id);
-        ts_source_sio_disconnect(id);
-    }
-
-    return ESP_OK;
-}
-
-const ts_auto_source_t *ts_source_get(const char *id)
-{
-    if (!id || !s_src_ctx.initialized) {
-        return NULL;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    int idx = find_source_index(id);
-    const ts_auto_source_t *src = (idx >= 0) ? &s_src_ctx.sources[idx] : NULL;
-
-    xSemaphoreGive(s_src_ctx.mutex);
-    return src;
-}
-
-ts_auto_source_t *ts_source_get_mutable(const char *id)
-{
-    if (!id || !s_src_ctx.initialized) {
-        return NULL;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    int idx = find_source_index(id);
-    ts_auto_source_t *src = (idx >= 0) ? &s_src_ctx.sources[idx] : NULL;
-
-    xSemaphoreGive(s_src_ctx.mutex);
-    return src;
-}
-
-int ts_source_count(void)
-{
-    if (!s_src_ctx.initialized) {
-        return 0;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-    int count = s_src_ctx.count;
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    return count;
-}
-
-const ts_auto_source_t *ts_source_get_by_index(int index)
-{
-    if (!s_src_ctx.initialized) {
-        return NULL;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    const ts_auto_source_t *src = NULL;
-    if (index >= 0 && index < s_src_ctx.count) {
-        src = &s_src_ctx.sources[index];
-    }
-
-    xSemaphoreGive(s_src_ctx.mutex);
-    return src;
-}
-
-esp_err_t ts_source_get_by_index_copy(int index, ts_auto_source_t *out_source)
-{
-    if (!out_source) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    if (!s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    esp_err_t ret = ESP_ERR_NOT_FOUND;
-    if (index >= 0 && index < s_src_ctx.count) {
-        memcpy(out_source, &s_src_ctx.sources[index], sizeof(ts_auto_source_t));
-        ret = ESP_OK;
-    }
-
-    xSemaphoreGive(s_src_ctx.mutex);
-    return ret;
 }
 
 /*===========================================================================*/
@@ -1920,200 +906,93 @@ esp_err_t ts_source_get_by_index_copy(int index, ts_auto_source_t *out_source)
 
 esp_err_t ts_source_start_all(void)
 {
-    if (!s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    ESP_LOGI(TAG, "Starting all data sources");
-
-    // 等待网络就绪（最多等待 10 秒）
-    int wait_count = 0;
-    const int max_wait = 100;  // 100 * 100ms = 10s
-    while (wait_count < max_wait) {
-        if (ts_net_manager_is_ready(TS_NET_IF_ETH) || 
-            ts_net_manager_is_ready(TS_NET_IF_WIFI_STA)) {
-            ESP_LOGI(TAG, "Network ready, starting external sources");
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-        wait_count++;
-        if (wait_count % 10 == 0) {
-            ESP_LOGD(TAG, "Waiting for network... (%d/%d)", wait_count, max_wait);
-        }
-    }
-    
-    if (wait_count >= max_wait) {
-        ESP_LOGW(TAG, "Network not ready after %d seconds, starting sources anyway", max_wait / 10);
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    // 收集需要启动的 Socket.IO 源（在锁内收集，锁外连接）
-    char sio_sources[CONFIG_TS_AUTOMATION_MAX_SOURCES][64];
-    int sio_count = 0;
-
-    // 初始化所有数据源连接
-    for (int i = 0; i < s_src_ctx.count; i++) {
-        if (!s_src_ctx.sources[i].enabled) {
-            continue;
-        }
-        
-        if (s_src_ctx.sources[i].type == TS_AUTO_SRC_WEBSOCKET) {
-            // TODO: 启动 WebSocket 连接
-            ESP_LOGD(TAG, "Starting WS source: %s", s_src_ctx.sources[i].id);
-        } else if (s_src_ctx.sources[i].type == TS_AUTO_SRC_SOCKETIO) {
-            // 记录 Socket.IO 源 ID，稍后连接
-            if (sio_count < CONFIG_TS_AUTOMATION_MAX_SOURCES) {
-                strncpy(sio_sources[sio_count], s_src_ctx.sources[i].id, sizeof(sio_sources[0]) - 1);
-                sio_sources[sio_count][sizeof(sio_sources[0]) - 1] = '\0';
-                sio_count++;
-            }
-        }
-    }
-
-    s_src_ctx.running = true;
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    // 在锁外启动 Socket.IO 连接（避免死锁）
-    for (int i = 0; i < sio_count; i++) {
-        ESP_LOGI(TAG, "Starting Socket.IO source: %s", sio_sources[i]);
-        ts_source_sio_connect(sio_sources[i]);
-    }
-
+    if (!ts_source_runtime.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    ts_source_runtime.running = true;
+    xSemaphoreGive(ts_source_runtime.mutex);
+    ts_source_config_activate();
     return ESP_OK;
 }
 
 esp_err_t ts_source_stop_all(void)
 {
-    if (!s_src_ctx.initialized) {
-        return ESP_OK;
+    if (!ts_source_runtime.initialized) return ESP_OK;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    ts_source_runtime.running = false;
+    for (int i = 0; i < ts_source_runtime.count; ++i) ts_source_runtime.sources[i].connected = false;
+    xSemaphoreGive(ts_source_runtime.mutex);
+    xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
+    for (int i = 0; i < SIO_MAX_CONNECTIONS; ++i) {
+        sio_connection_t *conn = &s_sio_ctx.connections[i];
+        if (!conn->allocated) continue;
+        conn->should_stop = true;
+        if (conn->task_handle) xTaskNotifyGive(conn->task_handle);
     }
-
-    ESP_LOGI(TAG, "Stopping all data sources");
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    s_src_ctx.running = false;
-
-    // 断开所有 WebSocket 连接
-    for (int i = 0; i < s_src_ctx.count; i++) {
-        if (s_src_ctx.sources[i].type == TS_AUTO_SRC_WEBSOCKET &&
-            s_src_ctx.sources[i].connected) {
-            // TODO: 断开 WebSocket
-            s_src_ctx.sources[i].connected = false;
-        }
-    }
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
+    xSemaphoreGive(s_sio_ctx.mutex);
     return ESP_OK;
 }
 
-esp_err_t ts_source_poll(const char *id)
+static esp_err_t poll_instance(const char *id, uint64_t expected)
 {
-    if (!id || !s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    int idx = find_source_index(id);
-    if (idx < 0) {
-        xSemaphoreGive(s_src_ctx.mutex);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    ts_auto_source_t *src = &s_src_ctx.sources[idx];
-    ts_auto_value_t value = {0};
-    esp_err_t ret = ESP_OK;
-
-    s_src_ctx.stats.total_polls++;
-
-    switch (src->type) {
-        case TS_AUTO_SRC_WEBSOCKET:
-        case TS_AUTO_SRC_SOCKETIO:
-            // WebSocket 和 Socket.IO 是推送模式，不需要轮询
-            ret = ESP_OK;
-            break;
-
-        case TS_AUTO_SRC_REST:
-            // REST API 轮询
-            xSemaphoreGive(s_src_ctx.mutex);  // 释放锁，HTTP 请求可能耗时
-            ret = read_rest_source(src, &value);
-            xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);  // 重新获取锁
-            s_src_ctx.stats.rest_requests++;
-            break;
-
-        case TS_AUTO_SRC_VARIABLE:
-            // 变量系统轮询
-            ret = read_variable_source(src, &value);
-            break;
-
-        default:
-            ret = ESP_ERR_NOT_SUPPORTED;
-    }
-
+    if (!id || !ts_source_runtime.initialized) return ESP_ERR_INVALID_ARG;
+    ts_auto_source_t *copy = heap_caps_malloc(sizeof(*copy), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!copy) return ESP_ERR_NO_MEM;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    int index = find_source_index(id);
+    esp_err_t ret = ts_source_runtime.closing ? ESP_ERR_INVALID_STATE : index < 0 ? ESP_ERR_NOT_FOUND : ESP_OK;
     if (ret == ESP_OK) {
-        src->last_value = value;
-        src->last_update_ms = esp_timer_get_time() / 1000;
-        s_src_ctx.stats.successful_polls++;
-
-        // 更新关联变量
-        update_source_variable(src);
-    } else {
-        s_src_ctx.stats.failed_polls++;
+        *copy = ts_source_runtime.sources[index];
+        if (!copy->enabled || (expected && expected != copy->instance)) ret = ESP_ERR_INVALID_STATE;
+        else ++ts_source_runtime.active_polls;
     }
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    return ret;
+    xSemaphoreGive(ts_source_runtime.mutex);
+    if (ret != ESP_OK) { free(copy);return ret; }
+    ts_auto_value_t value = {0};
+    if (copy->type == TS_AUTO_SRC_REST) ret = read_rest_source(copy, &value);
+    else if (copy->type == TS_AUTO_SRC_VARIABLE) {
+        ts_variable_registration_begin();
+        xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+        ret = current_source_index(id, copy->instance) >= 0 ? read_variable_source(copy, &value) : ESP_ERR_INVALID_STATE;
+        xSemaphoreGive(ts_source_runtime.mutex);
+        ts_variable_registration_end();
+    } else ret = copy->type == TS_AUTO_SRC_SOCKETIO || copy->type == TS_AUTO_SRC_WEBSOCKET ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    ++ts_source_runtime.stats.total_polls;
+    if (copy->type == TS_AUTO_SRC_REST) ++ts_source_runtime.stats.rest_requests;
+    index = current_source_index(id, copy->instance);
+    if (ret == ESP_OK && index >= 0) {
+        ts_source_runtime.sources[index].last_value = value;
+        ts_source_runtime.sources[index].last_update_ms = esp_timer_get_time() / 1000;
+        ++ts_source_runtime.stats.successful_polls;
+    } else {
+        ++ts_source_runtime.stats.failed_polls;
+        if (ret == ESP_OK) ret = ESP_ERR_INVALID_STATE;
+    }
+    --ts_source_runtime.active_polls;
+    xSemaphoreGive(ts_source_runtime.mutex);
+    free(copy);return ret;
 }
+
+esp_err_t ts_source_poll(const char *id) { return poll_instance(id, 0); }
 
 int ts_source_poll_all(void)
 {
-    if (!s_src_ctx.initialized || !s_src_ctx.running) {
-        return 0;
+    if (!ts_source_runtime.initialized) return 0;
+    if (atomic_exchange(&s_sio_ctx.activation_pending, false)) ts_source_config_activate();
+    char ids[CONFIG_TS_AUTOMATION_MAX_SOURCES][TS_AUTO_NAME_MAX_LEN];
+    uint64_t instances[CONFIG_TS_AUTOMATION_MAX_SOURCES];
+    int count = 0;
+    int64_t now = esp_timer_get_time() / 1000;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    for (int i = 0; ts_source_runtime.running && i < ts_source_runtime.count; ++i) {
+        const ts_auto_source_t *source = &ts_source_runtime.sources[i];
+        if (!source->enabled || source->type == TS_AUTO_SRC_SOCKETIO || source->type == TS_AUTO_SRC_WEBSOCKET ||
+            (source->poll_interval_ms && now - source->last_update_ms < source->poll_interval_ms)) continue;
+        strcpy(ids[count], source->id);instances[count++] = source->instance;
     }
-
+    xSemaphoreGive(ts_source_runtime.mutex);
     int polled = 0;
-    int64_t now_ms = esp_timer_get_time() / 1000;
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    for (int i = 0; i < s_src_ctx.count; i++) {
-        ts_auto_source_t *src = &s_src_ctx.sources[i];
-
-        if (!src->enabled) {
-            continue;
-        }
-
-        // WebSocket 和 Socket.IO 是推送模式，跳过轮询
-        if (src->type == TS_AUTO_SRC_WEBSOCKET || src->type == TS_AUTO_SRC_SOCKETIO) {
-            continue;
-        }
-
-        // 检查是否到达轮询时间
-        if (src->poll_interval_ms > 0) {
-            int64_t elapsed = now_ms - src->last_update_ms;
-            if (elapsed < src->poll_interval_ms) {
-                continue;
-            }
-        }
-
-        // 释放锁后轮询（避免长时间持有锁）
-        xSemaphoreGive(s_src_ctx.mutex);
-
-        esp_err_t ret = ts_source_poll(src->id);
-        if (ret == ESP_OK) {
-            polled++;
-        }
-
-        xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-    }
-
-    xSemaphoreGive(s_src_ctx.mutex);
-
+    for (int i = 0; i < count; ++i) polled += poll_instance(ids[i], instances[i]) == ESP_OK;
     return polled;
 }
 
@@ -2136,19 +1015,19 @@ esp_err_t ts_source_ws_disconnect(const char *id)
 
 bool ts_source_ws_is_connected(const char *id)
 {
-    if (!id || !s_src_ctx.initialized) {
+    if (!id || !ts_source_runtime.initialized) {
         return false;
     }
 
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
 
     int idx = find_source_index(id);
     bool connected = false;
-    if (idx >= 0 && s_src_ctx.sources[idx].type == TS_AUTO_SRC_WEBSOCKET) {
-        connected = s_src_ctx.sources[idx].connected;
+    if (idx >= 0 && ts_source_runtime.sources[idx].type == TS_AUTO_SRC_WEBSOCKET) {
+        connected = ts_source_runtime.sources[idx].connected;
     }
 
-    xSemaphoreGive(s_src_ctx.mutex);
+    xSemaphoreGive(ts_source_runtime.mutex);
     return connected;
 }
 
@@ -2159,38 +1038,57 @@ bool ts_source_ws_is_connected(const char *id)
 /**
  * 查找 Socket.IO 连接
  */
-static sio_connection_t *sio_find_connection(const char *source_id)
+/* Caller owns the connection mutex; slots never move while a task uses them. */
+static sio_connection_t *sio_find_connection(const char *id)
 {
-    for (int i = 0; i < s_sio_ctx.count; i++) {
-        if (strcmp(s_sio_ctx.connections[i].source_id, source_id) == 0) {
-            return &s_sio_ctx.connections[i];
-        }
-    }
+    for (int i = 0; i < SIO_MAX_CONNECTIONS; ++i)
+        if (s_sio_ctx.connections[i].allocated && !strcmp(s_sio_ctx.connections[i].source_id, id)) return &s_sio_ctx.connections[i];
     return NULL;
 }
 
-/**
- * 释放 Socket.IO 连接槽
- */
-static void sio_release_connection(const char *source_id)
+static void sio_release_connection(sio_connection_t *conn, bool activate)
+{
+    xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
+    conn->task_handle = NULL;
+    if (activate) s_sio_ctx.activation_pending = true;
+    xSemaphoreGive(s_sio_ctx.mutex);
+    /* This is the task's final access to the slot. Deinit/reuse may proceed
+     * as soon as it observes false, so no mutex operation may follow it. */
+    conn->allocated = false;
+}
+
+void ts_source_transport_changed(void)
 {
     if (!s_sio_ctx.mutex) return;
-
     xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
-
-    for (int i = 0; i < s_sio_ctx.count; i++) {
-        if (strcmp(s_sio_ctx.connections[i].source_id, source_id) == 0) {
-            // 移动后面的连接填补空位
-            for (int j = i; j < s_sio_ctx.count - 1; j++) {
-                s_sio_ctx.connections[j] = s_sio_ctx.connections[j + 1];
-            }
-            s_sio_ctx.count--;
-            ESP_LOGD(TAG, "SIO [%s] connection slot released", source_id);
-            break;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    for (int i = 0; i < SIO_MAX_CONNECTIONS; ++i) {
+        sio_connection_t *conn = &s_sio_ctx.connections[i];
+        if (conn->allocated && current_connection_index(conn) < 0) {
+            conn->should_stop = true;
+            if (conn->task_handle) xTaskNotifyGive(conn->task_handle);
         }
     }
-
+    xSemaphoreGive(ts_source_runtime.mutex);
     xSemaphoreGive(s_sio_ctx.mutex);
+}
+
+void ts_source_config_activate(void)
+{
+    if (!ts_source_runtime.initialized) return;
+    char ids[CONFIG_TS_AUTOMATION_MAX_SOURCES][TS_AUTO_NAME_MAX_LEN];
+    int count = 0;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    for (int i = 0; ts_source_runtime.running && i < ts_source_runtime.count; ++i)
+        if (ts_source_runtime.sources[i].enabled && ts_source_runtime.sources[i].type == TS_AUTO_SRC_SOCKETIO)
+            strcpy(ids[count++], ts_source_runtime.sources[i].id);
+    xSemaphoreGive(ts_source_runtime.mutex);
+    for (int i = 0; i < count; ++i) {
+        esp_err_t ret = ts_source_sio_connect(ids[i]);
+        if (ret == ESP_ERR_NOT_FINISHED) s_sio_ctx.activation_pending = true;
+        if (ret != ESP_OK && ret != ESP_ERR_NOT_FINISHED)
+            ESP_LOGW(TAG, "Source %s is saved; connection start failed: %s", ids[i], esp_err_to_name(ret));
+    }
 }
 
 /**
@@ -2223,10 +1121,10 @@ static void sio_handle_event_message(sio_connection_t *conn, const char *msg)
     ESP_LOGD(TAG, "SIO event: %s from source %s", event_name->valuestring, conn->source_id);
 
     // 查找关联的数据源
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-    int idx = find_source_index(conn->source_id);
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    int idx = current_connection_index(conn);
     if (idx >= 0) {
-        ts_auto_source_t *src = &s_src_ctx.sources[idx];
+        ts_auto_source_t *src = &ts_source_runtime.sources[idx];
 
         // 检查是否是我们订阅的事件
         if (strcmp(event_name->valuestring, src->socketio.event) == 0 && event_data) {
@@ -2238,7 +1136,7 @@ static void sio_handle_event_message(sio_connection_t *conn, const char *msg)
             if (json_str) {
                 size_t json_len = strlen(json_str);
                 src->last_value.type = TS_AUTO_VAL_STRING;
-                
+
                 // 存储格式：前50字符... (总大小)
                 if (json_len > 50) {
                     snprintf(src->last_value.str_val, sizeof(src->last_value.str_val),
@@ -2264,7 +1162,7 @@ static void sio_handle_event_message(sio_connection_t *conn, const char *msg)
                         ESP_LOGW(TAG, "SIO source '%s': pending mutex busy, dropping data", src->id);
                     }
                 }
-                
+
                 if (json_str) free(json_str);
             }
 
@@ -2273,7 +1171,7 @@ static void sio_handle_event_message(sio_connection_t *conn, const char *msg)
             src->connected = true;
         }
     }
-    xSemaphoreGive(s_src_ctx.mutex);
+    xSemaphoreGive(ts_source_runtime.mutex);
 
     cJSON_Delete(array);
 }
@@ -2285,6 +1183,7 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                                         int32_t event_id, void *event_data)
 {
     sio_connection_t *conn = (sio_connection_t *)arg;
+    if (conn->should_stop) return;
     esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
 
     switch (event_id) {
@@ -2300,12 +1199,12 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
             conn->connected = false;
             conn->upgraded = false;
             // 更新源状态
-            xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-            int idx = find_source_index(conn->source_id);
+            xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+            int idx = current_connection_index(conn);
             if (idx >= 0) {
-                s_src_ctx.sources[idx].connected = false;
+                ts_source_runtime.sources[idx].connected = false;
             }
-            xSemaphoreGive(s_src_ctx.mutex);
+            xSemaphoreGive(ts_source_runtime.mutex);
             break;
 
         case WEBSOCKET_EVENT_DATA:
@@ -2313,7 +1212,7 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                 conn->last_message_ms = esp_timer_get_time() / 1000;
 
                 // 检查是否是分片消息
-                bool is_complete = (data->payload_len == 0) || 
+                bool is_complete = (data->payload_len == 0) ||
                                    (data->payload_offset + data->data_len >= data->payload_len);
 
                 // 如果是分片消息，需要缓冲
@@ -2339,7 +1238,7 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                     conn->msg_buf_len += copy_len;
                     conn->msg_buf[conn->msg_buf_len] = '\0';
 
-                    ESP_LOGD(TAG, "SIO [%s] buffered %d bytes, total %zu", 
+                    ESP_LOGD(TAG, "SIO [%s] buffered %d bytes, total %zu",
                              conn->source_id, data->data_len, conn->msg_buf_len);
 
                     if (!is_complete) {
@@ -2349,7 +1248,7 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
 
                     // 消息完整，处理缓冲区中的消息
                     ESP_LOGD(TAG, "SIO [%s] complete msg: %zu bytes", conn->source_id, conn->msg_buf_len);
-                    
+
                     // 处理事件消息
                     if (strncmp(conn->msg_buf, SIO_EVENT_PREFIX, 2) == 0) {
                         sio_handle_event_message(conn, conn->msg_buf);
@@ -2378,12 +1277,12 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                         else if (strncmp(msg, "40{", 3) == 0 || strcmp(msg, "40") == 0) {
                             // 收到 CONNECT 响应，连接完成
                             conn->upgraded = true;
-                            xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-                            int i = find_source_index(conn->source_id);
+                            xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+                            int i = current_connection_index(conn);
                             if (i >= 0) {
-                                s_src_ctx.sources[i].connected = true;
+                                ts_source_runtime.sources[i].connected = true;
                             }
-                            xSemaphoreGive(s_src_ctx.mutex);
+                            xSemaphoreGive(ts_source_runtime.mutex);
                             ESP_LOGD(TAG, "SIO [%s] connected to namespace", conn->source_id);
                         }
                         else if (strcmp(msg, SIO_PING_MSG) == 0) {
@@ -2462,7 +1361,7 @@ static esp_err_t sio_http_handshake(const char *base_url, char *sid_out, size_t 
 
 /**
  * Socket.IO 连接任务（带自动重连）
- * 
+ *
  * 连接流程：
  * 1. 等待网络就绪
  * 2. 尝试 HTTP 握手，失败则延迟重试（指数退避）
@@ -2489,34 +1388,35 @@ static void sio_connection_task(void *arg)
 connection_retry:
     while (!conn->should_stop) {
         // 检查源是否仍然存在
-        xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-        idx = find_source_index(conn->source_id);
+        xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+        idx = current_connection_index(conn);
         if (idx < 0) {
-            xSemaphoreGive(s_src_ctx.mutex);
+            xSemaphoreGive(ts_source_runtime.mutex);
             ESP_LOGE(TAG, "SIO source not found: %s", conn->source_id);
             goto task_exit;
         }
         char base_url[TS_AUTO_PATH_MAX_LEN];
-        strncpy(base_url, s_src_ctx.sources[idx].socketio.url, sizeof(base_url) - 1);
-        
+        strncpy(base_url, ts_source_runtime.sources[idx].socketio.url, sizeof(base_url) - 1);
+
         // 获取配置的重连间隔（如果有）
-        uint32_t configured_reconnect_ms = s_src_ctx.sources[idx].socketio.reconnect_ms;
+        uint32_t configured_reconnect_ms = ts_source_runtime.sources[idx].socketio.reconnect_ms;
         if (configured_reconnect_ms > 0) {
             // 使用配置值作为初始延迟
             if (retry_count == 0) {
                 retry_delay_ms = configured_reconnect_ms;
             }
         }
-        xSemaphoreGive(s_src_ctx.mutex);
+        xSemaphoreGive(ts_source_runtime.mutex);
 
         if (retry_count > 0) {
-            ESP_LOGD(TAG, "SIO [%s] retry #%d, waiting %lu ms before reconnect...", 
+            ESP_LOGD(TAG, "SIO [%s] retry #%d, waiting %lu ms before reconnect...",
                      conn->source_id, retry_count, (unsigned long)retry_delay_ms);
-            vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
-            
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(retry_delay_ms));
+            if (conn->should_stop) goto task_exit;
+
             // 指数退避，最大不超过 MAX_RETRY_DELAY_MS
-            retry_delay_ms = (retry_delay_ms * 2 > MAX_RETRY_DELAY_MS) 
-                           ? MAX_RETRY_DELAY_MS 
+            retry_delay_ms = (retry_delay_ms * 2 > MAX_RETRY_DELAY_MS)
+                           ? MAX_RETRY_DELAY_MS
                            : retry_delay_ms * 2;
         }
 
@@ -2528,39 +1428,29 @@ connection_retry:
             retry_count++;
             continue;  // 重试
         }
-        
+
         // 握手成功，重置重试计数
         retry_count = 0;
         retry_delay_ms = INITIAL_RETRY_DELAY_MS;
-        
+
         // 跳出重试循环，继续建立 WebSocket 连接
         break;
     }
-    
+
     if (conn->should_stop) {
         goto task_exit;
     }
 
-    // 确保 pending_mutex 存在（首次连接或重连）
-    if (!conn->pending_mutex) {
-        conn->pending_mutex = xSemaphoreCreateMutex();
-        if (!conn->pending_mutex) {
-            ESP_LOGE(TAG, "SIO [%s] failed to create pending mutex", conn->source_id);
-            retry_count++;
-            goto connection_retry;
-        }
-    }
-
     // 重新获取 base_url（需要新的变量名避免作用域冲突）
     char ws_base_url[TS_AUTO_PATH_MAX_LEN];
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-    idx = find_source_index(conn->source_id);
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    idx = current_connection_index(conn);
     if (idx < 0) {
-        xSemaphoreGive(s_src_ctx.mutex);
+        xSemaphoreGive(ts_source_runtime.mutex);
         goto task_exit;
     }
-    strncpy(ws_base_url, s_src_ctx.sources[idx].socketio.url, sizeof(ws_base_url) - 1);
-    xSemaphoreGive(s_src_ctx.mutex);
+    strncpy(ws_base_url, ts_source_runtime.sources[idx].socketio.url, sizeof(ws_base_url) - 1);
+    xSemaphoreGive(ts_source_runtime.mutex);
 
     // 2. 构建 WebSocket URL
     char ws_url[256];
@@ -2591,26 +1481,23 @@ connection_retry:
     conn->client = esp_websocket_client_init(&ws_cfg);
     if (!conn->client) {
         ESP_LOGE(TAG, "SIO [%s] failed to init WebSocket client", conn->source_id);
-        sio_release_connection(source_id_copy);
-        vTaskDelete(NULL);
-        return;
+        goto task_exit;
     }
 
-    esp_websocket_register_events(conn->client, WEBSOCKET_EVENT_ANY,
-                                  sio_websocket_event_handler, conn);
+    if (esp_websocket_register_events(conn->client, WEBSOCKET_EVENT_ANY,
+                                     sio_websocket_event_handler, conn) != ESP_OK) goto task_exit;
 
     if (esp_websocket_client_start(conn->client) != ESP_OK) {
         ESP_LOGE(TAG, "SIO [%s] failed to start WebSocket client", conn->source_id);
         esp_websocket_client_destroy(conn->client);
         conn->client = NULL;
-        sio_release_connection(source_id_copy);
-        vTaskDelete(NULL);
-        return;
+        goto task_exit;
     }
 
     // 4. 主循环：保持连接，处理心跳超时和待处理数据
     while (!conn->should_stop) {
-        vTaskDelay(pdMS_TO_TICKS(200));  // 200ms 检查周期
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
+        if (conn->should_stop) break;
 
         // 处理待处理的自动发现数据（在此任务中执行，有足够栈空间）
         if (xSemaphoreTake(conn->pending_mutex, 0) == pdTRUE) {
@@ -2622,24 +1509,26 @@ connection_retry:
                 // 解析 JSON
                 cJSON *parsed = cJSON_Parse(json_to_process);
                 if (parsed) {
-                    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-                    int idx = find_source_index(conn->source_id);
+                    ts_variable_registration_begin();
+                    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+                    int idx = current_connection_index(conn);
                     if (idx >= 0) {
-                        ts_auto_source_t *src = &s_src_ctx.sources[idx];
-                        
+                        ts_auto_source_t *src = &ts_source_runtime.sources[idx];
+
                         // 先处理手动配置的映射（在主任务中执行，有足够栈空间）
                         if (src->mapping_count > 0) {
                             int mapped = process_source_mappings(src, parsed);
-                            ESP_LOGD(TAG, "SIO source '%s': processed %d/%d mappings", 
+                            ESP_LOGD(TAG, "SIO source '%s': processed %d/%d mappings",
                                      src->id, mapped, src->mapping_count);
                         }
-                        
+
                         // 如果启用了自动发现
                         if (src->auto_discover) {
                             if (!conn->auto_discovered) {
                                 // 首次：自动发现并创建变量
                                 int discovered = auto_discover_json_fields(src, parsed, NULL, 3, true);
                                 conn->auto_discovered = true;
+                                src->auto_discovered = true;
                                 ESP_LOGD(TAG, "SIO source '%s': auto-discovered %d variables (first time)",
                                          src->id, discovered);
                             } else {
@@ -2649,7 +1538,8 @@ connection_retry:
                             }
                         }
                     }
-                    xSemaphoreGive(s_src_ctx.mutex);
+                    xSemaphoreGive(ts_source_runtime.mutex);
+                    ts_variable_registration_end();
                     cJSON_Delete(parsed);
                 }
                 free(json_to_process);
@@ -2659,8 +1549,8 @@ connection_retry:
         }
 
         // 检查心跳超时（30秒无消息则重连）
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        if (conn->upgraded && (now_ms - conn->last_message_ms > 30000)) {
+        uint32_t now_ms = esp_timer_get_time() / 1000;
+        if (conn->upgraded && (uint32_t)(now_ms - conn->last_message_ms) > 30000) {
             ESP_LOGW(TAG, "SIO [%s] heartbeat timeout, reconnecting...", conn->source_id);
             break;
         }
@@ -2685,10 +1575,10 @@ connection_retry:
     conn->upgraded = false;
 
     // 检查是否应该重连
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-    idx = find_source_index(conn->source_id);
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    idx = current_connection_index(conn);
     bool should_reconnect = (idx >= 0);  // 源仍然存在则重连
-    xSemaphoreGive(s_src_ctx.mutex);
+    xSemaphoreGive(ts_source_runtime.mutex);
 
     if (should_reconnect && !conn->should_stop) {
         ESP_LOGD(TAG, "SIO [%s] will reconnect...", source_id_copy);
@@ -2697,15 +1587,22 @@ connection_retry:
     }
 
 task_exit:
-    // 最终清理
-    if (conn->pending_mutex) {
-        vSemaphoreDelete(conn->pending_mutex);
-        conn->pending_mutex = NULL;
+    if (conn->client) {
+        esp_websocket_client_stop(conn->client);
+        esp_websocket_client_destroy(conn->client);
+        conn->client = NULL;
     }
-
+    free(conn->msg_buf);conn->msg_buf = NULL;conn->msg_buf_len = 0;
+    free(conn->pending_json);conn->pending_json = NULL;
+    if (conn->pending_mutex) { vSemaphoreDelete(conn->pending_mutex);conn->pending_mutex = NULL; }
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    int remaining = find_source_index(conn->source_id);
+    bool activate = remaining < 0 || ts_source_runtime.sources[remaining].instance != conn->source_instance;
+    if (remaining >= 0 && !activate) ts_source_runtime.sources[remaining].connected = false;
+    xSemaphoreGive(ts_source_runtime.mutex);
     ESP_LOGI(TAG, "SIO [%s] connection task ended", source_id_copy);
-    sio_release_connection(source_id_copy);
-    vTaskDelete(NULL);
+    sio_release_connection(conn, activate);
+    vTaskDeleteWithCaps(NULL);
 }
 
 /**
@@ -2713,106 +1610,61 @@ task_exit:
  */
 esp_err_t ts_source_sio_connect(const char *id)
 {
-    if (!id || !s_src_ctx.initialized) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    // 检查源是否存在且是 Socket.IO 类型
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-    int idx = find_source_index(id);
-    if (idx < 0 || s_src_ctx.sources[idx].type != TS_AUTO_SRC_SOCKETIO) {
-        xSemaphoreGive(s_src_ctx.mutex);
-        return ESP_ERR_NOT_FOUND;
-    }
-    xSemaphoreGive(s_src_ctx.mutex);
-
-    // 检查是否已连接
+    if (!id || !ts_source_runtime.initialized) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    int index = find_source_index(id);
+    bool ready = index >= 0 && ts_source_runtime.running && ts_source_runtime.sources[index].enabled &&
+        ts_source_runtime.sources[index].type == TS_AUTO_SRC_SOCKETIO;
+    uint64_t instance = ready ? ts_source_runtime.sources[index].instance : 0;
+    xSemaphoreGive(ts_source_runtime.mutex);
+    if (!ready) { xSemaphoreGive(s_sio_ctx.mutex);return ESP_ERR_INVALID_STATE; }
     sio_connection_t *conn = sio_find_connection(id);
     if (conn) {
-        if (conn->task_handle) {
-            // 任务仍在运行
-            ESP_LOGW(TAG, "SIO [%s] already connected", id);
-            return ESP_OK;
-        } else {
-            // 连接槽存在但任务已结束，先释放旧槽
-            ESP_LOGI(TAG, "SIO [%s] releasing stale connection slot", id);
-            sio_release_connection(id);
-        }
+        esp_err_t ret = conn->source_instance == instance && !conn->should_stop ? ESP_OK : ESP_ERR_NOT_FINISHED;
+        if (ret != ESP_OK) { conn->should_stop = true;if (conn->task_handle) xTaskNotifyGive(conn->task_handle); }
+        xSemaphoreGive(s_sio_ctx.mutex);return ret;
     }
-
-    // 分配连接槽
-    if (!s_sio_ctx.mutex) {
-        s_sio_ctx.mutex = xSemaphoreCreateMutex();
+    for (int i = 0; i < SIO_MAX_CONNECTIONS; ++i)
+        if (!s_sio_ctx.connections[i].allocated) { conn = &s_sio_ctx.connections[i];break; }
+    if (!conn) {
+        bool closing = false;
+        for (int i = 0; i < SIO_MAX_CONNECTIONS; ++i) closing |= s_sio_ctx.connections[i].should_stop;
+        xSemaphoreGive(s_sio_ctx.mutex);return closing ? ESP_ERR_NOT_FINISHED : ESP_ERR_NO_MEM;
     }
-
-    xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
-
-    if (s_sio_ctx.count >= SIO_MAX_CONNECTIONS) {
-        xSemaphoreGive(s_sio_ctx.mutex);
-        return ESP_ERR_NO_MEM;
-    }
-
-    conn = &s_sio_ctx.connections[s_sio_ctx.count];
-    memset(conn, 0, sizeof(sio_connection_t));
-    strncpy(conn->source_id, id, sizeof(conn->source_id) - 1);
-    s_sio_ctx.count++;
-
-    xSemaphoreGive(s_sio_ctx.mutex);
-
-    // 初始化 pending mutex
+    memset(conn, 0, sizeof(*conn));
+    strcpy(conn->source_id, id);conn->source_instance = instance;
     conn->pending_mutex = xSemaphoreCreateMutex();
-    if (!conn->pending_mutex) {
-        ESP_LOGE(TAG, "Failed to create pending mutex for %s", id);
-        return ESP_FAIL;
+    if (!conn->pending_mutex) { xSemaphoreGive(s_sio_ctx.mutex);return ESP_ERR_NO_MEM; }
+    conn->allocated = true;
+    char task_name[32];snprintf(task_name, sizeof(task_name), "sio_%.27s", id);
+    BaseType_t created = xTaskCreateWithCaps(sio_connection_task, task_name, 6144, conn, 5,
+                                            &conn->task_handle, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (created != pdPASS) {
+        conn->allocated = false;vSemaphoreDelete(conn->pending_mutex);conn->pending_mutex = NULL;
     }
-    conn->pending_json = NULL;
-
-    // 启动连接任务（使用 PSRAM 栈，6KB 用于 WebSocket + JSON 解析）
-    char task_name[32];
-    snprintf(task_name, sizeof(task_name), "sio_%s", id);
-
-    if (xTaskCreateWithCaps(sio_connection_task, task_name, 6144, conn, 5, 
-                            &conn->task_handle, MALLOC_CAP_SPIRAM) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create SIO task for %s", id);
-        vSemaphoreDelete(conn->pending_mutex);
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "SIO [%s] connection started", id);
-    return ESP_OK;
+    xSemaphoreGive(s_sio_ctx.mutex);
+    return created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-/**
- * @brief 断开 Socket.IO 数据源
- */
 esp_err_t ts_source_sio_disconnect(const char *id)
 {
-    if (!id) return ESP_ERR_INVALID_ARG;
-
+    if (!id || !s_sio_ctx.mutex) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
     sio_connection_t *conn = sio_find_connection(id);
-    if (!conn) {
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    conn->should_stop = true;
-
-    // 等待任务结束
-    int timeout = 50;  // 5秒
-    while (conn->task_handle && timeout-- > 0) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    ESP_LOGI(TAG, "SIO [%s] disconnected", id);
-    return ESP_OK;
+    if (conn) { conn->should_stop = true;if (conn->task_handle) xTaskNotifyGive(conn->task_handle); }
+    xSemaphoreGive(s_sio_ctx.mutex);
+    return conn ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
-/**
- * @brief 检查 Socket.IO 是否已连接
- */
 bool ts_source_sio_is_connected(const char *id)
 {
+    if (!id || !s_sio_ctx.mutex) return false;
+    xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
     sio_connection_t *conn = sio_find_connection(id);
-    return conn && conn->upgraded;
+    bool connected = conn && !conn->should_stop && conn->upgraded;
+    xSemaphoreGive(s_sio_ctx.mutex);
+    return connected;
 }
 
 /*===========================================================================*/
@@ -2821,41 +1673,12 @@ bool ts_source_sio_is_connected(const char *id)
 
 esp_err_t ts_source_rest_fetch(const char *id)
 {
-    // TODO: 实现 REST 请求
-    ESP_LOGW(TAG, "REST fetch not implemented: %s", id);
-    return ESP_ERR_NOT_SUPPORTED;
+    return ts_source_poll(id);
 }
 
 /*===========================================================================*/
 /*                              枚举                                          */
 /*===========================================================================*/
-
-int ts_source_enumerate(int type_filter, ts_source_enum_cb_t callback, void *user_data)
-{
-    if (!callback || !s_src_ctx.initialized) {
-        return 0;
-    }
-
-    int count = 0;
-
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-
-    for (int i = 0; i < s_src_ctx.count; i++) {
-        // 类型过滤
-        if (type_filter >= 0 && s_src_ctx.sources[i].type != type_filter) {
-            continue;
-        }
-
-        count++;
-
-        if (!callback(&s_src_ctx.sources[i], user_data)) {
-            break;
-        }
-    }
-
-    xSemaphoreGive(s_src_ctx.mutex);
-    return count;
-}
 
 /*===========================================================================*/
 /*                              统计                                          */
@@ -2863,13 +1686,13 @@ int ts_source_enumerate(int type_filter, ts_source_enum_cb_t callback, void *use
 
 esp_err_t ts_source_manager_get_stats(ts_source_manager_stats_t *stats)
 {
-    if (!stats || !s_src_ctx.initialized) {
+    if (!stats || !ts_source_runtime.initialized) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    xSemaphoreTake(s_src_ctx.mutex, portMAX_DELAY);
-    *stats = s_src_ctx.stats;
-    xSemaphoreGive(s_src_ctx.mutex);
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    *stats = ts_source_runtime.stats;
+    xSemaphoreGive(ts_source_runtime.mutex);
 
     return ESP_OK;
 }

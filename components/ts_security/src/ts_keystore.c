@@ -13,10 +13,12 @@
  *   - _index:    已存储的所有 key ID 列表
  */
 
+#include "ts_storage.h"
 #include "ts_keystore.h"
 #include "ts_crypto.h"
 #include "ts_core.h"  /* TS_MALLOC_PSRAM */
 #include "nvs_flash.h"
+#include "ts_config_partitions.h"
 #include "nvs.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -462,7 +464,8 @@ esp_err_t ts_keystore_init(void)
     xSemaphoreTake(s_keystore.write_lock, portMAX_DELAY);
     esp_err_t ret = ESP_OK;
     if (!s_keystore.initialized) {
-        ret = nvs_open(KEYSTORE_NAMESPACE, NVS_READWRITE, &s_keystore.nvs_handle);
+        ret = nvs_open_from_partition(TS_CONFIG_KEYS_PARTITION, KEYSTORE_NAMESPACE,
+                                      NVS_READWRITE, &s_keystore.nvs_handle);
         if (ret == ESP_OK) s_keystore.initialized = true;
     }
     xSemaphoreGive(s_keystore.write_lock);
@@ -909,22 +912,10 @@ esp_err_t ts_keystore_export_public_key_to_file(const char *id, const char *path
     }
     
     /* 写入公钥文件 */
-    FILE *f = fopen(path, "w");
-    if (!f) {
-        ESP_LOGE(TAG, "Cannot create file: %s", path);
-        free(pub_key);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    size_t written = fwrite(pub_key, 1, pub_len, f);
-    fclose(f);
+    ret = ts_storage_write_file(path, pub_key, pub_len);
     free(pub_key);
-    
-    if (written != pub_len) {
-        ESP_LOGE(TAG, "Write incomplete: %zu/%zu bytes", written, pub_len);
-        return ESP_FAIL;
-    }
-    
+    if (ret != ESP_OK) return ret;
+
     ESP_LOGI(TAG, "Public key '%s' exported to %s", id, path);
     return ESP_OK;
 }
@@ -978,29 +969,20 @@ esp_err_t ts_keystore_export_private_key_to_file(const char *id, const char *pat
     }
     
     /* 写入私钥文件 */
-    FILE *f = fopen(path, "w");
-    if (!f) {
-        ESP_LOGE(TAG, "Cannot create file: %s", path);
+    FILE *file = NULL;
+    ret = ts_storage_open_write(path, &file);
+    if (ret != ESP_OK) {
         secure_free_key(priv_key, priv_len);
-        return ESP_ERR_NOT_FOUND;
+        return ret;
     }
-    
-    /* 设置文件权限为 600（仅所有者可读写）- 如果支持 */
 #ifdef __unix__
     chmod(path, 0600);
 #endif
-    
-    size_t written = fwrite(priv_key, 1, priv_len, f);
-    fclose(f);
-    
-    /* 安全清零内存 */
+    size_t written = fwrite(priv_key, 1, priv_len, file);
+    int closed = fclose(file);
     secure_free_key(priv_key, priv_len);
-    
-    if (written != priv_len) {
-        ESP_LOGE(TAG, "Write incomplete: %zu/%zu bytes", written, priv_len);
-        return ESP_FAIL;
-    }
-    
+    if (written != priv_len || closed != 0) return ESP_FAIL;
+
     ESP_LOGI(TAG, "Private key '%s' exported to %s", id, path);
     return ESP_OK;
 }

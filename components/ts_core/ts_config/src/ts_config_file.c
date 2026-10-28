@@ -23,7 +23,6 @@
 #include "ts_config_file.h"
 #include "ts_config_module.h"
 #include "ts_config_pack.h"
-#include "ts_event.h"
 #include "esp_log.h"
 #include "esp_vfs.h"
 #include "esp_heap_caps.h"
@@ -40,7 +39,6 @@ static const char *TAG = "ts_config_file";
 
 static char s_config_path[128] = CONFIG_TS_CONFIG_FILE_PATH;
 static bool s_file_initialized = false;
-static ts_event_handler_handle_t s_storage_event_handler = NULL;
 
 /* ============================================================================
  * 私有函数声明
@@ -48,7 +46,6 @@ static ts_event_handler_handle_t s_storage_event_handler = NULL;
 
 static bool path_exists(const char *path);
 static bool ensure_directory(const char *path);
-static void storage_event_handler(const ts_event_t *event, void *user_data);
 
 /**
  * @brief 检查文件是否属于 schema-less 模块（这些模块有自己的加载逻辑）
@@ -89,7 +86,7 @@ static bool is_schemaless_module_file(const char *filename)
  * 
  * 注意：此函数在系统启动早期调用，此时 SD 卡通常尚未挂载，
  * 事件系统也可能未初始化。因此只进行基础初始化。
- * 事件监听器的注册由 ts_config_file_register_events() 完成。
+ * 导入和导出只由明确的用户操作调用。
  */
 static esp_err_t file_backend_init(void)
 {
@@ -98,10 +95,10 @@ static esp_err_t file_backend_init(void)
     }
 
     ESP_LOGI(TAG, "Initializing file configuration backend...");
-    ESP_LOGD(TAG, "Configuration path: %s (will load when storage is ready)", s_config_path);
+    ESP_LOGD(TAG, "Explicit import/export path: %s", s_config_path);
 
     s_file_initialized = true;
-    ESP_LOGI(TAG, "File backend initialized (waiting for storage)");
+    ESP_LOGI(TAG, "File import/export backend initialized");
     return ESP_OK;
 }
 
@@ -110,12 +107,6 @@ static esp_err_t file_backend_init(void)
  */
 static esp_err_t file_backend_deinit(void)
 {
-    /* 注销事件监听器 */
-    if (s_storage_event_handler != NULL) {
-        ts_event_unregister(s_storage_event_handler);
-        s_storage_event_handler = NULL;
-    }
-
     s_file_initialized = false;
     ESP_LOGI(TAG, "File backend deinitialized");
     return ESP_OK;
@@ -453,99 +444,6 @@ esp_err_t ts_config_file_save_all(void)
 const ts_config_backend_ops_t *ts_config_file_get_ops(void)
 {
     return &s_file_backend_ops;
-}
-
-esp_err_t ts_config_file_register_events(void)
-{
-    if (s_storage_event_handler != NULL) {
-        /* 已经注册 */
-        return ESP_OK;
-    }
-    
-    if (!ts_event_is_initialized()) {
-        ESP_LOGE(TAG, "Event system not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    /* 
-     * 注册存储事件监听器
-     * 当 SD 卡挂载后，自动触发配置加载
-     */
-    esp_err_t ret = ts_event_register(
-        TS_EVENT_BASE_STORAGE,
-        TS_EVENT_ANY_ID,
-        storage_event_handler,
-        NULL,
-        &s_storage_event_handler
-    );
-    
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register storage event handler: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    ESP_LOGI(TAG, "Registered storage event handler for auto-load");
-    return ESP_OK;
-}
-
-/* ============================================================================
- * 私有函数实现
- * ========================================================================== */
-
-/**
- * @brief 存储事件处理函数
- * 
- * 监听 SD 卡/SPIFFS 挂载事件，自动触发配置加载
- */
-static void storage_event_handler(const ts_event_t *event, void *user_data)
-{
-    (void)user_data;
-    
-    if (event == NULL) {
-        return;
-    }
-    
-    switch (event->id) {
-        case TS_EVT_STORAGE_SD_MOUNTED: {
-            ESP_LOGI(TAG, "SD card mounted, loading configuration files...");
-            
-            /* 检查配置路径是否在 SD 卡上 */
-            if (strncmp(s_config_path, "/sdcard", 7) == 0) {
-                /* 确保配置目录存在 */
-                if (!path_exists(s_config_path)) {
-                    if (ensure_directory(s_config_path)) {
-                        ESP_LOGI(TAG, "Created configuration directory: %s", s_config_path);
-                    } else {
-                        ESP_LOGW(TAG, "Failed to create configuration directory: %s", s_config_path);
-                    }
-                }
-                
-                /* 加载配置文件 */
-                esp_err_t ret = ts_config_file_load_all();
-                if (ret == ESP_OK) {
-                    ESP_LOGI(TAG, "Configuration files loaded successfully");
-                } else if (ret == ESP_ERR_NOT_FOUND) {
-                    ESP_LOGI(TAG, "No configuration files found in %s", s_config_path);
-                } else {
-                    ESP_LOGW(TAG, "Failed to load some configuration files");
-                }
-            }
-            break;
-        }
-        
-        case TS_EVT_STORAGE_SD_UNMOUNTED:
-            ESP_LOGI(TAG, "SD card unmounted");
-            /* 可选：清除从 SD 卡加载的配置或回退到默认值 */
-            break;
-            
-        case TS_EVT_STORAGE_SPIFFS_MOUNTED:
-            ESP_LOGD(TAG, "SPIFFS mounted");
-            /* 如果配置路径在 SPIFFS，也可以处理 */
-            break;
-            
-        default:
-            break;
-    }
 }
 
 static bool path_exists(const char *path)

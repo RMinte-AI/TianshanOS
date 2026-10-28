@@ -10,6 +10,7 @@
  * 大缓冲区优先分配到 PSRAM
  */
 
+#include "ts_storage.h"
 #include "ts_sftp.h"
 #include "ts_ssh_client.h"
 #include "ts_core.h"  /* TS_MALLOC_PSRAM, TS_CALLOC_PSRAM */
@@ -652,7 +653,8 @@ esp_err_t ts_sftp_get(ts_sftp_session_t sftp, const char *remote_path,
         return ESP_ERR_INVALID_ARG;
     }
     
-    esp_err_t ret = ESP_FAIL;
+    esp_err_t ret = ts_storage_check_write_path(local_path, false);
+    if (ret != ESP_OK) return ret;
     ts_sftp_file_t remote_file = NULL;
     FILE *local_file = NULL;
     uint8_t *buffer = NULL;
@@ -675,13 +677,9 @@ esp_err_t ts_sftp_get(ts_sftp_session_t sftp, const char *remote_path,
     }
     
     /* 打开本地文件 */
-    local_file = fopen(local_path, "wb");
-    if (!local_file) {
-        ESP_LOGE(TAG, "Failed to open local file: %s", local_path);
-        ret = ESP_FAIL;
-        goto cleanup;
-    }
-    
+    ret = ts_storage_open_write(local_path, &local_file);
+    if (ret != ESP_OK) goto cleanup;
+
     /* 分配传输缓冲区 */
     buffer = TS_MALLOC_PSRAM(SFTP_BUFFER_SIZE);
     if (!buffer) {
@@ -724,7 +722,7 @@ esp_err_t ts_sftp_get(ts_sftp_session_t sftp, const char *remote_path,
     
 cleanup:
     if (buffer) free(buffer);
-    if (local_file) fclose(local_file);
+    if (local_file && fclose(local_file) != 0 && ret == ESP_OK) ret = ESP_FAIL;
     if (remote_file) ts_sftp_file_close(remote_file);
     
     return ret;

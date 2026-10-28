@@ -1,0 +1,746 @@
+{
+  "ui/widgets/get": {
+    "widgets": [
+      {
+        "id": "fixture-ring",
+        "type": "ring",
+        "label": "Fixture ring",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-gauge",
+        "type": "gauge",
+        "label": "Fixture gauge",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-temp",
+        "type": "temp",
+        "label": "Fixture temp",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "°C",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-number",
+        "type": "number",
+        "label": "Fixture number",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-bar",
+        "type": "bar",
+        "label": "Fixture bar",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-text",
+        "type": "text",
+        "label": "Fixture text",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-status",
+        "type": "status",
+        "label": "Fixture status",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-icon",
+        "type": "icon",
+        "label": "Fixture icon",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-dual",
+        "type": "dual",
+        "label": "Fixture dual",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-percent",
+        "type": "percent",
+        "label": "Fixture percent",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      },
+      {
+        "id": "fixture-log",
+        "type": "log",
+        "label": "Fixture log",
+        "expression": "${fixture.value}",
+        "expression2": "${fixture.value}",
+        "min": 0,
+        "max": 100,
+        "unit": "",
+        "color": "#4dabf7",
+        "decimals": 1,
+        "thresholds": [
+          0,
+          50,
+          80
+        ],
+        "colors": [
+          "#40c057",
+          "#fab005",
+          "#fa5252"
+        ],
+        "host_id": "fixture-host",
+        "path": "/tmp/fixture.log",
+        "maxLines": 15
+      }
+    ],
+    "refresh_interval": 5000,
+    "source": "sdcard"
+  },
+  "config/pack/info": {
+    "can_export": true,
+    "device_type": "Developer",
+    "cert_cn": "fixture.invalid",
+    "pack_version": 1
+  },
+  "network/wifi/mode": {
+    "mode": "apsta"
+  },
+  "ssh/hosts/list": {
+    "hosts": [
+      {
+        "id": "fixture-host",
+        "host": "192.0.2.30",
+        "port": 22,
+        "username": "fixture",
+        "key_id": "fixture-key",
+        "keyid": "fixture-key",
+        "auth_type": "key",
+        "enabled": true
+      }
+    ],
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000
+  },
+  "ssh/commands/list": {
+    "commands": [
+      {
+        "id": "fixture-command",
+        "host_id": "fixture-host",
+        "name": "Fixture command",
+        "command": "echo fixture-only",
+        "desc": "Synthetic display data",
+        "expectPattern": "fixture",
+        "timeout": 30
+      },
+      {
+        "id": "fixture-orphan",
+        "host_id": "missing-fixture-host",
+        "name": "Fixture orphan",
+        "command": "echo fixture-only",
+        "desc": "Synthetic display data",
+        "expectPattern": "fixture",
+        "timeout": 30,
+        "orphan": true
+      }
+    ],
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000
+  },
+  "automation/status": {
+    "state": "running",
+    "rules_count": 1,
+    "sources_count": 1,
+    "variables_count": 1,
+    "rule_triggers": 2,
+    "uptime_ms": 3600000
+  },
+  "automation/sources/list": {
+    "sources": [
+      {
+        "id": "fixture-source",
+        "label": "Fixture source",
+        "type": "http",
+        "enabled": true,
+        "poll_interval_ms": 5000
+      },
+      {
+        "id": "fixture-source-long",
+        "label": "Long automation record / 较长的自动化记录名称 / sources",
+        "type": "http",
+        "enabled": true,
+        "poll_interval_ms": 5000,
+        "name": "Long automation record / 较长的自动化记录名称 / sources"
+      }
+    ],
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000
+  },
+  "automation/rules/list": {
+    "rules": [
+      {
+        "id": "fixture-rule",
+        "name": "Fixture rule",
+        "enabled": true,
+        "manual_trigger": true,
+        "show_on_dashboard": true,
+        "conditions_count": 1,
+        "actions_count": 1,
+        "trigger_count": 2
+      },
+      {
+        "id": "fixture-rule-long",
+        "name": "Long automation record / 较长的自动化记录名称 / rules",
+        "enabled": true,
+        "manual_trigger": true,
+        "show_on_dashboard": true,
+        "conditions_count": 1,
+        "actions_count": 1,
+        "trigger_count": 2,
+        "label": "Long automation record / 较长的自动化记录名称 / rules"
+      }
+    ],
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000
+  },
+  "automation/actions/list": {
+    "templates": [
+      {
+        "id": "fixture-action",
+        "name": "Fixture action",
+        "type": "log",
+        "async": true,
+        "description": "Synthetic UI data",
+        "log": {
+          "level": 3,
+          "message": "fixture-only"
+        }
+      },
+      {
+        "id": "fixture-action-long",
+        "name": "Long automation record / 较长的自动化记录名称 / actions",
+        "type": "log",
+        "async": true,
+        "description": "Synthetic UI data",
+        "log": {
+          "level": 3,
+          "message": "fixture-only"
+        },
+        "label": "Long automation record / 较长的自动化记录名称 / actions"
+      }
+    ],
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000
+  },
+  "automation/actions/get": {
+    "id": "fixture-action",
+    "name": "Fixture action",
+    "type": "log",
+    "async": true,
+    "description": "Synthetic UI data",
+    "log": {
+      "level": 3,
+      "message": "fixture-only"
+    },
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation/rules/get": {
+    "id": "fixture-rule",
+    "name": "Fixture rule",
+    "enabled": true,
+    "manual_trigger": true,
+    "show_on_dashboard": true,
+    "conditions_count": 1,
+    "actions_count": 1,
+    "trigger_count": 2,
+    "conditions": [
+      {
+        "variable": "fixture.value",
+        "operator": "eq",
+        "value": 42
+      }
+    ],
+    "actions": [
+      {
+        "template_id": "fixture-action",
+        "type": "log"
+      }
+    ],
+    "cooldown_ms": 1000,
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation/variables/list": {
+    "variables": [
+      {
+        "name": "fixture.value",
+        "value": 42,
+        "type": "number",
+        "age_ms": 1000
+      }
+    ]
+  },
+  "key/list": {
+    "keys": [
+      {
+        "id": "fixture-key",
+        "type": "ed25519",
+        "comment": "Synthetic key row only",
+        "exportable": true,
+        "has_pubkey": true
+      }
+    ]
+  },
+  "ssh/key/list": {
+    "keys": [
+      {
+        "id": "fixture-key",
+        "type": "ed25519",
+        "comment": "Synthetic key row only",
+        "exportable": true,
+        "has_pubkey": true
+      }
+    ]
+  },
+  "ssh/known_hosts/list": {
+    "hosts": [
+      {
+        "host": "192.0.2.30",
+        "port": 22,
+        "type": "ssh-ed25519",
+        "fingerprint": "SHA256:fixture-only"
+      }
+    ]
+  },
+  "system/memory_detail": {
+    "dram": {
+      "total": 327680,
+      "used": 294912,
+      "free": 32768,
+      "used_percent": 90,
+      "largest_block": 4096,
+      "fragmentation": 65,
+      "min_free_ever": 28672
+    },
+    "psram": {
+      "total": 8388608,
+      "used": 6291456,
+      "free": 2097152,
+      "used_percent": 75,
+      "largest_block": 1048576,
+      "fragmentation": 45
+    },
+    "dma": {
+      "total": 32768,
+      "free": 8192,
+      "largest_block": 4096
+    },
+    "static": {
+      "data_size": 1024,
+      "bss_size": 4096,
+      "rodata_size": 8192,
+      "total_dram_static": 5120
+    },
+    "iram": {
+      "text_size": 8192,
+      "heap_total": 16384,
+      "heap_free": 8192
+    },
+    "rtc": {
+      "total_available": 8192,
+      "total_used": 1024
+    },
+    "nvs": {
+      "total_entries": 126,
+      "used_entries": 63,
+      "free_entries": 63,
+      "used_percent": 50,
+      "namespace_count": 2
+    },
+    "tasks": [
+      {
+        "name": "fixture-task",
+        "stack_hwm": 128,
+        "stack_alloc": 4096,
+        "stack_used": 3968,
+        "stack_usage_pct": 97,
+        "priority": 5,
+        "state": "Running",
+        "cpu_percent": 20
+      }
+    ],
+    "task_count": 1,
+    "total_stack_allocated": 4096,
+    "tips": [
+      "critical:dram_low",
+      "warning:dram_fragmented",
+      "info:psram_sufficient"
+    ]
+  },
+  "automation/config/status": {
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000
+  },
+  "automation/config/refresh": {
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000
+  },
+  "automation/sources/get": {
+    "id": "fixture-source",
+    "label": "Fixture source",
+    "type": "http",
+    "enabled": true,
+    "poll_interval_ms": 5000,
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "automation/services/list": {
+    "items": [
+      {
+        "run_id": "111111111111111111111111",
+        "command_id": "fixture-command",
+        "name": "Fixture background run with a longer name",
+        "host": "192.0.2.30",
+        "port": 22,
+        "username": "fixture",
+        "state": "unknown",
+        "source": "restart",
+        "operation_phase": "",
+        "busy": false
+      }
+    ]
+  },
+  "automation/actions/delete": {
+    "loaded": true,
+    "configured": true,
+    "enabled": true,
+    "paused": false,
+    "uncertain": false,
+    "sd_available": true,
+    "source": "sd",
+    "active_version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "internal_exists": true,
+    "internal_valid": true,
+    "comparison_known": true,
+    "backup_matches": false,
+    "internal_saved_at": 1700000000,
+    "impact": {
+      "rules": [
+        {
+          "id": "fixture-rule",
+          "name": "Fixture rule with a longer name"
+        }
+      ],
+      "actions": [],
+      "commands": [],
+      "sources": [],
+      "references_confirmed": true,
+      "requires_pause": false
+    }
+  },
+  "led/font/list": {
+    "fonts": [
+      {
+        "name": "pixel9x9",
+        "height": 9
+      }
+    ]
+  },
+  "hosts/list": {
+    "hosts": [
+      {
+        "host": "192.0.2.30",
+        "port": 22,
+        "type": "ssh-ed25519",
+        "fingerprint": "SHA256:synthetic-fixture-only",
+        "added_at": 1700000000
+      }
+    ]
+  },
+  "network/wifi/ap/stations": {
+    "stations": [
+      {
+        "mac": "02:00:00:00:00:01",
+        "ip": "192.0.2.10",
+        "rssi": -48
+      },
+      {
+        "mac": "02:00:00:00:00:02",
+        "ip": "192.0.2.100",
+        "rssi": -63
+      }
+    ]
+  },
+  "dhcp/clients": {
+    "clients": [
+      {
+        "mac": "02:00:00:00:00:01",
+        "ip": "192.0.2.10",
+        "hostname": "fixture"
+      },
+      {
+        "mac": "02:00:00:00:00:02",
+        "ip": "192.0.2.100",
+        "hostname": "long-host-name.invalid"
+      }
+    ]
+  }
+}

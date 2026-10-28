@@ -252,7 +252,6 @@ static esp_err_t api_config_module_list(const cJSON *params, ts_api_result_t *re
             cJSON_AddStringToObject(item, "nvs_namespace", nvs_ns ? nvs_ns : "");
             cJSON_AddNumberToObject(item, "version", ts_config_module_get_schema_version(mod));
             cJSON_AddBoolToObject(item, "dirty", ts_config_module_is_dirty(mod));
-            cJSON_AddBoolToObject(item, "pending_sync", ts_config_meta_is_pending_sync(mod));
         }
         
         cJSON_AddItemToArray(modules, item);
@@ -260,8 +259,6 @@ static esp_err_t api_config_module_list(const cJSON *params, ts_api_result_t *re
     
     /* 元数据 */
     cJSON_AddNumberToObject(data, "global_seq", (double)ts_config_meta_get_global_seq());
-    cJSON_AddNumberToObject(data, "sync_seq", (double)ts_config_meta_get_sync_seq());
-    cJSON_AddBoolToObject(data, "has_pending_sync", ts_config_module_has_pending_sync());
     
     ts_api_result_ok(result, data);
     return ESP_OK;
@@ -418,7 +415,6 @@ static esp_err_t api_config_module_show(const cJSON *params, ts_api_result_t *re
         cJSON *config = cJSON_AddObjectToObject(data, "config");
         add_module_config_to_json(mod, config);
         cJSON_AddBoolToObject(data, "dirty", ts_config_module_is_dirty(mod));
-        cJSON_AddBoolToObject(data, "pending_sync", ts_config_meta_is_pending_sync(mod));
     }
     
     ts_api_result_ok(result, data);
@@ -556,7 +552,6 @@ static esp_err_t api_config_module_save(const cJSON *params, ts_api_result_t *re
     
     cJSON_AddNumberToObject(data, "success_count", success_count);
     cJSON_AddNumberToObject(data, "fail_count", fail_count);
-    cJSON_AddBoolToObject(data, "has_pending_sync", ts_config_module_has_pending_sync());
     
     ts_api_result_ok(result, data);
     return ESP_OK;
@@ -597,36 +592,6 @@ static esp_err_t api_config_module_reset(const cJSON *params, ts_api_result_t *r
     cJSON_AddStringToObject(data, "module", module_name->valuestring);
     cJSON_AddBoolToObject(data, "reset", true);
     cJSON_AddBoolToObject(data, "persisted", persist);
-    
-    ts_api_result_ok(result, data);
-    return ESP_OK;
-}
-
-/**
- * @brief config.sync - 同步待处理配置到 SD 卡
- */
-static esp_err_t api_config_sync(const cJSON *params, ts_api_result_t *result)
-{
-    (void)params;
-    
-    cJSON *data = cJSON_CreateObject();
-    
-    if (!ts_config_module_has_pending_sync()) {
-        cJSON_AddBoolToObject(data, "synced", false);
-        cJSON_AddStringToObject(data, "message", "No pending sync");
-        ts_api_result_ok(result, data);
-        return ESP_OK;
-    }
-    
-    esp_err_t ret = ts_config_module_sync_pending();
-    if (ret != ESP_OK) {
-        cJSON_Delete(data);
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Sync failed");
-        return ret;
-    }
-    
-    cJSON_AddBoolToObject(data, "synced", true);
-    cJSON_AddBoolToObject(data, "has_pending", ts_config_module_has_pending_sync());
     
     ts_api_result_ok(result, data);
     return ESP_OK;
@@ -721,14 +686,6 @@ esp_err_t ts_api_config_register(void)
             .requires_auth = true,
             .permission = "config.admin"
         },
-        {
-            .name = "config.sync",
-            .description = "Sync pending configs to SD card",
-            .category = TS_API_CAT_CONFIG,
-            .handler = api_config_sync,
-            .requires_auth = true,
-            .permission = "config.write"
-        }
     };
     
     esp_err_t ret = ts_api_register_multiple(config_apis, 

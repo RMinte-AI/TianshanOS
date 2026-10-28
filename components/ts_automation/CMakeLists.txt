@@ -1,16 +1,24 @@
 idf_component_register(
     SRCS
         "src/ts_automation.c"
+        "src/ts_automation_config.c"
+        "src/ts_automation_control.c"
+        "src/ts_automation_file.c"
+        "src/ts_automation_document.c"
+        "src/ts_automation_legacy.c"
+        "src/ts_automation_migrate.c"
+        "src/ts_automation_references.c"
         "src/ts_variable.c"
         "src/ts_source_manager.c"
+        "src/ts_source_runtime.c"
         "src/ts_rule_engine.c"
+        "src/ts_rule_config.c"
         "src/ts_rule_codec.c"
-        "src/ts_rule_store.c"
-        "src/ts_rule_store_set.c"
         "src/ts_rule_pack.c"
         "src/ts_action_manager.c"
+        "src/ts_action_templates.c"
         "src/ts_action_filter.c"
-        "src/ts_action_store.c"
+        "src/ts_action_codec.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -24,6 +32,7 @@ idf_component_register(
         ts_net
         ts_drivers
         ts_security
+        ts_cert
         ts_console
         ts_jsonpath
         ts_config_pack

@@ -12,6 +12,7 @@ const {open, withPage, toastText, toastIs, expectToast} = kit;
 
 const fixture = name => fs.readFileSync(path.resolve(__dirname, '../fixtures/failure-wire', name), 'utf8');
 kit.install();
+const shownConfiguration={active_version:"00000000000000000000000000000001",loaded:true,configured:true,enabled:true,source:"sd",sd_available:true};
 
 for (const language of ['zh-CN', 'en-US']) {
     const zh = language === 'zh-CN';
@@ -81,22 +82,18 @@ for (const language of ['zh-CN', 'en-US']) {
     const ssh = {host: '192.0.2.8', port: 22, user: 'test'};
     const cases = [
         // [op, phase, params, device result, token override, expected]
-        ['rule.disable', 'failed', {name}, {code: 1, rawMessage: 'execution_busy'}, null,
-            zh ? '禁用规则“夜间关灯”失败：它正在执行中。等执行完成后再试。' : 'Failed to disable rule “Night off”: it is running right now. Wait for it to finish, then try again.'],
-        ['rule.enable', 'failed', {name}, {code: 1, rawMessage: 'revision_conflict'}, null,
-            zh ? '启用规则“夜间关灯”失败：设备上的这份配置刚被其他操作修改过。请刷新后确认最新内容，再重新操作。' : 'Failed to enable rule “Night off”: the configuration on the device was just changed by another operation. Refresh, check the latest content, then try again.'],
-        ['rule.enable', 'failed', {name}, {code: 1, rawMessage: 'service_busy'}, null,
-            zh ? '启用规则“夜间关灯”失败：它绑定的服务正在运行，或状态还没有确认。请先核实并停止该服务。' : 'Failed to enable rule “Night off”: its bound service is running or its state is unconfirmed. Verify the service state and stop it first.'],
-        ['rule.save', 'failed', {name}, {code: 1, rawMessage: 'capacity'}, null,
-            zh ? '保存规则“夜间关灯”失败：规则数量已达上限。请先删除不用的规则。' : 'Failed to save rule “Night off”: the rule limit has been reached. Delete unused rules first.'],
-        ['rule.save', 'failed', {name}, {code: 1, rawMessage: 'commit_unknown'}, null,
-            zh ? '保存规则“夜间关灯”的结果未确认。请重新读取并核对当前状态，不要重复提交。' : 'The result of saving rule “Night off” is unconfirmed. Reload and check the current state before submitting again.'],
+        ['rule.disable', 'failed', {name}, {code: 1, rawMessage: 'storage_write_failed'}, null,
+            zh ? '禁用规则“夜间关灯”失败：配置没有成功写入当前存储位置。请检查存储是否可用，再重新读取已保存的内容。' : 'Failed to disable rule “Night off”: the configuration could not be written to its current storage location. Check the storage, then read the saved contents again.'],
+        ['rule.enable', 'failed', {name}, {code: 1, rawMessage: 'configuration_changed'}, null,
+            zh ? '启用规则“夜间关灯”失败：当前配置或保存位置已经改变。请刷新并核对最新内容，再提交修改。' : 'Failed to enable rule “Night off”: the current configuration or storage location has changed. Refresh and check the current contents before submitting your changes.'],
+        ['rule.save', 'failed', {name}, {code: 1, rawMessage: 'too_many_rules'}, null,
+            zh ? '保存规则“夜间关灯”失败：规则数量已达 64 条上限。请先删除不用的规则，再新增。' : 'Failed to save rule “Night off”: the limit of 64 rules has been reached. Remove unused rules before adding another.'],
+        ['rule.save', 'failed', {name}, {code: 1, rawMessage: 'save_outcome_unknown'}, null,
+            zh ? '保存规则“夜间关灯”的结果未确认。请重新读取已保存的配置，核对内容；确认前不要重复提交。' : 'The result of saving rule “Night off” is unconfirmed. Read the saved configuration and check its contents. Do not submit again until the result is confirmed.'],
         ['quick.start', 'blocked', {name}, null, 'rule_disabled',
             zh ? '无法启动“夜间关灯”：这条规则已禁用。请先到「自动化」页启用它。' : 'Can\'t start “Night off”: the rule is disabled. Enable it on the Automation page first.'],
         ['quick.start', 'blocked', {name}, null, 'manual_not_allowed',
             zh ? '无法启动“夜间关灯”：这条规则没有开启“允许手动执行”。请在规则设置里打开“允许手动执行”。' : 'Can\'t start “Night off”: the rule does not allow manual execution. Turn on “Allow manual execution” in the rule settings.'],
-        ['quick.start', 'blocked', {name}, null, 'service_not_confirmed_stopped',
-            zh ? '无法启动“夜间关灯”：还没有确认它的服务已停止。请先点「核验远端状态」，确认后再启动。' : 'Can\'t start “Night off”: its service is not confirmed to be stopped. Use “Verify remote state” first, then start it.'],
         ['quick.start', 'failed', {name}, {code: 4, rawMessage: 'engine_not_accepting'}, null,
             zh ? '启动“夜间关灯”失败：自动化引擎暂时没有接收执行请求（可能正在重载配置，或已停止）。请稍等几秒再试。一直不行，请到「系统」页的服务列表里重启“automation”服务。'
                : 'Failed to start “Night off”: the automation engine is not accepting runs right now (it may be reloading its configuration, or stopped). Wait a few seconds and try again. If it keeps happening, restart the “automation” service in the service list on the System page.'],
@@ -116,8 +113,8 @@ for (const language of ['zh-CN', 'en-US']) {
             zh ? '连接 192.0.2.8 失败：无法连接到目标。请检查网络连接和目标的地址。' : 'Failed to connect to 192.0.2.8: the target could not be reached. Check the network connection and the target address.'],
         ['quick.start', 'failed', {name}, {code: 7, rawMessage: 'Failed to trigger rule'}, null,
             zh ? '启动“夜间关灯”失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。' : 'Failed to start “Night off”: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.'],
-        ['rule.disable', 'failed', {name}, {code: 1, rawMessage: 'invalid_configuration'}, null,
-            zh ? '禁用规则“夜间关灯”失败：规则内容不完整或不合法。请检查触发条件和动作，修正后再保存。' : 'Failed to disable rule “Night off”: the rule is incomplete or invalid. Check the conditions and actions, fix them, then save again.'],
+        ['rule.disable', 'failed', {name}, {code: 1, rawMessage: 'configuration_invalid'}, null,
+            zh ? '禁用规则“夜间关灯”失败：配置中有无法识别或不完整的内容。请检查有问题的项目，修正后再保存。' : 'Failed to disable rule “Night off”: the configuration contains unrecognized or incomplete items. Check the affected items and correct them before saving.'],
         // an operation the page has no text for still gets a sentence
         ['nothing.like.this', 'failed', {}, {code: 6, rawMessage: ''}, null,
             zh ? '操作失败：设备可用内存不足。请稍后再试；仍然失败请重启设备。' : 'The operation failed: the device is low on memory. Try again later; restart the device if it keeps failing.'],
@@ -157,9 +154,9 @@ for (const language of ['zh-CN', 'en-US']) {
     });
 
     // ------------------------------------------------------------------------------------------ rules: enable / disable
-    const rule = {id: 'night-off', name, enabled: true, manual_trigger: false, conditions_count: 1, actions_count: 1, trigger_count: 0};
+    const rule = {id: 'night-off', name, enabled: true, manual_trigger: false, conditions_count: 1, actions_count: 1, trigger_count: 0, revision: 7};
     const rulesDevice = (write, state = {}) => call => {
-        if (call.endpoint === 'automation/rules/list') return {code: 0, data: {loaded: true, rules: [{...rule, enabled: state.enabled ?? true}]}};
+        if (call.endpoint === 'automation/rules/list') return {code: 0, data: {...shownConfiguration, rules: [{...rule, enabled: state.enabled ?? true}]}};
         if (call.endpoint === 'automation/rules/get') return {code: 0, data: {revision: 7}};
         if (call.endpoint === 'automation/rules/disable' || call.endpoint === 'automation/rules/enable') return write(call);
     };
@@ -168,46 +165,43 @@ for (const language of ['zh-CN', 'en-US']) {
         return page.locator('#rules-list .switch');
     };
 
-    test(`${language}: rules: a rule that is running cannot be disabled - the toast names the rule, the reason and the next step`, async () => {
-        await withPage(language, rulesDevice(() => fixture('wire-rule-execution-busy.json')), async ({page, calls}) => {
+    test(`${language}: rules: a real save failure names the rule and its storage problem`, async () => {
+        await withPage(language, rulesDevice(() => fixture('wire-config-storage-failed.json')), async ({page, calls}) => {
             await (await rulesPage(page)).click();
-            await expectToast(page, 'error', zh ? '禁用规则“夜间关灯”失败：它正在执行中。等执行完成后再试。' : 'Failed to disable rule “Night off”: it is running right now. Wait for it to finish, then try again.');
+            await expectToast(page, 'error', zh ? '禁用规则“夜间关灯”失败：配置没有成功写入当前存储位置。请检查存储是否可用，再重新读取已保存的内容。' : 'Failed to disable rule “Night off”: the configuration could not be written to its current storage location. Check the storage, then read the saved contents again.');
             // the machine word lives only in the folded details
-            assert(!(await toastText(page)).includes('execution_busy'));
+            assert(!(await toastText(page)).includes('storage_write_failed'));
             await page.locator('#toast .toast-more').click();
             const detail = await page.locator('#toast .toast-detail').textContent();
-            assert(detail.includes('execution_busy') && detail.includes('automation.rules.disable'), detail);
+            assert(detail.includes('storage_write_failed') && detail.includes('automation.rules.disable'), detail);
             const write = calls.filter(c => c.endpoint === 'automation/rules/disable');
             assert.equal(write.length, 1);
-            assert.equal(write[0].params.expected_revision, 7);
+            assert.equal(write[0].params.active_version,shownConfiguration.active_version);
         });
     });
 
     test(`${language}: rules: a conflicting edit refreshes the list the user acted on`, async () => {
-        await withPage(language, rulesDevice(() => fixture('wire-rule-revision-conflict.json')), async ({page, calls}) => {
+        await withPage(language, rulesDevice(() => fixture('wire-config-changed.json')), async ({page, calls}) => {
             await (await rulesPage(page)).click();
-            await expectToast(page, 'error', zh ? '禁用规则“夜间关灯”失败：设备上的这份配置刚被其他操作修改过。请刷新后确认最新内容，再重新操作。' : 'Failed to disable rule “Night off”: the configuration on the device was just changed by another operation. Refresh, check the latest content, then try again.');
+            await expectToast(page, 'error', zh ? '禁用规则“夜间关灯”失败：当前配置或保存位置已经改变。请刷新并核对最新内容，再提交修改。' : 'Failed to disable rule “Night off”: the current configuration or storage location has changed. Refresh and check the current contents before submitting your changes.');
             await page.waitForFunction(() => true);
             assert.equal(calls.filter(c => c.endpoint === 'automation/rules/list').length, 2);
         });
     });
 
     test(`${language}: rules: success says what happened to which rule, not "ok"`, async () => {
-        await withPage(language, rulesDevice(() => fixture('wire-rule-ok.json')), async ({page}) => {
+        await withPage(language, rulesDevice(() => fixture('wire-config-ok.json')), async ({page}) => {
             await (await rulesPage(page)).click();
             await expectToast(page, 'success', zh ? '已禁用规则“夜间关灯”' : 'Rule “Night off” disabled');
             assert.equal(await page.locator('#toast').evaluate(e => !!e.querySelector('button')), false);   // a plain toast
         });
-        await withPage(language, rulesDevice(() => fixture('wire-rule-ok-mirror.json'), {enabled: false}), async ({page}) => {
-            await (await rulesPage(page)).click();
-            await expectToast(page, 'warning', zh ? '已启用规则“夜间关灯”，但备用副本未同步；请勿移除 SD 卡。' : 'Rule “Night off” enabled, but the backup copy is not synced; do not remove the SD card.');
-        });
+
     });
 
     test(`${language}: rules: an unconfirmed result is a warning that says not to repeat it`, async () => {
-        await withPage(language, rulesDevice(() => fixture('wire-rule-commit-unknown.json')), async ({page}) => {
+        await withPage(language, rulesDevice(() => fixture('wire-config-save-unknown.json')), async ({page}) => {
             await (await rulesPage(page)).click();
-            await expectToast(page, 'warning', zh ? '禁用规则“夜间关灯”的结果未确认。请重新读取并核对当前状态，不要重复提交。' : 'The result of disabling rule “Night off” is unconfirmed. Reload and check the current state before submitting again.');
+            await expectToast(page, 'warning', zh ? '禁用规则“夜间关灯”的结果未确认。请重新读取已保存的配置，核对内容；确认前不要重复提交。' : 'The result of disabling rule “Night off” is unconfirmed. Read the saved configuration and check its contents. Do not submit again until the result is confirmed.');
         });
         // the write never got an answer
         await withPage(language, rulesDevice(() => { throw new Error('unused'); }), async ({page, calls}) => {
@@ -223,7 +217,7 @@ for (const language of ['zh-CN', 'en-US']) {
     const quickDevice = (extra = {}, trigger = null) => call => {
         if (call.endpoint === 'ssh/hosts/list') return {code: 0, data: {hosts: []}};
         if (call.endpoint === 'ssh/commands/list') return {code: 0, data: {commands: []}};
-        if (call.endpoint === 'automation/rules/list') return {code: 0, data: {loaded: true, rules: [{...quickRule, ...extra}]}};
+        if (call.endpoint === 'automation/rules/list') return {code: 0, data: {...shownConfiguration, rules: [{...quickRule, ...extra}]}};
         if (call.endpoint === 'automation/rules/trigger' && trigger) return trigger;
     };
     const quickPage = async page => {
@@ -237,7 +231,7 @@ for (const language of ['zh-CN', 'en-US']) {
     };
 
     test(`${language}: quick actions: every reason a card cannot start is its own sentence`, async () => {
-        for (const [extra, token] of [[{enabled: false}, 'rule_disabled'], [{allow_manual_trigger: false}, 'manual_not_allowed'], [{reference_unresolved: true}, 'reference_unresolved'], [{pending_change: 'delete'}, 'rule_pending_delete'], [{runtime_active: false}, 'rule_not_active']]) {
+        for (const [extra, token] of [[{enabled: false}, 'rule_disabled'], [{allow_manual_trigger: false}, 'manual_not_allowed'], [{reference_unresolved: true}, 'reference_unresolved'], [{runtime_active: false}, 'rule_not_active']]) {
             await withPage(language, quickDevice(extra), async ({page, calls}) => {
                 const card = await quickPage(page);
                 await card.waitFor();
@@ -252,7 +246,7 @@ for (const language of ['zh-CN', 'en-US']) {
         }
     });
 
-    test(`${language}: quick actions: the card's own state decides the message (exhaustive)`, async () => {
+    test(`${language}: quick actions: remote cached state does not lock a locally available card`, async () => {
         await withPage(language, quickDevice(), async ({page}) => {
             const reasons = await page.evaluate(() => {
                 const out = {};
@@ -263,9 +257,8 @@ for (const language of ['zh-CN', 'en-US']) {
                 out.blockedNoReason = quickActionBlockReason({dataset: {allowed: 'false', service: '', state: 'stopped'}});
                 return out;
             });
-            assert.deepEqual(reasons, {stopped: '', running: 'service_running', ready: 'service_running', starting: 'service_starting', checking: 'service_checking',
-                stopping: 'service_stopping', unknown: 'service_not_confirmed_stopped', failed: 'service_not_confirmed_stopped', timeout: 'service_not_confirmed_stopped',
-                'something-new': 'service_not_confirmed_stopped', noService: '', blocked: 'rule_disabled', blockedNoReason: 'rule_details_unavailable'});
+            assert.deepEqual(reasons,{stopped:'',running:'',ready:'',starting:'',checking:'',stopping:'',unknown:'',failed:'',timeout:'',
+                'something-new':'',noService:'',blocked:'rule_disabled',blockedNoReason:'rule_details_unavailable'});
         });
     });
 
@@ -276,8 +269,8 @@ for (const language of ['zh-CN', 'en-US']) {
         ['wire-trigger-manual-not-allowed.json', '启动“夜间关灯”失败：这条规则没有开启“允许手动执行”。请在规则设置里打开“允许手动执行”。',
             'Failed to start “Night off”: the rule does not allow manual execution. Turn on “Allow manual execution” in the rule settings.'],
         ['wire-trigger-execution-busy.json', '启动“夜间关灯”失败：它正在执行中。等执行完成后再试。', 'Failed to start “Night off”: it is running right now. Wait for it to finish, then try again.'],
-        ['wire-trigger-service-not-admissible.json', '启动“夜间关灯”失败：它的服务当前的状态不允许启动（正在运行、正在启动，或状态未确认）。请先核验服务状态。',
-            'Failed to start “Night off”: its service cannot be started in its current state (running, starting, or state unconfirmed). Verify the service state first.'],
+        ['wire-trigger-service-not-admissible.json', '启动“夜间关灯”失败：后台服务暂时不能启动。请在后台服务列表中核验已有服务，或停止不再需要的服务。',
+            'Failed to start “Night off”: the background service cannot be started yet. Verify existing services or stop services you no longer need in the background service list.'],
         ['wire-trigger-not-found.json', '启动“夜间关灯”失败：设备上找不到这条规则。它可能已被删除，请刷新页面。', 'Failed to start “Night off”: the rule was not found on the device. It may have been deleted; refresh the page.'],
         ['wire-trigger-generic.json', '启动“夜间关灯”失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。',
             'Failed to start “Night off”: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.'],

@@ -13,6 +13,7 @@
  * @version 2.0.0
  */
 
+#include "ts_storage.h"
 #include "ts_console.h"
 #include "ts_api.h"
 #include "ts_log.h"
@@ -256,9 +257,15 @@ static int do_file_get(const char *host, int port, const char *user,
                        const char *password, const char *remote_path,
                        const char *local_path, int timeout_sec, bool use_scp, bool verbose)
 {
+    esp_err_t ret = ts_storage_check_write_path(local_path, false);
+    if (ret != ESP_OK) {
+        ts_console_printf(ret == ESP_ERR_NOT_ALLOWED
+            ? "This file belongs to Automation. Choose another download path.\n"
+            : "Invalid local download path.\n");
+        return 1;
+    }
     ts_ssh_session_t ssh = NULL;
-    esp_err_t ret;
-    
+
     if (verbose) {
         ts_console_printf("Connecting to %s@%s...\n", user, host);
     }
@@ -306,7 +313,8 @@ static int do_file_get(const char *host, int port, const char *user,
         ts_console_printf("✓ Download complete: %s\n", local_path);
         return 0;
     } else {
-        ts_console_printf("✗ Download failed\n");
+        ts_console_printf(ret == ESP_ERR_NOT_ALLOWED
+            ? "This file belongs to Automation. Choose another download path.\n" : "✗ Download failed\n");
         return 1;
     }
 }
