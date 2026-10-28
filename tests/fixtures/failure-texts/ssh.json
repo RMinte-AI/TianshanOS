@@ -35,54 +35,6 @@
       "details": null
     }
   },
-  "host.remove.failed": {
-    "zh-CN": {
-      "type": "error",
-      "text": "移除主机“root@192.0.2.8”失败：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
-      "details": "原因代号：no_detail\n接口：ssh.hosts.remove\n原始信息：Failed to remove host\n时间：<time>"
-    },
-    "en-US": {
-      "type": "error",
-      "text": "Failed to remove host “root@192.0.2.8”: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
-      "details": "Reason code: no_detail\nAPI: ssh.hosts.remove\nOriginal text: Failed to remove host\nTime: <time>"
-    }
-  },
-  "host.remove.list-stale": {
-    "zh-CN": {
-      "type": "error",
-      "text": "找不到这台主机的记录：页面上的列表已经过期。请刷新列表后再试。",
-      "details": null
-    },
-    "en-US": {
-      "type": "error",
-      "text": "Can't find the record of this host: the list on this page is out of date. Refresh the list and try again.",
-      "details": null
-    }
-  },
-  "host.remove.no-answer": {
-    "zh-CN": {
-      "type": "warning",
-      "text": "移除主机“root@192.0.2.8”的结果未确认。请先刷新核对当前状态，不要重复提交。",
-      "details": "原因代号：result_unknown\n接口：ssh.hosts.remove\n原始信息：Failed to fetch\n时间：<time>"
-    },
-    "en-US": {
-      "type": "warning",
-      "text": "The result of removing host “root@192.0.2.8” is unconfirmed. Refresh and check the current state before repeating the operation.",
-      "details": "Reason code: result_unknown\nAPI: ssh.hosts.remove\nOriginal text: Failed to fetch\nTime: <time>"
-    }
-  },
-  "host.remove.ok": {
-    "zh-CN": {
-      "type": "success",
-      "text": "已移除主机“root@192.0.2.8”",
-      "details": null
-    },
-    "en-US": {
-      "type": "success",
-      "text": "Host “root@192.0.2.8” removed",
-      "details": null
-    }
-  },
   "host.revoke.key-changed": {
     "zh-CN": {
       "type": "inline",
@@ -117,18 +69,6 @@
       "type": "inline",
       "text": "The result of revoking key “lab-key” from “root@192.0.2.8:22” is unconfirmed. Refresh and check the current state before repeating the operation.",
       "details": "Reason code: result_unknown\nAPI: ssh.revoke\nOriginal text: Failed to fetch\nTime: <time>"
-    }
-  },
-  "host.revoke.record-not-removed": {
-    "zh-CN": {
-      "type": "inline",
-      "text": "公钥已经从服务器上撤销，但没能移除本机上的主机记录“root@192.0.2.8”：设备没有返回具体原因。可在「终端」页打开「系统日志」查看这次操作的详细记录。",
-      "details": "原因代号：no_detail\n接口：ssh.hosts.remove\n原始信息：Failed to remove host\n时间：<time>"
-    },
-    "en-US": {
-      "type": "inline",
-      "text": "The public key was revoked on the server, but the host record “root@192.0.2.8” on this device could not be removed: the device did not return a specific reason. Open Terminal → System Logs to see the details of this operation.",
-      "details": "Reason code: no_detail\nAPI: ssh.hosts.remove\nOriginal text: Failed to remove host\nTime: <time>"
     }
   },
   "host.revoke.wrong-password": {

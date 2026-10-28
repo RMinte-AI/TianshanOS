@@ -4,16 +4,15 @@
  *
  * 统一配置模块系统
  * - 模块化配置管理（每个组件独立模块）
- * - SD卡优先，NVS 备份
- * - 双写同步机制
+ * - 系统配置只写默认 NVS
+ * - SD 卡仅显式导入／导出
  * - Schema 版本迁移支持
  * - 无 RTC 设计（使用序列号而非时间戳）
  *
  * 配置优先级（高→低）：
  * 1. 内存缓存（CLI/API 运行时修改）
- * 2. SD卡配置文件 /sdcard/config/{module}.json
- * 3. NVS 持久化存储（各模块独立命名空间）
- * 4. Schema 默认值
+ * 2. 系统 NVS（各模块独立命名空间）
+ * 3. Schema 默认值
  *
  * @author TianShanOS Team
  * @version 1.0.0
@@ -210,12 +209,8 @@ const char *ts_config_module_get_name(ts_config_module_t module);
  * @brief 从存储加载模块配置
  * 
  * 加载逻辑：
- * 1. 检查 pending_sync 标记
- * 2. 如果有待同步且 SD卡已挂载 → NVS 优先，然后同步到 SD卡
- * 3. 如果 SD卡已挂载且配置文件存在 → 从 SD卡加载
- * 4. 否则从 NVS 加载
- * 5. 如果 SD卡已挂载但配置文件不存在 → 自动导出到 SD卡
- * 6. 执行 Schema 版本迁移（如需要）
+ * 从系统 NVS 加载；仅不存在时应用 Schema 默认值。
+ * SD 文件只在一次性迁移或明确导入时读取。
  * 
  * @param module 模块ID，传入 TS_CONFIG_MODULE_MAX 表示加载全部
  * @return ESP_OK 成功
@@ -299,18 +294,13 @@ esp_err_t ts_config_module_set_string(ts_config_module_t module, const char *key
 esp_err_t ts_config_module_set_float(ts_config_module_t module, const char *key, float value);
 
 /* ============================================================================
- * 持久化 API（同时写入 NVS 和 SD卡）
+ * 持久化 API（系统 NVS）
  * ========================================================================== */
 
 /**
  * @brief 持久化模块配置
  * 
- * 持久化流程：
- * 1. 递增 global_seq
- * 2. 写入模块的 NVS 命名空间
- * 3. 如果 SD卡已挂载 → 写入 SD卡配置文件
- * 4. 如果 SD卡未挂载 → 设置 pending_sync 标记
- * 5. 清除模块 dirty 标记
+ * 写入系统 NVS 并确认提交结果；不自动写 SD 卡。
  * 
  * @param module 模块ID，传入 TS_CONFIG_MODULE_MAX 表示全部模块
  * @return ESP_OK 成功
@@ -350,33 +340,6 @@ esp_err_t ts_config_module_export_custom_json(ts_config_module_t module, const c
 esp_err_t ts_config_module_import_from_sdcard(ts_config_module_t module);
 
 /* ============================================================================
- * 同步 API
- * ========================================================================== */
-
-/**
- * @brief 同步待处理的配置到 SD卡
- * 
- * SD卡插入后调用，同步 pending_sync 标记的模块
- * 
- * @return ESP_OK 成功
- */
-esp_err_t ts_config_module_sync_pending(void);
-
-/**
- * @brief 检查是否有待同步的配置
- * 
- * @return true 有待同步
- */
-bool ts_config_module_has_pending_sync(void);
-
-/**
- * @brief 获取待同步模块的位掩码
- * 
- * @return 位掩码，bit N 表示模块 N 需要同步
- */
-uint8_t ts_config_module_get_pending_mask(void);
-
-/* ============================================================================
  * 重置 API
  * ========================================================================== */
 
@@ -384,7 +347,7 @@ uint8_t ts_config_module_get_pending_mask(void);
  * @brief 重置模块配置到 Schema 默认值
  * 
  * @param module 模块ID
- * @param persist 是否同时清除存储（NVS + SD卡）
+ * @param persist 是否持久化到系统 NVS
  * @return ESP_OK 成功
  */
 esp_err_t ts_config_module_reset(ts_config_module_t module, bool persist);

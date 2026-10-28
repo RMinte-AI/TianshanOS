@@ -69,14 +69,6 @@ typedef bool (*ts_host_prompt_cb_t)(const ts_known_host_t *host,
 esp_err_t ts_known_hosts_init(void);
 
 /**
- * @brief Start deferred loading from SD card
- *
- * Should be called after system initialization to load
- * known hosts from SD card if available.
- */
-void ts_known_hosts_start_deferred_load(void);
-
-/**
  * @brief Deinitialize known hosts module
  *
  * @return esp_err_t ESP_OK on success

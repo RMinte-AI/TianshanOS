@@ -592,9 +592,12 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
     TS_LOGD(TAG, "Upload request: path=%s, body_len=%d", path, (int)(req->body_len));
     
     // 安全检查：只允许写入 /sdcard
-    if (strncmp(path, "/sdcard", 7) != 0) {
+    if (strncmp(path, "/sdcard/", 8) != 0) {
         return ts_http_send_error(req, 403, "Upload only allowed to /sdcard");
     }
+    ret = ts_storage_check_write_path(path, false);
+    if (ret == ESP_ERR_NOT_ALLOWED) return ts_http_send_error(req, 409, "automation_configuration_managed");
+    if (ret != ESP_OK) return ts_http_send_error(req, 400, "storage_path_invalid");
     
     // 检查请求体
     if (!req->body || req->body_len == 0) {
@@ -604,15 +607,19 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
     // 确保目标目录存在
     char dir_path[256];
     strncpy(dir_path, path, sizeof(dir_path) - 1);
+    dir_path[sizeof(dir_path) - 1] = '\0';
     char *last_slash = strrchr(dir_path, '/');
     if (last_slash && last_slash != dir_path) {
         *last_slash = '\0';
-        ts_storage_mkdir_p(dir_path);
+        ret = ts_storage_mkdir_p(dir_path);
+        if (ret == ESP_ERR_NOT_ALLOWED) return ts_http_send_error(req, 409, "automation_configuration_managed");
+        if (ret != ESP_OK) return ts_http_send_error(req, 500, "Failed to create upload directory");
     }
     
     // 写入文件
     ret = ts_storage_write_file(path, req->body, req->body_len);
     if (ret != ESP_OK) {
+        if (ret == ESP_ERR_NOT_ALLOWED) return ts_http_send_error(req, 409, "automation_configuration_managed");
         TS_LOGE(TAG, "Failed to write file %s: %s", path, esp_err_to_name(ret));
         return ts_http_send_error(req, 500, "Failed to write file");
     }

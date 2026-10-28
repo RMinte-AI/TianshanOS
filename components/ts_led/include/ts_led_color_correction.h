@@ -8,8 +8,8 @@
  * - Brightness enhancement
  * - Saturation enhancement
  * 
- * Configuration priority: SD Card > NVS > Default values
- * Supports both JSON and encrypted TSCFG formats.
+ * Configuration: system NVS; legacy SD priority is imported only once.
+ * Explicit import/export supports JSON and encrypted TSCFG formats.
  * 
  * @author TianShanOS Team
  * @version 1.0.0

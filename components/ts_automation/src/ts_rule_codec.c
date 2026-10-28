@@ -1,7 +1,6 @@
 #include "ts_rule_codec.h"
 #include "ts_action_filter.h"
 #include "esp_heap_caps.h"
-#include "ts_action_manager.h"
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>
@@ -235,7 +234,7 @@ static bool value_read(const cJSON *j, ts_auto_value_t *v) {
     }
     return false;
 }
-static bool typed_value_read(const cJSON *object, ts_auto_value_t *v) {
+bool ts_auto_value_decode(const cJSON *object, ts_auto_value_t *v) {
     const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, "value");
     if (!value_read(value, v))
         return false;
@@ -252,7 +251,7 @@ static bool typed_value_read(const cJSON *object, ts_auto_value_t *v) {
     }
     return type->valueint == v->type;
 }
-static cJSON *value_write(const ts_auto_value_t *v) {
+cJSON *ts_auto_value_encode(const ts_auto_value_t *v) {
     switch (v->type) {
     case TS_AUTO_VAL_NULL:
         return cJSON_CreateNull();
@@ -276,12 +275,12 @@ static bool condition_read(const cJSON *j, char *variable, int *op, ts_auto_valu
         return false;
     strcpy(variable, name->valuestring);
     *op = o;
-    return typed_value_read(j, v);
+    return ts_auto_value_decode(j, v);
 }
 static cJSON *condition_write(const char *variable, int op, const ts_auto_value_t *value) {
     if (op < 0 || op >= 7)
         return NULL;
-    cJSON *j = cJSON_CreateObject(), *v = value_write(value);
+    cJSON *j = cJSON_CreateObject(), *v = ts_auto_value_encode(value);
     if (!j || !v) {
         cJSON_Delete(j);
         cJSON_Delete(v);
@@ -360,13 +359,15 @@ esp_err_t ts_rule_decode(const cJSON *j, ts_auto_rule_t *r) {
     }
     const cJSON *actions = cJSON_GetObjectItemCaseSensitive(j, "actions");
     if (!cJSON_IsArray(actions) || cJSON_GetArraySize(actions) > UINT8_MAX ||
-        !cJSON_GetArraySize(actions))
+        (r->enabled && !cJSON_GetArraySize(actions)))
         goto invalid;
     r->action_count = cJSON_GetArraySize(actions);
-    r->actions = heap_caps_calloc(r->action_count, sizeof(ts_auto_action_t),
-                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!r->actions)
-        goto oom;
+    if (r->action_count) {
+        r->actions = heap_caps_calloc(r->action_count, sizeof(ts_auto_action_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!r->actions)
+            goto oom;
+    }
     for (unsigned i = 0; i < r->action_count; ++i) {
         const cJSON *a = cJSON_GetArrayItem(actions, i);
         ts_auto_action_t *out = &r->actions[i];
@@ -374,17 +375,10 @@ esp_err_t ts_rule_decode(const cJSON *j, ts_auto_rule_t *r) {
             goto invalid;
         const cJSON *type = cJSON_GetObjectItemCaseSensitive(a, "type"),
                     *tpl = cJSON_GetObjectItemCaseSensitive(a, "template_id");
-        if (!type && cJSON_IsString(tpl)) {
-            ts_action_template_t *t =
-                heap_caps_calloc(1, sizeof(*t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!t)
-                goto oom;
-            esp_err_t ret = ts_action_template_get(tpl->valuestring, t);
-            if (ret == ESP_OK)
-                *out = t->action;
-            free(t);
-            if (ret != ESP_OK)
-                out->type = TS_AUTO_ACT_TEMPLATE_REF;
+        /* A template reference belongs to this document, never the live manager.
+         * Legacy files may also carry cached inline fields; the reference wins. */
+        if (cJSON_IsString(tpl) && tpl->valuestring[0]) {
+            out->type = TS_AUTO_ACT_TEMPLATE_REF;
         } else {
             int ty = choice(type, types, 9, -1);
             if (cJSON_IsString(type) && !strcmp(type->valuestring, "device"))
@@ -416,7 +410,7 @@ esp_err_t ts_rule_decode(const cJSON *j, ts_auto_rule_t *r) {
                 out->condition.op = op;
             }
         }
-        if (out->type == TS_AUTO_ACT_SET_VAR && !typed_value_read(a, &out->set_var.value))
+        if (out->type == TS_AUTO_ACT_SET_VAR && !ts_auto_value_decode(a, &out->set_var.value))
             goto invalid;
     }
     return ESP_OK;
@@ -493,7 +487,7 @@ cJSON *ts_rule_encode(const ts_auto_rule_t *r) {
         if (a->type == TS_AUTO_ACT_SET_VAR) {
             if (!cJSON_AddNumberToObject(aj, "value_type", a->set_var.value.type))
                 goto fail;
-            cJSON *v = value_write(&a->set_var.value);
+            cJSON *v = ts_auto_value_encode(&a->set_var.value);
             if (!v)
                 goto fail;
             if (!cJSON_AddItemToObject(aj, "value", v)) {

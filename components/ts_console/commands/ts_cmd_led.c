@@ -941,15 +941,11 @@ static int do_led_save(const char *device_name)
         }
     }
     
-    /* 同时使用统一配置模块进行双写 */
+    /* 同时保存模块化的系统配置 */
     ret = ts_config_module_persist(TS_CONFIG_MODULE_LED);
     if (ret == ESP_OK) {
         ts_console_success("Configuration saved to NVS");
-        if (ts_config_module_has_pending_sync()) {
-            ts_console_printf(" (SD card sync pending)\n");
-        } else {
-            ts_console_printf(" and SD card\n");
-        }
+        ts_console_printf("\n");
     } else {
         ts_console_success("Boot config saved for %s\n", 
             device_name ? device_name : "all LED devices");

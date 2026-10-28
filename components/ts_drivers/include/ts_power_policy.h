@@ -147,6 +147,10 @@ typedef void (*ts_power_policy_callback_t)(
  */
 esp_err_t ts_power_policy_get_default_config(ts_power_policy_config_t *config);
 
+/** Get the current effective configuration, including unsaved changes. */
+esp_err_t ts_power_policy_get_config(ts_power_policy_config_t *config);
+
+
 /**
  * @brief 初始化电压保护策略
  * @param config 配置参数（NULL 使用默认配置）
@@ -289,12 +293,11 @@ esp_err_t ts_power_policy_set_recovery_hold(uint32_t hold_sec);
 esp_err_t ts_power_policy_set_fan_stop_delay(uint32_t delay_sec);
 
 /**
- * @brief 保存当前配置到 SD 卡
+ * @brief 保存当前配置到系统 NVS
  * 
  * 将当前配置导出为 JSON 文件保存到 /sdcard/config/power_policy.json
- * 如果 SD 卡未挂载则返回错误
  * 
- * @return ESP_OK 成功，ESP_ERR_NOT_FOUND SD卡未挂载
+ * @return ESP_OK 成功，否则为实际保存错误
  */
 esp_err_t ts_power_policy_save_config(void);
 

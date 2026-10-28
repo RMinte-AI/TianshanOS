@@ -22,21 +22,30 @@ static unsigned writes, commits, events;
 static bool fail_set, fail_commit, fail_read, drop_event;
 static int slot(const char *key) { return !strcmp(key,"privkey") ? 0 : !strcmp(key,"cert") ? 1 : !strcmp(key,"ca_chain") ? 2 : -1; }
 void *heap_caps_malloc(size_t n,unsigned caps) { (void)caps; return test_malloc(n); }
-esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *h) { (void)name;(void)mode;*h=1;return ESP_OK; }
+esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *h) {
+    assert(!strcmp(name, "ts_pki"));(void)mode;*h=1;return ESP_OK;
+}
+esp_err_t nvs_open_from_partition(const char *partition,const char *name,int mode,nvs_handle_t *h) {
+    assert(!strcmp(partition, "keys_nvs") && !strcmp(name, "ts_pki"));
+    (void)mode;*h=2;return ESP_OK;
+}
+static void check_region(nvs_handle_t h,const char *key) {
+    assert(h == (!strcmp(key, "privkey") ? 2 : 1));
+}
 void nvs_close(nvs_handle_t h) { (void)h; }
 esp_err_t nvs_get_str(nvs_handle_t h,const char *key,char *out,size_t *len) {
-    (void)h; int i=slot(key); if(fail_read)return ESP_FAIL;
+    check_region(h,key); int i=slot(key); if(fail_read)return ESP_FAIL;
     if(i<0||!stored[i])return ESP_ERR_NVS_NOT_FOUND;
     size_t n=strlen(stored[i])+1;
     if(!out){*len=n;return ESP_OK;} if(*len<n)return ESP_ERR_INVALID_SIZE;
     memcpy(out,stored[i],n);*len=n;return ESP_OK;
 }
 esp_err_t nvs_set_str(nvs_handle_t h,const char *key,const char *value) {
-    (void)h; ++writes;if(fail_set)return ESP_FAIL;int i=slot(key);assert(i>=0);
+    check_region(h,key); ++writes;if(fail_set)return ESP_FAIL;int i=slot(key);assert(i>=0);
     free(stored[i]);stored[i]=strdup(value);return ESP_OK;
 }
 esp_err_t nvs_erase_key(nvs_handle_t h,const char *key) {
-    (void)h;int i=slot(key);if(fail_set)return ESP_FAIL;
+    check_region(h,key);int i=slot(key);if(fail_set)return ESP_FAIL;
     if(i<0||!stored[i])return ESP_ERR_NVS_NOT_FOUND;free(stored[i]);stored[i]=NULL;return ESP_OK;
 }
 esp_err_t nvs_commit(nvs_handle_t h) { (void)h;++commits;return fail_commit?ESP_FAIL:ESP_OK; }

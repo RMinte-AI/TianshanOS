@@ -25,13 +25,15 @@ async function fixture(language='zh-CN'){
  });
  await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&typeof editAction==='function');
  await page.evaluate(()=>{
-  closeLoginModal();window.writes=[];window.stored=null;
+  closeLoginModal();window.writes=[];window.stored=null;window.fixtureRevision=1;
+  const configuration=()=>({active_version:fixtureRevision.toString(16).padStart(32,'0'),source:'sd',loaded:true,configured:true,enabled:true,sd_available:true});
   api.call=async(endpoint,params)=>{
-   if(endpoint==='automation.actions.get')return {code:0,data:structuredClone(stored)};
+   if(endpoint==='automation.config.status')return {code:0,data:configuration()};
+   if(endpoint==='automation.actions.get')return {code:0,data:{...structuredClone(stored),active_version:configuration().active_version}};
    if(['automation.actions.add','automation.actions.update','automation.actions.delete','ui.widgets.set'].includes(endpoint)){
     writes.push({endpoint,params:structuredClone(params)});
-    if(window.rejectSave)return {code:500,message:'simulated storage failure'};
-    if(endpoint.startsWith('automation.actions.'))stored=structuredClone(params);
+    if(window.rejectSave)return {code:1,message:'storage_write_failed',data:{...configuration(),saved:false}};
+    if(endpoint.startsWith('automation.actions.')){stored=structuredClone(params);++fixtureRevision;return {code:0,data:{...configuration(),saved:true}};}
    }
    return {code:0,data:{}};
   };
@@ -198,3 +200,24 @@ for(const language of ['zh-CN','en-US'])for(const params of [undefined,{angle:0}
   }finally{await f.context.close();}
  });
 }
+
+for(const language of ['zh-CN','en-US'])test(`${language}: late font metadata preserves the saved font and the user's newer selection`,async()=>{
+ const f=await fixture(language);try{
+  await f.page.evaluate(async()=>{
+   window.fontReads=0;
+   api.storageList=async()=>{++fontReads;await new Promise(resolve=>window.finishFonts=resolve);return {code:0,data:{entries:[]}};};
+   stored={id:'fixture',name:'Text',type:'led',enabled:true,led:{device:'matrix',ctrl_type:'text',text:'Hello',font:'missing-font'}};
+   await editAction('fixture');
+  });
+  assert.equal(await f.page.locator('#action-led-font').inputValue(),'missing-font');
+  await f.page.evaluate(()=>finishFonts());
+  await f.page.waitForFunction(()=>document.querySelector('#action-led-font option:checked').textContent===configText('fontUnavailable',{name:'missing-font'}));
+  await f.page.evaluate(async()=>{document.getElementById('action-modal')?.remove();await editAction('fixture');});
+  await f.page.locator('#action-led-font').selectOption('');
+  await f.page.evaluate(()=>finishFonts());
+  await f.page.waitForFunction(()=>document.getElementById('action-led-font').options.length===1);
+  assert.equal(await f.page.locator('#action-led-font').inputValue(),'');
+  assert.equal(await f.page.evaluate(()=>fontReads),2);
+  assert.deepEqual(f.errors,[]);
+ }finally{await f.context.close();}
+});

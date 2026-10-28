@@ -14,7 +14,6 @@
  * - config --show --module net    显示模块配置
  * - config --module net -k eth.ip 获取模块配置
  * - config --allsave              保存所有模块配置
- * - config --sync                 同步待处理配置到SD卡
  * - config --export --module net  导出模块到SD卡
  * - config --meta                 显示元配置信息
  * 
@@ -57,7 +56,6 @@ static struct {
     /* 模块操作 */
     struct arg_lit *show;
     struct arg_lit *allsave;
-    struct arg_lit *sync;
     struct arg_lit *export_sd;
     struct arg_lit *meta;
     /* 配置包操作 */
@@ -324,8 +322,7 @@ static int do_config_list(bool json)
     ts_console_printf("%-10s %-12s %-8s %-8s %s\n", "Module", "NVS NS", "Version", "Status", "Dirty");
     print_separator();
     
-    const char *names[] = {"net", "dhcp", "wifi", "led", "fan", "device", "system"};
-    
+
     for (int i = 0; i < TS_CONFIG_MODULE_MAX; i++) {
         ts_config_module_t mod = (ts_config_module_t)i;
         bool registered = ts_config_module_is_registered(mod);
@@ -334,19 +331,17 @@ static int do_config_list(bool json)
             const char *nvs_ns = ts_config_module_get_nvs_namespace(mod);
             uint16_t version = ts_config_module_get_schema_version(mod);
             bool dirty = ts_config_module_is_dirty(mod);
-            bool pending = ts_config_meta_is_pending_sync(mod);
             ts_console_printf("%-10s %-12s v%-7d %-8s %s\n",
-                names[i], nvs_ns ? nvs_ns : "-", version,
-                pending ? "pending" : "synced", dirty ? "YES" : "-");
+                ts_config_module_get_name(mod), nvs_ns ? nvs_ns : "-", version,
+                "system", dirty ? "YES" : "-");
         } else {
-            ts_console_printf("%-10s %-12s %-8s %-8s %s\n", names[i], "-", "-", "N/A", "-");
+            ts_console_printf("%-10s %-12s %-8s %-8s %s\n", ts_config_module_get_name(mod), "-", "-", "N/A", "-");
         }
     }
     
     print_separator();
-    ts_console_printf("global_seq: %lu, sync_seq: %lu\n",
-        (unsigned long)ts_config_meta_get_global_seq(),
-        (unsigned long)ts_config_meta_get_sync_seq());
+    ts_console_printf("global_seq: %lu\n",
+        (unsigned long)ts_config_meta_get_global_seq());
     
     return 0;
 }
@@ -493,17 +488,16 @@ static int do_config_allsave(void)
     ts_console_printf("Saving all module configurations...\n");
     
     int success = 0, failed = 0;
-    const char *names[] = {"net", "dhcp", "wifi", "led", "fan", "device", "system"};
-    
+
     for (int i = 0; i < TS_CONFIG_MODULE_MAX; i++) {
         ts_config_module_t mod = (ts_config_module_t)i;
         if (ts_config_module_is_registered(mod)) {
             esp_err_t ret = ts_config_module_persist(mod);
             if (ret == ESP_OK) {
-                ts_console_printf("  [OK] %s\n", names[i]);
+                ts_console_printf("  [OK] %s\n", ts_config_module_get_name(mod));
                 success++;
             } else {
-                ts_console_printf("  [FAIL] %s: %s\n", names[i], esp_err_to_name(ret));
+                ts_console_printf("  [FAIL] %s: %s\n", ts_config_module_get_name(mod), esp_err_to_name(ret));
                 failed++;
             }
         }
@@ -512,11 +506,7 @@ static int do_config_allsave(void)
     ts_console_printf("\n");
     if (failed == 0) {
         ts_console_success("All %d modules saved to NVS", success);
-        if (ts_config_module_has_pending_sync()) {
-            ts_console_printf(" (SD card sync pending)\n");
-        } else {
-            ts_console_printf(" and SD card\n");
-        }
+        ts_console_printf("\n");
     } else {
         ts_console_warn("Saved %d modules, %d failed\n", success, failed);
     }
@@ -842,7 +832,6 @@ static int cmd_config(int argc, char **argv)
         ts_console_printf("\nModule Operations:\n");
         ts_console_printf("      --show          Show module configuration\n");
         ts_console_printf("      --allsave       Save ALL modules to NVS and SD card\n");
-        ts_console_printf("      --sync          Sync pending configs to SD card\n");
         ts_console_printf("      --export        Export module to SD card (plain)\n");
         ts_console_printf("      --meta          Show meta configuration info\n");
         ts_console_printf("\nConfig Pack (Encrypted Distribution):\n");
@@ -936,23 +925,6 @@ static int cmd_config(int argc, char **argv)
         return do_config_allsave();
     }
     
-    /* --sync: 同步待处理配置 */
-    if (s_config_args.sync->count > 0) {
-        if (ts_config_module_has_pending_sync()) {
-            ts_console_printf("Syncing pending configs to SD card...\n");
-            esp_err_t ret = ts_config_module_sync_pending();
-            if (ret == ESP_OK) {
-                ts_console_success("Sync complete\n");
-            } else {
-                ts_console_error("Sync failed: %s\n", esp_err_to_name(ret));
-                return 1;
-            }
-        } else {
-            ts_console_printf("No pending configs to sync\n");
-        }
-        return 0;
-    }
-    
     /* --meta: 显示元配置 */
     if (s_config_args.meta->count > 0) {
         ts_config_meta_dump();
@@ -1043,7 +1015,6 @@ esp_err_t ts_cmd_config_register(void)
     /* 模块操作 */
     s_config_args.show     = arg_lit0(NULL, "show", "Show module config");
     s_config_args.allsave  = arg_lit0(NULL, "allsave", "Save ALL modules");
-    s_config_args.sync     = arg_lit0(NULL, "sync", "Sync to SD card");
     s_config_args.export_sd= arg_lit0(NULL, "export", "Export to SD card (plain)");
     s_config_args.meta     = arg_lit0(NULL, "meta", "Show meta info");
     /* 配置包操作 */

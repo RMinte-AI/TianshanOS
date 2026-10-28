@@ -427,34 +427,28 @@ static esp_err_t api_config_pack_export(const cJSON *params, ts_api_result_t *re
     if (save_path && cJSON_IsString(save_path) && strlen(save_path->valuestring) > 0) {
         const char *path = save_path->valuestring;
         
-        /* 确保目录存在 */
-        char dir_path[256];
-        strncpy(dir_path, path, sizeof(dir_path) - 1);
-        dir_path[sizeof(dir_path) - 1] = '\0';
-        char *last_slash = strrchr(dir_path, '/');
-        if (last_slash && last_slash != dir_path) {
-            *last_slash = '\0';
-            struct stat st;
-            if (stat(dir_path, &st) != 0) {
-                /* 目录不存在，尝试创建 */
-                mkdir(dir_path, 0755);
+        esp_err_t ret = ts_storage_check_write_path(path, false);
+        char dir_path[TS_STORAGE_MAX_PATH];
+        if (ret == ESP_OK) {
+            snprintf(dir_path, sizeof(dir_path), "%s", path);
+            char *last_slash = strrchr(dir_path, '/');
+            if (last_slash && last_slash != dir_path) {
+                *last_slash = '\0';
+                ret = ts_storage_mkdir_p(dir_path);
             }
         }
-        
-        /* 写入文件 */
-        FILE *f = fopen(path, "w");
-        if (f) {
-            size_t written = fwrite(output, 1, output_len, f);
-            fclose(f);
-            if (written == output_len) {
-                cJSON_AddStringToObject(data, "saved_path", path);
-                TS_LOGI(TAG, "Config pack saved to: %s", path);
-            } else {
-                TS_LOGW(TAG, "Partial write to %s (%zu/%zu)", path, written, output_len);
-            }
-        } else {
-            TS_LOGW(TAG, "Failed to save config pack to: %s", path);
+        if (ret == ESP_OK) ret = ts_config_pack_save(path, output, output_len);
+        if (ret != ESP_OK) {
+            free(output);
+            cJSON_Delete(data);
+            const char *reason = ret == ESP_ERR_NOT_ALLOWED ? "automation_configuration_managed"
+                : ret == ESP_ERR_INVALID_ARG ? "storage_path_invalid" : "storage_write_failed";
+            ts_api_result_error(result, ret == ESP_ERR_NOT_ALLOWED ? TS_API_ERR_NO_PERMISSION
+                : ret == ESP_ERR_INVALID_ARG ? TS_API_ERR_INVALID_ARG : TS_API_ERR_INTERNAL, reason);
+            return ret;
         }
+        cJSON_AddStringToObject(data, "saved_path", path);
+
     }
     
     free(output);

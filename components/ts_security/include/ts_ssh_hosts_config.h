@@ -2,7 +2,7 @@
  * @file ts_ssh_hosts_config.h
  * @brief SSH Host Configuration Storage
  *
- * 管理 SSH 主机凭证配置，存储到 NVS 持久化。
+ * 管理 SSH 主机凭证配置，由当前自动化配置统一保存。
  * 与 ts_known_hosts（存储主机指纹）不同，这里存储的是连接凭证：
  * - 主机地址、端口、用户名
  * - 认证方式（密钥ID 或 密码）
@@ -61,7 +61,7 @@ typedef struct {
     char username[TS_SSH_USERNAME_MAX]; /**< 用户名 */
     ts_ssh_host_auth_type_t auth_type;  /**< 认证方式 */
     char keyid[TS_SSH_KEYID_MAX];       /**< 密钥 ID（auth_type=KEY 时使用） */
-    /* 注意：密码不持久化到 NVS，仅运行时内存 */
+    /* 注意：密码不持久化，仅运行时内存 */
     uint32_t created_time;               /**< 创建时间戳 */
     uint32_t last_used_time;             /**< 上次使用时间 */
     bool enabled;                        /**< 是否启用 */
@@ -149,14 +149,6 @@ esp_err_t ts_ssh_hosts_config_list(ts_ssh_host_config_t *configs,
 int ts_ssh_hosts_config_count(void);
 
 /**
- * @brief 更新上次使用时间
- * 
- * @param id 主机 ID
- * @return ESP_OK 成功
- */
-esp_err_t ts_ssh_hosts_config_touch(const char *id);
-
-/**
  * @brief 清除所有主机配置
  */
 esp_err_t ts_ssh_hosts_config_clear(void);
@@ -194,35 +186,8 @@ esp_err_t ts_ssh_hosts_config_iterate(ts_ssh_host_iterator_cb_t callback,
                                        size_t limit,
                                        size_t *total_count);
 
-/*===========================================================================*/
-/*                    SD Card Export/Import (持久化备份)                       */
-/*===========================================================================*/
-
-/** SD 卡配置文件路径（主配置文件） */
-#define TS_SSH_HOSTS_SDCARD_PATH  "/sdcard/config/ssh_hosts.json"
-
-/** SD 卡独立文件目录（每个主机一个文件） */
-#define TS_SSH_HOSTS_SDCARD_DIR   "/sdcard/config/ssh_hosts"
-
-/**
- * @brief 导出所有主机配置到 SD 卡
- * 
- * @return ESP_OK 成功，ESP_ERR_NOT_FOUND SD卡未挂载
- */
-esp_err_t ts_ssh_hosts_config_export_to_sdcard(void);
-
-/**
- * @brief 从 SD 卡导入主机配置
- * 
- * @param merge 是否合并（true=保留现有，false=清空后导入）
- * @return ESP_OK 成功，ESP_ERR_NOT_FOUND 文件不存在
- */
-esp_err_t ts_ssh_hosts_config_import_from_sdcard(bool merge);
-
-/**
- * @brief 同步到 SD 卡（内部调用，add/remove 后自动触发）
- */
-void ts_ssh_hosts_config_sync_to_sdcard(void);
+/** Explicit package import/export paths; never automatically reloaded. */
+#define TS_SSH_HOSTS_SDCARD_DIR "/sdcard/config/ssh_hosts"
 
 #ifdef __cplusplus
 }

@@ -7,13 +7,6 @@ menu "TianShanOS Automation Engine"
             Enable the automation engine for data monitoring,
             rule-based actions, and LED display control.
 
-    config TS_AUTOMATION_CONFIG_PATH
-        string "Default config file path"
-        default "/sdcard/config/automation.json"
-        depends on TS_AUTOMATION_ENABLED
-        help
-            Default path for automation configuration file on SD card.
-
     config TS_AUTOMATION_MAX_SOURCES
         int "Maximum number of data sources"
         default 16
@@ -24,7 +17,7 @@ menu "TianShanOS Automation Engine"
 
     config TS_AUTOMATION_MAX_RULES
         int "Maximum number of rules"
-        default 32
+        default 64
         range 8 64
         depends on TS_AUTOMATION_ENABLED
         help

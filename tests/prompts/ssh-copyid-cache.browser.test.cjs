@@ -30,7 +30,8 @@ for(const language of ['zh-CN','en-US']) {
       deployed=true;json(0,{deployed:true,verified:true,registered:true,host_id:host.id});
      });return;
     }
-    if(url.pathname==='/api/v1/ssh/hosts/list')return json(0,{hosts:deployed?[host]:[]});
+    if(url.pathname==='/api/v1/automation/config/status')return json(0,{active_version:'1'.padStart(32,'0'),configured:true,loaded:true,enabled:true,source:'sd',sd_available:true});
+    if(url.pathname==='/api/v1/ssh/hosts/list')return json(0,{hosts:deployed?[host]:[],active_version:'1'.padStart(32,'0')});
     if(url.pathname==='/api/v1/hosts/list')return json(0,{hosts:[]});
     if(url.pathname==='/api/v1/key/list')return json(0,{keys:[]});
     return json(0,{});

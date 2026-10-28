@@ -18,6 +18,8 @@
 #include "ts_source_manager.h"
 #include "ts_action_manager.h"
 #include "ts_storage.h"
+#include "ts_automation_config.h"
+#include "ts_event.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -40,13 +42,12 @@ static const char *TAG = "ts_automation";
  * 引擎内部状态结构
  */
 typedef struct {
-    ts_automation_state_t state;         // 当前状态
-    atomic_bool stopping;
+    _Atomic(ts_automation_state_t) state;
+    atomic_bool stopping, deinitializing;
     TaskHandle_t task_handle;            // 主任务句柄
-    SemaphoreHandle_t mutex;             // 状态互斥锁
+    _Atomic(SemaphoreHandle_t) mutex;
     
-    char config_path[128];               // 配置文件路径
-    bool config_modified;                // 配置是否被修改
+    ts_event_handler_handle_t storage_events;
     
     int64_t start_time_ms;               // 启动时间
     uint32_t actions_executed;           // 执行的动作计数
@@ -57,16 +58,22 @@ static ts_automation_ctx_t s_ctx = {
     .state = TS_AUTO_STATE_UNINITIALIZED,
     .task_handle = NULL,
     .mutex = NULL,
-    .config_modified = false,
 };
+static StaticSemaphore_t s_state_mutex_storage;
 
 /*===========================================================================*/
 /*                              前向声明                                      */
 /*===========================================================================*/
 
 static void automation_task(void *arg);
-static esp_err_t load_config(const char *path);
-static esp_err_t apply_default_config(void);
+static void storage_changed(const ts_event_t *event,void *unused)
+{
+    (void)unused;
+    if(event->id!=TS_EVT_STORAGE_SD_MOUNTED && event->id!=TS_EVT_STORAGE_SD_UNMOUNTED)return;
+    ts_auto_config_error_t error={0};
+    esp_err_t ret=ts_auto_config_storage_changed(&error);
+    if(ret!=ESP_OK)ESP_LOGW(TAG,"Storage change: %s (%s)",error.reason?error.reason:"configuration_unavailable",esp_err_to_name(ret));
+}
 
 /*===========================================================================*/
 /*                              版本信息                                      */
@@ -101,18 +108,8 @@ esp_err_t ts_automation_init(const ts_automation_config_t *config)
     ESP_LOGI(TAG, "Initializing automation engine v%s", ts_automation_get_version());
 
     // 创建互斥锁
-    s_ctx.mutex = xSemaphoreCreateMutex();
-    if (!s_ctx.mutex) {
-        ESP_LOGE(TAG, "Failed to create mutex");
-        return ESP_ERR_NO_MEM;
-    }
-
-    // 确定配置路径
-    const char *cfg_path = CONFIG_TS_AUTOMATION_CONFIG_PATH;
-    if (config && config->config_path) {
-        cfg_path = config->config_path;
-    }
-    strncpy(s_ctx.config_path, cfg_path, sizeof(s_ctx.config_path) - 1);
+    /* This single lock outlives late API readers and service restarts. */
+    if(!s_ctx.mutex)s_ctx.mutex=xSemaphoreCreateMutexStatic(&s_state_mutex_storage);
 
     // 初始化子模块
     esp_err_t ret;
@@ -141,38 +138,22 @@ esp_err_t ts_automation_init(const ts_automation_config_t *config)
         goto cleanup;
     }
 
-    // 加载引擎配置（sources/rules/actions 已由各自模块从 SD 卡加载）
-    ret = load_config(s_ctx.config_path);
-    if (ret == ESP_ERR_NOT_FOUND) {
-        /* automation.json 不存在是正常情况，使用默认引擎设置 */
-        ESP_LOGD(TAG, "No automation.json found, using default engine settings");
-        ret = apply_default_config();
-    } else if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to load automation.json: %s, using defaults", esp_err_to_name(ret));
-        ret = apply_default_config();
-    }
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to apply config: %s", esp_err_to_name(ret));
-        // 继续运行，使用空配置
-    }
-
-    s_ctx.state = TS_AUTO_STATE_INITIALIZED;
-    s_ctx.start_time_ms = esp_timer_get_time() / 1000;
-
-    // 预创建 SSH 命令变量（从 NVS 配置读取）
-    extern esp_err_t ts_ssh_commands_precreate_variables(void);
-    esp_err_t precreate_ret = ts_ssh_commands_precreate_variables();
-    if (precreate_ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to precreate SSH command variables: %s", esp_err_to_name(precreate_ret));
-        // 不影响启动
-    }
-
     // 注册 power policy 变量（如果 power policy 已初始化）
     extern esp_err_t ts_power_policy_register_variables(void);
     esp_err_t pp_ret = ts_power_policy_register_variables();
     if (pp_ret != ESP_OK && pp_ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "Failed to register power policy variables: %s", esp_err_to_name(pp_ret));
     }
+
+    // All SDK-owned definitions must exist before installing user definitions.
+    ts_auto_config_error_t config_error={0};
+    ret=ts_auto_config_startup(&config_error);
+    if(ret!=ESP_OK)ESP_LOGW(TAG,"Configuration is unavailable; management remains available: %s (%s)",
+        config_error.reason?config_error.reason:"configuration_unavailable",esp_err_to_name(ret));
+    ret=ts_event_register(TS_EVENT_BASE_STORAGE,TS_EVENT_ANY_ID,storage_changed,NULL,&s_ctx.storage_events);
+    if(ret!=ESP_OK)goto cleanup;
+    s_ctx.state=TS_AUTO_STATE_INITIALIZED;
+    s_ctx.start_time_ms=esp_timer_get_time()/1000;
 
     ESP_LOGI(TAG, "Automation engine initialized");
 
@@ -184,10 +165,11 @@ esp_err_t ts_automation_init(const ts_automation_config_t *config)
     return ESP_OK;
 
 cleanup:
-    if (s_ctx.mutex) {
-        vSemaphoreDelete(s_ctx.mutex);
-        s_ctx.mutex = NULL;
-    }
+    ts_auto_config_shutdown();
+    ts_action_manager_deinit();
+    ts_rule_engine_deinit();
+    ts_source_manager_deinit();
+    ts_variable_deinit();
     return ret;
 }
 
@@ -196,27 +178,29 @@ esp_err_t ts_automation_deinit(void)
     if (s_ctx.state == TS_AUTO_STATE_UNINITIALIZED) {
         return ESP_OK;
     }
-    if (ts_rule_restart_pending()) return ESP_ERR_INVALID_STATE;
 
     ESP_LOGI(TAG, "Deinitializing automation engine");
+    xSemaphoreTake(s_ctx.mutex,portMAX_DELAY);s_ctx.deinitializing=true;xSemaphoreGive(s_ctx.mutex);
 
     // 先停止
     esp_err_t ret = ts_automation_stop();
     if (ret != ESP_OK) return ret;
-    ret = ts_action_manager_deinit();
-    if (ret != ESP_OK) return ret;
+    if(s_ctx.storage_events){
+        ret=ts_event_unregister_sync(s_ctx.storage_events,1000);
+        if(ret!=ESP_OK && ret!=ESP_ERR_NOT_FOUND)return ret;
+        s_ctx.storage_events=NULL;
+    }
+    ts_auto_config_shutdown();
     ret = ts_rule_engine_deinit();
+    if (ret != ESP_OK) return ret;
+    ret = ts_action_manager_deinit();
     if (ret != ESP_OK) return ret;
     ts_source_manager_deinit();
     ts_variable_deinit();
 
-    // 清理互斥锁
-    if (s_ctx.mutex) {
-        vSemaphoreDelete(s_ctx.mutex);
-        s_ctx.mutex = NULL;
-    }
-
-    s_ctx.state = TS_AUTO_STATE_UNINITIALIZED;
+    xSemaphoreTake(s_ctx.mutex,portMAX_DELAY);
+    s_ctx.state = TS_AUTO_STATE_UNINITIALIZED;s_ctx.deinitializing=false;
+    xSemaphoreGive(s_ctx.mutex);
 
     ESP_LOGI(TAG, "Automation engine deinitialized");
     return ESP_OK;
@@ -224,7 +208,7 @@ esp_err_t ts_automation_deinit(void)
 
 bool ts_automation_is_initialized(void)
 {
-    return s_ctx.state != TS_AUTO_STATE_UNINITIALIZED;
+    return !s_ctx.deinitializing && s_ctx.state != TS_AUTO_STATE_UNINITIALIZED;
 }
 
 /*===========================================================================*/
@@ -234,7 +218,9 @@ bool ts_automation_is_initialized(void)
 esp_err_t ts_automation_start(void) {
     if (!s_ctx.mutex) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
-    if (s_ctx.stopping) { xSemaphoreGive(s_ctx.mutex); return ESP_ERR_INVALID_STATE; }
+    if (s_ctx.stopping || s_ctx.deinitializing || s_ctx.state==TS_AUTO_STATE_UNINITIALIZED) {
+        xSemaphoreGive(s_ctx.mutex); return ESP_ERR_INVALID_STATE;
+    }
     if (s_ctx.state == TS_AUTO_STATE_RUNNING) { xSemaphoreGive(s_ctx.mutex); return ESP_OK; }
     if (s_ctx.task_handle || ts_action_manager_resume() != ESP_OK) {
         xSemaphoreGive(s_ctx.mutex); return ESP_ERR_INVALID_STATE;
@@ -251,6 +237,7 @@ esp_err_t ts_automation_start(void) {
 esp_err_t ts_automation_stop(void) {
     if (!s_ctx.mutex) return ESP_OK;
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
+    if(s_ctx.state==TS_AUTO_STATE_UNINITIALIZED){xSemaphoreGive(s_ctx.mutex);return ESP_OK;}
     s_ctx.stopping = true;
     xSemaphoreGive(s_ctx.mutex);
     /* No external vTaskDelete: evaluator returns through rule lease cleanup.
@@ -276,11 +263,12 @@ esp_err_t ts_automation_stop(void) {
 
 esp_err_t ts_automation_pause(void)
 {
-    if (s_ctx.stopping || s_ctx.state != TS_AUTO_STATE_RUNNING) {
+    if(!s_ctx.mutex)return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_ctx.mutex,portMAX_DELAY);
+    if (s_ctx.stopping || s_ctx.deinitializing || s_ctx.state != TS_AUTO_STATE_RUNNING) {
+        xSemaphoreGive(s_ctx.mutex);
         return ESP_ERR_INVALID_STATE;
     }
-
-    xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
     s_ctx.state = TS_AUTO_STATE_PAUSED;
     xSemaphoreGive(s_ctx.mutex);
 
@@ -290,11 +278,12 @@ esp_err_t ts_automation_pause(void)
 
 esp_err_t ts_automation_resume(void)
 {
-    if (s_ctx.stopping || s_ctx.state != TS_AUTO_STATE_PAUSED) {
+    if(!s_ctx.mutex)return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_ctx.mutex,portMAX_DELAY);
+    if (s_ctx.stopping || s_ctx.deinitializing || s_ctx.state != TS_AUTO_STATE_PAUSED) {
+        xSemaphoreGive(s_ctx.mutex);
         return ESP_ERR_INVALID_STATE;
     }
-
-    xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
     s_ctx.state = TS_AUTO_STATE_RUNNING;
     xSemaphoreGive(s_ctx.mutex);
 
@@ -313,12 +302,16 @@ esp_err_t ts_automation_get_status(ts_automation_status_t *status)
     }
 
     memset(status, 0, sizeof(*status));
+    if(!s_ctx.mutex)return ESP_ERR_INVALID_STATE;
 
     xSemaphoreTake(s_ctx.mutex, portMAX_DELAY);
+    if(s_ctx.deinitializing || s_ctx.state==TS_AUTO_STATE_UNINITIALIZED){
+        xSemaphoreGive(s_ctx.mutex);return ESP_ERR_INVALID_STATE;
+    }
     
     status->state = s_ctx.state;
-    status->config_path = s_ctx.config_path;
-    status->config_modified = s_ctx.config_modified;
+    ts_auto_config_status_t config;ts_auto_config_status(&config);
+    status->config_path = config.source==TS_AUTO_CONFIG_SD?"/sdcard/config/automation/state.json":"/autocfg/state.json";
     status->actions_executed = s_ctx.actions_executed;
     status->rule_triggers = s_ctx.rule_triggers;
     
@@ -326,12 +319,11 @@ esp_err_t ts_automation_get_status(ts_automation_status_t *status)
         status->uptime_ms = (uint32_t)((esp_timer_get_time() / 1000) - s_ctx.start_time_ms);
     }
 
-    xSemaphoreGive(s_ctx.mutex);
-
     // 从子模块获取计数
     status->sources_count = ts_source_count();
     status->rules_count = ts_rule_count();
     status->variables_count = ts_variable_count();
+    xSemaphoreGive(s_ctx.mutex);
 
     // TODO: 统计活跃源和规则
 
@@ -399,167 +391,8 @@ static void automation_task(void *arg)
 /*                              配置管理                                      */
 /*===========================================================================*/
 
-/**
- * 加载配置文件
- * 
- * automation.json 是引擎级元配置，包含：
- * - version: 配置版本
- * - enabled: 引擎是否启用
- * - eval_interval_ms: 规则评估间隔
- * 
- * 注意：sources、rules、actions 由各自模块加载，这里只处理引擎级设置
- */
-static esp_err_t load_config(const char *path)
-{
-    ESP_LOGI(TAG, "Loading config from: %s", path);
-    
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        ESP_LOGD(TAG, "Config file not found: %s", path);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    if (size <= 0 || size > 4096) {
-        fclose(f);
-        ESP_LOGW(TAG, "Config file invalid size: %ld", size);
-        return ESP_ERR_INVALID_SIZE;
-    }
-    
-    char *content = malloc(size + 1);
-    if (!content) {
-        fclose(f);
-        return ESP_ERR_NO_MEM;
-    }
-    
-    size_t read = fread(content, 1, size, f);
-    fclose(f);
-    content[read] = '\0';
-    
-    cJSON *root = cJSON_Parse(content);
-    free(content);
-    
-    if (!root) {
-        ESP_LOGW(TAG, "Failed to parse config JSON");
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    /* 解析配置项 */
-    cJSON *version = cJSON_GetObjectItem(root, "version");
-    if (version && cJSON_IsString(version)) {
-        ESP_LOGI(TAG, "Config version: %s", version->valuestring);
-    }
-    
-    cJSON *enabled = cJSON_GetObjectItem(root, "enabled");
-    if (enabled && !cJSON_IsTrue(enabled)) {
-        ESP_LOGW(TAG, "Automation engine disabled by config");
-        /* 可以在这里设置标志，但目前不阻止启动 */
-    }
-    
-    cJSON *eval_interval = cJSON_GetObjectItem(root, "eval_interval_ms");
-    if (eval_interval && cJSON_IsNumber(eval_interval)) {
-        ESP_LOGI(TAG, "Rule eval interval: %d ms", eval_interval->valueint);
-        /* TODO: 应用到规则引擎 */
-    }
-    
-    cJSON_Delete(root);
-    
-    ESP_LOGI(TAG, "Config loaded from SD card");
-    return ESP_OK;
-}
-
-/**
- * @brief 应用默认引擎配置
- * 
- * 注意：数据源、规则、动作模板已由各自模块按 SD卡>NVS 优先级加载
- * 此函数仅设置引擎级默认参数
- */
-static esp_err_t apply_default_config(void)
-{
-    /* 引擎级默认设置已在结构体初始化时设定 */
-    /* sources.json/rules.json/actions.json 已由子模块独立加载 */
-    return ESP_OK;
-}
-
 esp_err_t ts_automation_reload(void)
 {
-    if (ts_rule_restart_pending()) return ESP_ERR_INVALID_STATE;
-    if (s_ctx.state == TS_AUTO_STATE_UNINITIALIZED) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    ESP_LOGI(TAG, "Reloading configuration");
-
-    // 暂停引擎
-    bool was_running = (s_ctx.state == TS_AUTO_STATE_RUNNING);
-    if (was_running) {
-        ts_automation_pause();
-    }
-
-    // 重新加载配置
-    esp_err_t ret = load_config(s_ctx.config_path);
-    if (ret == ESP_ERR_NOT_FOUND) {
-        ret = apply_default_config();
-    }
-
-    // 恢复运行
-    if (was_running) {
-        ts_automation_resume();
-    }
-
-    s_ctx.config_modified = false;
-
-    return ret;
-}
-
-esp_err_t ts_automation_save(const char *path)
-{
-    const char *save_path = path ? path : s_ctx.config_path;
-
-    ESP_LOGI(TAG, "Saving configuration to: %s", save_path);
-
-    // TODO: 实现配置保存
-    // 1. 导出所有源、规则、变量为 JSON
-    // 2. 写入文件
-
-    s_ctx.config_modified = false;
-
-    return ESP_OK;
-}
-
-int ts_automation_get_config_json(char *buffer, size_t buffer_size)
-{
-    if (!buffer || buffer_size == 0) {
-        return -1;
-    }
-
-    // TODO: 实现完整的 JSON 导出
-    // 暂时返回最小配置
-    const char *json = "{\"version\":\"1.0\",\"sources\":[],\"rules\":[],\"variables\":[]}";
-    int len = strlen(json);
-    
-    if (len >= (int)buffer_size) {
-        return -1;
-    }
-
-    strcpy(buffer, json);
-    return len;
-}
-
-esp_err_t ts_automation_apply_config_json(const char *json)
-{
-    if (!json) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_LOGI(TAG, "Applying config from JSON");
-
-    // TODO: 实现 JSON 配置解析和应用
-
-    s_ctx.config_modified = true;
-
-    return ESP_OK;
+    if(s_ctx.state==TS_AUTO_STATE_UNINITIALIZED)return ESP_ERR_INVALID_STATE;
+    ts_auto_config_error_t error={0};return ts_auto_config_reload(&error);
 }

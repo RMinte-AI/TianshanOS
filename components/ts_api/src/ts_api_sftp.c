@@ -14,6 +14,7 @@
  * @date 2026-01-20
  */
 
+#include "ts_storage.h"
 #include "ts_api.h"
 #include "ts_ssh_client.h"
 #include "ts_sftp.h"
@@ -247,9 +248,15 @@ static esp_err_t api_sftp_get(const cJSON *params, ts_api_result_t *result)
         return ESP_ERR_INVALID_ARG;
     }
     
+    esp_err_t ret = ts_storage_check_write_path(local->valuestring, false);
+    if (ret != ESP_OK) {
+        ts_api_result_error(result, ret == ESP_ERR_NOT_ALLOWED ? TS_API_ERR_NO_PERMISSION : TS_API_ERR_INVALID_ARG,
+            ret == ESP_ERR_NOT_ALLOWED ? "automation_configuration_managed" : "storage_path_invalid");
+        return ret;
+    }
     ts_ssh_session_t ssh = NULL;
     ts_sftp_session_t sftp = NULL;
-    esp_err_t ret = connect_sftp(params, &ssh, &sftp);
+    ret = connect_sftp(params, &ssh, &sftp);
     if (ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_CONNECTION, "Failed to connect");
         return ret;
@@ -260,7 +267,8 @@ static esp_err_t api_sftp_get(const cJSON *params, ts_api_result_t *result)
     close_sftp(ssh, sftp);
     
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Download failed");
+        ts_api_result_error(result, ret == ESP_ERR_NOT_ALLOWED ? TS_API_ERR_NO_PERMISSION : TS_API_ERR_INTERNAL,
+            ret == ESP_ERR_NOT_ALLOWED ? "automation_configuration_managed" : "Download failed");
         return ret;
     }
     

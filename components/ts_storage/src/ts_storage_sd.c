@@ -18,12 +18,14 @@
 #include "driver/spi_common.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_task_wdt.h"
 #include "esp_heap_caps.h"
 #include "diskio_sdmmc.h"  /* for ff_diskio_get_pdrv_card() */
 #include "diskio_impl.h"   /* for ff_diskio_get_drive() */
 #include "ffconf.h"        /* for FF_VOLUMES */
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>         /* for stdout */
 
 #define TAG "storage_sd"
@@ -51,12 +53,27 @@ extern void ts_storage_set_sd_mounted(bool mounted, const char *mount_point);
 
 static char s_mount_point[32] = "";
 static sdmmc_card_t *s_card = NULL;
+static StaticSemaphore_t s_gate_storage;
+static SemaphoreHandle_t s_gate;
+static uint64_t s_generation;
+
+void ts_storage_sd_lock(void)
+{
+    /* Storage initialization owns the first call, before services start. */
+    if (!s_gate) s_gate=xSemaphoreCreateRecursiveMutexStatic(&s_gate_storage);
+    xSemaphoreTakeRecursive(s_gate,portMAX_DELAY);
+}
+void ts_storage_sd_unlock(void) { xSemaphoreGiveRecursive(s_gate); }
+uint64_t ts_storage_sd_generation(void)
+{
+    ts_storage_sd_lock();uint64_t value=s_generation;ts_storage_sd_unlock();return value;
+}
 
 /*===========================================================================*/
 /*                          SD Card Operations                                */
 /*===========================================================================*/
 
-esp_err_t ts_storage_mount_sd(const ts_sd_config_t *config)
+static esp_err_t mount_sd_locked(const ts_sd_config_t *config)
 {
     if (s_card != NULL) {
         TS_LOGW(TAG, "SD card already mounted");
@@ -281,6 +298,7 @@ esp_err_t ts_storage_mount_sd(const ts_sd_config_t *config)
     strncpy(s_mount_point, cfg.mount_point, sizeof(s_mount_point) - 1);
     
     ts_storage_set_sd_mounted(true, s_mount_point);
+    ++s_generation;
     
     /* Log card info */
     TS_LOGI(TAG, "SD card mounted:");
@@ -296,7 +314,7 @@ esp_err_t ts_storage_mount_sd(const ts_sd_config_t *config)
     return ESP_OK;
 }
 
-esp_err_t ts_storage_unmount_sd(void)
+static esp_err_t unmount_sd_locked(void)
 {
     if (s_card == NULL) {
         return ESP_OK;
@@ -364,6 +382,7 @@ esp_err_t ts_storage_unmount_sd(void)
     
     /* 清理状态 - card 内存已由 esp_vfs_fat_sdcard_unmount 释放 */
     s_card = NULL;
+    ++s_generation;
     ts_storage_set_sd_mounted(false, NULL);
     
     /* 给驱动时间完成清理，确保下次挂载不会冲突 */
@@ -376,10 +395,10 @@ esp_err_t ts_storage_unmount_sd(void)
 
 bool ts_storage_sd_mounted(void)
 {
-    return (s_card != NULL);
+    ts_storage_sd_lock();bool mounted=s_card!=NULL;ts_storage_sd_unlock();return mounted;
 }
 
-esp_err_t ts_storage_sd_stats(ts_storage_stats_t *stats)
+static esp_err_t sd_stats_locked(ts_storage_stats_t *stats)
 {
     if (stats == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -410,55 +429,15 @@ esp_err_t ts_storage_sd_stats(ts_storage_stats_t *stats)
 
 esp_err_t ts_storage_format_sd(void)
 {
-    if (s_card == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    TS_LOGW(TAG, "Formatting SD card...");
-    
-    /* Unmount first */
-    esp_err_t ret = esp_vfs_fat_sdcard_unmount(s_mount_point, s_card);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    
-    /* Format */
-    const size_t workbuf_size = 4096;
-    void *workbuf = heap_caps_malloc(workbuf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (workbuf == NULL) {
-        workbuf = malloc(workbuf_size);  /* Fallback to DRAM */
-    }
-    if (workbuf == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    
-    MKFS_PARM mkfs_parm = {
-        .fmt = FM_FAT32,
-        .n_fat = 0,
-        .align = 0,
-        .n_root = 0,
-        .au_size = 0
-    };
-    FRESULT res = f_mkfs("", &mkfs_parm, workbuf, workbuf_size);
-    free(workbuf);
-    
-    if (res != FR_OK) {
-        TS_LOGE(TAG, "Failed to format: %d", res);
-        return ESP_FAIL;
-    }
-    
-    /* Remount */
-    s_card = NULL;
-    ret = ts_storage_mount_sd(NULL);
-    
-    if (ret == ESP_OK) {
-        TS_LOGI(TAG, "SD card formatted and remounted");
-    }
-    
-    return ret;
+    ts_storage_sd_lock();
+    esp_err_t ret=s_card ? esp_vfs_fat_sdcard_format(s_mount_point,s_card) : ESP_ERR_INVALID_STATE;
+    /* Even a failed format may have changed card contents. Old editors cannot
+     * keep using the previous configuration's mount identity. */
+    if(s_card)++s_generation;
+    ts_storage_sd_unlock();return ret;
 }
 
-esp_err_t ts_storage_sd_info(uint64_t *capacity, size_t *sector_size)
+static esp_err_t sd_info_locked(uint64_t *capacity, size_t *sector_size)
 {
     if (s_card == NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -473,4 +452,51 @@ esp_err_t ts_storage_sd_info(uint64_t *capacity, size_t *sector_size)
     }
     
     return ESP_OK;
+}
+
+esp_err_t ts_storage_mount_sd(const ts_sd_config_t *config)
+{
+    ts_storage_sd_lock();esp_err_t ret=mount_sd_locked(config);ts_storage_sd_unlock();return ret;
+}
+esp_err_t ts_storage_unmount_sd(void)
+{
+    ts_storage_sd_lock();esp_err_t ret=unmount_sd_locked();ts_storage_sd_unlock();return ret;
+}
+esp_err_t ts_storage_sd_stats(ts_storage_stats_t *stats)
+{
+    ts_storage_sd_lock();esp_err_t ret=sd_stats_locked(stats);ts_storage_sd_unlock();return ret;
+}
+esp_err_t ts_storage_sd_info(uint64_t *capacity,size_t *sector_size)
+{
+    ts_storage_sd_lock();esp_err_t ret=sd_info_locked(capacity,sector_size);ts_storage_sd_unlock();return ret;
+}
+esp_err_t ts_storage_sd_refresh(void)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=s_card ? sdmmc_get_status(s_card) : ESP_ERR_NOT_FOUND;
+    if(ret!=ESP_OK){
+        if(s_card)ret=unmount_sd_locked();
+        else ret=ESP_OK;
+        if(ret==ESP_OK)ret=mount_sd_locked(NULL);
+    }
+    ts_storage_sd_unlock();return ret;
+}
+
+/* Compare the resolved directory name, including FAT aliases/case rules. */
+bool ts_storage_sd_name_is(const char *path, const char *name)
+{
+    ts_storage_sd_lock();
+    bool matches = false;
+    size_t mount_length = strlen(s_mount_point);
+    if (s_card && mount_length && !strncmp(path, s_mount_point, mount_length) && path[mount_length] == '/') {
+        BYTE drive = ff_diskio_get_pdrv_card(s_card);
+        FILINFO info;
+        char fat_path[TS_STORAGE_MAX_PATH];
+        if (drive != 0xff) {
+            snprintf(fat_path, sizeof(fat_path), "%u:%s", drive, path + mount_length);
+            matches = f_stat(fat_path, &info) == FR_OK && !strcasecmp(info.fname, name);
+        }
+    }
+    ts_storage_sd_unlock();
+    return matches;
 }

@@ -503,23 +503,13 @@ exists(agx.cpu_temp) AND agx.cpu_temp > 80
 └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
 ```
 
-#### 5.1.4 NVS 持久化
+#### 5.1.4 配置保存与引用
 
-动作模板自动保存到 NVS（`action_tpl` namespace）：
+规则、动作模板、SSH 命令、SSH 主机、数据源和用户变量作为一个完整配置集合保存。正常使用 SD 卡的 `/sdcard/config/automation/state.json`；内部 `/autocfg/state.json` 是用户手动保存的应急副本。无卡时自动使用有效内部配置，编辑直接保存到内部。
 
-```c
-// 初始化时加载
-esp_err_t ts_action_manager_init(void) {
-    // ... 初始化 ...
-    ts_action_templates_load();  // 从 NVS 恢复
-}
+所有修改经过统一配置入口，在同一次提交中处理引用并保存完整集合。规则上限为 64 条，不代表可以同时执行 64 个任务。列表和编辑页的写入携带 `active_version`，避免旧页面覆盖新配置。
 
-// 修改时自动保存
-esp_err_t ts_action_template_add(...) {
-    // ... 添加 ...
-    ts_action_templates_save();  // 持久化到 NVS
-}
-```
+删除配置不连接远端等待服务停止。强制删除命令会保留关联模板为停用草稿、清空命令引用，并解除受影响规则的关联和停用规则；远端服务记录仍可独立核验、停止。详见 [自动化配置使用与存储](AUTOMATION_STORAGE.md)。
 
 #### 5.1.5 API 端点
 

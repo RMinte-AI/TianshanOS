@@ -5,6 +5,9 @@
 #include "ts_config_pack.h"
 #include "ts_crypto.h"
 #include "ts_cert.h"
+#include "ts_storage.h"
+esp_err_t ts_storage_write_file(const char *path,const void *data,size_t size)
+{ (void)path;(void)data;(void)size;assert(!"unexpected file export in crypto-only test");return ESP_FAIL; }
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/oid.h"
 #include <time.h>

@@ -21,6 +21,7 @@ typedef int esp_err_t;
 #define ESP_ERR_TIMEOUT 0x106
 #define ESP_ERR_NVS_NOT_FOUND 0x1102
 #define ESP_ERR_NOT_SUPPORTED 0x107
+#define ESP_ERR_NOT_FINISHED 0x10c
 static inline const char *esp_err_to_name(int e) { return e == 0 ? "ESP_OK" : "TEST_ERROR"; }
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
@@ -46,6 +47,7 @@ static inline int xSemaphoreTake(SemaphoreHandle_t p, unsigned t) { (void)t; ret
 static inline int xSemaphoreGive(SemaphoreHandle_t p) { return pthread_mutex_unlock(p)==0; }
 void *heap_caps_malloc(size_t n, unsigned caps);
 esp_err_t nvs_open(const char *, int, nvs_handle_t *);
+esp_err_t nvs_open_from_partition(const char *, const char *, int, nvs_handle_t *);
 void nvs_close(nvs_handle_t);
 esp_err_t nvs_get_str(nvs_handle_t,const char *,char *,size_t *);
 esp_err_t nvs_set_str(nvs_handle_t,const char *,const char *);

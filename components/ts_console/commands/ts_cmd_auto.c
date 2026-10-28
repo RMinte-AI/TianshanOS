@@ -15,6 +15,8 @@
 
 #include "ts_console.h"
 #include "ts_rule_engine.h"
+#include "ts_api.h"
+#include <stdlib.h>
 #include "argtable3/argtable3.h"
 #include "esp_log.h"
 #include <string.h>
@@ -28,6 +30,10 @@
 /*===========================================================================*/
 
 static struct {
+    struct arg_str *config;      // --config <status|check|backup|preview|apply|enable|disable>
+    struct arg_str *operation;   // --operation <use_sd|save_to_sd|restore_internal>
+    struct arg_str *version;     // --version <active_version>
+    struct arg_str *target;      // --target <target_version>
     struct arg_lit *history;     // --history
     struct arg_lit *stats;       // --stats
     struct arg_lit *list;        // --list
@@ -215,51 +221,49 @@ static int cmd_auto_stats(bool json_output)
 
 static int cmd_auto_list(bool json_output)
 {
-    int count = ts_rule_count();
-    
-    if (json_output) {
-        printf("{\"rules\":[\n");
-    } else {
-        printf("\n\033[1m%-20s %-8s %-10s %-10s %s\033[0m\n",
-               "ID", "ENABLED", "COOLDOWN", "TRIGGERS", "CONDITIONS");
-        printf("─────────────────────────────────────────────────────────────\n");
+    ts_api_result_t result={0};esp_err_t ret=ts_api_call("automation.rules.list",NULL,&result);
+    if(ret!=ESP_OK||result.code!=TS_API_OK){
+        printf("Cannot read configuration: %s\n",result.message?result.message:esp_err_to_name(ret));
+        ts_api_result_free(&result);return 1;
     }
-    
-    for (int i = 0; i < count; i++) {
-        ts_auto_rule_t rule;
-        if (ts_rule_get_by_index(i, &rule) == ESP_OK) {
-            if (json_output) {
-                printf("  {\"id\":\"%s\",\"enabled\":%s,\"cooldown_ms\":%" PRIu32 ","
-                       "\"triggers\":%" PRIu32 ",\"actions\":%d}%s\n",
-                       rule.id,
-                       rule.enabled ? "true" : "false",
-                       rule.cooldown_ms,
-                       rule.trigger_count,
-                       rule.action_count,
-                       (i < count - 1) ? "," : "");
-            } else {
-                printf("%-20s %-8s %-10" PRIu32 " %-10" PRIu32 " %d cond, %d act\n",
-                       rule.id,
-                       rule.enabled ? "\033[32mYES\033[0m" : "\033[31mNO\033[0m",
-                       rule.cooldown_ms,
-                       rule.trigger_count,
-                       rule.conditions.count,
-                       rule.action_count);
-            }
-            ts_rule_release(&rule);
+    if(json_output){
+        char *text=cJSON_PrintUnformatted(result.data);
+        if(text){puts(text);free(text);}
+    }else{
+        printf("\n%-20s %-8s %s\n","ID","ENABLED","NAME");
+        const cJSON *row;
+        cJSON_ArrayForEach(row,cJSON_GetObjectItemCaseSensitive(result.data,"rules")){
+            const char *id=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(row,"id")),
+                       *name=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(row,"name"));
+            printf("%-20s %-8s %s\n",id?id:"",cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row,"enabled"))?"YES":"NO",name?name:"");
         }
+        if(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result.data,"paused")))puts("Automation is paused. Definitions above are the saved configuration.");
     }
-    
-    if (json_output) {
-        printf("],\"count\":%d}\n", count);
-    } else {
-        if (count == 0) {
-            printf("  (no rules registered)\n");
-        }
-        printf("\n");
-    }
-    
-    return 0;
+    ts_api_result_free(&result);return 0;
+}
+
+static int cmd_auto_config(void)
+{
+    const char *action=s_auto_args.config->sval[0],*endpoint=NULL;
+    bool enable=!strcmp(action,"enable"),disable=!strcmp(action,"disable");
+    if(!strcmp(action,"status"))endpoint="automation.config.status";
+    else if(!strcmp(action,"check"))endpoint="automation.config.refresh";
+    else if(!strcmp(action,"backup"))endpoint="automation.config.backup";
+    else if(!strcmp(action,"preview"))endpoint="automation.config.preview";
+    else if(!strcmp(action,"apply"))endpoint="automation.config.apply";
+    else if(enable||disable)endpoint="automation.config.enable";
+    else {puts("Use --config status, check, backup, preview, apply, enable or disable.");return 1;}
+    cJSON *params=cJSON_CreateObject();bool ok=params!=NULL;
+    if(ok&&s_auto_args.operation->count)ok=cJSON_AddStringToObject(params,"operation",s_auto_args.operation->sval[0])!=NULL;
+    if(ok&&s_auto_args.version->count)ok=cJSON_AddStringToObject(params,"active_version",s_auto_args.version->sval[0])!=NULL;
+    if(ok&&s_auto_args.target->count)ok=cJSON_AddStringToObject(params,"target_version",s_auto_args.target->sval[0])!=NULL;
+    if(ok&&(enable||disable))ok=cJSON_AddBoolToObject(params,"enabled",enable)!=NULL;
+    if(!ok){cJSON_Delete(params);puts("Not enough memory to prepare the request.");return 1;}
+    ts_api_result_t result={0};esp_err_t ret=ts_api_call(endpoint,params,&result);cJSON_Delete(params);
+    char *text=result.data?cJSON_Print(result.data):NULL;
+    if(text){puts(text);free(text);}
+    if(ret!=ESP_OK||result.code!=TS_API_OK)printf("Operation did not complete: %s\n",result.message?result.message:esp_err_to_name(ret));
+    bool success=ret==ESP_OK&&result.code==TS_API_OK;ts_api_result_free(&result);return success?0:1;
 }
 
 /*===========================================================================*/
@@ -299,6 +303,10 @@ static int cmd_auto_handler(int argc, char **argv)
         printf("Usage: auto [options]\n");
         printf("Automation rule management and monitoring\n\n");
         printf("Options:\n");
+        printf("  --config <action>   status, check, backup, preview, apply, enable, disable\n");
+        printf("  --operation <name>  use_sd, save_to_sd, restore_internal\n");
+        printf("  --version <value>   active_version from status or preview\n");
+        printf("  --target <value>    target_version from preview (required for apply)\n");
         printf("  --history     Show recent execution history\n");
         printf("  --stats       Show engine statistics\n");
         printf("  --list        List all registered rules\n");
@@ -322,6 +330,7 @@ static int cmd_auto_handler(int argc, char **argv)
     }
     
     bool json = s_auto_args.json->count > 0;
+    if(s_auto_args.config->count)return cmd_auto_config();
     
     // 处理各种操作
     if (s_auto_args.history->count > 0) {
@@ -371,6 +380,10 @@ static int cmd_auto_handler(int argc, char **argv)
 void ts_cmd_auto_register(void)
 {
     // 初始化参数表
+    s_auto_args.config   = arg_str0(NULL,"config","<action>","Configuration status/check/backup/preview/apply/enable/disable");
+    s_auto_args.operation= arg_str0(NULL,"operation","<operation>","use_sd, save_to_sd or restore_internal");
+    s_auto_args.version  = arg_str0(NULL,"version","<version>","active_version from status or preview");
+    s_auto_args.target   = arg_str0(NULL,"target","<version>","target_version from preview");
     s_auto_args.history  = arg_lit0(NULL, "history",  "Show execution history");
     s_auto_args.stats    = arg_lit0(NULL, "stats",    "Show statistics");
     s_auto_args.list     = arg_lit0(NULL, "list",     "List all rules");

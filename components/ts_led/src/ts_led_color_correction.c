@@ -5,7 +5,7 @@
  * 色彩校正系统实现，包含：
  * - Gamma 查找表（预计算提高性能）
  * - RGB ↔ HSL 转换
- * - 配置持久化（NVS + SD Card）
+ * - 系统 NVS 持久化；SD 卡仅用于一次迁移及显式导入／导出
  * - TSCFG 加密配置支持
  */
 
@@ -13,7 +13,8 @@
 #include "ts_log.h"
 #include "ts_storage.h"
 #include "ts_config_pack.h"
-#include "nvs_flash.h"
+#include "ts_cert.h"
+#include <errno.h>
 #include "nvs.h"
 #include "cJSON.h"
 #include "esp_heap_caps.h"
@@ -252,6 +253,10 @@ esp_err_t ts_led_cc_get_default_config(ts_led_cc_config_t *config)
     return ESP_OK;
 }
 
+static esp_err_t store_config(const ts_led_cc_config_t *config);
+static esp_err_t decode_config(const cJSON *json, ts_led_cc_config_t *out);
+static esp_err_t read_config_file(const char *path, ts_led_cc_config_t *out);
+
 esp_err_t ts_led_cc_init(void)
 {
     if (g_initialized) {
@@ -262,38 +267,43 @@ esp_err_t ts_led_cc_init(void)
     /* Start with defaults */
     ts_led_cc_get_default_config(&g_config);
     
-    /* Try loading from SD card first (tscfg has priority over json) */
-    struct stat st;
-    bool loaded = false;
-    
-    /* Try encrypted config first */
-    if (stat(TS_LED_CC_SDCARD_TSCFG_PATH, &st) == 0) {
-        if (ts_led_cc_load_from_sdcard(TS_LED_CC_SDCARD_TSCFG_PATH) == ESP_OK) {
-            TS_LOGI(TAG, "Loaded config from SD card (tscfg)");
-            loaded = true;
+    nvs_handle_t handle;
+    uint8_t storage_version = 0;
+    esp_err_t ret = nvs_open(TS_LED_CC_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (ret == ESP_OK) {
+        ret = nvs_get_u8(handle, "storage_v", &storage_version);
+        nvs_close(handle);
+    }
+    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) return ret;
+    if (storage_version == 1) {
+        ret = ts_led_cc_load_from_nvs();
+    } else {
+        /* Preserve the previous SD priority once, after generic NVS migration.
+         * Subsequent startup and reset never read an old card file again. */
+        const char *legacy = NULL;
+        struct stat st;
+        if (ts_storage_sd_mounted()) {
+            if (stat(TS_LED_CC_SDCARD_TSCFG_PATH, &st) == 0) legacy = TS_LED_CC_SDCARD_TSCFG_PATH;
+            else if (errno != ENOENT) return ESP_FAIL;
+            else if (stat(TS_LED_CC_SDCARD_JSON_PATH, &st) == 0) legacy = TS_LED_CC_SDCARD_JSON_PATH;
+            else if (errno != ENOENT) return ESP_FAIL;
         }
-    }
-    
-    /* Try plain JSON */
-    if (!loaded && stat(TS_LED_CC_SDCARD_JSON_PATH, &st) == 0) {
-        if (ts_led_cc_load_from_sdcard(TS_LED_CC_SDCARD_JSON_PATH) == ESP_OK) {
-            TS_LOGI(TAG, "Loaded config from SD card (json)");
-            loaded = true;
+        if (legacy) {
+            if (!strcmp(legacy, TS_LED_CC_SDCARD_TSCFG_PATH)) {
+                ret = ts_cert_init();
+                if (ret == ESP_OK) ret = ts_config_pack_init();
+                if (ret != ESP_OK) return ret;
+            }
+            ret = read_config_file(legacy, &g_config);
+        } else {
+            ret = ts_led_cc_load_from_nvs();
+            if (ret == ESP_ERR_NVS_NOT_FOUND) ret = ESP_OK; /* First installation uses defaults. */
         }
+        if (ret == ESP_OK) ret = store_config(&g_config);
     }
-    
-    /* Try NVS */
-    if (!loaded) {
-        if (ts_led_cc_load_from_nvs() == ESP_OK) {
-            TS_LOGI(TAG, "Loaded config from NVS");
-            loaded = true;
-        }
-    }
-    
-    if (!loaded) {
-        TS_LOGI(TAG, "Using default config");
-    }
-    
+    if (ret != ESP_OK) return ret;
+    TS_LOGI(TAG, "Loaded color correction from system NVS");
+
     /* Initialize gamma LUT if enabled */
     if (g_config.gamma.enabled) {
         init_gamma_lut(g_config.gamma.gamma);
@@ -356,19 +366,11 @@ esp_err_t ts_led_cc_set_config(const ts_led_cc_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
     
+    esp_err_t ret = store_config(config);
+    if (ret != ESP_OK) return ret;
     memcpy(&g_config, config, sizeof(ts_led_cc_config_t));
-    
-    /* Update gamma LUT if needed */
-    if (g_config.gamma.enabled) {
-        init_gamma_lut(g_config.gamma.gamma);
-    }
-    
-    /* Save to NVS */
-    esp_err_t ret = ts_led_cc_save_to_nvs();
-    if (ret != ESP_OK) {
-        TS_LOGW(TAG, "Failed to save config to NVS");
-    }
-    
+    if (g_config.gamma.enabled) init_gamma_lut(g_config.gamma.gamma);
+
     notify_change();
     TS_LOGI(TAG, "Configuration updated");
     
@@ -377,26 +379,9 @@ esp_err_t ts_led_cc_set_config(const ts_led_cc_config_t *config)
 
 esp_err_t ts_led_cc_reset_config(void)
 {
-    if (!g_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    ts_led_cc_get_default_config(&g_config);
-    g_gamma_lut_valid = false;
-    
-    /* Clear NVS */
-    nvs_handle_t handle;
-    esp_err_t ret = nvs_open(TS_LED_CC_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (ret == ESP_OK) {
-        nvs_erase_all(handle);
-        nvs_commit(handle);
-        nvs_close(handle);
-    }
-    
-    notify_change();
-    TS_LOGI(TAG, "Configuration reset to defaults");
-    
-    return ESP_OK;
+    ts_led_cc_config_t config;
+    ts_led_cc_get_default_config(&config);
+    return ts_led_cc_set_config(&config);
 }
 
 /*===========================================================================*/
@@ -407,9 +392,10 @@ esp_err_t ts_led_cc_set_enabled(bool enabled)
 {
     if (!g_initialized) return ESP_ERR_INVALID_STATE;
     
-    g_config.enabled = enabled;
-    ts_led_cc_save_to_nvs();
-    notify_change();
+    ts_led_cc_config_t candidate = g_config;
+    candidate.enabled = enabled;
+    esp_err_t ret = ts_led_cc_set_config(&candidate);
+    if (ret != ESP_OK) return ret;
     
     TS_LOGI(TAG, "Color correction %s", enabled ? "enabled" : "disabled");
     return ESP_OK;
@@ -430,13 +416,14 @@ esp_err_t ts_led_cc_set_white_point(bool enabled, float red, float green, float 
         return ESP_ERR_INVALID_ARG;
     }
     
-    g_config.white_point.enabled = enabled;
-    g_config.white_point.red_scale = red;
-    g_config.white_point.green_scale = green;
-    g_config.white_point.blue_scale = blue;
+    ts_led_cc_config_t candidate = g_config;
+    candidate.white_point.enabled = enabled;
+    candidate.white_point.red_scale = red;
+    candidate.white_point.green_scale = green;
+    candidate.white_point.blue_scale = blue;
     
-    ts_led_cc_save_to_nvs();
-    notify_change();
+    esp_err_t ret = ts_led_cc_set_config(&candidate);
+    if (ret != ESP_OK) return ret;
     
     TS_LOGI(TAG, "White point: %s (R:%.2f G:%.2f B:%.2f)",
             enabled ? "enabled" : "disabled", red, green, blue);
@@ -451,15 +438,13 @@ esp_err_t ts_led_cc_set_gamma(bool enabled, float gamma)
         return ESP_ERR_INVALID_ARG;
     }
     
-    g_config.gamma.enabled = enabled;
-    g_config.gamma.gamma = gamma;
+    ts_led_cc_config_t candidate = g_config;
+    candidate.gamma.enabled = enabled;
+    candidate.gamma.gamma = gamma;
     
-    if (enabled) {
-        init_gamma_lut(gamma);
-    }
     
-    ts_led_cc_save_to_nvs();
-    notify_change();
+    esp_err_t ret = ts_led_cc_set_config(&candidate);
+    if (ret != ESP_OK) return ret;
     
     TS_LOGI(TAG, "Gamma: %s (%.2f)", enabled ? "enabled" : "disabled", gamma);
     return ESP_OK;
@@ -473,11 +458,12 @@ esp_err_t ts_led_cc_set_brightness(bool enabled, float factor)
         return ESP_ERR_INVALID_ARG;
     }
     
-    g_config.brightness.enabled = enabled;
-    g_config.brightness.factor = factor;
+    ts_led_cc_config_t candidate = g_config;
+    candidate.brightness.enabled = enabled;
+    candidate.brightness.factor = factor;
     
-    ts_led_cc_save_to_nvs();
-    notify_change();
+    esp_err_t ret = ts_led_cc_set_config(&candidate);
+    if (ret != ESP_OK) return ret;
     
     TS_LOGI(TAG, "Brightness: %s (%.2f)", enabled ? "enabled" : "disabled", factor);
     return ESP_OK;
@@ -491,11 +477,12 @@ esp_err_t ts_led_cc_set_saturation(bool enabled, float factor)
         return ESP_ERR_INVALID_ARG;
     }
     
-    g_config.saturation.enabled = enabled;
-    g_config.saturation.factor = factor;
+    ts_led_cc_config_t candidate = g_config;
+    candidate.saturation.enabled = enabled;
+    candidate.saturation.factor = factor;
     
-    ts_led_cc_save_to_nvs();
-    notify_change();
+    esp_err_t ret = ts_led_cc_set_config(&candidate);
+    if (ret != ESP_OK) return ret;
     
     TS_LOGI(TAG, "Saturation: %s (%.2f)", enabled ? "enabled" : "disabled", factor);
     return ESP_OK;
@@ -597,7 +584,7 @@ esp_err_t ts_led_cc_apply_inplace(ts_led_rgb_t *pixels, size_t count)
 /*                      NVS Persistence                                       */
 /*===========================================================================*/
 
-esp_err_t ts_led_cc_save_to_nvs(void)
+static esp_err_t store_config(const ts_led_cc_config_t *config)
 {
     nvs_handle_t handle;
     esp_err_t ret = nvs_open(TS_LED_CC_NVS_NAMESPACE, NVS_READWRITE, &handle);
@@ -606,7 +593,8 @@ esp_err_t ts_led_cc_save_to_nvs(void)
         return ret;
     }
     
-    ret = nvs_set_blob(handle, "config", &g_config, sizeof(g_config));
+    ret = nvs_set_blob(handle, "config", config, sizeof(*config));
+    if (ret == ESP_OK) ret = nvs_set_u8(handle, "storage_v", 1);
     if (ret == ESP_OK) {
         ret = nvs_commit(handle);
     }
@@ -620,6 +608,10 @@ esp_err_t ts_led_cc_save_to_nvs(void)
     }
     
     return ret;
+}
+esp_err_t ts_led_cc_save_to_nvs(void)
+{
+    return store_config(&g_config);
 }
 
 esp_err_t ts_led_cc_load_from_nvs(void)
@@ -670,26 +662,15 @@ esp_err_t ts_led_cc_save_to_sdcard(const char *path)
         return ESP_ERR_NO_MEM;
     }
     
-    FILE *f = fopen(file_path, "w");
-    if (!f) {
-        free(json_str);
-        TS_LOGE(TAG, "Failed to open file for writing: %s", file_path);
-        return ESP_FAIL;
-    }
-    
-    size_t written = fwrite(json_str, 1, strlen(json_str), f);
-    fclose(f);
+    esp_err_t ret = ts_storage_write_file(file_path, json_str, strlen(json_str));
     free(json_str);
-    
-    if (written == 0) {
-        return ESP_FAIL;
-    }
-    
+    if (ret != ESP_OK) return ret;
+
     TS_LOGI(TAG, "Saved to SD card: %s", file_path);
     return ESP_OK;
 }
 
-esp_err_t ts_led_cc_load_from_sdcard(const char *path)
+static esp_err_t read_config_file(const char *path, ts_led_cc_config_t *out)
 {
     const char *file_path = path;
     
@@ -768,10 +749,17 @@ esp_err_t ts_led_cc_load_from_sdcard(const char *path)
         return ESP_FAIL;
     }
     
-    esp_err_t ret = ts_led_cc_config_from_json(json);
+    esp_err_t ret = decode_config(json, out);
     cJSON_Delete(json);
     
     return ret;
+}
+
+esp_err_t ts_led_cc_load_from_sdcard(const char *path)
+{
+    ts_led_cc_config_t config;
+    esp_err_t ret = read_config_file(path, &config);
+    return ret == ESP_OK ? ts_led_cc_set_config(&config) : ret;
 }
 
 /*===========================================================================*/
@@ -827,9 +815,9 @@ cJSON *ts_led_cc_config_to_json(void)
     return root;
 }
 
-esp_err_t ts_led_cc_config_from_json(const cJSON *json)
+static esp_err_t decode_config(const cJSON *json, ts_led_cc_config_t *out)
 {
-    if (!json) return ESP_ERR_INVALID_ARG;
+    if (!cJSON_IsObject(json)) return ESP_ERR_INVALID_ARG;
     
     ts_led_cc_config_t config;
     memcpy(&config, &g_config, sizeof(config));
@@ -897,13 +885,15 @@ esp_err_t ts_led_cc_config_from_json(const cJSON *json)
         return ESP_ERR_INVALID_ARG;
     }
     
-    memcpy(&g_config, &config, sizeof(config));
-    
-    if (g_config.gamma.enabled) {
-        init_gamma_lut(g_config.gamma.gamma);
-    }
-    
+    *out = config;
     return ESP_OK;
+}
+
+esp_err_t ts_led_cc_config_from_json(const cJSON *json)
+{
+    ts_led_cc_config_t config;
+    esp_err_t ret = decode_config(json, &config);
+    return ret == ESP_OK ? ts_led_cc_set_config(&config) : ret;
 }
 
 char *ts_led_cc_export_json_string(bool pretty)
@@ -930,10 +920,6 @@ esp_err_t ts_led_cc_import_json_string(const char *json_str)
     esp_err_t ret = ts_led_cc_config_from_json(json);
     cJSON_Delete(json);
     
-    if (ret == ESP_OK) {
-        ts_led_cc_save_to_nvs();
-        notify_change();
-    }
     
     return ret;
 }

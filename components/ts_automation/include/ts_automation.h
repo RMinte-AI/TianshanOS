@@ -61,25 +61,20 @@ typedef struct {
     uint32_t actions_executed;           /**< Total actions executed */
     uint32_t rule_triggers;              /**< Total rule triggers */
     const char *config_path;             /**< Current config file path */
-    bool config_modified;                /**< Config modified since load */
 } ts_automation_status_t;
 
 /**
  * @brief Configuration for automation engine initialization
  */
 typedef struct {
-    const char *config_path;             /**< Path to config file (NULL for default) */
     bool auto_start;                     /**< Auto-start after init */
-    bool load_from_nvs;                  /**< Try loading from NVS if file not found */
 } ts_automation_config_t;
 
 /**
  * @brief Default configuration
  */
 #define TS_AUTOMATION_CONFIG_DEFAULT() { \
-    .config_path = NULL,                 \
     .auto_start = true,                  \
-    .load_from_nvs = true,               \
 }
 
 /*===========================================================================*/
@@ -89,7 +84,7 @@ typedef struct {
 /**
  * @brief Initialize the automation engine
  *
- * Loads configuration from SD card or NVS and initializes all subsystems.
+ * Initializes runtime managers and selects the SD or internal configuration.
  *
  * @param config Configuration options, or NULL for defaults
  * @return
@@ -164,31 +159,6 @@ esp_err_t ts_automation_resume(void);
  * @return ESP_OK on success
  */
 esp_err_t ts_automation_reload(void);
-
-/**
- * @brief Save current configuration to file
- *
- * @param path File path, or NULL for current path
- * @return ESP_OK on success
- */
-esp_err_t ts_automation_save(const char *path);
-
-/**
- * @brief Get current configuration as JSON string
- *
- * @param buffer Output buffer
- * @param buffer_size Buffer size
- * @return Actual JSON length, or -1 on error
- */
-int ts_automation_get_config_json(char *buffer, size_t buffer_size);
-
-/**
- * @brief Apply configuration from JSON string
- *
- * @param json JSON configuration string
- * @return ESP_OK on success
- */
-esp_err_t ts_automation_apply_config_json(const char *json);
 
 /*===========================================================================*/
 /*                           Status                                           */

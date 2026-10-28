@@ -4,6 +4,8 @@ set(TS_STORAGE_SRCS
     "src/ts_storage.c"
     "src/ts_storage_spiffs.c"
     "src/ts_storage_sd.c"
+    "src/ts_storage_auto.c"
+    "src/ts_storage_paths.c"
 )
 
 idf_component_register(

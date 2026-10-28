@@ -15,6 +15,7 @@
  * @date 2026-01-18
  */
 
+#include "ts_storage.h"
 #include "ts_console.h"
 #include "ts_api.h"
 #include "ts_log.h"
@@ -475,24 +476,16 @@ static int do_key_export(const char *key_id, const char *output_path)
     ts_console_printf("[2/2] Writing to file... ");
     
     /* 写入文件 */
-    FILE *fp = fopen(output_path, "w");
-    if (!fp) {
-        ts_console_printf("FAILED\n");
-        ts_console_printf("  Error: Cannot create file %s\n", output_path);
-        free(public_key);
-        return 1;
-    }
-    
-    size_t written = fwrite(public_key, 1, public_key_len, fp);
-    fclose(fp);
+    ret = ts_storage_write_file(output_path, public_key, public_key_len);
     free(public_key);
-    
-    if (written != public_key_len) {
+    if (ret != ESP_OK) {
         ts_console_printf("FAILED\n");
-        ts_console_printf("  Error: Write incomplete\n");
+        ts_console_printf(ret == ESP_ERR_NOT_ALLOWED
+            ? "  This file belongs to Automation. Choose another export path.\n"
+            : "  Could not save the public key. Check the path and storage.\n");
         return 1;
     }
-    
+
     ts_console_printf("OK\n\n");
     ts_console_printf("✓ Public key exported to: %s\n", output_path);
     ts_console_printf("\n");
@@ -518,9 +511,16 @@ static int do_key_export_private(const char *key_id, const char *output_path)
         return 1;
     }
     
+    esp_err_t ret = ts_storage_check_write_path(output_path, false);
+    if (ret != ESP_OK) {
+        ts_console_printf(ret == ESP_ERR_NOT_ALLOWED
+            ? "This file belongs to Automation. Choose another export path.\n" : "Invalid export path.\n");
+        return 1;
+    }
+
     /* 检查密钥是否存在并获取 exportable 状态 */
     ts_keystore_key_info_t info;
-    esp_err_t ret = ts_keystore_get_key_info(key_id, &info);
+    ret = ts_keystore_get_key_info(key_id, &info);
     if (ret == ESP_ERR_NOT_FOUND) {
         ts_console_printf("Error: Key '%s' not found\n", key_id);
         return 1;

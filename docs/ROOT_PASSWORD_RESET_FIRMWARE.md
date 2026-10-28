@@ -1,6 +1,8 @@
 # Root/Admin 密码恢复固件
 
-Root/Admin 密码恢复固件是一个 app-only 临时固件，只修改 NVS 中 `ts_auth/cred_root` 和 `ts_auth/cred_admin`，把 `root` 与 `admin` 密码都恢复为默认值 `rm01`。它不会擦除 NVS，也不会主动修改网络配置、证书、SSH key 或其他数据。
+本版本只适用于存储方案 v2。请先用配套 USB／串口包升级并完成首次配置迁移，再使用此恢复固件。它会核对新系统区 `nvs`（`0x9B0000`，128 KiB）和原密钥区 `keys_nvs`（`0x9000`，48 KiB）；旧布局会拒绝执行。
+
+Root/Admin 密码恢复固件是一个 app-only 临时固件，只修改新系统 NVS 中 `ts_auth/cred_root` 和 `ts_auth/cred_admin`，把 `root` 与 `admin` 密码都恢复为默认值 `rm01`。它不会擦除 NVS，也不会主动修改网络配置、证书、SSH key 或其他数据。
 
 该固件不启动正常系统服务，不启动 WebUI、API、网络或控制台。写入并校验 root/admin 凭据后，它会尝试切回另一个有效 OTA app 分区，等待 3 秒后重启。
 
@@ -40,7 +42,7 @@ ROOT_PASSWORD_RESET_VERSION=9.9.9 ./tools/build_root_reset.sh
 
 串口恢复用于 WebUI/OTA 不可用的场景。该流程会清除 OTA 选择信息并把恢复 app 写入 `ota_0`，不会擦 NVS。
 
-这个流程只有在 `ota_1` 保留着要返回的正常固件时，才会自动回到那个正常固件。如果设备原本运行在 `ota_0`，下面的命令会覆盖该正常固件；恢复固件随后会尝试切到 `ota_1`，那里可能是旧固件、测试固件或空分区。无法确认另一个 slot 内容时，串口流程应视为“先恢复 root/admin，再手动刷回正常固件”的救援手段。
+这个流程只有在 `ota_1` 保留着要返回的正常固件时，才会自动回到那个正常固件。如果设备原本运行在 `ota_0`，下面的命令会覆盖该正常固件；恢复固件随后会尝试切到 `ota_1`，那里可能是旧固件、测试固件或空分区。返回目标必须是兼容存储方案 v2 的正常固件；旧布局固件即使镜像有效，也不能在新布局上运行。无法确认另一个 slot 内容时，串口流程应视为“先恢复 root/admin，再手动刷回正常固件”的救援手段。
 
 ```bash
 esptool.py --chip esp32s3 -p <PORT> erase_region 0x16000 0x2000

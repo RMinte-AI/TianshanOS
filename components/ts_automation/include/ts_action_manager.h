@@ -85,6 +85,7 @@ typedef struct {
     ts_action_status_t status;          /**< Execution status */
     int exit_code;                       /**< Exit code (for SSH) */
     char output[256];                    /**< Output or error message */
+    const char *reason;                  /**< Static failure token, NULL without a specific reason */
     uint32_t duration_ms;                /**< Execution duration */
     int64_t timestamp;                   /**< Completion timestamp */
 } ts_action_result_t;
@@ -103,6 +104,7 @@ typedef struct {
     ts_auto_action_t action;            /**< Action definition */
     uint32_t service_operation_id;      /**< Direct service operation; zero for automation. */
     ts_service_operation_t service_kind;
+    char service_run_id[TS_SSH_RUN_ID_MAX];
     ts_action_callback_t callback;       /**< Completion callback */
     void *user_data;                     /**< User data for callback */
     uint8_t priority;                    /**< Priority (0=highest) */
@@ -119,20 +121,8 @@ typedef struct {
  * A named, reusable action configuration that can be referenced by rules
  * or executed manually via API.
  */
-typedef struct {
-    char id[TS_AUTO_NAME_MAX_LEN];       /**< Unique template ID */
-    char name[TS_AUTO_LABEL_MAX_LEN];    /**< Human-readable name */
-    char description[64];                 /**< Optional description */
-    ts_auto_action_t action;              /**< Action configuration */
-    bool enabled;                         /**< Is template enabled */
-    bool async;                           /**< Execute asynchronously (non-blocking) */
-    int64_t created_at;                   /**< Creation timestamp */
-    int64_t last_used_at;                 /**< Last execution timestamp */
-    uint32_t use_count;                   /**< Total execution count */
-} ts_action_template_t;
 
-/** Maximum number of action templates */
-#define TS_ACTION_TEMPLATE_MAX  32
+
 
 /*===========================================================================*/
 /*                          Initialization                                    */
@@ -169,22 +159,6 @@ esp_err_t ts_action_templates_load_state(void);
 /*===========================================================================*/
 
 /**
- * @brief Register SSH host for action execution
- * 
- * @param host SSH host configuration
- * @return ESP_OK on success
- */
-esp_err_t ts_action_register_ssh_host(const ts_action_ssh_host_t *host);
-
-/**
- * @brief Unregister SSH host
- * 
- * @param host_id Host ID to remove
- * @return ESP_OK on success
- */
-esp_err_t ts_action_unregister_ssh_host(const char *host_id);
-
-/**
  * @brief Get SSH host by ID
  * 
  * @param host_id Host ID
@@ -192,26 +166,6 @@ esp_err_t ts_action_unregister_ssh_host(const char *host_id);
  * @return ESP_OK if found
  */
 esp_err_t ts_action_get_ssh_host(const char *host_id, ts_action_ssh_host_t *host_out);
-esp_err_t ts_action_get_ssh_host_ex(const char *host_id, ts_action_ssh_host_t *host_out, bool *internal);
-
-/**
- * @brief Get number of registered SSH hosts
- * 
- * @return Number of hosts
- */
-int ts_action_get_ssh_host_count(void);
-
-/**
- * @brief Get all registered SSH hosts
- * 
- * @param hosts_out Output array (caller allocates, at least count items)
- * @param max_count Maximum number of hosts to return
- * @param count_out Actual number of hosts returned
- * @return ESP_OK on success
- */
-esp_err_t ts_action_get_ssh_hosts(ts_action_ssh_host_t *hosts_out, 
-                                   size_t max_count, 
-                                   size_t *count_out);
 
 /*===========================================================================*/
 /*                          Action Execution                                  */
@@ -347,7 +301,7 @@ esp_err_t ts_action_exec_device(const ts_auto_action_device_t *device,
  */
 /* Start/verify/stop independently of engine state. One direct control in flight.
  * Returns admission without remote I/O; queued controls expire after 30 seconds. */
-esp_err_t ts_action_service_control(const char *id, ts_service_operation_t kind, uint32_t *operation_id);
+esp_err_t ts_action_service_control(const char *id, ts_service_operation_t kind, char run_id[TS_SSH_RUN_ID_MAX], uint32_t *operation_id, const char **reason);
 
 esp_err_t ts_action_exec_ssh_ref(const ts_auto_action_ssh_ref_t *ssh_ref,
                                   ts_action_result_t *result);
@@ -468,18 +422,6 @@ esp_err_t ts_action_template_add(const ts_action_template_t *tpl);
  * @param id Template ID to remove
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if not exists
  */
-typedef struct {
-    char id[TS_AUTO_NAME_MAX_LEN];
-    char name[TS_AUTO_LABEL_MAX_LEN];
-} ts_action_template_reference_t;
-typedef struct {
-    const char *reason;
-    const char *check_reason;
-    bool references_confirmed;
-    size_t rule_count;
-    ts_action_template_reference_t *rules; /* Caller frees; NULL when details are unavailable. */
-} ts_action_template_delete_result_t;
-esp_err_t ts_action_template_remove_checked(const char *id, ts_action_template_delete_result_t *result);
 esp_err_t ts_action_template_remove(const char *id);
 
 /**
@@ -518,6 +460,10 @@ esp_err_t ts_action_template_list(ts_action_template_t *tpls_out,
  * @return ESP_OK on success
  */
 esp_err_t ts_action_template_execute(const char *id, ts_action_result_t *result);
+/* Check the displayed configuration while freezing dependencies, then release
+ * the admission gate before execution. Native/CLI current intent uses the API above. */
+esp_err_t ts_action_template_execute_versioned(const char *id, const char *active_version,
+                                              ts_action_result_t *result, const char **reason);
 
 /**
  * @brief Update an action template
@@ -528,39 +474,10 @@ esp_err_t ts_action_template_execute(const char *id, ts_action_result_t *result)
  */
 esp_err_t ts_action_template_update(const char *id, const ts_action_template_t *tpl);
 
-/*===========================================================================*/
-/*                       Persistence Functions                                */
-/*===========================================================================*/
-
-/**
- * @brief Save all action templates to NVS
- * 
- * @return ESP_OK on success
- */
-esp_err_t ts_action_templates_save(void);
-
-/**
- * @brief Load all action templates from NVS
- * 
- * If NVS is empty and SD card is mounted, will try to load from SD card file.
- * 
- * @return ESP_OK on success
- */
-esp_err_t ts_action_templates_load(void);
-
-/**
- * @brief Load action templates from SD card file
- * 
- * Used for config recovery when NVS is empty.
- * 
- * @param filepath Path to JSON file (e.g., "/sdcard/config/actions.json")
- * @return ESP_OK on success
- */
-esp_err_t ts_action_templates_load_from_file(const char *filepath);
-
 /* Only actual admissions allocate snapshots; ordinary condition evaluation does not. */
 esp_err_t ts_action_snapshot(const ts_auto_action_t *source, ts_auto_action_t *out);
-void ts_action_snapshot_owner(const ts_auto_action_t *action, const char *rule);
+void ts_action_snapshot_owner(ts_auto_action_t *action, const char *rule, uint32_t instance);
+bool ts_action_snapshot_current(const ts_auto_action_t *action);
 void ts_action_snapshot_retain(const ts_auto_action_t *action);
 void ts_action_snapshot_release(ts_auto_action_t *action);
 

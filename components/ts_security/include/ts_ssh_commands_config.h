@@ -2,7 +2,7 @@
  * @file ts_ssh_commands_config.h
  * @brief SSH Command Configuration Storage
  *
- * 管理 SSH 快捷指令配置，存储到 NVS 持久化。
+ * 管理 SSH 快捷指令配置，由当前自动化配置统一保存。
  * 存储的信息包括：
  * - 指令名称、SSH 命令、描述、图标
  * - 模式匹配配置（期望/失败/提取模式）
@@ -79,6 +79,7 @@ typedef struct {
     
     uint32_t created_time;                   /**< 创建时间戳 */
     uint32_t last_exec_time;                 /**< 上次执行时间 */
+    uint64_t instance;                       /**< Runtime identity; never persisted */
 } ts_ssh_command_config_t;
 
 /*===========================================================================*/
@@ -88,7 +89,7 @@ typedef struct {
 /**
  * @brief 初始化 SSH 指令配置模块
  * 
- * 从 NVS 加载所有配置，并为有 var_name 的指令预创建变量
+ * 初始化配置视图；启动时由自动化配置入口加载完整集合
  * 
  * @return ESP_OK 成功
  */
@@ -183,7 +184,7 @@ esp_err_t ts_ssh_commands_config_clear(void);
  * @param id 指令 ID
  * @return ESP_OK 成功
  */
-esp_err_t ts_ssh_commands_config_update_exec_time(const char *id);
+esp_err_t ts_ssh_commands_config_update_exec_time(const ts_ssh_command_config_t *executed);
 
 /**
  * @brief 为所有指令预创建变量
@@ -245,42 +246,8 @@ esp_err_t ts_ssh_commands_config_iterate_by_host(const char *host_id,
                                                    size_t limit,
                                                    size_t *total_count);
 
-/*===========================================================================*/
-/*                    SD Card Export/Import (持久化备份)                       */
-/*===========================================================================*/
-
-/** SD 卡配置文件路径（单文件模式 - 已废弃，保留兼容） */
-#define TS_SSH_COMMANDS_SDCARD_PATH  "/sdcard/config/ssh_commands.json"
-
-/** SD 卡独立指令文件夹路径（新模式 - 每条指令单独文件） */
-#define TS_SSH_COMMANDS_SDCARD_DIR   "/sdcard/config/ssh_commands"
-
-/**
- * @brief 导出所有指令到 SD 卡
- * 
- * 使用流式方式逐条写入，避免大块内存分配。
- * 文件格式为 JSON 数组，每个元素是一条指令。
- * 
- * @return ESP_OK 成功，ESP_ERR_NOT_FOUND SD卡未挂载
- */
-esp_err_t ts_ssh_commands_config_export_to_sdcard(void);
-
-/**
- * @brief 从 SD 卡导入指令配置
- * 
- * 使用流式 JSON 解析，逐条读取并保存到 NVS。
- * 
- * @param merge 是否合并（true=保留现有，false=清空后导入）
- * @return ESP_OK 成功，ESP_ERR_NOT_FOUND 文件不存在
- */
-esp_err_t ts_ssh_commands_config_import_from_sdcard(bool merge);
-
-/**
- * @brief 同步到 SD 卡（内部调用，add/remove 后自动触发）
- * 
- * 异步执行，不阻塞调用线程。
- */
-void ts_ssh_commands_config_sync_to_sdcard(void);
+/** Explicit package import/export paths; never automatically reloaded. */
+#define TS_SSH_COMMANDS_SDCARD_DIR "/sdcard/config/ssh_commands"
 
 #ifdef __cplusplus
 }

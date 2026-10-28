@@ -12,16 +12,12 @@
 #include "ts_event.h"
 #include "ts_log.h"
 #include "ts_variable.h"
-#include "ts_config_module.h"
-#include "ts_config_pack.h"
-#include "ts_storage.h"
 #include "cJSON.h"
 #include "esp_timer.h"
-#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "nvs_flash.h"
 #include "nvs.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define TAG "ts_temp_source"
@@ -102,7 +98,6 @@ static void sync_bound_variable_compat(void);
 static esp_err_t save_bound_vars_to_nvs(void);
 static esp_err_t load_preferred_source_from_nvs(void);
 static esp_err_t save_preferred_source_to_nvs(ts_temp_source_type_t type);
-static void export_temp_config_to_sdcard(void);
 static float sanitize_bound_weight(float weight);
 static bool has_positive_bound_weight(const ts_temp_bound_var_t *vars, uint8_t count);
 static bool read_fresh_variable_float(const char *name, int64_t now, double *value,
@@ -516,7 +511,8 @@ esp_err_t ts_temp_source_init(void)
     s_state.preferred_source = TS_TEMP_SOURCE_DEFAULT;  // 默认自动选择
     
     // 从 NVS 加载首选温度源
-    load_preferred_source_from_nvs();
+    esp_err_t load_ret = load_preferred_source_from_nvs();
+    if (load_ret != ESP_OK) { vSemaphoreDelete(s_state.mutex); s_state.mutex = NULL; return load_ret; }
     
     s_state.initialized = true;
     
@@ -912,15 +908,13 @@ esp_err_t ts_temp_set_preferred_source(ts_temp_source_type_t type)
     
     xSemaphoreGive(s_state.mutex);
     
-    // 保存到 NVS + SD 卡
-    save_preferred_source_to_nvs(type);
-    export_temp_config_to_sdcard();
+    esp_err_t saved = save_preferred_source_to_nvs(type);
     
     TS_LOGI(TAG, "Preferred source: %s -> %s",
             old_preferred == TS_TEMP_SOURCE_DEFAULT ? "auto" : ts_temp_source_type_to_str(old_preferred),
             type == TS_TEMP_SOURCE_DEFAULT ? "auto" : ts_temp_source_type_to_str(type));
     
-    return ESP_OK;
+    return saved;
 }
 
 ts_temp_source_type_t ts_temp_get_preferred_source(void)
@@ -938,37 +932,34 @@ esp_err_t ts_temp_clear_preferred_source(void)
 /*===========================================================================*/
 
 /* Forward declarations */
-static esp_err_t load_temp_config_from_file(const char *filepath);
+static esp_err_t load_migrated_temp_config(const char *content);
 static esp_err_t save_preferred_source_to_nvs(ts_temp_source_type_t type);
-static esp_err_t save_bound_variable_to_nvs(const char *var_name);
 
 /**
  * @brief 加载温度源配置
  * 
- * Priority: SD card file > NVS > defaults (遵循系统配置优先级原则)
+ * Normal reads use system NVS. A staged legacy JSON is consumed once.
  */
 static esp_err_t load_preferred_source_from_nvs(void)
 {
-    esp_err_t ret;
-    
-    /* 1. 优先从 SD 卡加载 */
-    if (ts_storage_sd_mounted()) {
-        ret = load_temp_config_from_file("/sdcard/config/temp.json");
-        if (ret == ESP_OK) {
-            TS_LOGI(TAG, "Loaded temp config from SD card");
-            return ESP_OK;  /* SD 卡配置已自动保存到 NVS */
-        }
-    }
-    
-    /* 2. SD 卡无配置，从 NVS 加载 */
     nvs_handle_t handle;
-    ret = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    
-    if (ret != ESP_OK) {
-        TS_LOGD(TAG, "No saved temp config found, using defaults");
-        return ESP_OK;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) return ret;
+    size_t length = 0;
+    ret = nvs_get_blob(handle, "config", NULL, &length);
+    if (ret == ESP_OK) {
+        char *content = malloc(length + 1);
+        if (!content) { nvs_close(handle); return ESP_ERR_NO_MEM; }
+        ret = nvs_get_blob(handle, "config", content, &length);
+        if (ret == ESP_OK) { content[length] = 0; ret = load_migrated_temp_config(content); }
+        free(content);
+        if (ret == ESP_OK) ret = nvs_erase_key(handle, "config");
+        if (ret == ESP_OK) ret = nvs_commit(handle);
+        nvs_close(handle);
+        return ret;
     }
-    
+    if (ret != ESP_ERR_NVS_NOT_FOUND) { nvs_close(handle); return ret; }
+
     s_state.identity_revision++;
     uint8_t preferred = 0;
     ret = nvs_get_u8(handle, NVS_KEY_PREFERRED, &preferred);
@@ -1026,40 +1017,12 @@ static esp_err_t load_preferred_source_from_nvs(void)
     return ESP_OK;
 }
 
-/**
- * @brief Load temp config from SD card JSON file
- * 
- * 支持 .tscfg 加密配置优先加载
- */
-static esp_err_t load_temp_config_from_file(const char *filepath)
+/* Convert the old selected JSON once, then retain only the owning NVS fields. */
+static esp_err_t load_migrated_temp_config(const char *content)
 {
-    if (!filepath) return ESP_ERR_INVALID_ARG;
-    
-    /* 使用 .tscfg 优先加载 */
-    char *content = NULL;
-    size_t content_len = 0;
-    bool used_tscfg = false;
-    
-    esp_err_t ret = ts_config_pack_load_with_priority(
-        filepath, &content, &content_len, &used_tscfg);
-    
-    if (ret != ESP_OK) {
-        TS_LOGD(TAG, "Cannot open file: %s", filepath);
-        return ret;
-    }
-    
-    if (used_tscfg) {
-        TS_LOGI(TAG, "Loaded encrypted config from .tscfg");
-    }
-    
     cJSON *root = cJSON_Parse(content);
-    free(content);
-    
-    if (!root) {
-        TS_LOGW(TAG, "Failed to parse JSON: %s", filepath);
-        return ESP_ERR_INVALID_ARG;
-    }
-    
+    if (!cJSON_IsObject(root)) { cJSON_Delete(root); return ESP_ERR_INVALID_ARG; }
+
     s_state.identity_revision++;
     /* Parse preferred_source */
     cJSON *pref = cJSON_GetObjectItem(root, "preferred_source");
@@ -1100,7 +1063,7 @@ static esp_err_t load_temp_config_from_file(const char *filepath)
             }
         }
         if (!has_positive_bound_weight(s_state.bound_vars, s_state.bound_var_count)) {
-            TS_LOGW(TAG, "Ignoring SD card bound vars with no positive weights");
+            TS_LOGW(TAG, "Ignoring migrated bound vars with no positive weights");
             s_state.bound_var_count = 0;
             memset(s_state.bound_vars, 0, sizeof(s_state.bound_vars));
         }
@@ -1119,17 +1082,13 @@ static esp_err_t load_temp_config_from_file(const char *filepath)
     
     cJSON_Delete(root);
     
-    TS_LOGI(TAG, "Loaded temp config from SD card: preferred=%s, bound_vars=%d",
+    TS_LOGI(TAG, "Loaded migrated temp config: preferred=%s, bound_vars=%d",
             ts_temp_source_type_to_str(s_state.preferred_source),
             s_state.bound_var_count);
     
-    /* Save to NVS for next boot */
-    save_preferred_source_to_nvs(s_state.preferred_source);
-    if (s_state.bound_var_count > 0) {
-        save_bound_vars_to_nvs();
-    }
-    
-    return ESP_OK;
+    esp_err_t ret = save_preferred_source_to_nvs(s_state.preferred_source);
+    if (ret == ESP_OK) ret = save_bound_vars_to_nvs();
+    return ret;
 }
 
 static esp_err_t save_preferred_source_to_nvs(ts_temp_source_type_t type)
@@ -1155,39 +1114,6 @@ static esp_err_t save_preferred_source_to_nvs(ts_temp_source_type_t type)
     if (ret == ESP_OK) {
         TS_LOGD(TAG, "Saved preferred source to NVS: %s",
                 type == 0 ? "auto" : ts_temp_source_type_to_str(type));
-    }
-    
-    return ret;
-}
-
-static esp_err_t save_bound_variable_to_nvs(const char *var_name)
-{
-    nvs_handle_t handle;
-    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    
-    if (ret != ESP_OK) {
-        TS_LOGE(TAG, "Failed to open NVS for write: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    if (var_name && var_name[0] != '\0') {
-        ret = nvs_set_str(handle, NVS_KEY_BOUND_VAR, var_name);
-    } else {
-        ret = nvs_erase_key(handle, NVS_KEY_BOUND_VAR);
-        if (ret == ESP_ERR_NVS_NOT_FOUND) ret = ESP_OK;
-    }
-    
-    if (ret != ESP_OK) {
-        TS_LOGE(TAG, "Failed to write bound variable: %s", esp_err_to_name(ret));
-        nvs_close(handle);
-        return ret;
-    }
-    
-    ret = nvs_commit(handle);
-    nvs_close(handle);
-    
-    if (ret == ESP_OK) {
-        TS_LOGD(TAG, "Saved bound variable to NVS: %s", var_name ? var_name : "(none)");
     }
     
     return ret;
@@ -1260,72 +1186,6 @@ static esp_err_t save_bound_vars_to_nvs(void)
     return ret;
 }
 
-/**
- * @brief 导出温度配置到 SD 卡
- * 
- * 生成包含 preferred_source、bound_variable（兼容）和 bound_variables（数组）的 JSON
- */
-static void export_temp_config_to_sdcard(void)
-{
-    ts_temp_source_type_t preferred_source = TS_TEMP_SOURCE_DEFAULT;
-    char bound_variable[TS_TEMP_MAX_VARNAME_LEN] = {0};
-    ts_temp_bound_var_t bound_vars[TS_TEMP_MAX_BOUND_VARS] = {0};
-    uint8_t bound_var_count = 0;
-
-    if (s_state.mutex) {
-        xSemaphoreTake(s_state.mutex, portMAX_DELAY);
-    }
-    preferred_source = s_state.preferred_source;
-    strncpy(bound_variable, s_state.bound_variable, sizeof(bound_variable) - 1);
-    bound_var_count = s_state.bound_var_count;
-    if (bound_var_count > 0) {
-        memcpy(bound_vars, s_state.bound_vars,
-               bound_var_count * sizeof(ts_temp_bound_var_t));
-    }
-    if (s_state.mutex) {
-        xSemaphoreGive(s_state.mutex);
-    }
-
-    cJSON *root = cJSON_CreateObject();
-    if (!root) {
-        TS_LOGW(TAG, "Failed to create JSON for SD card export");
-        return;
-    }
-    
-    const char *preferred_str = preferred_source == TS_TEMP_SOURCE_DEFAULT
-                                ? "auto" 
-                                : ts_temp_source_type_to_str(preferred_source);
-    cJSON_AddStringToObject(root, "preferred_source", preferred_str);
-    
-    /* 向后兼容：导出第一个变量名 */
-    if (bound_variable[0] != '\0') {
-        cJSON_AddStringToObject(root, "bound_variable", bound_variable);
-    }
-    
-    /* 导出加权变量数组 */
-    if (bound_var_count > 0) {
-        cJSON *arr = cJSON_CreateArray();
-        if (arr) {
-            for (uint8_t i = 0; i < bound_var_count; i++) {
-                cJSON *item = cJSON_CreateObject();
-                if (item) {
-                    cJSON_AddStringToObject(item, "name", bound_vars[i].name);
-                    cJSON_AddNumberToObject(item, "weight", bound_vars[i].weight);
-                    cJSON_AddItemToArray(arr, item);
-                }
-            }
-            cJSON_AddItemToObject(root, "bound_variables", arr);
-        }
-    }
-    
-    esp_err_t ret = ts_config_module_export_custom_json(TS_CONFIG_MODULE_TEMP, root);
-    cJSON_Delete(root);
-    
-    if (ret != ESP_OK && ret != TS_CONFIG_ERR_SD_NOT_MOUNTED) {
-        TS_LOGW(TAG, "Failed to export temp config to SD card: %s", esp_err_to_name(ret));
-    }
-}
-
 /*===========================================================================*/
 /*                      Public API - Variable Binding                         */
 /*===========================================================================*/
@@ -1382,12 +1242,11 @@ esp_err_t ts_temp_bind_variables(const ts_temp_bound_var_t *vars, uint8_t count)
 
     xSemaphoreGive(s_state.mutex);
 
-    save_bound_vars_to_nvs();
-    export_temp_config_to_sdcard();
+    esp_err_t saved = save_bound_vars_to_nvs();
 
     TS_LOGI(TAG, "Temperature bound to %d weighted variable(s)", count);
 
-    return ESP_OK;
+    return saved;
 }
 
 esp_err_t ts_temp_get_bound_variable(char *var_name, size_t len)
@@ -1448,12 +1307,8 @@ esp_err_t ts_temp_unbind_variable(void)
     
     xSemaphoreGive(s_state.mutex);
     
-    if (was_bound) {
-        save_bound_vars_to_nvs();
-        save_bound_variable_to_nvs(NULL);
-        export_temp_config_to_sdcard();
-        TS_LOGI(TAG, "Temperature variable binding removed");
-    }
-    
-    return ESP_OK;
+    if (!was_bound) return ESP_OK;
+    esp_err_t ret = save_bound_vars_to_nvs();
+    if (ret == ESP_OK) TS_LOGI(TAG, "Temperature variable binding removed");
+    return ret;
 }

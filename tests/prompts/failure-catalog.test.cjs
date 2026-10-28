@@ -176,14 +176,16 @@ const NOT_FAILURES = new Set(['ok', 'no_change', 'mirror_failed', 'recovery_clea
 
 test('every reason token the firmware can send has a message in both languages', () => {
     const automation = component('ts_api/src/ts_api_automation.c');
+    const config = ['ts_automation_config', 'ts_automation_document', 'ts_automation_references', 'ts_automation_migrate', 'ts_automation_legacy', 'ts_rule_config'].map(name => component('ts_automation/src/' + name + '.c')).join('\n') + '\n' + component('ts_api/src/ts_api_auto_config.c');
     const ssh = component('ts_api/src/ts_api_ssh.c');
     const tokens = new Set([
         ...returned(functionBody(automation, 'trigger_reject_token')),
+        ...[...config.matchAll(/\b(?:fail|error_at|failed|invalid)\([^;]+?\);|(?:->|\.)(?:reason|error)\s*=[^;]+;/g)].flatMap(m => [...m[0].matchAll(/"([a-z][a-z0-9_]*)"/g)].map(value => value[1])),
         ...returned(functionBody(automation, 'engine_refusal_token')),
         ...returned(functionBody(component('ts_config_pack/src/ts_config_pack.c'), 'ts_config_pack_reason')),
         ...returned(functionBody(component('ts_security/src/ts_ssh_client.c'), 'ts_ssh_connect_reason')),
         // rule save / enable / disable: the engine, the store and the API layer
-        ...[component('ts_automation/src/ts_rule_engine.c'), component('ts_automation/src/ts_rule_store.c'), automation]
+        ...[component('ts_automation/src/ts_rule_engine.c'), component('ts_automation/src/ts_rule_config.c'), component('ts_automation/src/ts_automation_config.c'), component('ts_automation/src/ts_automation_document.c'), component('ts_automation/src/ts_automation_references.c'), component('ts_automation/src/ts_automation_migrate.c'), component('ts_automation/src/ts_automation_legacy.c'), automation]
             .flatMap(source => [...source.matchAll(/error_code\s*=\s*"([a-z][a-z0-9_]*)"/g)].map(m => m[1])),
         ...[...automation.matchAll(/ts_api_result_error\(result, TS_API_ERR_\w+, "([a-z][a-z0-9_]*)"\)/g)].map(m => m[1]),
         // ts_api_result_reason(result, CODE, "token", detail): the helper the handlers use for a reason the page can state
@@ -205,8 +207,8 @@ test('every reason token the firmware can send has a message in both languages',
 });
 
 test('the catalogue has no reason that nothing can produce (a sentence nobody can reach is a trap for the next edit)', () => {
-    const sources = [component('ts_api/src/ts_api_automation.c'), component('ts_api/src/ts_api_ssh.c'), component('ts_api/src/ts_api_key.c'), component('ts_automation/src/ts_rule_engine.c'),
-        component('ts_automation/src/ts_rule_store.c'), component('ts_config_pack/src/ts_config_pack.c'), component('ts_security/src/ts_ssh_client.c'), component('ts_automation/src/ts_rule_store_set.c'), component('ts_automation/src/ts_rule_pack.c'), component('ts_cert/src/ts_cert.c'), component('ts_webui/src/ts_webui_api.c'), component('ts_webui/src/ts_webui_ws.c'), component('ts_webui/src/ts_ws_operation.c'), read('js/app.js'), read('js/api.js')].join('\n');
+    const sources = [component('ts_security/src/ts_ssh_service.c'), component('ts_automation/src/ts_action_manager.c'), component('ts_api/src/ts_api_auto_config.c'), component('ts_api/src/ts_api_automation.c'), component('ts_api/src/ts_api_ssh.c'), component('ts_api/src/ts_api_key.c'), component('ts_automation/src/ts_rule_engine.c'),
+        component('ts_automation/src/ts_rule_config.c'), component('ts_automation/src/ts_automation_config.c'), component('ts_automation/src/ts_automation_document.c'), component('ts_automation/src/ts_automation_references.c'), component('ts_automation/src/ts_automation_migrate.c'), component('ts_automation/src/ts_automation_legacy.c'), component('ts_config_pack/src/ts_config_pack.c'), component('ts_security/src/ts_ssh_client.c'), component('ts_automation/src/ts_rule_pack.c'), component('ts_cert/src/ts_cert.c'), component('ts_webui/src/ts_webui_api.c'), component('ts_webui/src/ts_webui_ws.c'), component('ts_webui/src/ts_ws_operation.c'), read('js/app.js'), read('js/api.js')].join('\n');
     // reasons the page produces from the error class, from a transport state, or from the API envelope of other modules
     const GENERIC = new Set(['busy', 'no_memory', 'not_found', 'no_permission', 'timeout', 'invalid_request', 'invalid_argument', 'not_supported', 'hardware_failed',
         'target_unreachable', 'auth_required', 'network_lost', 'invalid_response', 'no_detail', 'result_unknown', 'storage_failed']);

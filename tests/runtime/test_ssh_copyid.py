@@ -20,6 +20,8 @@ code = r'''
 #include "ts_api.h"
 #include "ts_ssh_client.h"
 #include "ts_ssh_hosts_config.h"
+#include "ts_ssh_config_codec.h"
+#include "ts_automation_config.h"
 #include "ts_known_hosts.h"
 #define TS_MALLOC_PSRAM malloc
 #define TS_STRDUP_PSRAM strdup
@@ -35,7 +37,7 @@ static const char *error_name(esp_err_t e) {
 }
 #define esp_err_to_name error_name
 static esp_err_t registration_error;
-static bool fail_deploy, fail_verify;
+static bool fail_deploy, fail_verify, change_configuration_on_deploy, configuration_changed;
 static int registrations, deployments, sessions, verifications;
 static ts_host_verify_result_t host_status = TS_HOST_VERIFY_OK;
 static esp_err_t host_save_error;
@@ -85,12 +87,20 @@ esp_err_t ts_ssh_connect_with_verifier(ts_ssh_session_t s,ts_ssh_verify_cb_t ver
 }
 esp_err_t ts_ssh_exec(ts_ssh_session_t s,const char *cmd,ts_ssh_exec_result_t *r) {
     assert(strstr(cmd,"authorized_keys") && strstr(cmd,"SYNTHETIC"));++deployments;
+    if(change_configuration_on_deploy)configuration_changed=true;
     r->exit_code=fail_deploy?1:0;r->stderr_data=fail_deploy?strdup("synthetic remote failure"):NULL;return ESP_OK;
 }
 void ts_ssh_exec_result_free(ts_ssh_exec_result_t *r) {free(r->stderr_data);}
-esp_err_t ts_ssh_hosts_config_add(const ts_ssh_host_config_t *cfg) {
-    ++registrations;registered_config=*cfg;return registration_error;
+esp_err_t ts_auto_config_edit_begin(const char *version,ts_auto_config_error_t *error) {
+    if(!version||strcmp(version,"original-version")||configuration_changed){error->reason=version?"configuration_changed":"configuration_version_required";return ESP_ERR_INVALID_STATE;}return ESP_OK;
 }
+void ts_auto_config_edit_end(void){}
+esp_err_t ts_auto_config_set(ts_auto_config_kind_t kind,const cJSON *row,const char *version,ts_auto_config_error_t *error) {
+    assert(kind==TS_AUTO_CONFIG_HOST&&!version);++registrations;
+    if(registration_error)error->reason=registration_error==ESP_ERR_NO_MEM?"out_of_memory":registration_error==ESP_ERR_INVALID_STATE?"configuration_changed":"storage_write_failed";
+    assert(ts_ssh_host_decode(row,&registered_config)==ESP_OK);return registration_error;
+}
+esp_err_t ts_ssh_hosts_config_get(const char *id,ts_ssh_host_config_t *out){(void)id;(void)out;return ESP_ERR_NOT_FOUND;}
 '''
 for name in ['ts_api_result_free', 'ts_api_result_ok', 'ts_api_result_error', 'ts_api_result_reason']:
     code += extract('components/ts_api/src/ts_api.c', name)
@@ -117,7 +127,7 @@ static esp_err_t send_result(esp_err_t ret,ts_api_result_t result) {
 code += r'''
 static cJSON *item(ts_api_result_t *r,const char *key) {return cJSON_GetObjectItem(r->data,key);}
 static cJSON *copyid_params(void) {
-    return cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"password\":\"synthetic\",\"keyid\":\"synthetic-key\"}");
+    return cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"password\":\"synthetic\",\"keyid\":\"synthetic-key\",\"active_version\":\"original-version\"}");
 }
 static void first_use_case(ts_host_verify_result_t status,int trust,esp_err_t save_error,bool bad_password,int expected) {
     host_status=status;host_save_error=save_error;fail_password=bad_password;
@@ -172,7 +182,7 @@ static void changed_key_confirmation(void) {
 }
 static void run_case(esp_err_t err,ts_api_result_code_t expected,bool verify_failure,int port,bool verify) {
     registration_error=err;fail_verify=verify_failure;registrations=deployments=verifications=0;
-    cJSON *params=cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"password\":\"synthetic\",\"keyid\":\"synthetic-key\"}");
+    cJSON *params=cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"password\":\"synthetic\",\"keyid\":\"synthetic-key\",\"active_version\":\"original-version\"}");
     cJSON_AddNumberToObject(params,"port",port);cJSON_AddBoolToObject(params,"verify",verify);
     ts_api_result_t r={0};esp_err_t ret=api_ssh_copyid(params,&r);
     assert(ret==ESP_OK && r.code==expected && registrations==1 && deployments==1 && sessions==0);
@@ -185,7 +195,7 @@ static void run_case(esp_err_t err,ts_api_result_code_t expected,bool verify_fai
     assert(!strcmp(registered_config.id,id) && registered_config.port==port);
     assert(!strcmp(registered_config.keyid,"synthetic-key"));
     if(err) {
-        assert(!strcmp(item(&r,"registration_error")->valuestring,error_name(err)));
+        assert(!strcmp(item(&r,"registration_error")->valuestring,err==ESP_ERR_NO_MEM?"out_of_memory":err==ESP_ERR_INVALID_STATE?"configuration_changed":"storage_write_failed"));
         assert(!strcmp(r.message,"host_registration_failed"));
     } else assert(!item(&r,"registration_error"));
     assert(send_result(ret,r)==ESP_OK);
@@ -215,8 +225,18 @@ int main(void) {
     run_case(ESP_ERR_INVALID_STATE,TS_API_ERR_BUSY,false,22,true);
     run_case(ESP_ERR_NO_MEM,TS_API_ERR_NO_MEM,false,22,true);
     run_case(ESP_FAIL,TS_API_ERR_INTERNAL,true,2222,true);
+    registration_error=ESP_OK;registrations=deployments=0;
+    cJSON *stale=copyid_params();cJSON_ReplaceItemInObject(stale,"active_version",cJSON_CreateString("stale-version"));
+    ts_api_result_t changed={0};assert(api_ssh_copyid(stale,&changed)==ESP_OK&&changed.code==TS_API_ERR_INVALID_ARG);
+    assert(!deployments&&!registrations&&!changed.data&&!strcmp(changed.message,"configuration_changed"));ts_api_result_free(&changed);
+    cJSON_ReplaceItemInObject(stale,"active_version",cJSON_CreateString("original-version"));
+    change_configuration_on_deploy=true;
+    assert(api_ssh_copyid(stale,&changed)==ESP_OK&&changed.code==TS_API_ERR_BUSY);
+    change_configuration_on_deploy=configuration_changed=false;
+    assert(deployments==1&&!registrations&&cJSON_IsTrue(item(&changed,"deployed"))&&cJSON_IsFalse(item(&changed,"registered")));
+    assert(!strcmp(item(&changed,"registration_error")->valuestring,"configuration_changed"));ts_api_result_free(&changed);cJSON_Delete(stale);
     fail_deploy=true;registrations=deployments=0;
-    cJSON *p=cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"password\":\"synthetic\",\"keyid\":\"synthetic-key\"}");
+    cJSON *p=cJSON_Parse("{\"host\":\"192.0.2.8\",\"user\":\"test\",\"password\":\"synthetic\",\"keyid\":\"synthetic-key\",\"active_version\":\"original-version\"}");
     ts_api_result_t r={0};assert(api_ssh_copyid(p,&r)==ESP_FAIL && r.code!=TS_API_OK);
     assert(!strcmp(r.message,"ssh_deploy_failed") && registrations==0 && deployments==1 && sessions==0);   /* the server's own text, if any, is data.detail */
     ts_api_result_free(&r);cJSON_Delete(p);
@@ -225,7 +245,7 @@ int main(void) {
 }
 '''
 includes = ['tests/certificate/stubs', 'components/ts_security/include',
-            'components/ts_api/include', 'components/ch405labs_esp_libssh2/libssh2/include',
+            'components/ts_api/include', 'components/ts_automation/include', 'components/ch405labs_esp_libssh2/libssh2/include',
             str(idf / 'components/json/cJSON')]
 env = {**os.environ, 'DEVELOPER_DIR': '/Library/Developer/CommandLineTools'}
 def compile_and_run(code, name):
@@ -233,7 +253,7 @@ def compile_and_run(code, name):
     file.write_text(code)
     subprocess.run(['cc', '-std=c11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined',
                     '-include', 'ts_ssh_probe.h', *[f'-I{x}' for x in includes], str(file),
-                    'components/ts_security/src/ts_ssh_probe.c', str(idf / 'components/json/cJSON/cJSON.c'),
+                    'components/ts_security/src/ts_ssh_probe.c', 'components/ts_security/src/ts_ssh_config_codec.c', str(idf / 'components/json/cJSON/cJSON.c'),
                     '-o', str(build / name)], check=True, env=env)
     subprocess.run([str(build / name)], check=True, env=env)
 
@@ -247,9 +267,8 @@ known = '#include <libssh2.h>\n' + '\n'.join(re.findall(
     r'^#define\s+(?:MAX_HOST_LEN|MAX_FINGERPRINT_LEN)\b.*', known_source, re.M)) + '\n' + stored_type
 known += r'''
 static struct {bool initialized;nvs_handle_t nvs;SemaphoreHandle_t mutex;} s_state;
-static bool s_loading_from_sdcard;
 static struct {char key[32];stored_host_t value;} saved_hosts[8];
-static int saved_count, store_writes, sd_exports;
+static int saved_count, store_writes;
 static esp_err_t read_error, write_error, commit_error;
 static stored_host_t pending_host;
 static char pending_key[32];
@@ -265,9 +284,7 @@ const char *libssh2_hostkey_hash(LIBSSH2_SESSION *s,int type) {
 }
 const char *ts_host_key_type_str(ts_host_key_type_t type) {return "ECDSA-256";}
 esp_err_t ts_known_hosts_init(void) {s_state.initialized=true;return ESP_OK;}
-static void export_host_to_sdcard(const char *host,uint16_t port,const stored_host_t *value) {
-    assert(!strcmp(value->host,host) && value->port==port);++sd_exports;
-}
+
 esp_err_t nvs_get_blob(nvs_handle_t h,const char *key,void *out,size_t *len) {
     if(read_error)return read_error;
     for(int i=0;i<saved_count;i++)if(!strcmp(saved_hosts[i].key,key)) {
@@ -313,13 +330,13 @@ int main(void) {
     StaticSemaphore_t mutex;s_state.mutex=xSemaphoreCreateMutexStatic(&mutex);s_state.initialized=true;
     memset(observed_hash,0x41,sizeof(observed_hash));
     persisted_case("192.0.2.8",22,TS_API_OK);
-    assert(saved_count==1 && store_writes==1 && sd_exports==1);
+    assert(saved_count==1 && store_writes==1);
     assert(strlen(saved_hosts[0].value.fingerprint)==64);
     assert(!strcmp(saved_hosts[0].value.host,"192.0.2.8") && saved_hosts[0].value.port==22);
     persisted_case("192.0.2.8",22,TS_API_OK);assert(store_writes==1);
     persisted_case("192.0.2.8",2222,TS_API_OK);
     persisted_case("192.0.2.9",22,TS_API_OK);
-    assert(saved_count==3 && store_writes==3 && sd_exports==3);
+    assert(saved_count==3 && store_writes==3);
     stored_host_t original=saved_hosts[0].value;
     observed_hash[31]=0x42; // A change in the final SHA-256 byte must also be rejected.
     persisted_case("192.0.2.8",22,TS_API_ERR_HOST_MISMATCH);
@@ -328,7 +345,7 @@ int main(void) {
     assert(store_writes==3);
     write_error=ESP_ERR_NO_MEM;persisted_case("192.0.2.10",22,TS_API_ERR_INTERNAL);write_error=ESP_OK;
     commit_error=ESP_FAIL;persisted_case("192.0.2.10",22,TS_API_ERR_INTERNAL);commit_error=ESP_OK;
-    assert(saved_count==3 && sd_exports==3);
+    assert(saved_count==3);
     memset(observed_hash,0x41,sizeof(observed_hash));
     persisted_case("192.0.2.8",22,TS_API_OK);assert(saved_count==3 && store_writes==5);
     pthread_mutex_destroy(&mutex);

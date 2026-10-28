@@ -85,12 +85,15 @@ esp_err_t ts_rule_disable(const char *id);
  * @return Rule pointer or NULL
  */
 typedef struct {
-    int applied, durable, mirror_synced;
+    int applied, durable;
     uint32_t revision;
     const char *error_code;
     char missing_template_id[TS_AUTO_NAME_MAX_LEN]; /* Request-local diagnostic, never persisted. */
 } ts_rule_commit_result_t;
 esp_err_t ts_rule_acquire(const char *id,ts_auto_rule_t *out);
+/* Copies the saved definition. Caller disposes its arrays with ts_rule_dispose. */
+esp_err_t ts_rule_definition_get(const char *id,ts_auto_rule_t *out);
+void ts_rule_resolve_presentation(ts_auto_rule_t *rule);
 void ts_rule_release(ts_auto_rule_t *rule);
 esp_err_t ts_rule_commit(const ts_auto_rule_t *candidate,const char *id,uint32_t expected_revision,ts_rule_commit_result_t *result);
 
@@ -146,8 +149,9 @@ typedef enum {
     TS_RULE_REJECT_CONFIG_BUSY,        /**< the configuration is being saved */
     TS_RULE_REJECT_RUNNING,            /**< the rule is already executing */
     TS_RULE_REJECT_SERVICE_STATE,      /**< a bound service cannot be started in its current state */
+    TS_RULE_REJECT_CONFIG_VERSION,     /**< the client displayed another configuration version */
     TS_RULE_REJECT_CHANGED,            /**< the rule was changed or removed while the trigger was admitted */
-    TS_RULE_REJECT_PENDING_DELETE      /**< the rule's deletion is saved and takes effect after a restart */
+    TS_RULE_REJECT_PAUSED              /**< the user paused the complete automation configuration */
 } ts_rule_reject_t;
 
 /**
@@ -158,6 +162,8 @@ typedef enum {
  * @return Same as ts_rule_trigger()
  */
 esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why);
+/* Check a displayed configuration version while freezing the admitted actions. */
+esp_err_t ts_rule_trigger_versioned(const char *id, const char *active_version, ts_rule_reject_t *why);
 
 /*===========================================================================*/
 /*                           Condition Evaluation                             */
@@ -352,53 +358,12 @@ esp_err_t ts_rule_clear_exec_history(void);
  */
 const char *ts_rule_exec_status_str(ts_rule_exec_status_t status);
 
-/*===========================================================================*/
-/*                           Persistence                                      */
-/*===========================================================================*/
-
-/**
- * @brief Save all rules to NVS
- *
- * @return ESP_OK on success
- */
-esp_err_t ts_rules_save(void);
-
-/**
- * @brief Load all rules from NVS
- * 
- * If NVS is empty and SD card is mounted, will try to load from SD card file.
- *
- * @return ESP_OK on success
- */
-esp_err_t ts_rules_load(void);
-
-/**
- * @brief Load rules from SD card file
- * 
- * Used for config recovery when NVS is empty.
- *
- * @param filepath Path to JSON file (e.g., "/sdcard/config/rules.json")
- * @return ESP_OK on success
- */
-esp_err_t ts_rules_load_from_file(const char *filepath);
-
-/* Cold API/load path only: may allocate and resolve command/template references. */
-void ts_rule_resolve_presentation(ts_auto_rule_t *rule);
 bool ts_rule_edit_begin(void);
+bool ts_rule_instance_current(uint32_t instance);
 void ts_rule_edit_end(void);
-void ts_rule_config_status(bool *loaded, bool *recovery);
-bool ts_rule_restart_pending(void);
-esp_err_t ts_rule_refresh_saved(void);
-const char *ts_rule_load_error(void);
-void ts_rule_saved_status(const char *id, cJSON *object);
-cJSON *ts_rule_pending_list(void);
 esp_err_t ts_rule_import_pack(const char *bytes, size_t length, bool preview, bool overwrite,
     uint32_t expected_revision, uint32_t expected_generation, uint32_t expected_credential,
-    const char *expected_digest, cJSON **data, const char **reason);
-typedef enum { TS_RULE_DEP_TEMPLATE, TS_RULE_DEP_COMMAND, TS_RULE_DEP_HOST, TS_RULE_DEP_ACTION_HOST } ts_rule_dependency_t;
-/* Configuration writers already hold ts_ssh_binding_lock; no network/execution side effects. */
-esp_err_t ts_rule_dependency_change(ts_rule_dependency_t kind, const char *id, const void *next);
-
+    const char *expected_digest, const char *active_version, cJSON **data, const char **reason);
 #ifdef __cplusplus
 }
 #endif

@@ -20,6 +20,7 @@
  * 6. 验证内容哈希
  */
 
+#include "ts_storage.h"
 #include "ts_config_pack.h"
 #include "ts_core.h"
 #include "ts_cert.h"
@@ -805,20 +806,9 @@ esp_err_t ts_config_pack_save(const char *path, const char *tscfg_json, size_t t
         return ESP_ERR_INVALID_ARG;
     }
     
-    FILE *f = fopen(path, "w");
-    if (!f) {
-        ESP_LOGE(TAG, "Failed to create file: %s", path);
-        return ESP_ERR_NOT_FOUND;
-    }
-    
-    size_t written = fwrite(tscfg_json, 1, tscfg_len, f);
-    fclose(f);
-    
-    if (written != tscfg_len) {
-        ESP_LOGE(TAG, "Failed to write file: %s", path);
-        return ESP_FAIL;
-    }
-    
+    esp_err_t ret = ts_storage_write_file(path, tscfg_json, tscfg_len);
+    if (ret != ESP_OK) return ret;
+
     ESP_LOGI(TAG, "Saved config pack to %s", path);
     return ESP_OK;
 }
@@ -1117,20 +1107,10 @@ ts_config_pack_result_t ts_config_pack_import(
     snprintf(path, sizeof(path), "%s/%s.tscfg", CONFIG_PACK_DIR, name);
     
     /* 保存加密的配置包文件（原样保存，不解密） */
-    FILE *f = fopen(path, "w");
-    if (!f) {
-        ESP_LOGE(TAG, "Failed to open file for writing: %s", path);
+    if (ts_config_pack_save(path, tscfg_json, tscfg_len) != ESP_OK) {
         return TS_CONFIG_PACK_ERR_IO;
     }
-    
-    size_t written = fwrite(tscfg_json, 1, tscfg_len, f);
-    fclose(f);
-    
-    if (written != tscfg_len) {
-        ESP_LOGE(TAG, "Failed to write config pack");
-        return TS_CONFIG_PACK_ERR_IO;
-    }
-    
+
     ESP_LOGI(TAG, "Config pack imported: %s -> %s", name, path);
     
     /* 填充返回的元数据 */

@@ -1,0 +1,560 @@
+/* Actual owner, file replacement, runtime views, variable table and rule
+ * admission. Network transports, PKI and the NVS driver are boundary stubs. */
+#define main file_fixture_main
+#include "ts_log.h"
+#include "test_automation_file.c"
+#undef main
+#include "../../components/ts_automation/src/ts_automation_config.c"
+#include "ts_variable.h"
+#include "ts_action_manager.h"
+#include "ts_source_runtime.h"
+#include "ts_rule_engine.h"
+#include "ts_rule_pack.h"
+#include "ts_automation.h"
+#include "ts_crypto.h"
+#include "nvs.h"
+#include <math.h>
+#include "ts_action_codec.h"
+#include "esp_timer.h"
+static uint8_t durable_control[4],pending_control[4];
+static bool has_control,fail_control,control_dirty,auto_v_dirty;
+static bool has_auto_v=true,sd_present=true,sd_mounted=true,internal_mounted=true;
+static uint8_t auto_v=1,pending_auto_v;
+static unsigned sd_probes,legacy_reads;
+static const cJSON *legacy_document;
+static StaticSemaphore_t sd_gate_storage;
+static SemaphoreHandle_t sd_gate;
+static uint64_t sd_generation=1;
+void ts_storage_sd_lock(void){if(!sd_gate)sd_gate=xSemaphoreCreateRecursiveMutexStatic(&sd_gate_storage);xSemaphoreTakeRecursive(sd_gate,portMAX_DELAY);}
+void ts_storage_sd_unlock(void){xSemaphoreGiveRecursive(sd_gate);}
+uint64_t ts_storage_sd_generation(void){return sd_generation;}
+bool ts_storage_sd_mounted(void){return sd_mounted;}
+bool ts_storage_auto_mounted(void){return internal_mounted;}
+esp_err_t ts_storage_sd_refresh(void)
+{ ++sd_probes;if(sd_mounted!=sd_present){sd_mounted=sd_present;++sd_generation;}return sd_present?ESP_OK:ESP_ERR_NOT_FOUND; }
+esp_err_t ts_config_pack_init(void){return ESP_OK;}
+esp_err_t ts_auto_legacy_read(bool sd,cJSON **json,ts_auto_config_error_t *error)
+{
+    (void)sd;(void)error;++legacy_reads;
+    ts_auto_document_t empty={.enabled=true,.migration_version=1};
+    *json=legacy_document?cJSON_Duplicate(legacy_document,true):ts_auto_document_encode(&empty);
+    return *json?ESP_OK:ESP_ERR_NO_MEM;
+}
+esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *handle)
+{ assert(!strcmp(name,"ts_cfg_state"));if(!has_control&&!has_auto_v&&mode==NVS_READONLY)return ESP_ERR_NVS_NOT_FOUND;*handle=1;return ESP_OK; }
+void nvs_close(nvs_handle_t handle){assert(handle==1);control_dirty=auto_v_dirty=false;}
+esp_err_t nvs_get_blob(nvs_handle_t handle,const char *name,void *out,size_t *size)
+{ assert(handle==1&&!strcmp(name,"auto_control"));if(!has_control)return ESP_ERR_NVS_NOT_FOUND;assert(*size>=4);memcpy(out,durable_control,4);*size=4;return ESP_OK; }
+esp_err_t nvs_set_blob(nvs_handle_t handle,const char *name,const void *in,size_t size)
+{ assert(handle==1&&!strcmp(name,"auto_control")&&size==4);memcpy(pending_control,in,4);control_dirty=true;return ESP_OK; }
+esp_err_t nvs_commit(nvs_handle_t handle)
+{
+    assert(handle==1);if(fail_control)return ESP_FAIL;
+    if(control_dirty){memcpy(durable_control,pending_control,4);has_control=true;control_dirty=false;}
+    if(auto_v_dirty){auto_v=pending_auto_v;has_auto_v=true;auto_v_dirty=false;}
+    return ESP_OK;
+}
+esp_err_t nvs_open_from_partition(const char *partition,const char *name,int mode,nvs_handle_t *handle)
+{ (void)name;(void)handle;assert(!strcmp(partition,"keys_nvs")&&mode==NVS_READONLY&&has_auto_v&&auto_v==1);return ESP_ERR_NVS_NOT_FOUND; }
+esp_err_t nvs_get_u8(nvs_handle_t handle,const char *name,uint8_t *value)
+{ assert(handle==1&&!strcmp(name,"auto_v"));if(!has_auto_v)return ESP_ERR_NVS_NOT_FOUND;*value=auto_v;return ESP_OK; }
+esp_err_t nvs_set_u8(nvs_handle_t handle,const char *name,uint8_t value)
+{ assert(handle==1&&!strcmp(name,"auto_v"));pending_auto_v=value;auto_v_dirty=true;return ESP_OK; }
+esp_err_t nvs_erase_all(nvs_handle_t handle){(void)handle;assert(false);return ESP_FAIL;}
+typedef void *esp_websocket_client_handle_t;
+#define SIO_SID_MAX_LEN 64
+#define SIO_MAX_CONNECTIONS TS_SOURCE_MAX_SIO_CONNECTIONS
+#define SIO_EVENT_PREFIX "42"
+static unsigned stop_notifications;
+static int xTaskNotifyGive(TaskHandle_t task) { assert(task);++stop_notifications;return 1; }
+#include "source_transport.inc"
+void ts_source_config_activate(void) { /* Task creation and real networking are outside this fixture. */ }
+
+int64_t esp_timer_get_time(void) { static int64_t now=100000;return ++now; }
+bool ts_action_manager_is_initialized(void) { return true; }
+static unsigned template_executions;
+static esp_err_t template_execution_ret=ESP_OK;
+static ts_action_result_t template_outcome={.status=TS_ACTION_STATUS_SUCCESS};
+esp_err_t ts_action_manager_execute(const ts_auto_action_t *action,ts_action_result_t *out)
+{ (void)action;++template_executions;if(out)*out=template_outcome;return template_execution_ret; }
+esp_err_t ts_action_queue(const ts_auto_action_t *action,ts_action_callback_t callback,void *context,uint8_t priority)
+{ (void)action;(void)callback;(void)context;(void)priority;return ESP_OK; }
+
+static atomic_bool refuse_actions, refuse_service;
+static pthread_mutex_t execution_gate=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t execution_changed=PTHREAD_COND_INITIALIZER;
+static bool block_action,action_reached,action_released;
+static unsigned rule_actions;
+bool ts_action_manager_accepting(void) { return !refuse_actions; }
+bool ts_ssh_service_start_admissible(const char *id) { (void)id;return !refuse_service; }
+static bool fail_service_import;static unsigned service_imports;
+esp_err_t ts_ssh_service_import_legacy(const ts_ssh_command_config_t *command,const ts_ssh_host_config_t *host)
+{assert(command&&host&&command->nohup);++service_imports;return fail_service_import?ESP_FAIL:ESP_OK;}
+typedef void *QueueHandle_t;
+#include "action_identity.inc"
+static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions,int count,int *ok,int *failed)
+{
+    (void)actions;pthread_mutex_lock(&execution_gate);
+    if(block_action){action_reached=true;pthread_cond_broadcast(&execution_changed);while(!action_released)pthread_cond_wait(&execution_changed,&execution_gate);}
+    pthread_mutex_unlock(&execution_gate);rule_actions+=count;*ok=count;*failed=0;return ESP_OK;
+}
+
+static bool fail_prepare;
+static unsigned prepares, publishes, pauses;
+static StaticSemaphore_t admission_storage;
+static SemaphoreHandle_t admission;
+void esp_fill_random(void *buffer,size_t size) { memset(buffer,0x42,size); }
+void ts_ssh_binding_lock(void) { if(!admission)admission=xSemaphoreCreateRecursiveMutexStatic(&admission_storage);xSemaphoreTakeRecursive(admission,portMAX_DELAY); }
+void ts_ssh_binding_unlock(void) { xSemaphoreGiveRecursive(admission); }
+#define ts_rule_config_prepare engine_prepare
+#define ts_rule_config_discard engine_discard
+#define ts_rule_config_publish engine_publish
+#define ts_rule_config_pause engine_pause
+#include "rule_runtime.inc"
+#undef ts_rule_config_prepare
+#undef ts_rule_config_discard
+#undef ts_rule_config_publish
+#undef ts_rule_config_pause
+esp_err_t ts_rule_config_prepare(const ts_auto_rule_t *rules,int count,bool keep_runtime,ts_rule_config_view_t **out)
+{ ++prepares;*out=NULL;return fail_prepare?ESP_ERR_NO_MEM:engine_prepare(rules,count,keep_runtime,out); }
+void ts_rule_config_discard(ts_rule_config_view_t *view) { engine_discard(view); }
+void ts_rule_config_publish(ts_rule_config_view_t *view,bool enabled) { ++publishes;engine_publish(view,enabled); }
+void ts_rule_config_pause(void) { ++pauses;engine_pause(); }
+
+
+static bool reject_package;
+cJSON *ts_config_pack_parse_json(const char *text,size_t length)
+{ return cJSON_ParseWithLengthOpts(text,length+1,NULL,true); }
+ts_config_pack_result_t ts_config_pack_load_verified_mem(const char *text,size_t length,
+    const ts_config_pack_acceptance_t *accepted,ts_config_pack_t **out,ts_config_pack_acceptance_t *result,uint32_t *generation)
+{
+    assert(!accepted);
+    if(reject_package)return TS_CONFIG_PACK_ERR_SIGNATURE;
+    *out=calloc(1,sizeof(**out));assert(*out);(*out)->content=strndup(text,length);(*out)->content_len=length;
+    if(result){
+        memset(result,0,sizeof(*result));result->policy=1;result->accepted_at=1;
+        unsigned char hash[32];assert(ts_crypto_hash(TS_HASH_SHA256,text,length,hash,32)==ESP_OK);
+        assert(ts_crypto_hex_encode(hash,32,result->package_sha256,65)==ESP_OK);
+        memset(result->signer_sha256,'1',64);memset(result->root_sha256,'2',64);memset(result->recipient,'3',64);
+    }
+    if(generation)*generation=1;
+    return TS_CONFIG_PACK_OK;
+}
+ts_config_pack_result_t ts_config_pack_load_mem(const char *text,size_t length,ts_config_pack_t **out)
+{
+    return ts_config_pack_load_verified_mem(text,length,NULL,out,NULL,NULL);
+}
+void ts_config_pack_free(ts_config_pack_t *pack){if(pack){free(pack->content);free(pack);}}
+bool ts_cert_material_begin(uint32_t generation){return generation==1;}
+void ts_cert_material_end(void){}
+
+#define CONFIG_TS_AUTOMATION_TASK_STACK_SIZE 8192
+#define CONFIG_TS_AUTOMATION_TASK_PRIORITY 5
+#define pdMS_TO_TICKS(n) (n)
+#define pdPASS 1
+typedef int BaseType_t;
+static struct {ts_automation_state_t state;atomic_bool stopping,deinitializing;TaskHandle_t task_handle;SemaphoreHandle_t mutex;unsigned rule_triggers;} top_ctx;
+static atomic_bool async_pending;
+static unsigned source_stops;
+esp_err_t ts_action_manager_quiesce(void){refuse_actions=true;s_ctx->accepting=false;return async_pending?ESP_ERR_TIMEOUT:ESP_OK;}
+esp_err_t ts_action_manager_resume(void){if(async_pending)return ESP_ERR_INVALID_STATE;refuse_actions=false;s_ctx->accepting=true;return ESP_OK;}
+esp_err_t ts_source_start_all(void){return ESP_OK;}
+esp_err_t ts_source_stop_all(void){++source_stops;return ESP_OK;}
+int ts_source_poll_all(void){return 0;}
+static void (*delay_hook)(void);
+static void vTaskDelay(unsigned ms){if(delay_hook){void(*hook)(void)=delay_hook;delay_hook=NULL;hook();}(void)ms;struct timespec delay={0,1000000};nanosleep(&delay,NULL);}
+static void vTaskDelete(void *task){assert(!task);pthread_exit(NULL);}
+static int xTaskCreatePinnedToCore(void(*fn)(void*),const char *name,unsigned stack,void *arg,unsigned priority,void **handle,int core)
+{(void)fn;(void)name;(void)stack;(void)arg;(void)priority;(void)core;*handle=(void*)1;return pdPASS;}
+static void automation_task(void *arg);
+#include "automation_task.inc"
+
+static const char *esp_err_to_name(esp_err_t error){(void)error;return "mock platform error";}
+static unsigned execution_io;
+static void (*execution_hook)(void);
+typedef struct {int code;char *message;void *data;size_t data_size;} ts_cmd_result_t;
+static esp_err_t ts_console_exec(const char *command,ts_cmd_result_t *result)
+{
+    (void)command;++execution_io;if(execution_hook)execution_hook();
+    result->code=0;result->message=strdup("completed");return ESP_OK;
+}
+static esp_err_t executed(ts_action_result_t *result)
+{++execution_io;result->status=TS_ACTION_STATUS_SUCCESS;return ESP_OK;}
+static esp_err_t exec_ssh_bound(const ts_auto_action_ssh_t *ssh,const ts_action_ssh_host_t *host,ts_action_result_t *result)
+{(void)ssh;assert(host);return executed(result);}
+static esp_err_t execute_bound_ref(const ts_auto_action_t *action,ts_action_result_t *result)
+{assert(action->runtime_binding);return executed(result);}
+esp_err_t ts_action_exec_led(const ts_auto_action_led_t *action,ts_action_result_t *result){(void)action;return executed(result);}
+esp_err_t ts_action_exec_gpio(const ts_auto_action_gpio_t *action,ts_action_result_t *result){(void)action;return executed(result);}
+esp_err_t ts_action_exec_log(const ts_auto_action_log_t *action,ts_action_result_t *result){(void)action;return executed(result);}
+esp_err_t ts_action_exec_device(const ts_auto_action_device_t *action,ts_action_result_t *result){(void)action;return executed(result);}
+static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;ts_action_result_t result;return executed(&result);}
+static esp_err_t execute_service_control(const ts_action_queue_entry_t *entry,ts_action_result_t *result){(void)entry;return executed(result);}
+#include "action_execution.inc"
+esp_err_t ts_action_submit_prepared(const ts_auto_action_t *action)
+{ts_action_queue_entry_t entry={.action=*action};ts_action_result_t result={0};return execute_entry(&entry,&result);}
+#include "rule_repeat.inc"
+static void *run_automation(void *arg){automation_task(arg);return NULL;}
+
+static ts_auto_config_status_t status(void)
+{ ts_auto_config_status_t value;ts_auto_config_status(&value);return value; }
+static esp_err_t write_object(ts_auto_config_kind_t kind,const char *raw,const char *version,
+                              ts_auto_config_error_t *error)
+{
+    cJSON *value=cJSON_Parse(raw);assert(value);
+    esp_err_t ret=ts_auto_config_set(kind,value,version,error);cJSON_Delete(value);return ret;
+}
+
+static void stop_cases(void)
+{
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"stop\",\"name\":\"Stop test\",\"enabled\":true,\"cooldown_ms\":0,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"log\",\"message\":\"run\"}]}",NULL,NULL)==ESP_OK);
+    top_ctx.mutex=xSemaphoreCreateMutex();top_ctx.state=TS_AUTO_STATE_RUNNING;top_ctx.task_handle=(void*)1;
+    block_action=true;action_reached=action_released=false;pthread_t task;
+    assert(!pthread_create(&task,NULL,run_automation,NULL));
+    pthread_mutex_lock(&execution_gate);while(!action_reached)pthread_cond_wait(&execution_changed,&execution_gate);pthread_mutex_unlock(&execution_gate);
+    assert(ts_automation_stop()==ESP_ERR_TIMEOUT && ts_automation_start()==ESP_ERR_INVALID_STATE);
+    int index=find_rule_index("stop");assert(index>=0 && s_rule_ctx.meta[index].executing);
+    async_pending=true;
+    pthread_mutex_lock(&execution_gate);action_released=true;pthread_cond_broadcast(&execution_changed);pthread_mutex_unlock(&execution_gate);
+    assert(!pthread_join(task,NULL));block_action=false;
+    assert(!s_rule_ctx.meta[index].executing && !((rule_payload_t*)s_rule_ctx.rules[index].lease)->refs);
+    assert(ts_automation_stop()==ESP_ERR_TIMEOUT && ts_automation_start()==ESP_ERR_INVALID_STATE && !source_stops);
+    async_pending=false;assert(ts_automation_stop()==ESP_OK && source_stops==1);
+    assert(ts_automation_start()==ESP_OK && ts_action_manager_accepting());
+    top_ctx.deinitializing=true;assert(ts_automation_start()==ESP_ERR_INVALID_STATE);top_ctx.deinitializing=false;
+    top_ctx.task_handle=NULL;vSemaphoreDelete(top_ctx.mutex);top_ctx.mutex=NULL;
+    assert(ts_rule_unregister("stop")==ESP_OK);
+}
+
+static void rule_publication_cases(void)
+{
+    ts_auto_rule_t *rules=calloc(64,sizeof(*rules));assert(rules);
+    for(int i=0;i<64;++i){snprintf(rules[i].id,sizeof(rules[i].id),"r%d",i);strcpy(rules[i].name,"Original");}
+    ts_rule_config_view_t *prepared=NULL;
+    assert(engine_prepare(rules,65,true,&prepared)==ESP_ERR_INVALID_SIZE && !prepared);
+    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true);
+    assert(ts_rule_count()==64);
+    s_rule_ctx.rules[0].last_trigger_ms=77;s_rule_ctx.rules[0].trigger_count=2;
+    ts_auto_rule_t held;assert(ts_rule_acquire("r0",&held)==ESP_OK);uint32_t identity=held.instance;
+    strcpy(rules[1].name,"Changed");
+    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true);
+    assert(s_rule_ctx.rules[0].instance==identity && s_rule_ctx.rules[0].last_trigger_ms==77 && s_rule_ctx.rules[0].trigger_count==2);
+    assert(!strcmp(held.name,"Original") && s_rule_ctx.retired==1);ts_rule_release(&held);assert(!s_rule_ctx.retired);
+    engine_pause();assert(!s_rule_ctx.config_enabled);free(rules);
+}
+
+static void rule_config_cases(void)
+{
+    ts_auto_rule_t rule={0};strcpy(rule.id,"aux");strcpy(rule.name,"First");
+    ts_rule_commit_result_t result;
+    assert(ts_rule_commit(&rule,rule.id,0,&result)==ESP_OK && result.applied==1 && result.durable==1);
+    ts_auto_rule_t held;assert(ts_rule_acquire(rule.id,&held)==ESP_OK && held.revision==1);
+    strcpy(rule.name,"Second");assert(ts_rule_commit(&rule,rule.id,1,&result)==ESP_OK && result.revision==2);
+    ts_auto_rule_t current;assert(ts_rule_acquire(rule.id,&current)==ESP_OK && !strcmp(current.name,"Second"));ts_rule_release(&current);
+    assert(!strcmp(held.name,"First"));assert(ts_rule_unregister(rule.id)==ESP_OK);
+    assert(ts_rule_acquire(rule.id,&current)==ESP_ERR_NOT_FOUND);ts_rule_release(&held);
+    ts_auto_variable_t ready={0};strcpy(ready.name,"test.ready");strcpy(ready.source_id,"test_sdk");
+    ready.value.type=TS_AUTO_VAL_BOOL;ready.value.bool_val=true;assert(ts_variable_register(&ready)==ESP_OK);
+    const struct {bool enabled,manual,allow;} triggers[]={
+        {true,false,false}, /* Automatic rule with manual control disabled. */
+        {true,true,true},   /* Manual rule never runs on evaluation. */
+        {false,true,true},  /* Disabled rules cannot run. */
+        {true,false,true}   /* Allowed for the following admission checks. */
+    };
+    for(unsigned i=0;i<sizeof(triggers)/sizeof(triggers[0]);++i){
+        bool enabled=triggers[i].enabled,manual=triggers[i].manual,allow=triggers[i].allow;
+        char raw[512];snprintf(raw,sizeof(raw),"{\"id\":\"eval\",\"name\":\"Evaluate\",\"enabled\":%s,\"manual_trigger\":%s,\"show_on_dashboard\":false,\"allow_manual_trigger\":%s,\"cooldown_ms\":0,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"log\",\"message\":\"run\"}]}",enabled?"true":"false",manual?"true":"false",allow?"true":"false");
+        assert(write_object(TS_AUTO_CONFIG_RULE,raw,NULL,NULL)==ESP_OK);
+        unsigned before=rule_actions;bool triggered=true;
+        assert(ts_rule_evaluate("eval",&triggered)==ESP_OK && (rule_actions>before)==(enabled&&!manual));
+        ts_rule_reject_t why=TS_RULE_REJECT_NONE;before=rule_actions;
+        esp_err_t ret=ts_rule_trigger_ex("eval",&why);
+        assert((ret==ESP_OK)==(enabled&&allow) && (rule_actions>before)==(enabled&&allow));
+    }
+    refuse_actions=true;ts_rule_reject_t why;assert(ts_rule_trigger_ex("eval",&why)==ESP_ERR_INVALID_STATE && why==TS_RULE_REJECT_NOT_ACCEPTING);refuse_actions=false;
+    assert(ts_auto_config_enable(false,NULL,NULL)==ESP_OK);
+    const ts_auto_config_view_t *paused_view=ts_auto_config_acquire();
+    assert(ts_auto_config_definitions(paused_view)!=NULL);ts_auto_config_release(paused_view);
+    assert(ts_rule_trigger_ex("eval",&why)==ESP_ERR_INVALID_STATE && why==TS_RULE_REJECT_PAUSED);
+    assert(ts_auto_config_enable(true,NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"svc\",\"host_id\":\"host\",\"name\":\"Service\",\"command\":\"true\"}",NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"eval\",\"name\":\"Service\",\"enabled\":true,\"allow_manual_trigger\":true,\"manual_trigger\":true,\"actions\":[{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"svc\"}]}",NULL,NULL)==ESP_OK);
+    refuse_service=true;assert(ts_rule_trigger_ex("eval",&why)==ESP_ERR_INVALID_STATE && why==TS_RULE_REJECT_SERVICE_STATE);refuse_service=false;
+    assert(ts_rule_unregister("eval")==ESP_OK);
+    assert(ts_ssh_commands_config_remove("svc")==ESP_OK);
+    const char *package="{\"type\":\"automation_rule\",\"rule\":{\"id\":\"imported\",\"name\":\"Imported\",\"enabled\":true,\"actions\":[{\"type\":\"log\",\"message\":\"imported\"}]}}";
+    cJSON *preview=NULL,*applied=NULL;const char *reason=NULL;
+    assert(ts_rule_import_pack(package,strlen(package),true,false,0,0,0,NULL,NULL,&preview,&reason)==ESP_OK);
+    uint32_t rev=cJSON_GetObjectItem(preview,"expected_revision")->valuedouble;
+    uint32_t generation=cJSON_GetObjectItem(preview,"expected_generation")->valuedouble;
+    const char *digest=cJSON_GetObjectItem(preview,"package_digest")->valuestring;
+    const char *version=cJSON_GetObjectItem(preview,"active_version")->valuestring;
+    assert(ts_rule_import_pack(package,strlen(package),false,false,rev,generation,1,digest,version,&applied,&reason)==ESP_OK);
+    assert(cJSON_IsTrue(cJSON_GetObjectItem(applied,"runtime_applied")) && cJSON_IsFalse(cJSON_GetObjectItem(applied,"restart_required")));
+    assert(ts_rule_acquire("imported",&current)==ESP_OK && current.enabled);ts_rule_release(&current);
+    cJSON_Delete(applied);applied=NULL;
+    assert(ts_rule_import_pack(package,strlen(package),false,true,rev,generation,1,digest,version,&applied,&reason)!=ESP_OK && !strcmp(reason,"configuration_changed"));
+    cJSON *again=NULL;
+    assert(ts_rule_import_pack(package,strlen(package),true,false,0,0,0,NULL,NULL,&again,&reason)==ESP_OK);
+    ts_auto_config_status_t imported=status();
+    assert(cJSON_IsTrue(cJSON_GetObjectItem(again,"unchanged")));
+    assert(ts_rule_import_pack(package,strlen(package),false,false,
+        cJSON_GetObjectItem(again,"expected_revision")->valuedouble,cJSON_GetObjectItem(again,"expected_generation")->valuedouble,1,
+        cJSON_GetObjectItem(again,"package_digest")->valuestring,cJSON_GetObjectItem(again,"active_version")->valuestring,&applied,&reason)==ESP_OK);
+    assert(!strcmp(reason,"no_change") && !strcmp(status().active_version,imported.active_version));
+    cJSON_Delete(again);cJSON_Delete(applied);applied=NULL;
+    const ts_auto_config_view_t *view=ts_auto_config_acquire();const cJSON *rows=cJSON_GetObjectItem(ts_auto_config_json(view),"rules");
+    assert(cJSON_IsObject(cJSON_GetObjectItem(cJSON_GetArrayItem(rows,0),"_package")));ts_auto_config_release(view);
+    assert(ts_rule_disable("imported")==ESP_OK);
+    view=ts_auto_config_acquire();rows=cJSON_GetObjectItem(ts_auto_config_json(view),"rules");
+    assert(!cJSON_GetObjectItem(cJSON_GetArrayItem(rows,0),"_package"));ts_auto_config_release(view);
+    ts_auto_config_status_t before=status();reject_package=true;
+    assert(ts_rule_import_pack(package,strlen(package),true,false,0,0,0,NULL,NULL,&applied,&reason)!=ESP_OK && !strcmp(reason,"signature_invalid"));reject_package=false;
+    assert(!strcmp(status().active_version,before.active_version));
+    assert(ts_rule_unregister("imported")==ESP_OK);cJSON_Delete(preview);
+}
+
+static void source_cases(void)
+{
+    ts_auto_source_t source={.enabled=true,.type=TS_AUTO_SRC_SOCKETIO};
+    strcpy(source.id,"stream");strcpy(source.label,"Stream");
+    strcpy(source.socketio.url,"http://192.0.2.10:9000");strcpy(source.socketio.event,"telemetry");
+    assert(ts_source_register(&source)==ESP_OK);
+    ts_auto_source_t first;assert(ts_source_get_copy("stream",&first)==ESP_OK && first.instance);
+    strcpy(source.id,"other");assert(ts_source_register(&source)==ESP_OK);
+    ts_auto_source_t other;assert(ts_source_get_copy("other",&other)==ESP_OK);
+    sio_connection_t *old=&s_sio_ctx.connections[0],*stable=&s_sio_ctx.connections[1];
+    strcpy(old->source_id,"stream");old->source_instance=first.instance;old->allocated=true;old->task_handle=(void*)1;
+    old->pending_mutex=xSemaphoreCreateMutex();assert(old->pending_mutex);
+    strcpy(stable->source_id,"other");stable->source_instance=other.instance;stable->allocated=true;stable->task_handle=(void*)2;
+    stable->pending_mutex=xSemaphoreCreateMutex();assert(stable->pending_mutex);
+    sio_handle_event_message(old,"42[\"telemetry\",{\"temperature\":20}]");
+    assert(ts_source_get_copy("stream",&source)==ESP_OK && source.connected);
+    ts_auto_variable_t observed={0};strcpy(observed.name,"stream.temperature");strcpy(observed.source_id,"stream");
+    observed.value.type=TS_AUTO_VAL_INT;observed.value.int_val=20;assert(ts_variable_register(&observed)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_HOST,"{\"id\":\"host\",\"host\":\"192.0.2.9\",\"username\":\"operator\",\"port\":22}",NULL,NULL)==ESP_OK);
+    assert(ts_source_get_copy("stream",&source)==ESP_OK && source.connected && source.instance==first.instance);
+    assert(ts_variable_exists("stream.temperature"));
+    strcpy(source.socketio.url,"http://192.0.2.11:9000");assert(ts_source_register(&source)==ESP_OK);
+    assert(ts_source_get_copy("stream",&source)==ESP_OK && source.instance!=first.instance && !source.connected);
+    assert(old->should_stop && !stable->should_stop && stop_notifications);
+    assert(!ts_variable_exists("stream.temperature"));
+    sio_handle_event_message(old,"42[\"telemetry\",{\"temperature\":99}]");
+    ts_auto_source_t current;assert(ts_source_get_copy("stream",&current)==ESP_OK && !current.connected);
+    vSemaphoreDelete(old->pending_mutex);old->pending_mutex=NULL;
+    sio_release_connection(old,true);
+    assert(!old->allocated && stable->allocated && !strcmp(stable->source_id,"other") && stable->source_instance==other.instance);
+    old->source_instance=current.instance;old->should_stop=false;old->allocated=true;
+    old->pending_mutex=xSemaphoreCreateMutex();assert(old->pending_mutex);
+    sio_handle_event_message(old,"42[\"telemetry\",{\"temperature\":30}]");
+    assert(ts_source_get_copy("stream",&current)==ESP_OK && current.connected);
+    ts_source_runtime.closing=true;
+    sio_handle_event_message(old,"42[\"telemetry\",{\"temperature\":31}]");
+    assert(ts_source_get_copy("stream",&source)==ESP_OK && source.last_update_ms==current.last_update_ms);
+    ts_source_runtime.closing=false;
+    assert(ts_source_unregister("stream")==ESP_OK && ts_source_get_copy("stream",&current)==ESP_ERR_NOT_FOUND);
+    sio_handle_event_message(old,"42[\"telemetry\",{\"temperature\":40}]");
+    assert(ts_source_get_copy("other",&current)==ESP_OK && current.instance==other.instance && !current.connected);
+    assert(ts_source_unregister("other")==ESP_OK);
+    vSemaphoreDelete(old->pending_mutex);old->pending_mutex=NULL;sio_release_connection(old,false);
+    vSemaphoreDelete(stable->pending_mutex);stable->pending_mutex=NULL;sio_release_connection(stable,false);
+    cJSON *many=cJSON_CreateArray();assert(many);
+    for(int i=0;i<TS_SOURCE_MAX_SIO_CONNECTIONS+1;++i) {
+        snprintf(source.id,sizeof(source.id),"stream_%d",i);
+        char *raw=ts_source_config_encode(&source);assert(raw);cJSON *row=cJSON_Parse(raw);free(raw);
+        assert(row && cJSON_AddItemToArray(many,row));
+    }
+    ts_auto_config_error_t error={0};ts_auto_config_status_t before=status();
+    assert(ts_auto_config_replace_collection(TS_AUTO_CONFIG_SOURCE,many,NULL,&error)==ESP_ERR_INVALID_SIZE);
+    assert(!strcmp(error.reason,"source_connection_limit") && !strcmp(status().active_version,before.active_version));
+    cJSON_Delete(many);
+}
+#include "ts_api.h"
+#include "../../components/ts_api/src/ts_api_auto_config.h"
+#define TS_STRDUP_PSRAM strdup
+#include "api_result.inc"
+#undef TS_STRDUP_PSRAM
+#include "config_api.inc"
+#include "test_automation_modes.inc"
+#include "test_action_lifecycle.inc"
+#include "test_config_api.inc"
+
+int main(void)
+{
+    s_ctx->accepting=true;
+    assert(mkdtemp(directory));assert(test_mkdir("/autocfg",0775)==0);
+    assert(test_mkdir("/sdcard",0775)==0);
+    ts_auto_config_error_t error={0};
+    assert(ts_variable_init()==ESP_OK && ts_rule_engine_init()==ESP_OK);
+    rule_publication_cases();
+    assert(ts_source_runtime_init()==ESP_OK);
+    ts_source_runtime.running=true;s_sio_ctx.mutex=xSemaphoreCreateMutex();assert(s_sio_ctx.mutex);
+    ts_auto_variable_t sensor={0};strcpy(sensor.name,"system.temperature");strcpy(sensor.source_id,"system");
+    sensor.value.type=TS_AUTO_VAL_INT;sensor.value.int_val=10;sensor.default_value=sensor.value;
+    assert(ts_variable_register(&sensor)==ESP_OK);
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_SD,&error)==ESP_OK);
+    assert(ts_ssh_commands_config_init()==ESP_OK && ts_ssh_hosts_config_init()==ESP_OK);
+    assert(ts_ssh_commands_config_load_state()==ESP_OK && ts_ssh_hosts_config_load_state()==ESP_OK);
+    ts_auto_config_status_t first=status();
+    assert(first.loaded && first.enabled && strlen(first.active_version)==32);
+    assert(write_object(TS_AUTO_CONFIG_HOST,"{\"id\":\"host\",\"host\":\"192.0.2.9\",\"username\":\"operator\",\"port\":22,\"keyid\":\"key-ref\"}",
+                        first.active_version,&error)==ESP_OK);
+    source_cases();
+    rule_config_cases();
+    stop_cases();
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"threshold\",\"source_id\":\"operator\",\"value_type\":2,\"value\":3}",NULL,&error)==ESP_OK);
+    ts_auto_variable_t sample={0};strcpy(sample.name,"threshold");strcpy(sample.source_id,"operator");
+    sample.value.type=TS_AUTO_VAL_INT;sample.value.int_val=77;sample.default_value=sample.value;sample.flags=TS_AUTO_VAR_READONLY;
+    assert(ts_variable_upsert(&sample)==ESP_OK);
+    ts_variable_info_t info;assert(ts_variable_get_info("threshold",&info)==ESP_OK && info.value.int_val==77 && !info.flags);
+    strcpy(sample.source_id,"other_source");assert(ts_variable_upsert(&sample)==ESP_ERR_INVALID_STATE);
+    assert(ts_variable_set_int("threshold",11)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"command\",\"host_id\":\"host\",\"name\":\"Original\",\"command\":\"run\",\"var_name\":\"worker\"}",NULL,&error)==ESP_OK);
+    int32_t observed;
+    assert(ts_variable_get_int("threshold",&observed)==ESP_OK && observed==11);
+    assert(ts_variable_get_int("system.temperature",&observed)==ESP_OK && observed==10);
+    assert(ts_variable_exists("worker.status"));
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"worker.status\",\"value_type\":4,\"value\":\"manual\"}",NULL,&error)==ESP_ERR_INVALID_ARG);
+    assert(!strcmp(error.reason,"variable_name_reserved"));
+    assert(write_object(TS_AUTO_CONFIG_ACTION,"{\"id\":\"template\",\"name\":\"Start\",\"enabled\":true,\"type\":\"ssh_cmd_ref\",\"ssh_ref\":{\"cmd_id\":\"command\"}}",NULL,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"rule\",\"name\":\"Run\",\"enabled\":true,\"actions\":[{\"template_id\":\"template\"}]}",NULL,&error)==ESP_OK);
+    ts_action_template_t template;
+    assert(ts_action_template_get("template",&template)==ESP_OK);
+    const char *execute_reason=NULL;
+    assert(ts_action_template_execute_versioned("template","old-version",NULL,&execute_reason)==ESP_ERR_INVALID_STATE);
+    assert(!strcmp(execute_reason,"configuration_changed"));
+    assert(ts_action_template_execute("template",NULL)==ESP_OK);
+    assert(ts_action_template_get("template",&template)==ESP_OK && template.use_count==1);
+    ts_ssh_command_config_t executed;
+    assert(ts_ssh_commands_config_get("command",&executed)==ESP_OK && executed.instance);
+    assert(ts_ssh_commands_config_update_exec_time(&executed)==ESP_OK);
+    ts_ssh_command_config_t latest;
+    assert(ts_ssh_commands_config_get("command",&latest)==ESP_OK && latest.last_exec_time>0);
+    assert(ts_ssh_commands_config_remove("command")!=ESP_OK); /* Definition references, without remote-state guards. */
+    const ts_auto_config_view_t *held=ts_auto_config_acquire();
+    ts_variable_config_view_t *prepared=NULL;
+    assert(ts_variable_config_prepare(ts_auto_config_definitions(held),NULL,ts_auto_config_definitions(held),&prepared)==ESP_OK);
+    assert(ts_variable_set_int("threshold",12)==ESP_OK && ts_variable_set_int("system.temperature",20)==ESP_OK);
+    ts_variable_config_publish(prepared);
+    assert(ts_variable_get_int("threshold",&observed)==ESP_OK && observed==12);
+    assert(ts_variable_get_int("system.temperature",&observed)==ESP_OK && observed==20);
+    const cJSON *initial=cJSON_GetArrayItem(cJSON_GetObjectItem(ts_auto_config_json(held),"variables"),0);
+    assert(cJSON_GetObjectItem(initial,"value")->valueint==3);
+    assert(!strcmp(ts_auto_config_definitions(held)->commands[0].name,"Original"));
+    ts_auto_config_status_t before=status();
+    cJSON *many=cJSON_CreateArray();assert(many);
+    for(int i=0;i<ts_auto_config_limit(TS_AUTO_CONFIG_VARIABLE);++i) {
+        cJSON *v=cJSON_CreateObject();char name[32];snprintf(name,sizeof(name),"user_%d",i);
+        cJSON_AddStringToObject(v,"name",name);cJSON_AddNumberToObject(v,"value_type",2);cJSON_AddNumberToObject(v,"value",i);
+        assert(cJSON_AddItemToArray(many,v));
+    }
+    assert(ts_auto_config_replace_collection(TS_AUTO_CONFIG_VARIABLE,many,before.active_version,&error)==ESP_ERR_INVALID_SIZE);
+    assert(!strcmp(error.reason,"variable_capacity_reached") && !strcmp(status().active_version,before.active_version));
+    cJSON_Delete(many);
+    fail_prepare=true;
+    unsigned published=publishes;
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"command\",\"host_id\":\"host\",\"name\":\"Changed\",\"command\":\"run\"}",before.active_version,&error)==ESP_ERR_NO_MEM);
+    assert(publishes==published && !strcmp(status().active_version,before.active_version));
+    fail_prepare=false;
+    fail_install=true;
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"command\",\"host_id\":\"host\",\"name\":\"Changed\",\"command\":\"run\"}",before.active_version,&error)==ESP_FAIL);
+    fail_install=false;
+    assert(!strcmp(status().active_version,before.active_version));
+    cJSON *impact=NULL;
+    fail_prepare=true;
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_COMMAND,"command",TS_AUTO_DELETE_FORCE,NULL,
+                                 false,before.active_version,&impact,&error)==ESP_ERR_INVALID_STATE);
+    assert(!strcmp(error.reason,"pause_required"));
+    cJSON_Delete(impact);
+    fail_install=true;
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_COMMAND,"command",TS_AUTO_DELETE_FORCE,NULL,
+                                 true,before.active_version,&impact,&error)==ESP_FAIL && !impact);
+    assert(status().paused && !strcmp(error.reason,"save_failed_automation_paused"));
+    const ts_auto_config_view_t *unchanged=ts_auto_config_acquire();
+    assert(cJSON_GetArraySize(cJSON_GetObjectItem(ts_auto_config_json(unchanged),"commands"))==1);
+    ts_auto_config_release(unchanged);
+    fail_install=false;
+    before=status();
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_COMMAND,"command",TS_AUTO_DELETE_FORCE,NULL,
+                                 true,before.active_version,&impact,&error)==ESP_OK && !impact);
+    assert(status().paused && pauses && !strcmp(ts_auto_config_definitions(held)->commands[0].name,"Original"));
+    fail_prepare=false;
+    assert(ts_ssh_commands_config_add(&executed,NULL,0)==ESP_OK);
+    assert(ts_ssh_commands_config_get("command",&latest)==ESP_OK && latest.instance!=executed.instance && !latest.last_exec_time);
+    assert(ts_ssh_commands_config_update_exec_time(&executed)==ESP_OK);
+    assert(ts_ssh_commands_config_get("command",&latest)==ESP_OK && !latest.last_exec_time); /* An old completion cannot mark a recreated command. */
+    ts_auto_config_template_used(held,0,123456);
+    assert(ts_action_template_get("template",&template)==ESP_OK && !template.use_count);
+    ts_auto_config_release(held);
+    fail_prepare=false;
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_SD,&error)==ESP_OK && status().paused);
+    before=status();fail_prepare=true;
+    assert(write_object(TS_AUTO_CONFIG_HOST,"{\"id\":\"host\",\"host\":\"192.0.2.7\",\"username\":\"operator\"}",NULL,&error)==ESP_ERR_NO_MEM);
+    assert(!strcmp(status().active_version,before.active_version));fail_prepare=false;
+    before=status();
+    fail_install=true;
+    assert(ts_auto_config_enable(true,NULL,&error)==ESP_FAIL && status().paused);
+    assert(!strcmp(status().active_version,before.active_version));
+    fail_install=false;
+    assert(ts_auto_config_enable(true,NULL,&error)==ESP_OK && status().enabled);
+    assert(ts_ssh_hosts_config_clear()!=ESP_OK && ts_ssh_hosts_config_count()==1);
+    before=status();
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_INTERNAL,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_HOST,"{\"id\":\"host\",\"host\":\"192.0.2.8\",\"username\":\"operator\"}",
+                        before.active_version,&error)==ESP_ERR_INVALID_STATE);
+    assert(!strcmp(error.reason,"configuration_changed"));
+    ts_auto_config_status_t current=status();
+    assert(ts_auto_config_edit_begin(current.active_version,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_HOST,"{\"id\":\"host\",\"host\":\"192.0.2.8\",\"username\":\"operator\"}",
+                        NULL,&error)==ESP_OK);
+    ts_auto_config_edit_end();
+    const ts_auto_config_view_t *input=ts_auto_config_acquire();
+    cJSON *migration=cJSON_Duplicate(ts_auto_config_json(input),true);assert(migration);
+    ts_auto_config_release(input);
+    before=status();fail_prepare=true;
+    assert(ts_auto_config_install(TS_AUTO_CONFIG_SD,migration,&error)==ESP_ERR_NO_MEM);
+    assert(!strcmp(status().active_version,before.active_version) && status().source==TS_AUTO_CONFIG_INTERNAL);
+    fail_prepare=false;fail_install=true;
+    assert(ts_auto_config_install(TS_AUTO_CONFIG_SD,migration,&error)==ESP_FAIL);
+    assert(!strcmp(status().active_version,before.active_version) && status().source==TS_AUTO_CONFIG_INTERNAL);
+    fail_install=false;
+    assert(ts_auto_config_install(TS_AUTO_CONFIG_SD,migration,&error)==ESP_OK && status().source==TS_AUTO_CONFIG_SD);
+    cJSON_Delete(migration);
+    assert(ts_auto_config_enable(false,NULL,&error)==ESP_OK);
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_INTERNAL,&error)==ESP_OK && status().paused);
+    ts_auto_config_close();s_config.control_loaded=false; /* New boot reads the persisted decision. */
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_INTERNAL,&error)==ESP_OK && status().paused);
+    fail_control=true;error=(ts_auto_config_error_t){0};
+    assert(ts_auto_config_enable(true,NULL,&error)==ESP_FAIL && error.saved && !strcmp(error.reason,"saved_automation_paused"));
+    assert(status().paused);
+    ts_auto_config_close();s_config.control_loaded=false;
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_INTERNAL,&error)==ESP_OK && status().paused);
+    fail_control=false;
+    assert(ts_auto_config_enable(true,NULL,&error)==ESP_OK && status().enabled);
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_SD,&error)==ESP_OK);
+    before=status();++sd_generation;
+    assert(write_object(TS_AUTO_CONFIG_HOST,"{\"id\":\"host\",\"host\":\"192.0.2.10\",\"username\":\"operator\"}",
+                        before.active_version,&error)==ESP_ERR_INVALID_STATE && !strcmp(error.reason,"sd_card_changed"));
+    assert(status().source==TS_AUTO_CONFIG_INTERNAL);
+    assert(ts_auto_config_open(TS_AUTO_CONFIG_SD,&error)==ESP_OK);
+    held=ts_auto_config_acquire();
+    ts_auto_config_close();
+    assert(ts_auto_config_definitions(held)->host_count==1);
+    ts_auto_config_release(held);
+    action_lifecycle_cases();
+    config_api_cases();
+    config_pack_api_cases();
+    mode_cases();
+    ts_ssh_commands_config_deinit();ts_ssh_hosts_config_deinit();
+    for(int location=TS_AUTO_FILE_SD;location<=TS_AUTO_FILE_INTERNAL;++location)
+        assert(test_unlink(s_paths[location].current)==0);
+    char path[512];
+    const char *dirs[]={"/autocfg","/sdcard/config/automation","/sdcard/config","/sdcard"};
+    for(unsigned i=0;i<sizeof(dirs)/sizeof(dirs[0]);++i)
+    { mapped(dirs[i],path,sizeof(path));assert(rmdir(path)==0); }
+    assert(rmdir(directory)==0);
+    assert(ts_rule_engine_deinit()==ESP_OK && ts_variable_deinit()==ESP_OK);
+    ts_source_runtime_deinit();vSemaphoreDelete(s_sio_ctx.mutex);
+    puts("PASS configuration owner/runtime: commit order, variable values/capacity, retained source connections, stable slots, stale callbacks and force/pause");
+    return 0;
+}

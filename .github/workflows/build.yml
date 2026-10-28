@@ -38,6 +38,7 @@ jobs:
           node-version: '22'
       - run: python3 -m unittest discover -s tests/ci -p 'test_*.py'
       - run: python3 tests/release/test_release.py
+      - run: python3 tests/release/test_serial_upgrade.py
       - name: Select checks and release eligibility
         id: scope
         run: python3 tools/ci/check_profile.py
@@ -213,6 +214,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Package USB / serial partition upgrade
+        run: python3 tools/serial_upgrade.py package --build-dir build --output "build/tianshanos-serial-v$(cat version.txt)"
+
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -222,6 +226,7 @@ jobs:
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
             build/flasher_args.json
+            build/tianshanos-serial-*.zip
           retention-days: 30
 
       - name: Upload full build (for debugging)
@@ -315,6 +320,7 @@ jobs:
           files: |
             firmware/**/*.bin
             firmware/**/flasher_args.json
+            firmware/**/*.zip
           fail_on_unmatched_files: true
           target_commitish: ${{ needs.build.outputs.commit }}
           body_path: docs/releases/${{ steps.preflight.outputs.tag }}.md

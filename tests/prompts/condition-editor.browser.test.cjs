@@ -30,7 +30,8 @@ function rule(value='ready',value_type=4,operator='ne'){
   conditions:[condition],actions:[{type:'log',template_id:'fixture-action',message:'fixture',delay_ms:17,async:false,repeat_mode:'count',repeat_count:3,repeat_interval_ms:250,condition:structuredClone(condition)}]};
 }
 async function fixture(original=rule(),language='zh-CN'){
- let stored=structuredClone(original);const writes=[];
+ let stored=structuredClone(original);const writes=[];let revision=1;
+ const status=()=>({active_version:revision.toString(16).padStart(32,'0'),loaded:true,configured:true,enabled:true,source:'sd',sd_available:true});
  const context=await browser.newContext();await context.addInitScript(language=>{localStorage.setItem('ts_language',language);class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}window.WebSocket=Socket;},language);
  const page=await context.newPage();
  await page.route('**/*',async route=>{
@@ -39,10 +40,11 @@ async function fixture(original=rule(),language='zh-CN'){
   if(url.pathname==='/js/app.js'&&process.env.CONDITION_EDITOR_BASELINE){await route.fulfill({contentType:'application/javascript',body:fs.readFileSync(process.env.CONDITION_EDITOR_BASELINE,'utf8')});return;}
   if(!url.pathname.startsWith('/api/')){await route.continue();return;}
   const endpoint=url.pathname.slice('/api/v1/'.length);let data={};
-  if(endpoint==='automation/actions/list')data={templates:[{id:'fixture-action',name:'Action " & < >',type:'log'}]};
-  if(endpoint==='automation/rules/get')data=stored;
+  if(endpoint==='automation/config/status')data=status();
+  if(endpoint==='automation/actions/list')data={...status(),templates:[{id:'fixture-action',name:'Action " & < >',type:'log'}]};
+  if(endpoint==='automation/rules/get')data={...stored,active_version:status().active_version};
   if(endpoint==='automation/rules/update'||endpoint==='automation/rules/add'){
-   const params=req.postDataJSON();writes.push(structuredClone(params));stored={...stored,...params,revision:stored.revision+1};delete stored.expected_revision;data={revision:stored.revision,mirror_synced:true};
+   const params=req.postDataJSON();assert.equal(params.active_version,status().active_version);writes.push(structuredClone(params));stored={...stored,...params,revision:stored.revision+1};delete stored.active_version;++revision;data={...status(),saved:true};
   }
   await route.fulfill({json:{code:0,data}});
  });

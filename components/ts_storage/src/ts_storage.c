@@ -67,6 +67,9 @@ esp_err_t ts_storage_deinit(void)
         return ESP_ERR_INVALID_STATE;
     }
     
+    esp_err_t ret = ts_storage_unmount_auto();
+    if (ret != ESP_OK) return ret;
+
     /* Unmount filesystems if mounted */
     if (s_storage.spiffs_mounted) {
         ts_storage_unmount_spiffs();
@@ -193,7 +196,21 @@ char *ts_storage_read_string(const char *path)
     return str;
 }
 
-esp_err_t ts_storage_write_file(const char *path, const void *data, size_t size)
+esp_err_t ts_storage_open_write(const char *path, FILE **file)
+{
+    if (!file) return ESP_ERR_INVALID_ARG;
+    *file = NULL;
+    ts_storage_sd_lock();
+    esp_err_t ret = ts_storage_check_write_path(path, false);
+    if (ret == ESP_OK) {
+        *file = fopen(path, "wb");
+        if (!*file) ret = ESP_FAIL;
+    }
+    ts_storage_sd_unlock();
+    return ret;
+}
+
+static esp_err_t write_file_unchecked(const char *path, const void *data, size_t size)
 {
     if (path == NULL || data == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -206,14 +223,22 @@ esp_err_t ts_storage_write_file(const char *path, const void *data, size_t size)
     }
     
     size_t written = fwrite(data, 1, size, f);
-    fclose(f);
+    int closed = fclose(f);
     
-    if (written != size) {
+    if (written != size || closed != 0) {
         TS_LOGE(TAG, "Write error: %zu of %zu bytes", written, size);
         return ESP_FAIL;
     }
     
     return ESP_OK;
+}
+
+esp_err_t ts_storage_write_file(const char *path, const void *data, size_t size)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(path,false);
+    if(ret==ESP_OK)ret=write_file_unchecked(path, data, size);
+    ts_storage_sd_unlock();return ret;
 }
 
 esp_err_t ts_storage_write_string(const char *path, const char *str)
@@ -225,7 +250,7 @@ esp_err_t ts_storage_write_string(const char *path, const char *str)
     return ts_storage_write_file(path, str, strlen(str));
 }
 
-esp_err_t ts_storage_append(const char *path, const void *data, size_t size)
+static esp_err_t append_unchecked(const char *path, const void *data, size_t size)
 {
     if (path == NULL || data == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -237,16 +262,24 @@ esp_err_t ts_storage_append(const char *path, const void *data, size_t size)
     }
     
     size_t written = fwrite(data, 1, size, f);
-    fclose(f);
+    int closed = fclose(f);
     
-    if (written != size) {
+    if (written != size || closed != 0) {
         return ESP_FAIL;
     }
     
     return ESP_OK;
 }
 
-esp_err_t ts_storage_delete(const char *path)
+esp_err_t ts_storage_append(const char *path, const void *data, size_t size)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(path,false);
+    if(ret==ESP_OK)ret=append_unchecked(path,data,size);
+    ts_storage_sd_unlock();return ret;
+}
+
+static esp_err_t delete_unchecked(const char *path)
 {
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -260,7 +293,15 @@ esp_err_t ts_storage_delete(const char *path)
     return ESP_OK;
 }
 
-esp_err_t ts_storage_rename(const char *old_path, const char *new_path)
+esp_err_t ts_storage_delete(const char *path)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(path,true);
+    if(ret==ESP_OK)ret=delete_unchecked(path);
+    ts_storage_sd_unlock();return ret;
+}
+
+static esp_err_t rename_unchecked(const char *old_path, const char *new_path)
 {
     if (old_path == NULL || new_path == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -274,7 +315,16 @@ esp_err_t ts_storage_rename(const char *old_path, const char *new_path)
     return ESP_OK;
 }
 
-esp_err_t ts_storage_copy(const char *src_path, const char *dst_path)
+esp_err_t ts_storage_rename(const char *old_path, const char *new_path)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(old_path,true);
+    if(ret==ESP_OK)ret=ts_storage_check_write_path(new_path,true);
+    if(ret==ESP_OK)ret=rename_unchecked(old_path, new_path);
+    ts_storage_sd_unlock();return ret;
+}
+
+static esp_err_t copy_unchecked(const char *src_path, const char *dst_path)
 {
     if (src_path == NULL || dst_path == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -302,8 +352,9 @@ esp_err_t ts_storage_copy(const char *src_path, const char *dst_path)
         }
     }
     
+    if (ferror(src)) ret = ESP_FAIL;
     fclose(src);
-    fclose(dst);
+    if (fclose(dst) != 0) ret = ESP_FAIL;
     
     if (ret != ESP_OK) {
         unlink(dst_path);
@@ -312,11 +363,19 @@ esp_err_t ts_storage_copy(const char *src_path, const char *dst_path)
     return ret;
 }
 
+esp_err_t ts_storage_copy(const char *src_path, const char *dst_path)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(dst_path,false);
+    if(ret==ESP_OK)ret=copy_unchecked(src_path, dst_path);
+    ts_storage_sd_unlock();return ret;
+}
+
 /*===========================================================================*/
 /*                         Directory Operations                               */
 /*===========================================================================*/
 
-esp_err_t ts_storage_mkdir(const char *path)
+static esp_err_t mkdir_unchecked(const char *path)
 {
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -333,7 +392,15 @@ esp_err_t ts_storage_mkdir(const char *path)
     return ESP_OK;
 }
 
-esp_err_t ts_storage_mkdir_p(const char *path)
+esp_err_t ts_storage_mkdir(const char *path)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(path,false);
+    if(ret==ESP_OK)ret=mkdir_unchecked(path);
+    ts_storage_sd_unlock();return ret;
+}
+
+static esp_err_t mkdir_p_unchecked(const char *path)
 {
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -372,7 +439,15 @@ esp_err_t ts_storage_mkdir_p(const char *path)
     return ESP_OK;
 }
 
-esp_err_t ts_storage_rmdir(const char *path)
+esp_err_t ts_storage_mkdir_p(const char *path)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(path,false);
+    if(ret==ESP_OK)ret=mkdir_p_unchecked(path);
+    ts_storage_sd_unlock();return ret;
+}
+
+static esp_err_t rmdir_unchecked(const char *path)
 {
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -386,7 +461,15 @@ esp_err_t ts_storage_rmdir(const char *path)
     return ESP_OK;
 }
 
-esp_err_t ts_storage_rmdir_r(const char *path)
+esp_err_t ts_storage_rmdir(const char *path)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(path,true);
+    if(ret==ESP_OK)ret=rmdir_unchecked(path);
+    ts_storage_sd_unlock();return ret;
+}
+
+static esp_err_t rmdir_r_unchecked(const char *path)
 {
     if (path == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -403,16 +486,21 @@ esp_err_t ts_storage_rmdir_r(const char *path)
         char full_path[TS_STORAGE_MAX_PATH];
         snprintf(full_path, sizeof(full_path), "%s/%s", path, info.name);
         
-        if (info.is_directory) {
-            ts_storage_rmdir_r(full_path);
-        } else {
-            unlink(full_path);
-        }
+        ret = info.is_directory ? ts_storage_rmdir_r(full_path) : ts_storage_delete(full_path);
+        if (ret != ESP_OK) break;
     }
     
     ts_storage_dir_close(&iter);
     
-    return ts_storage_rmdir(path);
+    return ret == ESP_OK ? ts_storage_rmdir(path) : ret;
+}
+
+esp_err_t ts_storage_rmdir_r(const char *path)
+{
+    ts_storage_sd_lock();
+    esp_err_t ret=ts_storage_check_write_path(path,true);
+    if(ret==ESP_OK)ret=rmdir_r_unchecked(path);
+    ts_storage_sd_unlock();return ret;
 }
 
 esp_err_t ts_storage_dir_open(ts_dir_iterator_t *iter, const char *path)

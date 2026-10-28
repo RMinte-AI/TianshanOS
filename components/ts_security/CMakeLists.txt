@@ -12,9 +12,11 @@ idf_component_register(
         "src/ts_keystore.c"
         "src/ts_ssh_hosts_config.c"
         "src/ts_ssh_commands_config.c"
+        "src/ts_ssh_config_codec.c"
         "src/ts_ssh_log_watch.c"
         "src/ts_ssh_probe.c"
         "src/ts_ssh_service.c"
+        "src/ts_ssh_run_store.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -27,6 +29,7 @@ idf_component_register(
         ch405labs_esp_libssh2
         json
     PRIV_REQUIRES
+        ts_storage
         esp_timer
         ts_config_pack
 )

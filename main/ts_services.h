@@ -24,6 +24,8 @@ extern "C" {
  *
  * @return ESP_OK 成功
  */
+/* Prepare and migrate persistent settings before any owning service starts. */
+esp_err_t ts_services_prepare_config(void);
 esp_err_t ts_services_register_all(void);
 
 #ifdef __cplusplus

@@ -77,36 +77,10 @@ esp_err_t ts_source_enable(const char *id);
 esp_err_t ts_source_disable(const char *id);
 
 /**
- * @brief Get source by ID
- *
- * @param id Source ID
- * @return Source pointer or NULL
+ * @brief Copy a source definition and its current status
  */
-const ts_auto_source_t *ts_source_get(const char *id);
-
-/**
- * @brief Get mutable source by ID (for internal use)
- *
- * @param id Source ID
- * @return Mutable source pointer or NULL
- */
-ts_auto_source_t *ts_source_get_mutable(const char *id);
-
-/**
- * @brief Get number of registered sources
- *
- * @return Source count
- */
+esp_err_t ts_source_get_copy(const char *id, ts_auto_source_t *out);
 int ts_source_count(void);
-
-/**
- * @brief Get source by index
- *
- * @param index Source index (0 to source_count-1)
- * @return Source pointer or NULL if index out of range
- * @note Pointer is only valid while holding internal mutex, prefer ts_source_get_by_index_copy
- */
-const ts_auto_source_t *ts_source_get_by_index(int index);
 
 /**
  * @brief Get source by index with thread-safe copy

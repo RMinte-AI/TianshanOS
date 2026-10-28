@@ -348,6 +348,18 @@ static struct {
     struct arg_end *end;
 } s_mkdir_args;
 
+static int fs_mutation_error(const char *command, const char *path, esp_err_t ret)
+{
+    if (ret == ESP_ERR_NOT_ALLOWED) {
+        ts_console_error("%s: '%s' belongs to Automation. Use Automation > Configuration & backup, or edit items in their lists.\n", command, path);
+    } else if (ret == ESP_ERR_INVALID_ARG) {
+        ts_console_error("%s: invalid path '%s'.\n", command, path);
+    } else {
+        ts_console_error("%s: could not change '%s'. Check the path and storage.\n", command, path);
+    }
+    return 1;
+}
+
 static int cmd_mkdir(int argc, char **argv)
 {
     int nerrors = arg_parse(argc, argv, (void **)&s_mkdir_args);
@@ -368,12 +380,10 @@ static int cmd_mkdir(int argc, char **argv)
     char resolved[256];
     resolve_path(s_mkdir_args.path->sval[0], resolved, sizeof(resolved));
     
-    int ret = mkdir(resolved, 0755);
-    if (ret != 0) {
-        ts_console_error("mkdir: cannot create '%s': %s\n", resolved, strerror(errno));
-        return 1;
-    }
-    
+    esp_err_t ret = s_mkdir_args.parents->count
+        ? ts_storage_mkdir_p(resolved) : ts_storage_mkdir(resolved);
+    if (ret != ESP_OK) return fs_mutation_error("mkdir", resolved, ret);
+
     return 0;
 }
 
@@ -388,44 +398,6 @@ static struct {
     struct arg_lit *help;
     struct arg_end *end;
 } s_rm_args;
-
-static int rm_recursive(const char *path);
-
-static int rm_dir_contents(const char *path)
-{
-    DIR *dir = opendir(path);
-    if (!dir) return -1;
-    
-    struct dirent *entry;
-    char fullpath[512];
-    int ret = 0;
-    
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", path, entry->d_name);
-        ret = rm_recursive(fullpath);
-        if (ret != 0) break;
-    }
-    
-    closedir(dir);
-    return ret;
-}
-
-static int rm_recursive(const char *path)
-{
-    struct stat st;
-    if (stat(path, &st) != 0) return -1;
-    
-    if (S_ISDIR(st.st_mode)) {
-        rm_dir_contents(path);
-        return rmdir(path);
-    } else {
-        return unlink(path);
-    }
-}
 
 static int cmd_rm(int argc, char **argv)
 {
@@ -451,31 +423,25 @@ static int cmd_rm(int argc, char **argv)
     bool recursive = s_rm_args.recursive->count > 0;
     bool force = s_rm_args.force->count > 0;
     
+    esp_err_t ret = ts_storage_check_write_path(resolved, true);
+    if (ret != ESP_OK) return fs_mutation_error("rm", resolved, ret);
     struct stat st;
     if (stat(resolved, &st) != 0) {
-        if (!force) {
-            ts_console_error("rm: cannot remove '%s': %s\n", resolved, strerror(errno));
-            return 1;
-        }
-        return 0;
+        if (force && errno == ENOENT) return 0;
+        ts_console_error("rm: cannot remove '%s': %s\n", resolved, strerror(errno));
+        return 1;
     }
-    
-    int ret;
     if (S_ISDIR(st.st_mode)) {
         if (!recursive) {
             ts_console_error("rm: cannot remove '%s': Is a directory (use -r)\n", resolved);
             return 1;
         }
-        ret = rm_recursive(resolved);
+        ret = ts_storage_rmdir_r(resolved);
     } else {
-        ret = unlink(resolved);
+        ret = ts_storage_delete(resolved);
     }
-    
-    if (ret != 0 && !force) {
-        ts_console_error("rm: cannot remove '%s': %s\n", resolved, strerror(errno));
-        return 1;
-    }
-    
+    if (ret != ESP_OK) return fs_mutation_error("rm", resolved, ret);
+
     return 0;
 }
 
@@ -509,12 +475,6 @@ static int cmd_cp(int argc, char **argv)
     resolve_path(s_cp_args.src->sval[0], src_resolved, sizeof(src_resolved));
     resolve_path(s_cp_args.dst->sval[0], dst_resolved, sizeof(dst_resolved));
     
-    FILE *src = fopen(src_resolved, "rb");
-    if (!src) {
-        ts_console_error("cp: cannot open '%s': %s\n", src_resolved, strerror(errno));
-        return 1;
-    }
-    
     // 检查目标是否是目录
     struct stat st;
     if (stat(dst_resolved, &st) == 0 && S_ISDIR(st.st_mode)) {
@@ -529,22 +489,9 @@ static int cmd_cp(int argc, char **argv)
         }
     }
     
-    FILE *dst = fopen(dst_resolved, "wb");
-    if (!dst) {
-        fclose(src);
-        ts_console_error("cp: cannot create '%s': %s\n", dst_resolved, strerror(errno));
-        return 1;
-    }
-    
-    char buffer[1024];
-    size_t bytes;
-    while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
-        fwrite(buffer, 1, bytes, dst);
-    }
-    
-    fclose(src);
-    fclose(dst);
-    
+    esp_err_t ret = ts_storage_copy(src_resolved, dst_resolved);
+    if (ret != ESP_OK) return fs_mutation_error("cp", dst_resolved, ret);
+
     return 0;
 }
 
@@ -591,12 +538,9 @@ static int cmd_mv(int argc, char **argv)
         }
     }
     
-    if (rename(src_resolved, dst_resolved) != 0) {
-        ts_console_error("mv: cannot move '%s' to '%s': %s\n", 
-                        src_resolved, dst_resolved, strerror(errno));
-        return 1;
-    }
-    
+    esp_err_t ret = ts_storage_rename(src_resolved, dst_resolved);
+    if (ret != ESP_OK) return fs_mutation_error("mv", src_resolved, ret);
+
     return 0;
 }
 

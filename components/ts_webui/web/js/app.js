@@ -4,10 +4,10 @@ function runtimeText(key) {
     return translated && translated !== 'runtimeRepair.' + key ? translated : key;
 }
 async function ruleWriteWithRevision(method, id) {
-    const current = await api.call('automation.rules.get', { id });
-    if (current.code !== 0) return {...current, endpoint: 'automation.rules.get'};   // the read failed, not the write
-    if (!Number.isInteger(current.data?.revision)) return current;
-    return api.call(method, { id, expected_revision: current.data.revision });
+    const view = configurationList('rules');
+    const rule = view?.items.find(item => item.id === id);
+    if (!rule) throw pageFailure('configuration_version_required');
+    return api.call(method, {id, expected_revision: rule.revision, active_version: view.version});
 }
 /**
  * TianshanOS Web App - Main Application
@@ -24,6 +24,458 @@ function capturePageValidity() {
     const content = document.getElementById('page-content');
     return () => (typeof router === 'undefined' || router.navigation === navigation) &&
         (!navigation || navigation.isCurrent()) && document.getElementById('page-content') === content;
+}
+
+// Configuration versions belong to the displayed list or editor, never a later read.
+const automationLists = new Map();
+const automationReads = new Map();
+let automationUiGeneration = 0;
+let automationConfigStatus = null;
+const configText = (key, params) => t('automationConfig.' + key, params);
+const configEndpoints = {rules: 'automation.rules.delete', actions: 'automation.actions.delete',
+    commands: 'ssh.commands.remove', hosts: 'ssh.hosts.remove', sources: 'automation.sources.delete'};
+function configurationRead(kind) {
+    const pageCurrent = capturePageValidity(), generation = automationUiGeneration;
+    const token = Symbol(kind); automationReads.set(kind, token);
+    return () => pageCurrent() && generation === automationUiGeneration && automationReads.get(kind) === token;
+}
+function recordConfigurationList(kind, data, items) {
+    automationLists.set(kind, {version: data.active_version, items, current: capturePageValidity()});
+}
+function configurationList(kind) {
+    const view = automationLists.get(kind);
+    return view?.current() ? view : null;
+}
+function configurationVersion(kind) {
+    const version = configurationList(kind)?.version;
+    if (!version) throw pageFailure('configuration_version_required');
+    return version;
+}
+async function configurationResult(result) {
+    const data = result?.data;
+    if (!data?.active_version) return;
+    const changedSource = data.source && automationConfigStatus && automationConfigStatus.source !== data.source;
+    if (data.source) automationConfigStatus = data;
+    if (data.saved || changedSource) { ++automationUiGeneration; automationLists.clear(); }
+    renderConfigurationSummary();
+    if (data.saved || changedSource) await refreshConfigurationViews();
+}
+function renderConfigurationSummary() {
+    const summary = document.getElementById('automation-config-summary');
+    if (!summary || !automationConfigStatus) return;
+    const d = automationConfigStatus;
+    summary.textContent = configText(!d.loaded ? 'notLoaded' : d.source === 'sd' ? 'usingSd' : 'usingInternal') +
+        (d.paused ? ' · ' + configText('paused') : '') +
+        (d.awaiting_sd_choice ? ' · ' + configText('cardChoice') : '') +
+        (d.source==='internal'&&d.sd_available===false ? ' · '+configText('resourcesUnavailable') : '');
+}
+async function refreshConfigurationStatus(check = false) {
+    const current = configurationRead('config-status');
+    const endpoint = check ? 'automation.config.refresh' : 'automation.config.status';
+    const result = await api.call(endpoint, {});
+    if (!current()) return null;
+    await configurationResult(result);
+    requireApiSuccess(result, endpoint);
+    return result.data;
+}
+function bindConfigurationEditor(modal, kind, version) {
+    const pageCurrent = capturePageValidity();
+    const context = {version: version || configurationList(kind)?.version, source: automationConfigStatus?.source};
+    modal._configuration = context; modal.dataset.configurationClosed = 'false';
+    modal.onkeydown=event=>{
+        if(event.key==='Escape'){event.preventDefault();event.stopPropagation();modal.querySelector('.sf button:not(.primary)')?.click();}
+        if(event.key==='Enter'&&event.target.closest('button.primary.bad'))event.preventDefault();
+    };
+    modal.querySelector('.sf button:not(.primary)')?.focus();
+    if (typeof router !== 'undefined') router.navigation?.onDispose(() => {
+        if (modal._configuration === context) {modal.dataset.configurationClosed = 'true';modal.remove();}
+    });
+    context.current = () => modal.isConnected && !modal.classList.contains('hidden') &&
+        modal.dataset.configurationClosed !== 'true' && modal._configuration === context && pageCurrent();
+    modal.querySelector('.configuration-edit-note')?.remove();
+    const note = document.createElement('p'); note.className = 't-note configuration-edit-note';
+    context.note = note;
+    const buttons = [...modal.querySelectorAll('.sf .primary')];
+    buttons.forEach(button => button.disabled = !context.version);
+    context.ready = (async () => {
+        if (!context.version) {
+            const result = requireApiSuccess(await api.call('automation.config.status', {}), 'automation.config.status');
+            if (!context.current()) return;
+            context.version = result.data.active_version; context.source = result.data.source;
+        }
+        if (context.current() && !context.busy) buttons.forEach(button => button.disabled = false);
+    })().catch(error => {
+        if (context.current()) {note.innerHTML = failureNote({error, endpoint: 'automation.config.status', write: false}); modal.querySelector('.sb')?.prepend(note);}
+    });
+    return context;
+}
+async function configurationEditorParams(modalId, params) {
+    const context = document.getElementById(modalId)?._configuration;
+    if (!context) throw pageFailure('configuration_version_required');
+    await context.ready;
+    if (!context.current()) throw pageFailure('configuration_changed');
+    if (!context.version) throw pageFailure('configuration_version_required');
+    return {...params, active_version: context.version};
+}
+async function configurationEditorSave(modalId, endpoint, params) {
+    const modal = document.getElementById(modalId), context = modal?._configuration;
+    if (!context) throw pageFailure('configuration_version_required');
+    if (context.busy) return null;
+    context.busy = true;
+    const buttons = [...modal.querySelectorAll('button')].map(button => [button, button.disabled]);
+    buttons.forEach(([button]) => button.disabled = true);
+    try {
+        const versioned = await configurationEditorParams(modalId, params);
+        const result = await api.call(endpoint, versioned);
+        if (!context.current()) return null;
+        await configurationResult(result);
+        return context.current() ? result : null;
+    } catch (error) {
+        if (context.current()) throw error;
+        return null;
+    } finally {
+        context.busy = false;
+        if (context.current()) buttons.forEach(([button, disabled]) => button.disabled = disabled);
+    }
+}
+
+function configurationEditorRead(modalId) {
+    const modal = document.getElementById(modalId), context = modal?._configuration;
+    return async data => {
+        if (!context) return false;
+        await context.ready;
+        if (!context.current()) return false;
+        if (data?.active_version !== context.version) {
+            context.note.textContent = configText('editorChanged');
+            modal.querySelector('.sb')?.prepend(context.note);
+            modal.querySelectorAll('.sf .primary').forEach(button => button.disabled = true);
+            return false;
+        }
+        return true;
+    };
+}
+function configurationHandler(name, ...args) {
+    return escapeHtml(name + '(' + args.map(value => JSON.stringify(value)).join(',') + ')');
+}
+async function refreshConfigurationViews() {
+    const calls = [];
+    if (document.getElementById('rules-list')) calls.push(refreshRules(), refreshActions(), refreshSources(), refreshAutomationStatus());
+    if (document.getElementById('commands-list')) calls.push((async () => {await loadSshCommands(); await loadHostSelector(); refreshCommandsList();})());
+    if (document.getElementById('ssh-hosts-table-body')) calls.push(refreshSshHostsList());
+    if (document.getElementById('quick-actions-grid')) calls.push(refreshQuickActions());
+    await Promise.allSettled(calls);
+}
+async function showAutomationConfig() {
+    document.getElementById('automation-config-modal')?.remove();
+    const modal = document.createElement('div'); modal.id = 'automation-config-modal'; modal.className = 'modal show';
+    document.body.appendChild(modal);
+    if (typeof router !== 'undefined') router.navigation?.onDispose(() => modal.remove());
+    modal.onkeydown = event => {if (event.key === 'Escape') {event.stopPropagation();if(modal.dataset.busy !== 'true')closeModal(modal.id);}};
+    modal.innerHTML = sheet(640, configText('title'), '<div id="automation-config-body" class="mgrid"><p class="t-note">' + t('common.loading') + '</p></div>',
+        `<button type="button" class="btn lg" onclick="closeModal('automation-config-modal')">${t('common.close')}</button>`);
+    modal.querySelector('.sf button').focus();
+    try {const status = await refreshConfigurationStatus(); if (modal.isConnected && modal.dataset.configurationClosed !== 'true' && status) renderAutomationConfig(modal, status);}
+    catch (error) {if (modal.isConnected) modal.querySelector('#automation-config-body').innerHTML = failureNote({error, write: false});}
+}
+function renderAutomationConfig(modal, d) {
+    const value = text => `<span class="t-body">${escapeHtml(text)}</span>`;
+    const saved = d.internal_exists ? (d.internal_saved_at ? new Date(d.internal_saved_at * 1000).toLocaleString() : configText('savedTimeUnknown')) : configText('noBackup');
+    const backup = !d.internal_exists ? configText('noBackup') : !d.internal_valid ? configText('backupUnreadable') :
+        !d.comparison_known ? configText('comparisonUnknown') : configText(d.backup_matches ? 'backupCurrent' : 'backupBehind');
+    const button = (operation, label, disabled = false) => `<button type="button" class="btn sm" data-config-operation="${operation}"${disabled ? ' disabled' : ''}>${configText(label)}</button>`;
+    modal.querySelector('#automation-config-body').innerHTML =
+        `<p class="t-body">${configText(!d.loaded ? 'notLoaded' : d.source === 'sd' ? 'sdExplanation' : 'internalExplanation')}</p>` +
+        (!d.loaded && d.load_error ? failureNote({token: d.load_error, write: false}) : '') +
+        grp(row(configText(d.loaded ? 'currentSource' : 'storageSource'), value(configText(d.source === 'sd' ? 'sd' : 'internal'))) +
+            row(configText('card'), value(configText(d.sd_available ? 'cardAvailable' : 'cardUnavailable'))) +
+            row(configText('backupTime'), value(saved)) + row(configText('backupState'), value(backup))) +
+        `<section class="config-section"><h3 class="gt">${configText(d.source === 'sd' ? 'backupGroup' : 'sourceGroup')}</h3>` +
+        (d.source === 'sd' ? `<p class="t-note">${configText('included')}</p><div class="acts wrap">${button('backup', 'saveBackup', !d.loaded || d.uncertain)}${button('restore_internal', 'restoreBackup', !d.internal_valid)}</div><p class="t-note">${configText('backupManual')}</p>` :
+            `<p class="t-note">${configText(d.sd_available ? 'chooseCard' : 'insertCard')}</p><div class="acts wrap">${button('use_sd', 'useSd', !d.sd_available)}${button('save_to_sd', 'saveToSd', !d.sd_available || !d.loaded || d.uncertain)}</div>`) +
+        (d.sd_available===false ? `<p class="t-note" role="status">${configText('resourcesUnavailable')}</p>` : '') +
+        `</section><section class="config-section"><h3 class="gt">${configText('operationsGroup')}</h3><div class="acts wrap">${button('check', 'checkCard')}${button(d.paused ? 'enable' : 'disable', d.paused ? 'enable' : 'disable', !d.loaded)}</div></section><div id="automation-config-result" class="t-note" role="status"></div>`;
+    modal.querySelectorAll('[data-config-operation]').forEach(button => button.onclick = () => automationConfigOperation(button.dataset.configOperation, modal));
+}
+function configurationChanges(diff) {
+    const rows = [];
+    for (const [key, label] of [['added', 'added'], ['changed', 'changed'], ['removed', 'removed']]) {
+        const items = diff?.[key] || [];
+        if (items.length) rows.push(`<p class="t-label">${configText(label, {count: items.length})}</p><ul>${items.map(item =>
+            `<li>${escapeHtml(configText('kind_' + item.collection))} · ${escapeHtml(item.name || item.id)}</li>`).join('')}</ul>`);
+    }
+    if (diff?.settings_changed) rows.push(`<p>${configText('settingsChanged')}</p>`);
+    if (diff?.complete === false) rows.push(`<p>${configText('diffIncomplete')}</p>`);
+    return rows.length ? `<div style="max-height:240px;overflow:auto">${rows.join('')}</div>` : `<p>${configText('noDifference')}</p>`;
+}
+async function automationConfigOperation(operation, modal = document.getElementById('automation-config-modal')) {
+    if (!modal || modal.dataset.busy === 'true') return;
+    const pageCurrent=capturePageValidity(),status=automationConfigStatus;
+    const current=()=>pageCurrent()&&modal.isConnected&&modal.dataset.configurationClosed!=='true';
+    modal.querySelector('.sf button').disabled=true;
+    modal.dataset.busy = 'true'; modal.querySelectorAll('[data-config-operation]').forEach(button => button.disabled = true);
+    const box = modal.querySelector('#automation-config-result');
+    box.textContent = t('toast.processing');
+    try {
+        let result;
+        if (operation === 'check') result = await api.call('automation.config.refresh', {});
+        else if (operation === 'backup') result = await api.call('automation.config.backup', {active_version: status.active_version});
+        else if (operation === 'enable' || operation === 'disable') result = await api.call('automation.config.enable', {enabled: operation === 'enable', active_version: status.active_version});
+        else {
+            const preview = requireApiSuccess(await api.call('automation.config.preview', {operation}), 'automation.config.preview').data;
+            if (!current() || !modal.isConnected) return;
+            modal.classList.add('hidden');
+            const confirmation = confirmSheet({title: configText(operation), primary: configText(operation),
+                tone: operation === 'use_sd' ? 'neutral' : 'danger', width: 560,
+                bodyHtml: `<p>${configText('confirm_' + operation)}</p>${configurationChanges(preview.diff)}<p>${configText(preview.will_remain_paused ? 'willStayPaused' : 'willRun')}</p>`});
+            let dialog = document.getElementById('confirm-sheet-' + confirmSheetSeq);
+            if (typeof router !== 'undefined') router.navigation?.onDispose(() => dialog?.querySelector('[data-r="0"]')?.click());
+            const accepted = await confirmation; dialog = null;
+            modal.classList.remove('hidden');
+            if (!accepted || !current() || !modal.isConnected) return;
+            result = await api.call('automation.config.apply', {operation, active_version: preview.active_version, target_version: preview.target_version});
+        }
+        if (!current() || !modal.isConnected) return;
+        await configurationResult(result);
+        if (result.code !== 0) {box.innerHTML = failureNote({result, write: operation !== 'check'});return;}
+        renderAutomationConfig(modal, result.data);
+        if (operation !== 'check') showToast(configText(operation === 'backup' ? 'backupSaved' : 'operationDone'), 'success');
+
+    } catch (error) {if (current() && modal.isConnected) box.innerHTML = failureNote({error, write: operation !== 'check'});}
+    finally {
+        modal.dataset.busy = 'false';
+        if (current() && automationConfigStatus) {
+            // Keep an error visible while restoring the controls for an explicit next action.
+            const message = modal.querySelector('#automation-config-result')?.innerHTML;
+            renderAutomationConfig(modal, automationConfigStatus);
+            modal.querySelector('.sf button').disabled=false;modal.querySelector('.sf button').focus();
+            if (message) modal.querySelector('#automation-config-result').innerHTML = message;
+        }
+    }
+}
+const configurationDeletesInFlight = new Set();
+function configurationImpact(impact) {
+    const sections = [];
+    for (const kind of ['rules', 'actions', 'commands', 'sources']) {
+        const rows = impact?.[kind] || [];
+        if (rows.length) sections.push(`<div class="gt">${configText('kind_' + kind)} · ${rows.length}</div><ul>${rows.map(row => `<li>${escapeHtml(row.name || row.id)} <span class="mono">${escapeHtml(row.id)}</span></li>`).join('')}</ul>`);
+    }
+    return sections.length ? `<div style="max-height:220px;overflow:auto">${sections.join('')}</div>` : `<p>${configText('noReferences')}</p>`;
+}
+async function deleteConfiguration(kind, id, name = id, view = configurationList(kind)) {
+    const key = kind + ':' + id;
+    if (configurationDeletesInFlight.has(key)) return;
+    const version = view?.version;
+    if (!version) {reportFailure({token: 'configuration_version_required', write: false});return;}
+    configurationDeletesInFlight.add(key);
+    const modal = document.createElement('div'); modal.className = 'modal show'; modal.id = 'configuration-delete-modal';
+    modal.innerHTML = sheet(560, configText('deleteTitle', {name: escapeHtml(name)}),
+        `<div class="seg"><button type="button" class="on" data-delete-mode="normal">${configText('normalDelete')}</button><button type="button" data-delete-mode="force">${configText('forceDelete')}</button></div>` +
+        `<p class="t-note">${configText('deleteDoesNotStop')}</p><div id="configuration-delete-impact">${t('common.loading')}</div>` +
+        `<div id="configuration-delete-options"></div><div id="configuration-delete-result" class="t-note" role="status"></div>`,
+        `<button type="button" class="btn lg" data-delete-cancel>${t('common.cancel')}</button><button type="button" class="btn lg primary bad" data-delete-submit disabled>${t('common.delete')}</button>`);
+    document.body.appendChild(modal);
+    const pageCurrent = capturePageValidity();
+    const op = {rules: 'rule.delete', actions: 'action.delete', commands: 'command.delete', sources: 'source.delete', hosts: 'host.remove'}[kind];
+    let force = false, impact = null, ready = false, busy = false, stale = false, pauseRequired = false, pauseConfirmed = false, replacementChoice = '';
+    const current = () => pageCurrent() && modal.isConnected;
+    const cleanup = () => {modal.remove(); configurationDeletesInFlight.delete(key);};
+    modal.querySelector('[data-delete-cancel]').onclick = () => {if (!busy) cleanup();};
+    modal.onkeydown = event => {
+        if (event.key === 'Escape') {event.stopPropagation();if (!busy) cleanup();}
+        if (event.key === 'Enter' && event.target.matches('[data-delete-submit]')) event.preventDefault();
+    };
+    if (typeof router !== 'undefined') router.navigation?.onDispose(cleanup);
+    modal.querySelector('[data-delete-cancel]').focus();
+    const render = () => {
+        const selection = modal.querySelector('#configuration-delete-replacement'), pause = modal.querySelector('#configuration-delete-pause');
+        if (selection) replacementChoice = selection.value;
+        if (pause) pauseConfirmed = pause.checked;
+        modal.querySelectorAll('[data-delete-mode]').forEach(button => button.classList.toggle('on', (button.dataset.deleteMode === 'force') === force));
+        const options = modal.querySelector('#configuration-delete-options');
+        if (force) options.innerHTML = `<p class="t-body">${configText('forceExplanation')}</p>` +
+            (pauseRequired || impact?.requires_pause ? `<label class="t-body"><input type="checkbox" id="configuration-delete-pause"> ${configText('confirmPause')}</label>` : '');
+        else {
+            const referenced = ['rules', 'actions', 'commands', 'sources'].some(key => impact?.[key]?.length);
+            const replacements = ['actions', 'commands', 'hosts'].includes(kind) ? (view.items || []).filter(row => row?.id && row.id !== id && row.enabled !== false) : [];
+            options.innerHTML = referenced ? grp(row(configText('referencesAction'), `<select class="field" id="configuration-delete-replacement"><option value="">${configText('unlink')}</option>${replacements.map(row => `<option value="${escapeHtml(row.id)}">${configText('replaceWith', {name: escapeHtml(row.name || row.id)})}</option>`).join('')}</select>`)) : '';
+        }
+        const replacement = modal.querySelector('#configuration-delete-replacement'), pauseChoice = modal.querySelector('#configuration-delete-pause');
+        if (replacement) replacement.value = replacementChoice;
+        if (pauseChoice) pauseChoice.checked = pauseConfirmed;
+        modal.querySelector('[data-delete-cancel]').disabled = busy;
+        modal.querySelectorAll('[data-delete-mode]').forEach(button => button.disabled = busy);
+        const submit = modal.querySelector('[data-delete-submit]');
+        submit.textContent = configText(force ? 'forceDelete' : 'normalDelete');
+        submit.disabled = busy || stale || (!force && !ready);
+        const recheck = modal.querySelector('[data-delete-recheck]');
+        if (recheck) recheck.disabled = busy;
+    };
+    const showRecheck = details => {
+        stale = true;
+        const notice = modal.querySelector('#configuration-delete-result');
+        notice.innerHTML = failureNote(details);
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'btn sm'; button.dataset.deleteRecheck = '';
+        button.textContent = configText('reviewDelete');
+        const actions = document.createElement('div'); actions.className = 'acts'; actions.style.marginTop = '8px';
+        actions.appendChild(button); notice.appendChild(actions);
+        button.onclick = async () => {
+            if (busy) return;
+            busy = true; render();
+            try {
+                automationLists.delete(kind);
+                await refreshConfigurationViews();
+                if (!current()) return;
+                const refreshed = configurationList(kind);
+                if (!refreshed) throw pageFailure('configuration_version_required');
+                const target = refreshed.items.find(item => item.id === id);
+                cleanup();
+                await deleteConfiguration(kind, id, target?.name || target?.label || name, refreshed);
+            } catch (error) {
+                if (current()) showRecheck({error, write: false});
+            } finally {busy = false; if (current()) render();}
+        };
+    };
+    modal.querySelectorAll('[data-delete-mode]').forEach(button => button.onclick = () => {if (!busy) {force = button.dataset.deleteMode === 'force';render();}});
+    modal.querySelector('[data-delete-submit]').onclick = async () => {
+        if (busy || stale || (!force && !ready)) return;
+        const pause = modal.querySelector('#configuration-delete-pause');
+        if (force && (pauseRequired || impact?.requires_pause) && !pause?.checked) {fieldError('configuration-delete-pause', configText('confirmPause'));return;}
+        const replacement = modal.querySelector('#configuration-delete-replacement')?.value;
+        const params = {id, active_version: version, ...(force ? {force: true, pause_automation: !!pause?.checked} :
+            replacement ? {replacement_id: replacement} : {mode: 'cascade'})};
+        busy = true;render();
+        try {
+            const result = await api.call(configEndpoints[kind], params);
+            if (!current()) return;
+            await configurationResult(result);
+            if (result.code === 0) {
+                const details = result.data?.impact;
+                const message = result.data?.paused && params.pause_automation ? configText('deletedPaused', {name}) : configText('deleted',
+                    {name, rules: details?.rules?.length || 0, actions: details?.actions?.length || 0});
+                cleanup();showToast(message, 'success');
+            } else {
+                if (apiErrorReason(result) === 'pause_required') {force = true;pauseRequired = true;impact = result.data?.impact || impact;}
+                if (apiErrorReason(result) === 'configuration_changed') showRecheck({op, params: {name}, result, write: true});
+                else modal.querySelector('#configuration-delete-result').innerHTML = failureNote({op, params: {name}, result, write: true});
+                render();
+            }
+        } catch (error) {if (current()) modal.querySelector('#configuration-delete-result').innerHTML = failureNote({op, params: {name}, error, write: true});}
+        finally {busy = false;if (current()) render();}
+    };
+    try {
+        const result = await api.call(configEndpoints[kind], {id, active_version: version, preview: true});
+        if (!current()) return;
+        if (result.code === 0) {
+            impact = result.data?.impact; modal.querySelector('#configuration-delete-impact').innerHTML = configurationImpact(impact);
+            ready = true;
+        }
+        else {
+            modal.querySelector('#configuration-delete-impact').innerHTML = failureNote({result, write: false});
+            if (apiErrorReason(result) === 'configuration_changed') showRecheck({result, write: false});
+        }
+        render();
+    } catch (error) {if (current()) {modal.querySelector('#configuration-delete-impact').innerHTML = failureNote({error, write: false});render();}}
+}
+
+const configurationImports = {
+    'ssh-host': {handler: 'SshHost', kind: 'hosts', endpoint: 'ssh.hosts.import', title: 'securityPage.importSshHostTitle', desc: 'securityPage.importSshHostDesc', label: 'sshHost'},
+    'ssh-cmd': {handler: 'SshCommand', kind: 'commands', endpoint: 'ssh.commands.import', title: 'ssh.importSshCmdTitle', desc: 'ssh.importSshCmdDesc', label: 'sshCommand'},
+    source: {handler: 'Source', kind: 'sources', endpoint: 'automation.sources.import', title: 'automation.importSourceTitle', desc: 'automation.importSourceDesc', label: 'source'},
+    action: {handler: 'Action', kind: 'actions', endpoint: 'automation.actions.import', title: 'automation.importActionTitle', desc: 'automation.importActionDesc', label: 'action'},
+    rule: {handler: 'Rule', kind: 'rules', endpoint: 'automation.rules.import', title: 'ruleConfig.importTitle', desc: 'ruleConfig.importDesc', label: 'rule'}
+};
+function showConfigurationImport(key) {
+    const spec = configurationImports[key], id = `import-${key}-modal`;
+    document.getElementById(id)?.remove();
+    const modal = document.createElement('div'); modal.id = id; modal.className = 'modal show';
+    modal.innerHTML = importSheet(key, t(spec.title), t(spec.desc), `preview${spec.handler}Import`,
+        `confirm${spec.handler}Import`, `hideImport${spec.handler}Modal`);
+    const recheck = document.createElement('button'); recheck.type = 'button'; recheck.className = 'btn lg';
+    recheck.textContent = configText('previewAgain'); recheck.onclick = () => previewConfigurationImport(key);
+    modal.querySelector('.sf').insertBefore(recheck, modal.querySelector('.sf .primary'));
+    document.body.appendChild(modal);
+    bindConfigurationEditor(modal, spec.kind);
+    // Binding an editor does not mean a file has been verified.
+    modal._configuration.ready.then(() => {if (modal.isConnected) modal.querySelector(`#import-${key}-btn`).disabled = true;});
+    modal._pack = {attempt: 0, preview: null, busy: false};
+    modal.onkeydown = event => {if (event.key === 'Escape') {event.stopPropagation();hideConfigurationImport(key);}};
+    router.navigation?.onDispose(() => modal.remove());
+}
+function hideConfigurationImport(key) {
+    const modal = document.getElementById(`import-${key}-modal`);
+    if (modal && !modal._pack.busy) modal.remove();
+}
+async function previewConfigurationImport(key) {
+    const spec = configurationImports[key], modal = document.getElementById(`import-${key}-modal`);
+    if (!modal || modal._pack.busy) return;
+    const state = modal._pack, attempt = ++state.attempt, accept = configurationEditorRead(modal.id);
+    const current = () => modal._configuration.current() && attempt === state.attempt;
+    state.preview = null;
+    const input = modal.querySelector(`#import-${key}-file`), file = input.files?.[0];
+    const box = modal.querySelector(`#import-${key}-result`), button = modal.querySelector(`#import-${key}-btn`);
+    button.disabled = true;
+    if (!file) return;
+    modal.querySelector(`#import-${key}-file-status`).textContent = file.name;
+    box.className = 'result-box'; box.textContent = t('ssh.verifyingPack');
+    modal.querySelector(`#import-${key}-preview`).innerHTML = importPlaceholder(key);
+    try {
+        const bytes = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(await file.arrayBuffer());
+        if (!current()) return;
+        const params = await configurationEditorParams(modal.id, {tscfg: bytes, filename: file.name, preview: true});
+        const result = requireApiSuccess(await api.call(spec.endpoint, params), spec.endpoint);
+        if (!current() || !await accept(result.data)) return;
+        const data = result.data;
+        if (data?.valid !== true || !data.package_digest || !Number.isInteger(data.credential_generation) ||
+            (key === 'rule' && (data.trusted !== true || data.target_matches !== true))) throw pageFailure('invalid_response');
+        state.preview = data; state.bytes = bytes; state.filename = file.name;
+        renderImportPreview(key, {...data, note: configText('importAppliesNow')}, configText('kind_' + spec.kind));
+        const detail = modal.querySelector(`#import-${key}-preview`);
+        for (const item of data.items || []) detail.insertAdjacentHTML('beforeend', row(configText('kind_' + item.collection), escapeHtml(item.name || item.id)));
+        if (data.rule) {
+            const rule = data.rule, conditions = Array.isArray(rule.conditions) ? rule.conditions.length : rule.conditions?.items?.length || 0;
+            detail.insertAdjacentHTML('beforeend', row(t('rulePack.summaryLabel'), escapeHtml(t('rulePack.summary', {conditions, actions: rule.actions?.length || 0}))) +
+                `<details><summary>${t('rulePack.content')}</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify(rule, null, 2))}</pre></details>`);
+            for (const warning of data.warnings || []) {
+                const warningKey = {dynamic_inputs: 'dynamicInputs', dependency_disabled: 'disabledDependency'}[warning];
+                if (warningKey) detail.insertAdjacentHTML('beforeend', row(t('securityPage.noteLabel'), escapeHtml(t('rulePack.' + warningKey))));
+            }
+        }
+        box.className = 'result-box success'; box.textContent = t(key === 'rule' ? 'rulePack.verified' : 'ssh.signatureVerified');
+        button.disabled = false;
+    } catch (error) {
+        if (current()) packBox(box, {op: 'pack.verify', params: {kind: t('failure.kinds.' + spec.label), file: file.name}, error, endpoint: spec.endpoint, write: false});
+    }
+}
+async function confirmConfigurationImport(key) {
+    const spec = configurationImports[key], modal = document.getElementById(`import-${key}-modal`);
+    if (!modal) return;
+    const state = modal._pack, preview = state.preview;
+    if (state.busy || !preview) return;
+    const current = modal._configuration.current, box = modal.querySelector(`#import-${key}-result`);
+    const params = {tscfg: state.bytes, filename: state.filename, active_version: preview.active_version,
+        overwrite: modal.querySelector(`#import-${key}-overwrite`).checked};
+    if (key === 'rule') Object.assign(params, {expected_revision: preview.expected_revision,
+        expected_generation: preview.expected_generation, credential_generation: preview.credential_generation, package_digest: preview.package_digest});
+    else Object.assign(params, {expected_credential: preview.credential_generation, expected_digest: preview.package_digest});
+    state.busy = true; modal.querySelectorAll('button,input').forEach(element => element.disabled = true);
+    box.className = 'result-box'; box.textContent = t('ssh.savingConfig');
+    try {
+        const result = await api.call(spec.endpoint, params);
+        if (!current()) return;
+        await configurationResult(result);
+        requireApiSuccess(result, spec.endpoint);
+        state.preview = null;
+        box.className = 'result-box success'; box.textContent = configText('importSaved');
+        showToast(t('failure.ops.pack.import.done', {file: state.filename}), 'success');
+
+    } catch (error) {
+        if (current()) packBox(box, {op: 'pack.import', params: {kind: t('failure.kinds.' + spec.label), file: state.filename}, error, endpoint: spec.endpoint, write: true});
+        state.preview = null;
+    } finally {
+        state.busy = false;
+        if (current()) {modal.querySelectorAll('button,input').forEach(element => element.disabled = false); modal.querySelector(`#import-${key}-btn`).disabled = true;}
+    }
 }
 
 let ws = null;
@@ -201,7 +653,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 全局键盘快捷键
     document.addEventListener('keydown', (e) => {
         // Esc 键取消 SSH 命令执行
-        if (e.key === 'Escape' && typeof currentExecSessionId !== 'undefined' && currentExecSessionId) {
+        if (e.key === 'Escape' && typeof currentExecSessionId !== 'undefined' && currentExecSessionId && !document.querySelector('.modal:not(.hidden)')) {
             e.preventDefault();
             cancelExecution();
         }
@@ -570,6 +1022,13 @@ const kvRow = (label, value = '-', id = '') => `<div class="kv"><span>${label}</
 const sheet = (w, title, body, foot = '', close = '', cls = '') =>
     `<div class="sheet m-float${cls ? ' ' + cls : ''}" style="width:${w}px"><div class="sh"><span class="st">${title}</span>${close ? `<button type="button" class="btn icon round xbtn" onclick="${close}" aria-label="${t('common.close')}" title="${t('common.close')}"><svg class="i"><use href="#ri-close-line"/></svg></button>` : ''}</div><div class="sb">${body}</div>${foot ? `<div class="sf">${foot}</div>` : ''}</div>`;
 const gt = title => `<div class="gt">${title}</div>`;
+function mountPageModals(page) {
+    for (const modal of page.querySelectorAll('.modal')) {
+        document.body.appendChild(modal);
+        router.navigation.onDispose(() => modal.remove());
+    }
+}
+const gridTable = (columns, rows) => `<div class="data-table" style="--cols:${columns}">${rows}</div>`;
 const grp = (rows, style = '') => `<div class="grp"${style ? ` style="${style}"` : ''}>${rows}</div>`;
 const row = (label, ctl, note = '', tip = '') => `<div class="row"><div class="rl"${tip ? ` title="${escapeHtml(tip)}"` : ''}>${label}${note ? `<small>${note}</small>` : ''}</div><div class="rc">${ctl}</div></div>`;
 // 行内输入框：宽度按稿；cls 里 mono 用于标识符/命令/地址；extra 追加属性（type、min、max、value…）
@@ -594,7 +1053,7 @@ function renderImportPreview(key, data, typeVal) {
         row(t('securityPage.configId'), `<span class="mono">${escapeHtml(data.id)}</span>`) +
         (typeVal ? row(t('common.type'), typeVal) : '') +
         row(t('ssh.signer'), escapeHtml(data.signer) + (data.official ? ` <span class="state ok">${t('ssh.official')}</span>` : '')) +
-        row(t('securityPage.noteLabel'), escapeHtml(data.note || t('ssh.restartToLoad'))) +
+        row(t('securityPage.noteLabel'), escapeHtml(data.note || configText('importAppliesNow'))) +
         row(t('ssh.overwriteExisting'), swc(`import-${key}-overwrite`), data.exists ? t('securityPage.configExistsWarning') : '');
 }
 
@@ -704,11 +1163,12 @@ async function loadSystemPage() {
                     <div class="card-h">
                         <span class="t-section">${t('system.devicePanel')}</span>
                         <div class="acts">
-                            <button id="agx-power-btn" class="btn sm pw bad" onclick="toggleAgxPower()">${pwHtml('system.agxPowerName', t('system.powerOff'))}</button>
+                            <button id="agx-power-btn" class="btn sm pw" onclick="toggleAgxPower()">${pwHtml('system.agxPowerName', t('system.powerOff'))}</button>
                             <button id="lpmu-power-btn" class="btn sm pw warn" onclick="toggleLpmuPower()">${pwHtml('system.lpmuPowerName', t('system.lpmuUnknown'))}</button>
                             <button class="btn sm" onclick="showWidgetManager()"><svg class="i"><use href="#ri-apps-line"/></svg>${t('system.widgetManager')}</button>
                         </div>
                     </div>
+                    ${api.isRoot() ? `<div class="acts" style="margin:8px 0"><button type="button" class="btn sm" onclick="showServiceRuns()"><svg class="i"><use href="#ri-server-line"/></svg>${serviceRunText('title')}</button></div>` : ''}
                     <div id="quick-actions-grid" class="qa-grid">
                         <div class="t-note">${t('common.loading')}</div>
                     </div>
@@ -1096,7 +1556,7 @@ function updateAgxPowerButton() {
     const btn = document.getElementById('agx-power-btn');
     if (!btn) return;
 
-    btn.className = 'btn sm pw ' + (agxPowerState ? 'ok' : 'bad');
+    btn.className = 'btn sm pw' + (agxPowerState ? ' ok' : '');
     btn.innerHTML = pwHtml('system.agxPowerName', t(agxPowerState ? 'system.powerRunning' : 'system.powerOff'));
     btn.title = t(agxPowerState ? 'system.agxPowerOffTitle' : 'system.agxPowerOnTitle');
 }
@@ -2846,7 +3306,7 @@ function loadDataWidgetsFromLocalStorage() {
 
 /**
  * 保存数据组件配置
- * 双写：后端 API (SD卡/NVS) + localStorage (备份)
+ * 后端保存到系统 NVS；浏览器保留现有本地显示设置。
  */
 async function saveDataWidgets() {
     // 防止重复保存
@@ -2858,15 +3318,15 @@ async function saveDataWidgets() {
         localStorage.setItem('data_widgets_v2', JSON.stringify(dataWidgets));
         localStorage.setItem('data_widgets_refresh_interval', dataWidgetsRefreshInterval.toString());
         
-        // 2. 保存到后端（SD卡 + NVS）
+        // 2. 保存到后端系统配置区
         const response = await api.call('ui.widgets.set', {
             widgets: dataWidgets,
             refresh_interval: dataWidgetsRefreshInterval
         }, 'POST');
         
-        // API 响应格式: {code: 0, data: {sdcard_saved: true, nvs_saved: true}}
+        // API 响应格式: {code: 0, data: {nvs_saved: true}}
         if (response && response.code === 0 && response.data) {
-            console.log(`数据组件配置已保存 (sdcard=${response.data.sdcard_saved}, nvs=${response.data.nvs_saved})`);
+            console.log(`数据组件配置已保存 (nvs=${response.data.nvs_saved})`);
         }
     } catch (e) {
         console.warn('保存数据组件配置到后端失败:', e);
@@ -3774,23 +4234,13 @@ async function refreshQuickActions() {
     }
     
     try {
-        // 确保 SSH 主机数据已加载（用于 nohup 按钮）
-        if (!window._sshHostsData || Object.keys(window._sshHostsData).length === 0) {
-            await loadSshHostsData();
-            if (!pageCurrent()) return;
-        }
-        
-        // 强制刷新 SSH 命令缓存，确保 nohup/serviceMode 等字段为最新
-        await loadSshCommands();
-        if (!pageCurrent()) return;
-        
         const result = await api.call('automation.rules.list');
         if (!pageCurrent()) return;
-        
+        recordConfigurationList('quick-rules', result.data || {}, result.data?.rules || []);
         if (result.code === 0 && result.data && result.data.rules) {
             // 过滤出启用且标记为可手动触发的规则
-            if (!result.data.loaded || result.data.recovery_required) {
-                renderQuickActionNotice(container, result.data.recovery_required ? 'recovery' : 'loading'); return;
+            if (!result.data.loaded) {
+                renderQuickActionNotice(container, result.data.load_error ? 'unavailable' : 'loading', result.data.load_error); return;
             }
             const allRules = result.data.rules;
             const manualRules = allRules.filter(r => r.show_on_dashboard === true);
@@ -3817,48 +4267,27 @@ async function refreshQuickActions() {
             }
             
             if (manualRules.length > 0) {
-                // 串行检查每个规则的 nohup 状态并生成卡片，避免多路 ssh.exec 并发导致后端串行/覆盖、结果错位
                 const cardsHtml = [];
                 for (const rule of manualRules) {
-                    const nohupInfo = await checkRuleHasNohupSsh(rule);
-                    if (!pageCurrent()) return;
-                    let nohupBtns = '', statusHtml = '';
-                    let isRunning = false;
-                    if (nohupInfo?.serviceMode) {
-                        statusHtml = `<span class="quick-action-service-status" data-command="${escapeHtml(nohupInfo.commandId)}"><span class="service-value">${runtimeText('unknown')}</span></span>`;
-                        nohupBtns = `
-                            <div class="quick-action-nohup-bar" onclick="event.stopPropagation()">
-                                <button type="button" class="btn icon sm" onclick="verifyServiceState('${escapeHtml(nohupInfo.commandId)}')" title="${runtimeText('verifyState')}" aria-label="${runtimeText('verifyState')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
-                                <button type="button" class="btn sm" onclick="quickActionViewLog('${escapeHtml(nohupInfo.logFile)}', '${escapeHtml(nohupInfo.hostId)}')"><svg class="i"><use href="#ri-file-list-line"/></svg>${t('automationPage.logTitle')}</button>
-                                <button type="button" class="btn sm dg" onclick="quickActionStopProcess('${escapeHtml(nohupInfo.commandId)}', ${!rule.manual_trigger})"><svg class="i"><use href="#ri-stop-fill"/></svg>${t('automationPage.stopProcess')}</button>
-                            </div>`;
-                    }
-                    const cardOnClick = `triggerQuickAction('${escapeHtml(rule.id)}')`;
-                    const cleanName = rule.name.replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F1E0}-\u{1F1FF}\u200D]+\s*/gu, '').trim();
+                    const cardOnClick = configurationHandler('triggerQuickAction', rule.id);
+                    const cleanName = (rule.name || rule.id).replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F1E0}-\u{1F1FF}\u200D]+\s*/gu, '').trim();
                     cardsHtml.push(`
-                        <div class="quick-action-card${nohupInfo ? ' has-nohup' : ''}${nohupInfo?.serviceMode ? ' has-service' : ''}${isRunning ? ' is-running' : ''}" 
+                        <div class="quick-action-card"
                              id="quick-action-${escapeHtml(rule.id)}"
                              data-rule-id="${escapeHtml(rule.id)}"
-                             data-allowed="${rule.enabled && rule.allow_manual_trigger && !rule.reference_unresolved && !nohupInfo?.unresolved && rule.pending_change !== 'delete' && rule.runtime_active !== false}"
-                             data-block="${rule.pending_change === 'delete' ? 'rule_pending_delete' : !rule.enabled ? 'rule_disabled' : !rule.allow_manual_trigger ? 'manual_not_allowed' : rule.reference_unresolved ? 'reference_unresolved' : nohupInfo?.unresolved ? 'rule_details_unavailable' : rule.runtime_active === false ? 'rule_not_active' : ''}"
-                             data-pending-change="${escapeHtml(rule.pending_change || 'none')}"
-                             aria-disabled="${rule.pending_change === 'delete' || rule.runtime_active === false}"
-                             data-service="${nohupInfo?.serviceMode ? escapeHtml(nohupInfo.commandId) : ''}"
-                             data-state="${nohupInfo?.serviceMode ? 'unknown' : 'stopped'}"
+                             data-allowed="${rule.enabled && rule.allow_manual_trigger && !rule.reference_unresolved && rule.runtime_active !== false}"
+                             data-block="${!rule.enabled ? 'rule_disabled' : !rule.allow_manual_trigger ? 'manual_not_allowed' : rule.reference_unresolved ? 'reference_unresolved' : rule.runtime_active === false ? 'rule_not_active' : ''}"
+                             aria-disabled="${rule.runtime_active === false}"
                              onclick="${cardOnClick}" 
                              title="${escapeHtml(cleanName)}">
                             <div class="quick-action-head"><div class="quick-action-name">${escapeHtml(cleanName)}</div></div>
-                            <div class="quick-action-foot"><small>${rule.pending_change === 'delete' ? t('rulePack.pendingDelete') + ' · ' : ''}${(!nohupInfo?.serviceMode || !rule.enabled || !rule.manual_trigger) ? runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic') : ''}${(rule.reference_unresolved || nohupInfo?.unresolved) ? ' · ' + runtimeText('referenceUnresolved') : ''}${statusHtml && (!rule.enabled || !rule.manual_trigger) ? ' · ' : ''}${statusHtml}</small>${nohupBtns}</div>
+                            <div class="quick-action-foot"><small>${runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic')}${rule.reference_unresolved ? ' · ' + runtimeText('referenceUnresolved') : ''}</small></div>
                         </div>
                     `);
                 }
                 container.innerHTML = cardsHtml.join('');
                 
-                // 更新服务状态
-                updateQuickActionServiceStatus();
-                
-                // 启动定时刷新服务状态（每 3 秒）
-                startServiceStatusRefresh();
+
             } else {
                 renderQuickActionNotice(container, 'empty');
             }
@@ -3875,131 +4304,200 @@ async function refreshQuickActions() {
 /**
  * 更新快捷操作卡片中的服务状态
  */
-let serviceStatusRefreshInterval = null;
 
-function startServiceStatusRefresh() {
-    // 清除之前的定时器
-    stopServiceStatusRefresh();
-    
-    // 每 3 秒刷新一次服务状态
-    serviceStatusRefreshInterval = setInterval(() => {
-        const statusContainers = document.querySelectorAll('.quick-action-service-status, .service-mode-status .service-status');
-        if (statusContainers.length === 0) {
-            stopServiceStatusRefresh();
-            return;
-        }
-        updateQuickActionServiceStatus();
-    }, 3000);
-}
+// Explicit controls poll only the local operation record. No automatic resubmission.
 
-function stopServiceStatusRefresh() {
-    if (serviceStatusRefreshInterval) {
-        clearInterval(serviceStatusRefreshInterval);
-        serviceStatusRefreshInterval = null;
-    }
+const serviceRunText = (key, params) => t('serviceRuns.' + key, params);
+let serviceRuns = new Map(), serviceStatusRead = null, serviceStatusRefreshInterval = null;
+const serviceStateVersions = new Map(), serviceVerifyInFlight = new Set(), serviceStopInFlight = new Set();
+function advanceServiceState(runId) {
+    const version = (serviceStateVersions.get(runId) || 0) + 1;
+    serviceStateVersions.set(runId, version); return version;
 }
-
-let serviceStatusInFlight = false;
-const serviceStateVersions = new Map();
-function advanceServiceState(commandId) {
-    const version = (serviceStateVersions.get(commandId) || 0) + 1;
-    serviceStateVersions.set(commandId, version);
-    return version;
+function serviceStateLabel(data) {
+    if (['queued','executing'].includes(data.operation_phase)) return runtimeText(data.operation_phase === 'queued' ? 'controlQueued' :
+        data.operation_kind === 'stop' ? 'stopping' : data.operation_kind === 'verify' ? 'checking' : 'starting');
+    if (!data.state || data.state === 'unknown') return serviceRunText(['failed','expired','unconfirmed'].includes(data.operation_phase)?'unconfirmed':'unverified');
+    return serviceRunText('lastResult', {state: runtimeText(data.state)});
 }
-const serviceVerifyInFlight = new Set();
-const serviceStates = ['unknown', 'starting', 'checking', 'running', 'ready', 'stopping', 'stopped', 'timeout', 'failed'];
 function renderServiceState(element, data = {}) {
-    const launching = data.operation_phase === 'queued' || data.operation_phase === 'executing';
-    const state = launching ? (data.operation_kind === 'stop' ? 'stopping' : data.operation_kind === 'verify' ? 'checking' : 'starting') : serviceStates.includes(data.state) ? data.state : 'unknown';
-    for (const value of serviceStates) element.classList.remove('status-' + value);
-    element.classList.add('status-' + state);
-    const label = element.querySelector('.service-value') || element;
-    label.textContent = runtimeText(launching ? (data.operation_phase === 'queued' ? 'controlQueued' : data.operation_kind === 'verify' ? 'controlVerifying' : state) : state);
-    element.title = runtimeText('stateEvidence') + ': ' + (data.source || 'none') +
-        (data.confirmed_ms ? ' · ' + runtimeText('confirmedAt') + ' ' + Math.floor(data.confirmed_ms / 1000) + 's' : '');
-    const card = element.closest('.quick-action-card');
-    if (card) card.dataset.state = state;
+    element.textContent = serviceStateLabel(data);
+    element.title = data.confirmed_ms ? serviceRunText('checkedAt', {seconds: Math.floor(data.confirmed_ms / 1000)}) : serviceRunText('unverifiedHint');
 }
-function renderServiceCommand(commandId, data) {
-    for (const element of document.querySelectorAll('.quick-action-service-status, .service-mode-status .service-status'))
-        if (element.dataset.command === commandId) renderServiceState(element, data);
-}
-function renderServiceOperation(commandId, data) {
+function renderServiceOperation(runId, data) {
     const output = document.getElementById('exec-result');
-    if (!output || output.dataset.serviceCommand !== commandId || !output.dataset.operationId || !data.operation_id) return;
-    const matches = Number(output.dataset.operationId) === data.operation_id;
-    const phase = matches ? data.operation_phase : 'operationReplaced';
+    if (!output || output.dataset.serviceRun !== runId || !output.dataset.operationId) return;
+    if (Number(output.dataset.operationId) !== data.operation_id) return;
+    const phase = data.operation_phase;
     if (!phase || phase === output.dataset.operationPhase) return;
     output.dataset.operationPhase = phase;
-    output.textContent += '\n' + runtimeText(phase === 'expired' ? 'controlExpired' : 'launch_' + phase) +
-        (matches && data.operation_error ? ' (' + data.operation_error + ')' : '');
+    output.textContent += '\n' + runtimeText('launch_' + phase);
 }
-async function refreshServiceStates() {
-    if (document.hidden || serviceStatusInFlight) return;
-    serviceStatusInFlight = true;
-    try {
-        for (const element of document.querySelectorAll('.quick-action-service-status, .service-mode-status .service-status')) {
-            const commandId = element.dataset.command;
-            const revision = serviceStateVersions.get(commandId);
-            if (!element.isConnected || document.hidden) break;
-            if (serviceVerifyInFlight.has(commandId)) continue;
-            let data = {};
-            try {
-                const response = await api.call('automation.services.status', { command_id: commandId });
-                if (response.code === 0) data = response.data || {};
-            } catch (_) {}
-            if (element.isConnected && revision === serviceStateVersions.get(commandId) && !serviceVerifyInFlight.has(commandId)) {
-                renderServiceState(element, data);
-                renderServiceOperation(commandId, data);
-            }
-        }
-    } finally { serviceStatusInFlight = false; }
-}
-async function updateQuickActionServiceStatus() {
-    await refreshServiceStates();
-}
-// Explicit controls poll only the local operation record. No automatic resubmission.
-async function waitServiceOperation(commandId, operationId, isCurrent) {
-    const deadline = Date.now() + 60000;
-    while (isCurrent() && Date.now() < deadline) {
-        const response = requireApiSuccess(await api.call('automation.services.status', {command_id: commandId}), 'automation.services.status');
-        if (!isCurrent()) return null;
-        const data = response.data || {};
-        if (data.operation_id !== operationId) throw new Error(runtimeText('launch_operationReplaced'));
-        if (data.operation_phase === 'succeeded') return data;
-        if (data.operation_phase === 'expired') throw new Error(runtimeText('controlExpired'));
-        if (data.operation_phase === 'failed' || data.operation_phase === 'unconfirmed')
-            throw new Error(runtimeText('outcomeUnknown'));
-        await new Promise(resolve => setTimeout(resolve, 1000));
+function renderServiceRuns() {
+    const body = document.getElementById('service-runs-body');
+    if (!body) return;
+    if (!body._rows) {
+        body.innerHTML=`<p class="t-note">${serviceRunText('explanation')}</p><p class="t-note" data-runs-empty>${serviceRunText('empty')}</p><div data-runs-rows></div>`;
+        body._rows=new Map();
     }
-    if (isCurrent()) throw new Error(runtimeText('outcomeUnknown'));
+    body.querySelector('[data-runs-empty]').hidden=serviceRuns.size>0;
+    for (const [id,row] of body._rows) if (!serviceRuns.has(id)) {row.remove();body._rows.delete(id);}
+    for (const run of serviceRuns.values()) {
+        let row=body._rows.get(run.run_id);
+        if (!row) {
+            row=document.createElement('div');row.className='grp';row.style.cssText='margin-top:12px;padding:12px';
+            const button=(action,label,icon)=>`<button type="button" class="btn sm" data-run-action="${action}"><svg class="i"><use href="#${icon}"/></svg>${label}</button>`;
+            row.innerHTML=`<div class="t-body" style="font-weight:600;overflow-wrap:anywhere">${escapeHtml(run.name || run.command_id)}</div>` +
+                `<div class="t-note mono" style="overflow-wrap:anywhere">${escapeHtml(run.username)}@${escapeHtml(run.host)}:${run.port}</div>` +
+                `<div class="t-body" data-run-status style="margin-top:8px"></div><div class="t-note" data-run-time></div><div class="t-note" data-run-error></div>` +
+                `<div class="acts wrap" style="margin-top:8px">${button('verify',runtimeText('verifyState'),'ri-refresh-line')}${button('log',t('sshPage.viewLog'),'ri-file-list-line')}${button('stop',t('common.stop'),'ri-stop-line')}</div>` +
+                `<details style="margin-top:8px"><summary class="t-note">${serviceRunText('details')}</summary><div class="t-note mono" style="overflow-wrap:anywhere">${escapeHtml(run.run_id)} · ${escapeHtml(run.command_id)}${run.rule_id ? ' · '+escapeHtml(run.rule_id) : ''}</div></details>`;
+            row.dataset.run=run.run_id;
+            row.querySelectorAll('[data-run-action]').forEach(button=>button.onclick=()=>{
+                if (button.dataset.runAction==='verify') verifyServiceState(run.run_id);
+                else if (button.dataset.runAction==='stop') quickActionStopProcess(run.run_id,!!run.rule_id);
+                else showServiceRunLog(run.run_id);
+            });
+            body.querySelector('[data-runs-rows]').appendChild(row);body._rows.set(run.run_id,row);
+        }
+        renderServiceState(row.querySelector('[data-run-status]'),run);
+        row.querySelector('[data-run-time]').textContent=run.confirmed_ms?serviceRunText('checkedAt',{seconds:Math.floor(run.confirmed_ms/1000)}):serviceRunText('unverifiedHint');
+        row.querySelector('[data-run-error]').innerHTML=run.operation_reason?failureNote({token:run.operation_reason,params:{user:run.username},write:false}):'';
+        const busy=serviceVerifyInFlight.has(run.run_id)||serviceStopInFlight.has(run.run_id)||['queued','executing'].includes(run.operation_phase);
+        row.querySelectorAll('[data-run-action]').forEach(button=>button.disabled=busy&&button.dataset.runAction!=='log');
+    }
+}
+async function showServiceRuns() {
+    document.getElementById('service-runs-modal')?.remove();
+    const modal = document.createElement('div');modal.id = 'service-runs-modal';modal.className = 'modal show';
+    modal.innerHTML = sheet(640, serviceRunText('title'), `<div id="service-runs-body" aria-live="polite">${t('common.loading')}</div>`,
+        `<button type="button" class="btn lg" data-service-close>${t('common.close')}</button><button type="button" class="btn lg" data-service-refresh>${t('common.refresh')}</button>`);
+    document.body.appendChild(modal);
+    modal.querySelector('[data-service-close]').onclick = () => modal.remove();
+    modal.querySelector('[data-service-close]').focus();
+    modal.querySelector('[data-service-refresh]').onclick = () => refreshServiceStates();
+    modal.onkeydown = event => {if (event.key === 'Escape') {event.stopPropagation();modal.remove();}};
+    router.navigation?.onDispose(() => modal.remove());
+    await refreshServiceStates();if(modal.isConnected)startServiceStatusRefresh();
+}
+function startServiceStatusRefresh() {
+    if (serviceStatusRefreshInterval) return;
+    serviceStatusRefreshInterval = setInterval(() => {
+        if (!document.getElementById('service-runs-modal') && !document.getElementById('exec-result')?.dataset.serviceRun) {stopServiceStatusRefresh();return;}
+        refreshServiceStates();
+    },3000);
+}
+function stopServiceStatusRefresh() {clearInterval(serviceStatusRefreshInterval);serviceStatusRefreshInterval = null;}
+function refreshServiceStates() {
+    if (document.hidden) return Promise.resolve();
+    if (serviceStatusRead?.current()) return serviceStatusRead.promise;
+    const read = {current: capturePageValidity()}, versions = new Map(serviceStateVersions);
+    serviceStatusRead = read;
+    read.promise = (async () => {
+        try {
+            const result = requireApiSuccess(await api.call('automation.services.list',{}),'automation.services.list');
+            if (!read.current() || serviceStatusRead !== read) return;
+            const records = new Map();
+            for (const run of result.data.items || []) {
+                if (versions.get(run.run_id) !== serviceStateVersions.get(run.run_id)) {
+                    const existing = serviceRuns.get(run.run_id); if (existing) records.set(run.run_id,existing);
+                } else {records.set(run.run_id,run);renderServiceOperation(run.run_id,run);}
+            }
+            serviceRuns = records;renderServiceRuns();
+        } catch (error) {
+            if (!read.current() || serviceStatusRead !== read) return;
+            const body = document.getElementById('service-runs-body');
+            if (body) {body._rows=null;body.innerHTML = failureNote({op:'service.runs',error,endpoint:'automation.services.list',write:false});}
+        } finally {if (serviceStatusRead === read) serviceStatusRead = null;}
+    })();return read.promise;
+}
+async function waitServiceOperation(runId, operationId, isCurrent) {
+    const deadline = Date.now()+60000;
+    while (isCurrent() && Date.now()<deadline) {
+        const result = requireApiSuccess(await api.call('automation.services.status',{run_id:runId}),'automation.services.status');
+        if (!isCurrent()) return null;
+        const data = result.data;
+        if (data.run_id !== runId || data.operation_id !== operationId) throw pageFailure('service_operation_changed');
+        if (serviceRuns.has(runId)) serviceRuns.set(runId,{...serviceRuns.get(runId),...data});
+        renderServiceOperation(runId,data);renderServiceRuns();
+        if (data.operation_phase === 'succeeded') return data;
+        if (['expired','failed','unconfirmed'].includes(data.operation_phase))
+            throw new ApiOperationError({code:4,error:data.operation_reason || 'service_outcome_unknown'},'automation.services.status',{uncertain:data.operation_phase==='unconfirmed'});
+        await new Promise(resolve=>setTimeout(resolve,1000));
+    }
+    if (isCurrent()) throw pageFailure('service_outcome_unknown');
     return null;
 }
-async function requestServiceControl(commandId, stop, isCurrent) {
+async function requestServiceControl(runId, stop, isCurrent) {
     const endpoint = stop ? 'automation.services.stop' : 'automation.services.status';
-    const params = stop ? {command_id: commandId} : {command_id: commandId, verify: true};
-    const response = requireApiSuccess(await api.call(endpoint, params, 'POST'), endpoint);
-    if (!Number.isInteger(response.data?.operation_id) || response.data.operation_id <= 0)
-        throw new ApiOperationError({}, endpoint, {kind: 'format', uncertain: true});
-    return waitServiceOperation(commandId, response.data.operation_id, isCurrent);
+    const result = requireApiSuccess(await api.call(endpoint,{run_id:runId,...(!stop?{verify:true}:{})},'POST'),endpoint);
+    if (result.data?.run_id !== runId || !Number.isInteger(result.data.operation_id) || result.data.operation_id<=0)
+        throw new ApiOperationError({},endpoint,{kind:'format',uncertain:true});
+    return waitServiceOperation(runId,result.data.operation_id,isCurrent);
 }
-async function verifyServiceState(commandId) {
-    if (serviceVerifyInFlight.has(commandId)) return;
-    serviceVerifyInFlight.add(commandId);
-    const revision = advanceServiceState(commandId);
-    const pageCurrent = capturePageValidity();
-    const isCurrent = () => pageCurrent() && revision === serviceStateVersions.get(commandId);
+async function verifyServiceState(runId) {
+    if (serviceVerifyInFlight.has(runId) || serviceStopInFlight.has(runId)) return;
+    serviceVerifyInFlight.add(runId);const revision = advanceServiceState(runId), pageCurrent = capturePageValidity();
+    const current = () => pageCurrent() && revision === serviceStateVersions.get(runId);
+    renderServiceRuns();
     try {
-        const data = await requestServiceControl(commandId, false, isCurrent);
-        if (!data || !isCurrent()) return;
-        renderServiceCommand(commandId, data);
-        showToast(runtimeText(data.state || 'unknown'), 'info');
-        return data;
-    } catch (e) {
-        if (!isCurrent()) return;
-        renderServiceCommand(commandId, {});
-        reportFailure({ op: 'service.verify', error: e, write: true }, { type: 'warning' });
-    } finally { advanceServiceState(commandId); serviceVerifyInFlight.delete(commandId); }
+        const result = await requestServiceControl(runId,false,current);
+        if (result && current()) {showToast(runtimeText(result.state || 'unknown'),'info');return result;}
+    } catch (error) {if (current()) reportFailure({op:'service.verify',params:{user:serviceRuns.get(runId)?.username || ''},error,write:true},{type:'warning'});}
+    finally {advanceServiceState(runId);serviceVerifyInFlight.delete(runId);if (pageCurrent()) {renderServiceRuns();await refreshServiceStates();}}
+}
+async function quickActionStopProcess(runId, automatic) {
+    if (serviceVerifyInFlight.has(runId) || serviceStopInFlight.has(runId)) return;
+    const pageCurrent = capturePageValidity();
+    const modal = document.getElementById('service-runs-modal');
+    modal?.classList.add('hidden');
+    const confirmation = confirmAction(runtimeText(automatic?'confirmStopAutomatic':'confirmStop'),{primary:t('common.stop'),tone:'neutral'});
+    let dialog=document.getElementById('confirm-sheet-'+confirmSheetSeq);
+    router.navigation?.onDispose(()=>dialog?.querySelector('[data-r="0"]')?.click());
+    const accepted = await confirmation;dialog=null;
+    modal?.classList.remove('hidden');
+    if (!accepted || !pageCurrent() || (modal && !modal.isConnected)) return;
+    serviceStopInFlight.add(runId);const revision = advanceServiceState(runId);
+    const current = () => pageCurrent() && revision === serviceStateVersions.get(runId);
+    renderServiceRuns();
+    try {
+        const result = await requestServiceControl(runId,true,current);
+        if (result && current()) showToast(runtimeText(result.state==='stopped'?'stopped':'outcomeUnknown'),result.state==='stopped'?'success':'warning');
+    } catch (error) {if (current()) reportFailure({op:'service.stopprocess',params:{user:serviceRuns.get(runId)?.username || ''},error,write:true},{type:'warning'});}
+    finally {advanceServiceState(runId);serviceStopInFlight.delete(runId);if (pageCurrent()) {renderServiceRuns();await refreshServiceStates();}}
+}
+async function showServiceRunLog(runId, follow = false) {
+    const run = serviceRuns.get(runId);
+    if (!run) {showToast(serviceRunText('recordMissing'),'warning');return;}
+    document.getElementById('service-run-log-modal')?._close();
+    const parent = document.getElementById('service-runs-modal');parent?.classList.add('hidden');
+    const modal = document.createElement('div');modal.id='service-run-log-modal';modal.className='modal show';
+    modal.innerHTML = sheet(720,escapeHtml(run.name || run.command_id),`<p class="t-note">${escapeHtml(run.username)}@${escapeHtml(run.host)}:${run.port} · ${serviceRunText('logHint')}</p><pre class="term" data-run-log style="height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre><div data-run-log-error class="t-note" role="status"></div>`,
+        `<button type="button" class="btn lg" data-log-close>${t('common.close')}</button><button type="button" class="btn lg" data-log-refresh>${t('common.refresh')}</button><button type="button" class="btn lg" data-log-follow>${serviceRunText('follow')}</button>`);
+    document.body.appendChild(modal);
+    let timer=null, fetching=false;
+    const current = () => modal.isConnected && document.getElementById(modal.id)===modal;
+    const stop = () => {clearInterval(timer);timer=null;modal.querySelector('[data-log-follow]').textContent=serviceRunText('follow');};
+    modal._close = () => {stop();modal.remove();if (parent?.isConnected) parent.classList.remove('hidden');};
+    const load = async () => {
+        if (!current() || fetching || document.hidden) return;
+        fetching=true;
+        try {
+            const result = requireApiSuccess(await api.call('ssh.exec',{host:run.host,port:run.port,user:run.username,keyid:run.keyid,
+                command:"tail -100 -- '"+run.log_file.replace(/'/g,"'\\''")+"'",timeout_ms:5000}),'ssh.exec');
+            if (!current()) return;
+            if (result.data?.exit_code !== 0) throw pageFailure('service_log_unavailable');
+            modal.querySelector('[data-run-log]').textContent=result.data.stdout || serviceRunText('logEmpty');
+            modal.querySelector('[data-run-log-error]').textContent='';
+        } catch (error) {
+            if (current()) {stop();modal.querySelector('[data-run-log-error]').innerHTML=failureNote({op:'home.quicklog',params:{user:run.username},error,endpoint:'ssh.exec',write:false});}
+        } finally {fetching=false;}
+    };
+    const toggle = () => {if (timer) stop();else {modal.querySelector('[data-log-follow]').textContent=serviceRunText('stopFollow');timer=setInterval(load,2000);load();}};
+    modal.querySelector('[data-log-close]').focus();
+    modal.querySelector('[data-log-close]').onclick=modal._close;modal.querySelector('[data-log-refresh]').onclick=load;modal.querySelector('[data-log-follow]').onclick=toggle;
+    modal.onkeydown=event=>{if(event.key==='Escape'){event.stopPropagation();modal._close();}};router.navigation?.onDispose(modal._close);
+    if (follow) toggle();else await load();
 }
 
 // 触发快捷操作后的冷却时间（毫秒），避免连续触发导致后端只执行最后一个
@@ -4037,13 +4535,8 @@ window.stopSystemPageTimers = function() {
  * 触发快捷操作
  * @param {string} ruleId - 规则 ID
  */
-// Why a quick-action card cannot be started right now ('' when it can): the card knows its rule's state and its service's state.
-function quickActionBlockReason(card) {
-    if (card.dataset.allowed !== 'true') return card.dataset.block || 'rule_details_unavailable';
-    if (!card.dataset.service) return '';
-    return ({stopped: '', running: 'service_running', ready: 'service_running', starting: 'service_starting',
-        checking: 'service_checking', stopping: 'service_stopping'})[card.dataset.state] ?? 'service_not_confirmed_stopped';
-}
+// Local definition availability; backend admission checks independent runs.
+function quickActionBlockReason(card) {return card.dataset.allowed === 'true' ? '' : card.dataset.block || 'rule_details_unavailable';}
 async function triggerQuickAction(ruleId) {
     const card = document.getElementById(`quick-action-${ruleId}`);
     if (!card) {
@@ -4065,27 +4558,13 @@ async function triggerQuickAction(ruleId) {
     
     const name = card.querySelector('.quick-action-name')?.textContent.trim() || ruleId;
     try {
-        // Keep verification and triggering within the same in-flight operation.
-        if (card.dataset.service) advanceServiceState(card.dataset.service);
         card.classList.add('triggering');
         card.style.pointerEvents = 'none';
-
-        // A user start request may verify unknown state. Periodic refresh remains local.
-        if (card.dataset.allowed === 'true' && card.dataset.service && card.dataset.state === 'unknown') {
-            try {
-                const checked = await requestServiceControl(card.dataset.service, false,
-                    () => card.isConnected && document.getElementById(`quick-action-${ruleId}`) === card);
-                if (!checked) return;
-                card.dataset.state = checked.state || 'unknown';
-            } catch (_) { card.dataset.state = 'unknown'; }
-        }
         const blocked = quickActionBlockReason(card);
         if (blocked) {
             reportFailure({ op: 'quick.start', phase: 'blocked', params: { name }, token: blocked }, { type: 'warning' });
             return;
         }
-
-        if (card.dataset.service) card.dataset.state = 'starting';
 
         // 更新图标显示加载状态
         const iconEl = card.querySelector('.quick-action-icon');
@@ -4094,8 +4573,9 @@ async function triggerQuickAction(ruleId) {
             iconEl.innerHTML = '<span class="spinner-small"><svg class="i"><use href="#ri-refresh-line"/></svg></span>';
         }
         
-        const result = await api.call('automation.rules.trigger', { id: ruleId });
+        const result = await api.call('automation.rules.trigger', {id:ruleId,active_version:configurationVersion('quick-rules')});
         
+        if (!card.isConnected || document.getElementById(card.id) !== card) return;
         if (result.code === 0) {
             showToast((typeof t === 'function' ? t('toast.operationExecuted') : '操作已执行'), 'success');
             _quickActionLastTriggeredId = ruleId;
@@ -4113,335 +4593,13 @@ async function triggerQuickAction(ruleId) {
     } catch (e) {
         console.error('triggerQuickAction error:', e);
         reportFailure({ op: 'quick.start', params: { name }, error: e, endpoint: 'automation.rules.trigger', write: true });
-        if (card?.dataset.service) card.dataset.state = 'unknown';
     } finally {
-        if (card.dataset.service) advanceServiceState(card.dataset.service);
         card.classList.remove('triggering');
         card.style.pointerEvents = '';
     }
 }
 
-/**
- * 检查规则是否包含 nohup SSH 命令
- * @param {object} rule - 规则对象（列表中的简化数据）
- * @returns {object|null} - 返回 {logFile, keyword, hostId} 或 null
- */
-async function checkRuleHasNohupSsh(rule) {
-    // 列表 API 只返回 actions_count，需要获取完整规则
-    if (!rule.actions_count || rule.actions_count === 0) {
-        return null;
-    }
-    
-    // 获取规则详情
-    try {
-        const detailResult = await api.call('automation.rules.get', { id: rule.id });
-        if (detailResult.code !== 0 || !detailResult.data || !detailResult.data.actions) {
-            return { unresolved: true };
-        }
-        
-        const actions = detailResult.data.actions;
-        
-        // 确保 SSH 命令已加载
-        if (Object.keys(sshCommands).length === 0) {
-            await loadSshCommands();
-        }
-        
-        // 遍历所有动作
-        for (const action of actions) {
-            let sshCmdId = null;
-            
-            // 方式1: 动作本身是 ssh_cmd_ref 类型（兼容两种 API 返回格式）
-            // rules.get 返回 action.cmd_id（直接字段），actions.get 返回 action.ssh_ref.cmd_id（嵌套）
-            if (!action.template_id && action.type === 'ssh_cmd_ref' && (action.ssh_ref?.cmd_id || action.cmd_id)) {
-                sshCmdId = action.ssh_ref?.cmd_id || action.cmd_id;
-            }
-            // 方式2: 动作有 template_id，需要查询模板获取实际类型
-            else if (action.template_id) {
-                try {
-                    const tplResult = await api.call('automation.actions.get', { id: action.template_id });
-                    if (tplResult.code === 0 && tplResult.data) {
-                        if (tplResult.data.type === 'ssh_cmd_ref' && (tplResult.data.ssh_ref?.cmd_id || tplResult.data.cmd_id)) {
-                            sshCmdId = tplResult.data.ssh_ref?.cmd_id || tplResult.data.cmd_id;
-                        }
-                    } else return { unresolved: true };
-                } catch (e) {
-                    return { unresolved: true };
-                }
-            }
-            
-            if (sshCmdId) {
-                const cmdId = String(sshCmdId);
-                let foundCommand = false;
-                // 在所有主机的命令中查找
-                for (const [hostId, cmds] of Object.entries(sshCommands)) {
-                    const cmd = cmds.find(c => String(c.id) === cmdId);
-                    if (cmd) {
-                        foundCommand = true;
-                        if (cmd.nohup) {
-                            // 找到了 nohup 命令
-                            // safeName：优先从 cmd.name 提取英文数字，fallback 到 cmd.id
-                            // （纯中文名如"嵌入模型拉起"提取不到任何字符，需要用 id）
-                            const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
-                            const logFile = `/tmp/ts_nohup_${safeName}.log`;
-                            const pidFile = `/tmp/ts_nohup_${safeName}.pid`;
-                            const varName = cmd.varName || '';  // 服务模式变量名
-                            
-                            return {
-                                logFile: logFile,
-                                pidFile: pidFile,
-                                keyword: cmd.command,
-                                progName: safeName,
-                                hostId: hostId,
-                                cmdName: cmd.name,
-                                commandId: cmdId,
-                                // 服务模式信息
-                                serviceMode: cmd.serviceMode || false,
-                                varName: varName,
-                                readyPattern: cmd.readyPattern || '',
-                                serviceFailPattern: cmd.serviceFailPattern || ''
-                            };
-                        }
-                    }
-                }
-                if (!foundCommand) return { unresolved: true };
-            }
-        }
-    } catch (e) {
-        console.error('checkRuleHasNohupSsh error:', e);
-        return { unresolved: true };
-    }
-    return null;
-}
-
-/**
-  * 快捷操作 - 查看日志
- */
-let quickActionTailInterval = null;
-let quickActionLastContent = '';
-
-async function quickActionViewLog(logFile, hostId) {
-    // 清空上次的日志缓存
-    quickActionLastContent = '';
-    
-    // 获取主机信息
-    const host = window._sshHostsData?.[hostId];
-    if (!host) {
-        showToast((typeof t === 'function' ? t('sshPage.hostNotExistShort') : '主机不存在'), 'error');
-        return;
-    }
-    
-    const logTitle = typeof t === 'function' ? t('automationPage.logTitle') : '日志';
-    const stopTrackingText = typeof t === 'function' ? t('automationPage.stopTracking') : '停止跟踪';
-    const intervalText = typeof t === 'function' ? t('automationPage.interval') : '间隔';
-    const interval1Sec = typeof t === 'function' ? t('automationPage.interval1Sec') : '1秒';
-    const interval2Sec = typeof t === 'function' ? t('automationPage.interval2Sec') : '2秒';
-    const interval3Sec = typeof t === 'function' ? t('automationPage.interval3Sec') : '3秒';
-    const interval5Sec = typeof t === 'function' ? t('automationPage.interval5Sec') : '5秒';
-    const interval10Sec = typeof t === 'function' ? t('automationPage.interval10Sec') : '10秒';
-    const interval30Sec = typeof t === 'function' ? t('automationPage.interval30Sec') : '30秒';
-    const realTimeText = typeof t === 'function' ? t('automationPage.realTimeUpdating') : '● 实时更新中';
-    const closeText = typeof t === 'function' ? t('common.close') : '关闭';
-    const safeFile = escapeHtml(logFile), safeHost = escapeHtml(hostId);
-    const modalHtml = `<div id="quick-log-modal" class="modal">${sheet(760, `${logTitle} <small class="t-note mono" style="font-weight:400">${safeFile}</small>`, `
-            <pre class="term logv" id="quick-log-content" style="height:320px;margin:0;white-space:pre-wrap">${t('common.loading')}</pre>`,
-            `<span class="inl" style="margin-right:auto"><button class="btn lg" id="quick-log-tail-btn" onclick="toggleQuickLogTail('${safeFile}', '${safeHost}')"><svg class="i"><use href="#ri-stop-fill"/></svg>${stopTrackingText}</button>
-                <span class="t-note">${intervalText}</span>
-                <select class="field" id="quick-log-interval" onchange="updateQuickLogInterval('${safeFile}', '${safeHost}')" style="width:90px">
-                    <option value="1000">${interval1Sec}</option>
-                    <option value="2000">${interval2Sec}</option>
-                    <option value="3000">${interval3Sec}</option>
-                    <option value="5000" selected>${interval5Sec}</option>
-                    <option value="10000">${interval10Sec}</option>
-                    <option value="30000">${interval30Sec}</option>
-                </select>
-                <span id="quick-log-status" class="t-note"><span style="color:var(--ok)">${realTimeText}</span></span></span>
-            <button class="btn lg primary" onclick="closeQuickLogModal()">${closeText}</button>`, 'closeQuickLogModal()')}</div>
-    `;
-    
-    // 添加模态框
-    const existing = document.getElementById('quick-log-modal');
-    if (existing) existing.remove();
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-    
-    // 加载日志并自动开始跟踪
-    await quickActionRefreshLog(logFile, hostId);
-    
-    // 自动开始实时跟踪（默认5秒间隔）
-    startQuickLogTail(logFile, hostId, 5000);
-}
-
-async function quickActionRefreshLog(logFile, hostId) {
-    const host = window._sshHostsData?.[hostId];
-    if (!host) return;
-    
-    const contentEl = document.getElementById('quick-log-content');
-    if (!contentEl || document.hidden || contentEl.dataset.loading === 'true') return;
-    contentEl.dataset.loading = 'true';
-    
-    try {
-        const result = await api.call('ssh.exec', {
-            host: host.host,
-            port: host.port,
-            user: host.username,
-            keyid: host.keyid,
-            command: `if [ -f ${logFile} ]; then tail -c 60000 -- ${logFile}; else echo '${typeof t === 'function' ? t('automationPage.logFileEmptyBracket') : '[日志文件不存在或为空]'}'; fi`,
-            timeout_ms: 15000
-        });
-        if (!contentEl.isConnected || document.getElementById('quick-log-content') !== contentEl) return;
-        if (result.code !== 0 || !result.data) {
-            contentEl.textContent = failureText({ op: 'automationpage.logfetchfailed', result, write: false });
-            return;
-        }
-        const _empty = typeof t === 'function' ? t('automationPage.logEmptyBracket') : '[空]';
-        const output = (result.data.stdout || result.data.stderr || '').trim() || _empty;
-        if (output !== quickActionLastContent) {
-            contentEl.textContent = output;
-            contentEl.scrollTop = contentEl.scrollHeight;
-            quickActionLastContent = output;
-        }
-    } catch (e) {
-        if (!contentEl.isConnected || document.getElementById('quick-log-content') !== contentEl) return;
-        const _retry = typeof t === 'function' ? t('automationPage.deviceBusyRetry') : '若设备繁忙可稍后重试。';
-        contentEl.textContent = failureText({ op: 'home.quicklog', error: e, endpoint: 'ssh.exec', write: false }) + '\n\n' + _retry;
-    } finally {
-        contentEl.dataset.loading = 'false';
-    }
-}
-
-// 保存当前跟踪的参数，用于更新间隔时重启
-let quickActionTailParams = { logFile: null, hostId: null };
-
-/**
- * 开始日志跟踪
- * @param {string} logFile - 日志文件路径
- * @param {string} hostId - 主机 ID
- * @param {number} intervalMs - 刷新间隔（毫秒），默认 5000
- */
-function startQuickLogTail(logFile, hostId, intervalMs = 5000) {
-    if (quickActionTailInterval) {
-        clearInterval(quickActionTailInterval);
-    }
-    
-    // 保存参数
-    quickActionTailParams = { logFile, hostId };
-    
-    const btn = document.getElementById('quick-log-tail-btn');
-    const status = document.getElementById('quick-log-status');
-    
-    if (btn) {
-        const stopText = typeof t === 'function' ? t('automationPage.stopTracking') : '停止跟踪';
-        btn.innerHTML = '<svg class="i"><use href="#ri-stop-fill"/></svg>' + stopText;
-    }
-    if (status) {
-        const realTimeText = typeof t === 'function' ? t('automationPage.realTimeUpdating') : '● 实时更新中';
-        status.innerHTML = '<span style="color:var(--ok)">' + realTimeText + '</span>';
-    }
-    quickActionLastContent = '';
-    
-    // 定义刷新函数
-    const doRefresh = async () => {
-        // 检查模态框是否还存在
-        if (!document.getElementById('quick-log-modal')) {
-            clearInterval(quickActionTailInterval);
-            quickActionTailInterval = null;
-            return;
-        }
-        try {
-            await quickActionRefreshLog(logFile, hostId);
-        } catch (e) {
-            console.error('Tail refresh error:', e);
-        }
-    };
-    
-    // 立即执行一次
-    doRefresh();
-    
-    // 设置定时器
-    quickActionTailInterval = setInterval(doRefresh, intervalMs);
-}
-
-/**
- * 更新日志刷新间隔
- */
-function updateQuickLogInterval(logFile, hostId) {
-    const select = document.getElementById('quick-log-interval');
-    if (!select) return;
-    
-    const intervalMs = parseInt(select.value, 10);
-    
-    // 如果正在跟踪，重新启动以应用新间隔
-    if (quickActionTailInterval) {
-        startQuickLogTail(logFile, hostId, intervalMs);
-    }
-}
-
-/**
- * 停止日志跟踪
- */
-function stopQuickLogTail() {
-    if (quickActionTailInterval) {
-        clearInterval(quickActionTailInterval);
-        quickActionTailInterval = null;
-    }
-    
-    const btn = document.getElementById('quick-log-tail-btn');
-    const status = document.getElementById('quick-log-status');
-    
-    if (btn) {
-        const startText = typeof t === 'function' ? t('automationPage.startTracking') : '开始跟踪';
-        btn.innerHTML = '<svg class="i"><use href="#ri-play-line"/></svg>' + startText;
-    }
-    if (status) status.textContent = (typeof t === 'function' ? t('automationPage.trackingStopped') : '已暂停');
-}
-
-/**
- * 切换日志跟踪状态
- */
-function toggleQuickLogTail(logFile, hostId) {
-    if (quickActionTailInterval) {
-        stopQuickLogTail();
-    } else {
-        // 获取当前选择的间隔
-        const select = document.getElementById('quick-log-interval');
-        const intervalMs = select ? parseInt(select.value, 10) : 5000;
-        startQuickLogTail(logFile, hostId, intervalMs);
-    }
-}
-
-function closeQuickLogModal() {
-    if (quickActionTailInterval) {
-        clearInterval(quickActionTailInterval);
-        quickActionTailInterval = null;
-    }
-    const modal = document.getElementById('quick-log-modal');
-    if (modal) modal.remove();
-}
-
-/**
- * 快捷操作 - 终止进程（基于 PID 文件精确停止）
- * 后端验证实例身份并停止进程组，页面仅显示核验结果。
- */
-const serviceStopInFlight = new Set();
-async function quickActionStopProcess(commandId, automatic) {
-    if (serviceStopInFlight.has(commandId)) return;
-    if (!await confirmAction(runtimeText(automatic ? 'confirmStopAutomatic' : 'confirmStop'), { primary: t('common.stop'), tone: 'neutral' })) return;
-    serviceStopInFlight.add(commandId);
-    const revision = advanceServiceState(commandId);
-    const pageCurrent = capturePageValidity();
-    const isCurrent = () => pageCurrent() && revision === serviceStateVersions.get(commandId);
-    renderServiceCommand(commandId, {state: 'stopping'});
-    try {
-        const data = await requestServiceControl(commandId, true, isCurrent);
-        if (!data || !isCurrent()) return;
-        renderServiceCommand(commandId, data);
-        const stopped = data.state === 'stopped';
-        showToast(runtimeText(stopped ? 'stopped' : 'outcomeUnknown'), stopped ? 'success' : 'warning');
-    } catch (e) {
-        if (isCurrent()) { renderServiceCommand(commandId, {}); reportFailure({ op: 'service.stopprocess', error: e, write: true }, { type: 'warning' }); }
-    } finally { advanceServiceState(commandId); serviceStopInFlight.delete(commandId); await updateQuickActionServiceStatus(); }
-}
-
-// 时间同步功能
+// 浏览器时间同步
 async function syncTimeFromBrowser(silent = false) {
     try {
         const now = Date.now();
@@ -4742,7 +4900,7 @@ function generateLedModalContent(device, type) {
             gt(t('ledPage.position')) +
             grp(
                 row(t('ledPage.autoPosition'), swc('modal-text-auto-pos', true, 'onchange="toggleTextAutoPos(this.checked)"')) +
-                `<div class="row off"><div class="rl">X</div><div class="rc">${num('modal-text-x', 80, 0, 'min="0" max="255" placeholder="X" disabled')}<span class="t-note" id="modal-text-pos-note">${t('ledPage.autoPosNote')}</span></div></div>` +
+                `<div class="row off"><div class="rl">X<small id="modal-text-pos-note">${t('ledPage.autoPosNote')}</small></div><div class="rc">${num('modal-text-x', 80, 0, 'min="0" max="255" placeholder="X" disabled')}</div></div>` +
                 `<div class="row off"><div class="rl">Y</div><div class="rc">${num('modal-text-y', 80, 0, 'min="0" max="255" placeholder="Y" disabled')}</div></div>`) +
             gt(t('ledPage.scroll')) +
             grp(
@@ -4790,6 +4948,7 @@ function openLedModal(device, type) {
     const [body, foot] = generateLedModalContent(device, type);
     
     const modal = document.getElementById('led-modal');
+    if (modal.classList.contains('hidden')) router.navigation.onDispose(closeLedModal);
     modal.innerHTML = sheet(660, `${t('led.settingsTitle')} · ${type === 'colorcorrection' ? t('ledPage.colorCorrectionTitle') : deviceName}`, tabs + body, foot, 'closeLedModal()');
     modal.classList.remove('hidden');
     
@@ -5541,7 +5700,7 @@ async function loadFilePickerDirectory(path) {
             : `<span class="t-body" role="link" style="cursor:pointer" data-path="${escapeHtml(upto)}" onclick="loadFilePickerDirectory(this.dataset.path)">${escapeHtml(seg)}</span>`);
     }).join('');
     const listContainer = document.getElementById('file-picker-list');
-    listContainer.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('common.loading') + '</div>';
+    listContainer.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('common.loading') + '</div>';
     
     try {
         const result = await api.storageList(path);
@@ -5567,7 +5726,7 @@ async function loadFilePickerDirectory(path) {
         });
         
         if (filtered.length === 0) {
-            listContainer.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('filePage.noImages') + '</div>';
+            listContainer.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('filePage.noImages') + '</div>';
             return;
         }
         
@@ -5586,7 +5745,7 @@ async function loadFilePickerDirectory(path) {
             return `<div class="tr" style="--cols:24px 1fr 90px;cursor:pointer" data-path="${escapeHtml(fullPath)}" data-directory="${isDir}" onclick="filePickerItemClick(this, this.dataset.path, this.dataset.directory === 'true')"><div><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg></div><div>${escapeHtml(f.name)}</div><div>${isDir ? '-' : formatFileSize(f.size)}</div></div>`;
         }).join('');
     } catch (e) {
-        listContainer.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'file.list', error: e, write: false })}</span></div>`;
+        listContainer.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'file.list', error: e, write: false })}</span></div>`;
     }
 }
 
@@ -5880,17 +6039,17 @@ async function loadNetworkPage() {
             </div>
 
             <!-- WiFi 扫描 -->
-            <div class="modal hidden" id="wifi-scan-section">${sheet(560, t('networkPage.wifiScanTitle'), '<div class="card" style="padding:0;background:var(--fill)" id="wifi-scan-results"></div>',
+            <div class="modal hidden" id="wifi-scan-section">${sheet(560, t('networkPage.wifiScanTitle'), '<div class="card data-table cols-wifi" style="padding:0;background:var(--fill)" id="wifi-scan-results"></div>',
                 `<button class="btn lg" onclick="showWifiScan()"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.refresh')}</button><button class="btn lg primary" onclick="hideWifiScan()">${t('common.close')}</button>`, 'hideWifiScan()')}</div>
             
             <!-- 热点接入设备 -->
-            <div class="modal hidden" id="ap-stations-section">${sheet(560, t('networkPage.apStations'), `<div class="card" style="padding:0;background:var(--fill)"><div class="tr th cols-sta"><div>MAC</div><div>IP</div><div>RSSI</div></div><div id="ap-stations-results"></div></div>`,
+            <div class="modal hidden" id="ap-stations-section">${sheet(560, t('networkPage.apStations'), `<div class="card data-table cols-sta" style="padding:0;background:var(--fill)"><div class="tr th cols-sta"><div>MAC</div><div>IP</div><div>RSSI</div></div><div class="table-body" id="ap-stations-results"></div></div>`,
                 `<button class="btn lg primary" onclick="hideApStations()">${t('common.close')}</button>`, 'hideApStations()')}</div>
             
             <!-- DHCP 客户端 -->
             <div class="modal hidden" id="dhcp-clients-section">${sheet(560, t('networkPage.dhcpClients'), `
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span class="t-label">${t('networkPage.ifaceLabel')}</span><select id="dhcp-iface-select" class="field" style="width:140px" onchange="loadDhcpClients()"><option value="ap">WiFi AP</option><option value="eth">Ethernet</option></select><button class="btn icon sm" onclick="loadDhcpClients()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button></div>
-                <div class="card" style="padding:0;background:var(--fill)"><div class="tr th cols-dhcp"><div>MAC</div><div>IP</div><div>${t('networkPage.hostname')}</div></div><div id="dhcp-clients-results"></div></div>`,
+                <div class="card data-table cols-dhcp" style="padding:0;background:var(--fill)"><div class="tr th cols-dhcp"><div>MAC</div><div>IP</div><div>${t('networkPage.hostname')}</div></div><div class="table-body" id="dhcp-clients-results"></div></div>`,
                 `<button class="btn lg primary" onclick="hideDhcpClients()">${t('common.close')}</button>`, 'hideDhcpClients()')}</div>
             
             <!-- WiFi 热点配置 -->
@@ -5904,6 +6063,7 @@ async function loadNetworkPage() {
         </div>
     `;
     
+    mountPageModals(content);
     await refreshNetworkPage();
     if (!pageCurrent()) return;
     await refreshNetworkLpmuAccessStatus(false);
@@ -6492,14 +6652,14 @@ async function showWifiScan() {
     const container = document.getElementById('wifi-scan-results');
     
     section.classList.remove('hidden');
-    container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.scanning') + '</div>';
+    container.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('networkPage.scanning') + '</div>';
     
     try {
         const result = await api.wifiScan();
         requireApiSuccess(result, 'network.wifi.scan');
         if (result.data && result.data.networks) {
             if (result.data.networks.length === 0) {
-                container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.noNetwork') + '</div>';
+                container.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('networkPage.noNetwork') + '</div>';
                 return;
             }
             // 按信号强度排序
@@ -6513,7 +6673,7 @@ async function showWifiScan() {
             `).join('');
         }
     } catch (e) {
-        container.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'wifi.scan', error: e, endpoint: 'network.wifi.scan', write: false })}</span></div>`;
+        container.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'wifi.scan', error: e, endpoint: 'network.wifi.scan', write: false })}</span></div>`;
     }
 }
 
@@ -6608,13 +6768,13 @@ async function showApStations() {
     const container = document.getElementById('ap-stations-results');
     
     section.classList.remove('hidden');
-    container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('common.loading') + '</div>';
+    container.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('common.loading') + '</div>';
     
     try {
         const result = await api.wifiApStations();
         if (result.data && result.data.stations) {
             if (result.data.stations.length === 0) {
-                container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.noDevice') + '</div>';
+                container.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('networkPage.noDevice') + '</div>';
                 return;
             }
             container.innerHTML = result.data.stations.map(sta => `
@@ -6622,7 +6782,7 @@ async function showApStations() {
             `).join('');
         }
     } catch (e) {
-        container.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'wifi.stations', error: e, write: false })}</span></div>`;
+        container.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'wifi.stations', error: e, write: false })}</span></div>`;
     }
 }
 
@@ -6680,14 +6840,14 @@ async function loadDhcpClients() {
     const iface = document.getElementById('dhcp-iface-select').value;
     const container = document.getElementById('dhcp-clients-results');
     
-    container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('common.loading') + '</div>';
+    container.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('common.loading') + '</div>';
     
     try {
         const result = await api.dhcpClients(iface);
         if (!pageCurrent()) return;
         if (result.data && result.data.clients) {
             if (result.data.clients.length === 0) {
-                container.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('networkPage.noClientBrief') + '</div>';
+                container.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('networkPage.noClientBrief') + '</div>';
                 return;
             }
             container.innerHTML = result.data.clients.map(client => `
@@ -6696,7 +6856,7 @@ async function loadDhcpClients() {
         }
     } catch (e) {
         if (!pageCurrent()) return;
-        container.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'network.dhcpclients', error: e, write: false })}</span></div>`;
+        container.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'network.dhcpclients', error: e, write: false })}</span></div>`;
     }
 }
 
@@ -7038,9 +7198,9 @@ async function loadDirectory(path) {
             return a.name.localeCompare(b.name);
         });
         
-        const cols = 'style="--cols:24px 1fr 120px 132px"';
-        listContainer.innerHTML = `
-            <div class="tr th" ${cols}>
+        const cols = 'minmax(max-content,24px) minmax(max-content,1fr) minmax(max-content,120px) minmax(max-content,132px)';
+        listContainer.innerHTML = gridTable(cols, `
+            <div class="tr th">
                 <div><input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this)" title="${t('files.selectAll')}" aria-label="${t('files.selectAll')}"></div>
                 <div>${t('files.name')}</div>
                 <div>${t('files.size')}</div>
@@ -7054,7 +7214,7 @@ async function loadDirectory(path) {
                 const escapedName = escapeHtml(entry.name);
                 const isSelected = selectedFiles.has(fullPath);
                 return `
-                    <div class="tr file-row" ${cols} data-path="${escapedPath}" data-type="${entry.type}" data-name="${escapedName}">
+                    <div class="tr file-row" data-path="${escapedPath}" data-type="${entry.type}" data-name="${escapedName}">
                         <div><input type="checkbox" class="file-checkbox" data-path="${escapedPath}" ${isSelected ? 'checked' : ''} onchange="toggleFileSelection(this.dataset.path, this)" aria-label="${escapedName}"></div>
                         <div class="file-name ${isDir ? 'clickable' : ''}"><span class="fn"><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg>${escapeHtml(entry.name)}</span></div>
                         <div>${size}</div>
@@ -7062,7 +7222,7 @@ async function loadDirectory(path) {
                     </div>
                 `;
             }).join('')}
-        `;
+        `);
         
         // 使用事件委托处理点击
         listContainer.addEventListener('click', handleFileListClick);
@@ -7492,11 +7652,12 @@ let sshCommands = {};
  * - 旧格式（兼容）: "cmd_xxxxxxxx" (随机 hex)
  */
 async function loadSshCommands() {
-    const pageCurrent = capturePageValidity();
+    const pageCurrent = configurationRead('commands');
     try {
         const result = await api.call('ssh.commands.list', {});
         if (!pageCurrent()) return;
         if (result && result.data && result.data.commands) {
+            recordConfigurationList('commands', result.data, result.data.commands);
             // 按 host_id 组织
             sshCommands = {};
             // 收集孤儿命令（单独分组）
@@ -7599,129 +7760,26 @@ async function saveSshCommandToBackend(hostId, cmdData, cmdId) {
         ...(cmdData.readyInterval && { readyInterval: cmdData.readyInterval })
     };
     
-    const result = await api.call('ssh.commands.add', params);
+    const result = await configurationEditorSave('command-modal', 'ssh.commands.add', params);
+    if (!result) return null;
     if (result && result.code === 0 && result.data && result.data.id) {
         return result.data.id;
     }
     throw new ApiOperationError(result, 'ssh.commands.add');
 }
 
-/**
- * 从后端删除 SSH 指令
- * @param {string} cmdId - 指令 ID（如 "AGX_Power_On" 或 "cmd_xxxxxxxx"）
- */
-// Deletion needs fresh remote evidence: a missing registry entry is unknown,
-// including after a controller reboot. Reuse queued verification, never stop here.
-// Only queued/executing operations are current work; terminal receipts are not busy evidence.
-function deleteServiceMessage(data = {}) {
-    const pending = data.busy || ['queued', 'executing'].includes(data.operation_phase);
-    if (pending && ['start', 'stop', 'verify'].includes(data.operation_kind))
-        return {start: 'starting', stop: 'stopping', verify: 'verifying'}[data.operation_kind];
-    if (pending) return 'operationPending';
-    if (data.state === 'stopped') return null;
-    if (['running', 'ready', 'checking'].includes(data.state)) return 'running';
-    if (['starting', 'stopping'].includes(data.state)) return data.state;
-    if (['unknown', 'failed', 'timeout'].includes(data.state)) return 'unconfirmed';
-    return 'unconfirmed';
-}
-async function showDeleteProtection(result, context, pageCurrent) {
-    if (!pageCurrent()) return false;
-    const reason = apiErrorReason(result);
-    const data = result.data || {};
-    let title, bodyHtml, target = null, primary;
-    if (reason === 'action_in_use') {
-        title = t('deleteProtection.actionTitle');
-        const rules = data.details_available && Array.isArray(data.rules) ? data.rules : [];
-        bodyHtml = escapeHtml(t('deleteProtection.' + (rules.length ? 'actionInUse' : 'actionInUseWithoutDetails'), {name: context.name}));
-        if (rules.length) bodyHtml += '<div class="grp" style="margin-top:12px">' + rules.map(rule =>
-            '<div class="row" style="align-items:flex-start;flex-wrap:wrap"><div class="rl" style="min-width:0;max-width:100%;overflow-wrap:anywhere">' + escapeHtml(rule.name || rule.id) +
-            '</div><div class="rc mono" style="max-width:100%;overflow-wrap:anywhere">' + escapeHtml(rule.id) + '</div></div>').join('') + '</div>';
-        primary = t('deleteProtection.viewRules'); target = '/automation';
-    } else if (reason === 'action_reference_check_unavailable') {
-        title = t('deleteProtection.actionTitle');
-        const key = {busy: 'checkBusy', loading: 'checkLoading', recovery: 'checkRecovery'}[data.check_reason] || 'checkFailed';
-        bodyHtml = escapeHtml(t('deleteProtection.' + key));
-        primary = t('common.close');
-    } else if (reason === 'service_delete_protected') {
-        title = t('deleteProtection.' + (context.type === 'action' ? 'templateTitle' : 'commandTitle'), {name: context.name});
-        const state = context.service;
-        const key = state ? deleteServiceMessage(state) : null;
-        bodyHtml = context.type === 'action' && (context.commandName || context.commandId) ? escapeHtml(t('deleteProtection.boundCommand', {command: context.commandName || context.commandId})) + '\n\n' : '';
-        bodyHtml += escapeHtml(t('deleteProtection.' + (key || 'unconfirmed'), {command: context.commandName || context.commandId || context.name}));
-        if (context.type === 'command') primary = t('common.close');
-        else { primary = t('deleteProtection.viewCommand'); target = '/commands'; }
-    } else return false;
-    const toast = document.getElementById('toast');
-    if (toast?.classList.contains('toast-info') && toast.textContent === t('toast.processing')) {
-        clearTimeout(toastTimer); toast.classList.remove('show'); toast.classList.add('hidden'); toastDeadline = 0;
-    }
-    const pending = confirmSheet({title, bodyHtml, primary, secondary: target ? t('common.close') : false});
-    let modal = document.getElementById('confirm-sheet-' + confirmSheetSeq);
-    if (typeof router !== 'undefined') router.navigation?.onDispose(() => {
-        if (modal?.isConnected) (modal.querySelector('button[data-r="0"]') || modal.querySelector('button[data-r="1"]'))?.click();
-    });
-    const choice = await pending;
-    modal = null; // A closed sheet must not stay retained by the navigation disposer.
-    if (choice && target && pageCurrent()) {
-        if (typeof router !== 'undefined') await router.navigate(target);
-        else window.location.hash = target;
-    }
-    return true;
-}
-function renderQuickActionNotice(container, state) {
-    const loading = state === 'loading', recovery = state === 'recovery';
+function renderQuickActionNotice(container, state, reason) {
+    const loading = state === 'loading', unavailable = state === 'unavailable';
     const isRoot = api.isRoot();
-    const title = t(loading ? 'deleteProtection.quickLoadingTitle' : recovery ? 'deleteProtection.quickRecoveryTitle' : 'automationPage.noQuickActions');
-    const body = loading ? runtimeText('configLoading') : recovery ? runtimeText('recovery_required') :
-        (isRoot ? t('automationPage.quickActionsHint') : t('deleteProtection.quickEmptyNeedRoot'));
-    const detail = loading ? (isRoot ? t('deleteProtection.loadingDetails') : t('deleteProtection.quickLoadingNeedRoot')) :
-        recovery ? (isRoot ? t('deleteProtection.recoveryDetails') : t('deleteProtection.quickRecoveryNeedRoot')) : '';
-    container.innerHTML = '<div class="empty"><p class="t-body">' + escapeHtml(title) + '</p><p class="t-note">' + escapeHtml(body) +
-        '</p>' + (detail ? '<p class="t-note">' + escapeHtml(detail) + '</p>' : '') +
-        (isRoot ? '<button type="button" class="btn sm" onclick="window.location.hash=\'/automation\'">' + t('deleteProtection.goAutomation') + '</button>' : '') + '</div>';
-}
-
-const configurationDeletesInFlight = new Set();
-async function verifyStoppedServiceForDelete(commandId, pageCurrent, context = {type: 'command', name: commandId}) {
-    const revision = advanceServiceState(commandId);
-    const isCurrent = () => pageCurrent() && revision === serviceStateVersions.get(commandId);
-    try {
-        const response = await api.call('ssh.commands.get', { id: commandId });
-        if (!isCurrent()) return false;
-        // A stale template can still be removed after its command has disappeared.
-        if (response.code === 2) return true;
-        const command = requireApiSuccess(response, 'ssh.commands.get').data || {};
-        if (!command.nohup || !command.serviceMode) return true;
-        const data = await requestServiceControl(commandId, false, isCurrent);
-        if (!data || !isCurrent()) return false;
-        renderServiceCommand(commandId, data);
-        if (deleteServiceMessage(data)) {
-            await showDeleteProtection({code: 4, error: 'service_delete_protected'},
-                {...context, commandId, commandName: command.name || commandId, service: data}, isCurrent);
-            return false;
-        }
-        return true;
-    } catch (error) {
-        if (!isCurrent()) return false;
-        throw error;
-    } finally {
-        // Retire this result and its in-flight reads without invalidating a newer control.
-        if (isCurrent()) advanceServiceState(commandId);
-    }
-}
-
-async function deleteSshCommandFromBackend(cmdId) {
-    requireApiSuccess(await api.call('ssh.commands.remove', { id: cmdId }), 'ssh.commands.remove');
-}
-
-/**
- * 确保所有已保存指令的变量都已创建（保留用于兼容，实际由后端处理）
- * 后端在 ESP32 启动时会自动预创建所有命令变量
- */
-async function ensureAllCommandVariables() {
-    // 后端在 ts_automation_init() 时会调用 ts_ssh_commands_precreate_variables()
-    // 自动为 NVS 中保存的所有命令创建变量
-    console.debug('Command variables are pre-created by backend on ESP32 boot');
+    const title = unavailable ? configText('notLoaded') : t(loading ? 'quickActionNotice.quickLoadingTitle' : 'automationPage.noQuickActions');
+    const body = unavailable ? failureNote({op: 'home.quicklist', token: reason, write: false}) :
+        '<p class="t-note">' + escapeHtml(loading ? runtimeText('configLoading') :
+            (isRoot ? t('automationPage.quickActionsHint') : t('quickActionNotice.quickEmptyNeedRoot'))) + '</p>';
+    const detail = loading ? (isRoot ? t('quickActionNotice.loadingDetails') : t('quickActionNotice.quickLoadingNeedRoot')) :
+        unavailable && !isRoot ? t('quickActionNotice.quickEmptyNeedRoot') : '';
+    container.innerHTML = '<div class="empty"><p class="t-body">' + escapeHtml(title) + '</p>' + body +
+        (detail ? '<p class="t-note">' + escapeHtml(detail) + '</p>' : '') +
+        (isRoot ? '<button type="button" class="btn sm" onclick="window.location.hash=\'/automation\'">' + t('quickActionNotice.goAutomation') + '</button>' : '') + '</div>';
 }
 
 async function loadCommandsPage() {
@@ -7744,7 +7802,7 @@ async function loadCommandsPage() {
             <div class="sec-h">
                 <span class="t-section sec-t" data-i18n="ssh.selectHost">${t('ssh.selectHost')}</span>
                 <div class="acts">
-                    <button class="btn sm" onclick="showImportSshCommandModal()"><svg class="i"><use href="#ri-download-line"/></svg><span data-i18n="ssh.importCommand">${t('ssh.importCommand')}</span></button>
+                    <button type="button" class="btn sm" onclick="showServiceRuns()"><svg class="i"><use href="#ri-server-line"/></svg>${serviceRunText('title')}</button><button class="btn sm" onclick="showImportSshCommandModal()"><svg class="i"><use href="#ri-download-line"/></svg><span data-i18n="ssh.importCommand">${t('ssh.importCommand')}</span></button>
                     <button class="btn sm" onclick="showAddCommandModal()"><svg class="i"><use href="#ri-add-line"/></svg><span data-i18n="ssh.newCommand">${t('ssh.newCommand')}</span></button>
                 </div>
             </div>
@@ -7775,7 +7833,7 @@ async function loadCommandsPage() {
                             <span class="vsep"></span>
                             <button class="btn sm" id="nohup-view-log" onclick="nohupViewLog()">${t('sshPage.viewLog')}</button>
                             <button class="btn sm" id="nohup-tail-log" onclick="nohupTailLog()">${t('sshPage.tailLog')}</button>
-                            <button class="btn sm" id="nohup-stop-tail" onclick="nohupStopTail()" style="display:none">${t('sshPage.stopTail')}</button>
+
                             <button class="btn sm" id="nohup-check-process" onclick="nohupCheckProcess()">${t('sshPage.checkProcess')}</button>
                             <button class="btn sm dg" id="nohup-stop-process" onclick="nohupStopProcess()">${t('sshPage.stopProcess')}</button>
                         </div>
@@ -7804,18 +7862,15 @@ async function loadCommandsPage() {
         <div id="command-modal" class="modal hidden"><form id="command-form" class="sheet m-float" style="width:660px" onsubmit="return false;">
             <div class="sh"><span class="st" id="command-modal-title">${t('ssh.newCommand')}</span></div>
             <div class="sb">
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end">
-                    <div class="fl" id="cmd-id-group">
-                        <label>${t('sshPage.cmdId')} *</label>
-                        <input type="text" class="field" id="cmd-edit-id" placeholder="${t('ssh.cmdIdPlaceholderShort')}" title="${escapeHtml(t('sshPage.cmdIdHint'))}" pattern="^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$" oninput="validateCommandId(this)" required>
-                    </div>
-                    <div class="fl"><label>${t('common.name')} *</label><input type="text" class="field" id="cmd-name" placeholder="${t('sshPage.cmdNamePlaceholder')}" required></div>
+                <div class="grp">
+                    <div class="row" id="cmd-id-group"><label class="rl" for="cmd-edit-id">${t('sshPage.cmdId')} *</label><div class="rc"><input type="text" class="field" id="cmd-edit-id" placeholder="${t('ssh.cmdIdPlaceholderShort')}" title="${escapeHtml(t('sshPage.cmdIdHint'))}" pattern="^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$" oninput="validateCommandId(this)" required></div></div>
+                    <div class="row"><label class="rl" for="cmd-name">${t('common.name')} *</label><div class="rc"><input type="text" class="field" id="cmd-name" placeholder="${t('sshPage.cmdNamePlaceholder')}" required></div></div>
+                    <div class="row"><label class="rl" for="cmd-desc">${t('common.description')}</label><div class="rc"><input type="text" class="field" id="cmd-desc" placeholder="${t('sshPage.cmdDescPlaceholder')}" title="${escapeHtml(t('common.optional'))}"></div></div>
                 </div>
                 <span id="cmd-id-error" class="form-error" style="display:none"></span>
                 <div style="height:12px"></div>
                 <div class="fl"><label>${t('common.command')} *</label><textarea class="field mono" id="cmd-command" style="height:64px" placeholder="${t('sshPage.cmdCommandPlaceholder')}" title="${escapeHtml(t('sshPage.multiLineHint'))}" required></textarea></div>
                 <div style="height:12px"></div>
-                <div class="fl"><label>${t('common.description')}</label><input type="text" class="field" id="cmd-desc" style="width:100%" placeholder="${t('sshPage.cmdDescPlaceholder')}" title="${escapeHtml(t('common.optional'))}"></div>
                 <div class="gt" style="margin-top:16px">${t('dataWidget.icon')}</div>
                 <div style="display:flex;justify-content:center;margin-bottom:10px"><div class="seg icon-type-tabs"><button type="button" class="on" data-type="emoji" onclick="switchCmdIconType('emoji')">${t('automation.iconTab')}</button><button type="button" data-type="image" onclick="switchCmdIconType('image')">${t('automation.imageTab')}</button></div></div>
                 <div id="icon-emoji-picker" style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px">
@@ -7862,21 +7917,19 @@ async function loadCommandsPage() {
         </form></div>
     `;
     
+    mountPageModals(content);
     // 加载主机列表
     await loadHostSelector();
     if (!pageCurrent()) return;
     
-    // 确保所有已保存指令的变量都已创建（后台执行，不阻塞 UI）
-    ensureAllCommandVariables().catch(e => {
-        console.warn('Failed to ensure command variables:', e);
-    });
+
 }
 
 // 当前选中的主机
 let selectedHostId = null;
 
 async function loadHostSelector() {
-    const pageCurrent = capturePageValidity();
+    const pageCurrent = configurationRead('command-hosts');
     const container = document.getElementById('host-selector');
     
     try {
@@ -7887,6 +7940,7 @@ async function loadHostSelector() {
             return;
         }
         const hosts = result.data?.hosts || [];
+        recordConfigurationList('hosts', result.data, hosts);
         
         if (hosts.length === 0) {
             container.innerHTML = `
@@ -7905,7 +7959,7 @@ async function loadHostSelector() {
         const orphanCount = sshCommands['__orphan__']?.length || 0;
         
         let html = hosts.map(h => `
-            <div class="tile host-card ${selectedHostId === h.id ? 'on' : ''}" style="width:280px" onclick="selectHost('${escapeHtml(h.id)}')" data-host-id="${escapeHtml(h.id)}">
+            <div class="tile host-card ${selectedHostId === h.id ? 'on' : ''}" style="width:280px" onclick="${configurationHandler('selectHost', h.id)}" data-host-id="${escapeHtml(h.id)}">
                 <svg class="i host-icon"><use href="#ri-server-line"/></svg>
                 <div>
                     <div class="t-body" style="font-weight:600">${escapeHtml(h.id)}</div>
@@ -7918,7 +7972,7 @@ async function loadHostSelector() {
         if (orphanCount > 0) {
             html += `
             <div class="tile host-card orphan-group ${selectedHostId === '__orphan__' ? 'on' : ''}" style="width:300px;background:rgba(255,149,0,.10)" onclick="selectHost('__orphan__')" data-host-id="__orphan__">
-                <span style="color:var(--warn)"><svg class="i"><use href="#ri-alert-line"/></svg></span>
+                <span class="inline-icon" style="color:var(--warn)"><svg class="i"><use href="#ri-alert-line"/></svg></span>
                 <div>
                     <div class="t-body" style="font-weight:600">${t('sshPage.orphanCommands')}</div>
                     <div class="t-note" style="color:var(--warn)">${t('promptRepair.orphanCount', {count: orphanCount})}</div>
@@ -7950,6 +8004,13 @@ function selectHost(hostId) {
     refreshCommandsList();
 }
 
+function commandImageUnavailable(image) {
+    if(!image.isConnected)return;
+    image.hidden=true;
+    const note=image.closest('.command-card')?.querySelector('[data-command-image-note]');
+    if(note){note.hidden=false;note.title=new URL(image.src,location.href).searchParams.get('path')||'';}
+}
+
 function refreshCommandsList() {
     const container = document.getElementById('commands-list');
     const createFirstBtn = `<button type="button" class="btn sm" onclick="showAddCommandModal()"><svg class="i"><use href="#ri-add-line"/></svg>${t('ssh.createFirstCommand')}</button>`;
@@ -7970,9 +8031,9 @@ function refreshCommandsList() {
     // 操作列宽按最多的按钮数定，保证各行对齐（默认 执行 / 编辑 / 删除 三个 = 96px）
     const extraCount = c => (c.varName ? 1 : 0) + (c.nohup && c.serviceMode ? 3 : 0) + 1;
     const nBtn = 3 + Math.max(...hostCommands.map(extraCount));
-    const cols = `style="--cols:32px 1fr 1.6fr ${nBtn * 28 + (nBtn - 1) * 6}px"`;
+    const cols = `minmax(max-content,32px) minmax(max-content,1fr) minmax(max-content,1.6fr) minmax(max-content,${nBtn * 28 + (nBtn - 1) * 6}px)`;
 
-    container.innerHTML = hostCommands.map((cmd, idx) => {
+    container.innerHTML = gridTable(cols, hostCommands.map((cmd, idx) => {
         const isOrphan = cmd.orphan === true;
         
         // 模式匹配 / nohup 标签
@@ -7982,61 +8043,52 @@ function refreshCommandsList() {
         if (cmd.failPattern) tagsHtml += tag('ri-close-line', t('promptRepair.failureLabel') + ' ' + escapeHtml(cmd.failPattern));
         if (cmd.extractPattern) tagsHtml += tag('ri-file-list-line', t('promptRepair.extractLabel') + ' ' + escapeHtml(cmd.extractPattern));
         if (cmd.nohup && !cmd.serviceMode) tagsHtml += tag('ri-rocket-line', t('ssh.nohupTitle'));
-        if (cmd.nohup && cmd.serviceMode) {
-            // 服务模式：显示服务状态（用 cmd.id 作唯一标识，避免多个服务时 ID 冲突）
-            const statusId = `service-status-${cmd.id || idx}`;
-            tagsHtml += `<span class="service-mode-status" title="${escapeHtml(t('promptRepair.servicePattern', {pattern: cmd.readyPattern}))}" data-var="${escapeHtml(cmd.varName)}" data-status-id="${statusId}"><span id="${statusId}" data-command="${escapeHtml(cmd.id)}" class="state service-status">...</span></span>`;
-        }
+        if (cmd.nohup && cmd.serviceMode) tagsHtml += tag('ri-server-line', t('ssh.serviceMode'));
         
         // 图标：RemixIcon 类名、图片路径或旧版 Emoji
         const iconValue = cmd.icon || 'ri-rocket-line';
         let iconHtml;
         if (iconValue.startsWith('/sdcard/')) {
-            iconHtml = `<img src="/api/v1/file/download?path=${encodeURIComponent(iconValue)}" alt="icon" style="width:16px;height:16px;object-fit:contain" onerror="this.outerHTML='<svg class=\\'i\\'><use href=\\'#ri-rocket-line\\'/></svg>'">`;
+            iconHtml = `<img src="/api/v1/file/download?path=${encodeURIComponent(iconValue)}" alt="${escapeHtml(t('automation.iconLabel'))}" style="width:16px;height:16px;object-fit:contain" onerror="commandImageUnavailable(this)">`;
         } else if (iconValue.startsWith('ri-')) {
-            iconHtml = `<svg class="i"><use href="#${iconValue}"/></svg>`;
+            iconHtml = `<svg class="i"><use href="#${escapeHtml(iconValue)}"/></svg>`;
         } else {
-            iconHtml = iconValue;
+            iconHtml = escapeHtml(iconValue);
         }
         
         // 服务模式按钮（日志、停止）
-        const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
-        const serviceActions = (cmd.nohup && cmd.serviceMode)
-            ? icoBtn('ri-refresh-line', runtimeText('verifyState'), `verifyServiceState('${escapeHtml(cmd.id)}')`) + icoBtn('ri-file-text-line', t('sshPage.viewLog'), `viewServiceLog(${idx}, '${escapeHtml(safeName)}')`) + icoBtn('ri-stop-line', t('sshPage.stopService'), `stopServiceProcess(${idx})`, 'dg')
-            : '';
+        const serviceActions = cmd.nohup ? icoBtn('ri-server-line',serviceRunText('title'),'showServiceRuns()') : '';
         const varBtn = cmd.varName ? `<button class="btn icon sm cmd-variables" data-variable="${escapeHtml(cmd.varName)}" title="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}" aria-label="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}"><svg class="i"><use href="#ri-bar-chart-line"/></svg></button>` : '';
         const runTitle = isOrphan ? t('ssh.hostNotExistCannotExec') : t('common.run');
         const runBtn = `<button class="btn icon sm btn-exec" onclick="executeCommand(${idx})" title="${runTitle}" aria-label="${runTitle}" ${isOrphan ? 'disabled' : ''}><svg class="i"><use href="#ri-play-line"/></svg></button>`;
         
         return `
-        <div class="tr command-card ${isOrphan ? 'orphan-command' : ''}" ${cols} data-cmd-idx="${idx}" data-has-service="${cmd.serviceMode || false}">
-            <span style="color:var(--accent-text)">${iconHtml}</span>
+        <div class="tr command-card ${isOrphan ? 'orphan-command' : ''}" data-cmd-idx="${idx}" data-has-service="${cmd.serviceMode || false}">
+            <span class="command-icon" style="color:var(--accent-text)">${iconHtml}</span>
             <div>
                 <div class="t-body cmd-name" style="font-weight:500" title="${escapeHtml(cmd.name)}">${escapeHtml(cmd.name)}${tagsHtml ? ' ' + tagsHtml : ''}</div>
+                <div class="t-note" style="color:var(--warn)" data-command-image-note hidden>${escapeHtml(configText('imageUnavailable'))}</div>
                 <div class="t-note mono">${escapeHtml(cmd.id || '')}</div>
                 ${isOrphan ? `<div class="t-note" style="color:var(--warn)">${escapeHtml(t('promptRepair.orphanHost', {id: cmd.originalHostId || '?'}))}</div>` : ''}
                 ${cmd.desc ? `<div class="t-note" title="${escapeHtml(cmd.desc)}">${escapeHtml(cmd.desc)}</div>` : ''}
             </div>
             <span class="mono t-label cmd-code" title="${escapeHtml(cmd.command)}">${escapeHtml(cmd.command.split('\n')[0])}${cmd.command.includes('\n') ? ' ...' : ''}</span>
-            <div class="act">${runBtn}${serviceActions}${varBtn}${icoBtn('ri-edit-line', t('common.edit'), `editCommand(${idx})`)}${icoBtn('ri-upload-line', t('ssh.exportConfig'), `exportSshCommand('${escapeHtml(cmd.id)}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteCommand(${idx})`, 'dg')}</div>
+            <div class="act">${runBtn}${serviceActions}${varBtn}${icoBtn('ri-edit-line', t('common.edit'), `editCommand(${idx})`)}${icoBtn('ri-upload-line', t('ssh.exportConfig'), configurationHandler('exportSshCommand', cmd.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteCommand(${idx})`, 'dg')}</div>
         </div>
-    `}).join('');
+    `}).join(''));
     
     container.querySelectorAll('.cmd-variables').forEach(button => {
         button.addEventListener('click', () => showCommandVariables(button.dataset.variable));
     });
     // 更新服务模式状态
-    updateServiceStatusInList();
+
 }
 
 /**
  * 更新指令列表中的服务状态
  * 查询每个服务模式指令的变量状态并更新显示
  */
-async function updateServiceStatusInList() {
-    await refreshServiceStates();
-    if (document.querySelector('.service-mode-status')) startServiceStatusRefresh();
-}
+
 
 function showAddCommandModal() {
     if (!selectedHostId) {
@@ -8096,6 +8148,7 @@ function showAddCommandModal() {
     document.querySelector('.icon-btn')?.classList.add('selected');
     
     document.getElementById('command-modal').classList.remove('hidden');
+    bindConfigurationEditor(document.getElementById('command-modal'), 'commands').hostId = selectedHostId;
     
     // 更新超时输入框状态
     updateTimeoutState();
@@ -8117,8 +8170,9 @@ function closeCommandModal() {
 function openSourceVarsSheet(title) {
     const modal = document.getElementById('source-variables-modal');
     if (!modal) return null;
+    if (modal.classList.contains('hidden')) router.navigation.onDispose(closeSourceVariablesModal);
     modal.innerHTML = sheet(660, title,
-        `<div class="card" id="source-variables-body" style="padding:0;background:var(--fill)"><div class="tr" style="--cols:1fr;border-top:0;color:var(--ink-3)">${t('common.loading')}</div></div>`,
+        `<div class="card" id="source-variables-body" style="padding:0;background:var(--fill)"><div class="tr table-message" style="border-top:0;color:var(--ink-3)">${t('common.loading')}</div></div>`,
         `<button class="btn lg primary" onclick="closeSourceVariablesModal()">${t('common.close')}</button>`,
         'closeSourceVariablesModal()');
     modal.classList.remove('hidden');
@@ -8126,13 +8180,13 @@ function openSourceVarsSheet(title) {
 }
 
 function setSourceVarsMessage(body, msg, isError = false) {
-    body.innerHTML = `<div class="tr" style="--cols:1fr;border-top:0;${isError ? '' : 'color:var(--ink-3)'}">${isError ? `<span class="form-error">${msg}</span>` : msg}</div>`;
+    body.innerHTML = `<div class="tr table-message" style="border-top:0;${isError ? '' : 'color:var(--ink-3)'}">${isError ? `<span class="form-error">${msg}</span>` : msg}</div>`;
 }
 
 function renderSourceVarsTable(body, vars) {
-    const cols = '--cols:1.4fr .8fr 1fr 1fr';
-    body.innerHTML = `<div class="tr th" style="${cols}"><div>${t('sshPage.varTableName')}</div><div>${t('sshPage.varTableType')}</div><div>${t('sshPage.varTableValue')}</div><div>${t('sshPage.varTableUpdated')}</div></div>` +
-        vars.map(v => `<div class="tr" style="${cols}"><div><span class="mono">${escapeHtml(v.name)}</span></div><div>${escapeHtml(v.type || '-')}</div><div>${formatVariableValue(v.value, v.type)}</div><div>${formatVariableUpdateTime(v)}</div></div>`).join('');
+    const cols = 'minmax(max-content,1.4fr) minmax(max-content,.8fr) minmax(max-content,1fr) minmax(max-content,1fr)';
+    body.innerHTML = gridTable(cols, `<div class="tr th" ><div>${t('sshPage.varTableName')}</div><div>${t('sshPage.varTableType')}</div><div>${t('sshPage.varTableValue')}</div><div>${t('sshPage.varTableUpdated')}</div></div>` +
+        vars.map(v => `<div class="tr" ><div><span class="mono">${escapeHtml(v.name)}</span></div><div>${escapeHtml(v.type || '-')}</div><div>${formatVariableValue(v.value, v.type)}</div><div>${formatVariableUpdateTime(v)}</div></div>`).join(''));
 }
 
 async function showCommandVariables(varName) {
@@ -8369,6 +8423,7 @@ function validateCommandId(input) {
 }
 
 async function saveCommand() {
+    const hostId = document.getElementById('command-modal')?._configuration?.hostId;
     const cmdId = document.getElementById('cmd-edit-id').value.trim();
     const name = document.getElementById('cmd-name').value.trim();
     let command = document.getElementById('cmd-command').value.trim();
@@ -8434,8 +8489,8 @@ async function saveCommand() {
         return;
     }
     
-    if (!sshCommands[selectedHostId]) {
-        sshCommands[selectedHostId] = [];
+    if (!sshCommands[hostId]) {
+        sshCommands[hostId] = [];
     }
     
     const cmdData = { 
@@ -8463,24 +8518,10 @@ async function saveCommand() {
          * ID 由用户在前端输入，直接传给后端
          * 后端会验证 ID 格式，如果 ID 已存在则执行更新
          */
-        const savedId = await saveSshCommandToBackend(selectedHostId, cmdData, cmdId);
-        cmdData.id = savedId;
-        
-        if (isEditMode) {
-            // 编辑模式：更新本地缓存（根据 ID 查找）
-            const existingIdx = sshCommands[selectedHostId].findIndex(c => c.id === cmdId);
-            if (existingIdx >= 0) {
-                sshCommands[selectedHostId][existingIdx] = cmdData;
-            }
-            showToast(t('failure.ops.command.save.done', params), 'success');
-        } else {
-            // 新建模式：添加到本地缓存
-            sshCommands[selectedHostId].push(cmdData);
-            showToast(t('failure.ops.command.save.done', params), 'success');
-        }
-        
+        if (!await saveSshCommandToBackend(hostId, cmdData, cmdId)) return;
+        showToast(t('failure.ops.command.save.done', params), 'success');
         closeCommandModal();
-        refreshCommandsList();
+
         
     } catch (e) {
         console.error('Failed to save command:', e);
@@ -8562,6 +8603,7 @@ function editCommand(idx) {
     });
     
     document.getElementById('command-modal').classList.remove('hidden');
+    bindConfigurationEditor(document.getElementById('command-modal'), 'commands').hostId = selectedHostId;
     
     // 更新超时输入框状态
     updateTimeoutState();
@@ -8689,170 +8731,23 @@ async function doExportSshCommand(cmdId, recipientCert, includeHost) {
 /**
  * 显示导入 SSH 指令配置弹窗
  */
-async function showImportSshCommandModal() {
-    let modal = document.getElementById('import-ssh-cmd-modal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'import-ssh-cmd-modal';
-        modal.className = 'modal';
-        document.body.appendChild(modal);
-    }
-    
-    // 加载主机列表用于下拉选择
-    let hostsOptions = `<option value="">-- ${typeof t === 'function' ? t('ssh.useConfigHost') : '使用配置中的主机'} --</option>`;
-    try {
-        const result = await api.call('ssh.hosts.list', {});
-        const hosts = result.data?.hosts || [];
-        for (const h of hosts) {
-            hostsOptions += `<option value="${escapeHtml(h.id)}">${escapeHtml(h.id)} (${escapeHtml(h.host)}:${h.port})</option>`;
-        }
-    } catch (e) {
-        console.warn('Failed to load hosts list:', e);
-    }
-    
-    modal.innerHTML = importSheet('ssh-cmd', t('ssh.importSshCmdTitle'), t('ssh.importSshCmdDesc'), 'previewSshCommandImport', 'confirmSshCommandImport', 'hideImportSshCommandModal',
-        `<div class="grp" style="margin-top:8px"><div class="row" id="import-ssh-cmd-host-group" style="display:none"><div class="rl">${t('ssh.importHostConfig')}</div><div class="rc">${swc('import-ssh-cmd-host', true)}</div></div>${row(t('ssh.bindToHost'), `<select class="field" id="import-ssh-cmd-target-host" style="width:220px">${hostsOptions}</select>`, '', t('ssh.bindToHostHint'))}</div>`);
-    
-    window._importSshCmdTscfg = null;
-    modal.classList.remove('hidden');
-}
+function showImportSshCommandModal() { showConfigurationImport('ssh-cmd'); }
 
-function hideImportSshCommandModal() {
-    const modal = document.getElementById('import-ssh-cmd-modal');
-    if (modal) modal.classList.add('hidden');
-    window._importSshCmdTscfg = null;
-}
+function hideImportSshCommandModal() { hideConfigurationImport('ssh-cmd'); }
 
 /**
  * 预览 SSH 指令导入内容
  */
-async function previewSshCommandImport() {
-    const fileInput = document.getElementById('import-ssh-cmd-file');
-    const resultBox = document.getElementById('import-ssh-cmd-result');
-    const step2 = document.getElementById('import-ssh-cmd-step2');
-    const previewDiv = document.getElementById('import-ssh-cmd-preview');
-    const hostGroup = document.getElementById('import-ssh-cmd-host-group');
-    const importBtn = document.getElementById('import-ssh-cmd-btn');
-    const statusEl = document.getElementById('import-ssh-cmd-file-status');
-    
-    if (!fileInput.files || !fileInput.files[0]) {
-        if (statusEl) statusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件';
-        return;
-    }
-    
-    const file = fileInput.files[0];
-    if (statusEl) statusEl.textContent = file.name;
-    
-    resultBox.classList.remove('hidden', 'success', 'error', 'warning');
-    resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
-    importBtn.disabled = true;
-    previewDiv.innerHTML = importPlaceholder('ssh-cmd');
-    
-    try {
-        const content = await file.text();
-        window._importSshCmdTscfg = content;
-        window._importSshCmdFilename = file.name;  // 保存文件名
-        
-        const result = await api.call('ssh.commands.import', { 
-            tscfg: content,
-            filename: file.name,
-            preview: true
-        });
-        
-        if (result.code === 0 && result.data?.valid) {
-            const data = result.data;
-            renderImportPreview('ssh-cmd', data, data.type === 'ssh_command' ? t('ssh.sshCommand') : data.type);
-            resultBox.className = 'result-box success';
-            resultBox.textContent = (typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过');
-            importBtn.disabled = false;
-        } else {
-            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshCommand'), file: file.name }, result, endpoint: 'ssh.commands.import', write: false });
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshCommand'), file: file.name }, error: e, endpoint: 'ssh.commands.import', write: false });
-    }
-}
+async function previewSshCommandImport() { return previewConfigurationImport('ssh-cmd'); }
 
 /**
  * 确认导入 SSH 指令
  */
-async function confirmSshCommandImport() {
-    const overwrite = document.getElementById('import-ssh-cmd-overwrite').checked;
-    const resultBox = document.getElementById('import-ssh-cmd-result');
-    const importBtn = document.getElementById('import-ssh-cmd-btn');
-    
-    if (!window._importSshCmdTscfg) {
-        showToast((typeof t === 'function' ? t('toast.selectFileFirst') : '请先选择文件'), 'error');
-        return;
-    }
-    
-    const packParams = { kind: t('failure.kinds.sshCommand'), file: window._importSshCmdFilename || '' };
-    resultBox.classList.remove('hidden', 'success', 'error', 'warning');
-    resultBox.textContent = (typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...');
-    importBtn.disabled = true;
-    
-    try {
-        const params = { 
-            tscfg: window._importSshCmdTscfg,
-            filename: window._importSshCmdFilename,
-            overwrite: overwrite
-        };
-        
-        const result = await api.call('ssh.commands.import', params);
-        
-        if (result.code === 0) {
-            const data = result.data;
-            if (data?.exists && !data?.imported) {
-                resultBox.className = 'result-box warning';
-                resultBox.textContent = (typeof t === 'function' ? t('securityPage.configExistsCheckOverwrite', {id: data.id}) : `配置 ${data.id} 已存在，请勾选「覆盖」选项`);
-                importBtn.disabled = false;
-            } else {
-                resultBox.className = 'result-box success';
-                resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : '已保存配置'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('ssh.restartToTakeEffect') : '重启系统后生效'}</small>`;
-                showToast(t('failure.ops.pack.import.done', packParams), 'success');
-                // 不刷新列表，因为还没加载
-                setTimeout(() => hideImportSshCommandModal(), 2000);
-            }
-        } else {
-            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'ssh.commands.import' });
-            importBtn.disabled = false;
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'ssh.commands.import', write: true });
-        importBtn.disabled = false;
-    }
-}
+async function confirmSshCommandImport() { return confirmConfigurationImport('ssh-cmd'); }
 
 async function deleteCommand(idx) {
-    const hostId = selectedHostId;
-    const cmd = sshCommands[hostId]?.[idx];
-    if (!cmd) return;
-    const key = 'command:' + cmd.id;
-    if (configurationDeletesInFlight.has(key)) return;
-    configurationDeletesInFlight.add(key);
-    const pageCurrent = capturePageValidity();
-    const params = { name: cmd.name || cmd.id };
-    let removing = false;   // once the remove request is on its way, no answer means "unknown"
-    try {
-        if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteCmd', { name: cmd.name }) : `确定要删除指令「${cmd.name}」吗？`, { primary: t('common.delete'), tone: 'danger' }) || !pageCurrent()) return;
-        if (cmd.id) {
-            showToast(t('toast.processing'), 'info');
-            if (!await verifyStoppedServiceForDelete(cmd.id, pageCurrent, {type: 'command', name: cmd.name || cmd.id}) || !pageCurrent()) return;
-            removing = true;
-            await deleteSshCommandFromBackend(cmd.id);
-        }
-        if (!pageCurrent()) return;
-        const commands = sshCommands[hostId];
-        const currentIndex = commands?.findIndex(item => item === cmd || (cmd.id && item.id === cmd.id));
-        if (currentIndex >= 0) commands.splice(currentIndex, 1);
-        if (selectedHostId === hostId) refreshCommandsList();
-        showToast(t('failure.ops.command.delete.done', params), 'success');
-    } catch (e) {
-        if (pageCurrent() && await showDeleteProtection(e, {type: 'command', name: cmd.name || cmd.id}, pageCurrent)) return;
-        if (pageCurrent()) reportFailure({ op: 'command.delete', params, error: e, endpoint: removing ? 'ssh.commands.remove' : (e.operation || 'ssh.commands.get'), write: removing });
-    } finally {
-        configurationDeletesInFlight.delete(key);
-    }
+    const command = sshCommands[selectedHostId]?.[idx];
+    if (command) return deleteConfiguration('commands', command.id, command.name || command.id);
 }
 
 /* 当前执行中的会话 ID */
@@ -8861,21 +8756,19 @@ let currentExecSessionId = null;
 // A display belongs to one local invocation, then one acknowledged server operation.
 let execDisplayOwner = null;
 function releaseExecDisplay() {
-    if (execDisplayOwner) execDisplayOwner.messages = [];
-    execDisplayOwner = null;
-    currentExecSessionId = null;
-    if (tailIntervalId) clearInterval(tailIntervalId);
-    tailIntervalId = null;
-    const tail = document.getElementById('nohup-tail-log');
-    const stop = document.getElementById('nohup-stop-tail');
-    if (tail) tail.style.display = 'inline-block';
-    if (stop) stop.style.display = 'none';
+    if (execDisplayOwner) {
+        execDisplayOwner.messages=[];
+        delete execDisplayOwner.element.dataset.serviceRun;
+        delete execDisplayOwner.element.dataset.operationId;
+        delete execDisplayOwner.element.dataset.operationPhase;
+    }
+    execDisplayOwner=null;currentExecSessionId=null;currentNohupInfo={runId:null};
 }
 function claimExecDisplay(kind, element) {
     releaseExecDisplay();
     const owner = {kind, element, sessionId: null, finished: false, messages: [], bytes: 0};
     execDisplayOwner = owner;
-    delete element.dataset.serviceCommand;
+    delete element.dataset.serviceRun;
     delete element.dataset.operationId;
     delete element.dataset.operationPhase;
     const matchPanel = document.getElementById('match-result-panel');
@@ -8897,451 +8790,87 @@ function acknowledgeExecSession(owner, sessionId) {
 }
 
 /* nohup 相关状态（用于快捷按钮） */
-let currentNohupInfo = {
-    logFile: null,
-    processKeyword: null,
-    hostId: null
-};
-
-/* nohup 快捷操作：查看日志 */
-async function nohupViewLog() {
-    if (!currentNohupInfo.logFile || !currentNohupInfo.hostId) {
-        showToast((typeof t === 'function' ? t('toast.noLogInfo') : '没有可用的日志信息'), 'warning');
-        return;
-    }
-    await executeNohupHelperCommand(`cat "${currentNohupInfo.logFile}"`);
-}
-
-/* nohup 实时跟踪状态 */
-let tailIntervalId = null;
-let lastTailContent = '';
-
-/* nohup 快捷操作：实时跟踪 */
-async function nohupTailLog() {
-    if (!currentNohupInfo.logFile || !currentNohupInfo.hostId) {
-        showToast((typeof t === 'function' ? t('toast.noLogInfo') : '没有可用的日志信息'), 'warning');
-        return;
-    }
-    
-    // 如果已在跟踪，则停止
-    if (tailIntervalId) {
-        nohupStopTail();
-        return;
-    }
-    
-    const tailBtn = document.getElementById('nohup-tail-log');
-    const stopBtn = document.getElementById('nohup-stop-tail');
-    const resultPre = document.getElementById('exec-result');
-    const owner = claimExecDisplay('tail', resultPre);
-    const info = {...currentNohupInfo};
-    let fetching = false;
-    
-    // 切换按钮状态
-    tailBtn.style.display = 'none';
-    stopBtn.style.display = '';
-    
-    resultPre.textContent += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n${typeof t === 'function' ? t('sshPage.startRealTimeTail', { logFile: currentNohupInfo.logFile }) : `开始实时跟踪: ${info.logFile}\n（点击"停止跟踪"按钮退出）`}\n━━━━━━━━━━━━━━━━━━━━━━\n`;
-    lastTailContent = '';
-    
-    // 定时获取日志
-    const fetchLog = async () => {
-        if (!ownsExecDisplay(owner) || fetching || document.hidden) return;
-        fetching = true;
-        try {
-            const host = window._cmdHostsList?.find(h => h.id === info.hostId);
-            if (!host) return;
-            
-            const result = await api.call('ssh.exec', {
-                host: host.host,
-                port: host.port,
-                user: host.username,
-                keyid: host.keyid,
-                command: `tail -100 "${info.logFile}" 2>/dev/null`,
-                timeout_ms: 5000
-            });
-            
-            if (!ownsExecDisplay(owner)) return;
-            const content = result.data?.stdout || '';
-            // 只显示新增内容
-            if (content && content !== lastTailContent) {
-                if (lastTailContent === '') {
-                    resultPre.textContent += content;
-                } else if (content.length > lastTailContent.length && content.startsWith(lastTailContent)) {
-                    resultPre.textContent += content.substring(lastTailContent.length);
-                } else {
-                    // 内容完全变化，显示全部
-                    resultPre.textContent += '\n' + content;
-                }
-                lastTailContent = content;
-                resultPre.scrollTop = resultPre.scrollHeight;
-            }
-        } catch (e) {
-            if (ownsExecDisplay(owner)) console.error('Tail log error:', e);
-        } finally { fetching = false; }
-    };
-    
-    // 立即获取一次
-    await fetchLog();
-    // 每2秒获取一次
-    if (ownsExecDisplay(owner)) tailIntervalId = setInterval(fetchLog, 2000);
-}
-
-/* nohup 快捷操作：停止实时跟踪 */
-function nohupStopTail() {
-    if (tailIntervalId) {
-        clearInterval(tailIntervalId);
-        tailIntervalId = null;
-    }
-    
-    const tailBtn = document.getElementById('nohup-tail-log');
-    const stopBtn = document.getElementById('nohup-stop-tail');
-    const resultPre = document.getElementById('exec-result');
-    
-    if (tailBtn) tailBtn.style.display = '';
-    if (stopBtn) stopBtn.style.display = 'none';
-    
-    if (!resultPre || execDisplayOwner?.kind !== 'tail') return;
-    releaseExecDisplay();
-    resultPre.textContent += t('promptRepair.tailStopped');
-    resultPre.scrollTop = resultPre.scrollHeight;
-}
-
-/* nohup 快捷操作：检查进程（使用 PID 文件） */
-async function nohupCheckProcess() {
-    if (currentNohupInfo.commandId) {
-        const owner = execDisplayOwner;
-        const state = await verifyServiceState(currentNohupInfo.commandId);
-        if (state && ownsExecDisplay(owner)) owner.element.textContent += '\n' + runtimeText(state.state || 'unknown');
-        return;
-    }
-    if (!currentNohupInfo.pidFile || !currentNohupInfo.hostId) {
-        showToast((typeof t === 'function' ? t('toast.noProcessInfo') : '没有可用的进程信息'), 'warning');
-        return;
-    }
-    // 使用 PID 文件检查进程状态，并显示进程详情
-    await executeNohupHelperCommand(`if [ -f ${currentNohupInfo.pidFile} ]; then PID=$(cat ${currentNohupInfo.pidFile}); if kill -0 $PID 2>/dev/null; then echo "进程运行中 (PID: $PID)"; ps -p $PID -o pid,user,%cpu,%mem,etime,args --no-headers 2>/dev/null || ps -p $PID 2>/dev/null; else echo "进程已退出 (PID: $PID)"; fi; else echo "PID 文件不存在"; fi`);
-}
-
-/* nohup 快捷操作：停止进程（使用 PID 文件） */
-async function nohupStopProcess() {
-    if (currentNohupInfo.commandId) {
-        await quickActionStopProcess(currentNohupInfo.commandId, false);
-        return;
-    }
-    if (!currentNohupInfo.pidFile || !currentNohupInfo.hostId) {
-        showToast((typeof t === 'function' ? t('toast.noProcessInfo') : '没有可用的进程信息'), 'warning');
-        return;
-    }
-    
-    // 确认对话框
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmStopProcess') : '确定要停止此后台进程吗？', { primary: t('common.stop'), tone: 'neutral' })) {
-        return;
-    }
-    
-    const info = {...currentNohupInfo};
-    // 停止实时跟踪（如果正在进行）
-    nohupStopTail();
-    
-    // 使用 PID 文件精确停止
-    const owner = await executeNohupHelperCommand(`if [ -f ${info.pidFile} ]; then kill $(cat ${info.pidFile}) 2>/dev/null && rm -f ${info.pidFile} && echo "进程已停止"; else echo "PID 文件不存在"; fi`, info);
-    if (!ownsExecDisplay(owner)) return;
-    
-    // 再次检查进程状态
-    await executeNohupHelperCommand(`[ -f ${info.pidFile} ] && kill -0 $(cat ${info.pidFile}) 2>/dev/null && echo "进程仍在运行" || echo "确认：进程已停止"`, info);
-}
-
-/* 执行 nohup 辅助命令 */
-async function executeNohupHelperCommand(command, info = currentNohupInfo) {
-    const host = window._cmdHostsList?.find(h => h.id === info.hostId);
-    if (!host) {
-        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
-        return;
-    }
-    
-    const resultPre = document.getElementById('exec-result');
-    const owner = claimExecDisplay('log', resultPre);
-    resultPre.textContent += `\n\n━━━━━━━━━━━━━━━━━━━━━━\n$ ${command}\n`;
-    
-    try {
-        const result = await api.call('ssh.exec', {
-            host: host.host,
-            port: host.port,
-            user: host.username,
-            keyid: host.keyid,
-            command: command,
-            timeout_ms: 10000
-        });
-        
-        // ssh.exec 返回 stdout 和 stderr，不是 output
-        if (!ownsExecDisplay(owner)) return;
-        if (result.code !== 0) {
-            resultPre.textContent += '\n' + failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, result, endpoint: 'ssh.exec', write: false });
-            resultPre.scrollTop = resultPre.scrollHeight;
-            return owner;
-        }
-        const stdout = result.data?.stdout || '';
-        const stderr = result.data?.stderr || '';
-        if (stdout || stderr) {
-            if (stdout) resultPre.textContent += stdout;
-            if (stderr) resultPre.textContent += `[stderr] ${stderr}`;
-        } else {
-            resultPre.textContent += t('promptRepair.noOutput');
-        }
-    } catch (e) {
-        if (!ownsExecDisplay(owner)) return;
-        resultPre.textContent += '\n' + failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, error: e, endpoint: 'ssh.exec', write: false });
-    }
-    
-    // 滚动到底部
-    resultPre.scrollTop = resultPre.scrollHeight;
-    return owner;
-}
-
-/**
- * 服务模式：查看日志（从命令列表卡片调用）
- * @param {number} idx - 命令索引
- * @param {string} safeName - 安全名称（用于日志文件）
- */
-async function viewServiceLog(idx, safeName) {
-    const cmd = sshCommands[selectedHostId]?.[idx];
-    if (!cmd) {
-        reportFailure({ op: 'command.lookup', phase: 'blocked', token: 'list_stale' });
-        return;
-    }
-    
-    const host = window._cmdHostsList?.find(h => h.id === selectedHostId);
-    if (!host) {
-        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
-        return;
-    }
-    
-    const logFile = `/tmp/ts_nohup_${safeName}.log`;
-    
-    // 显示结果区域
-    const resultSection = document.getElementById('exec-result-section');
-    const resultPre = document.getElementById('exec-result');
-    const owner = claimExecDisplay('log', resultPre);
-    resultSection.style.display = '';
-    document.getElementById('cancel-exec-btn').style.display = 'none';
-    document.getElementById('nohup-actions').style.display = 'none';
-    
-    resultPre.textContent = (typeof t === 'function' ? t('sshPage.viewServiceLogFile', { name: cmd.name, file: logFile }) : `查看服务日志: ${cmd.name}\n文件: ${logFile}`) + '\n\n';
-    resultSection.scrollIntoView({ behavior: 'smooth' });
-    
-    try {
-        const result = await api.call('ssh.exec', {
-            host: host.host,
-            port: host.port,
-            user: host.username,
-            keyid: host.keyid,
-            command: `tail -200 "${logFile}" 2>/dev/null || echo "日志文件不存在或为空"`,
-            timeout_ms: 10000
-        });
-        
-        if (!ownsExecDisplay(owner)) return;
-        if (result.code !== 0) {
-            resultPre.textContent += failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, result, endpoint: 'ssh.exec', write: false });
-            return;
-        }
-        const stdout = result.data?.stdout || '';
-        const stderr = result.data?.stderr || '';
-        
-        if (stdout) {
-            resultPre.textContent += stdout;
-        } else if (stderr) {
-            resultPre.textContent += typeof t === 'function' ? t('sshPage.logErrorMsg', { msg: stderr }) : `[错误] ${stderr}`;
-        } else {
-            resultPre.textContent += (typeof t === 'function' ? t('ui.logEmpty') : '（日志为空）');
-        }
-    } catch (e) {
-        if (!ownsExecDisplay(owner)) return;
-        resultPre.textContent += failureText({ op: 'ssh.helper', params: { host: `${host.username}@${host.host}:${host.port}`, user: host.username, port: host.port }, error: e, endpoint: 'ssh.exec', write: false });
-    }
-    
-    resultPre.scrollTop = resultPre.scrollHeight;
-}
-
-/**
- * 服务模式：停止进程（从命令列表卡片调用）
- * @param {number} idx - 命令索引
- * @param {string} safeName - 安全名称（用于 PID 文件）
- */
-async function stopServiceProcess(idx) {
-    const cmd = sshCommands[selectedHostId]?.[idx];
-    if (cmd) await quickActionStopProcess(cmd.id, false);
-}
+let currentNohupInfo = {runId: null};
+function nohupViewLog() {if (currentNohupInfo.runId) return showServiceRunLog(currentNohupInfo.runId);}
+function nohupTailLog() {if (currentNohupInfo.runId) return showServiceRunLog(currentNohupInfo.runId,true);}
+function nohupCheckProcess() {if (currentNohupInfo.runId) return verifyServiceState(currentNohupInfo.runId);}
+function nohupStopProcess() {if (currentNohupInfo.runId) return quickActionStopProcess(currentNohupInfo.runId,false);}
 
 const serviceStartInFlight = new Set();
-async function executeManagedService(cmd, resultPre) {
-    if (serviceStartInFlight.has(cmd.id)) return;
-    serviceStartInFlight.add(cmd.id);
-    const owner = claimExecDisplay('service', resultPre);
-    advanceServiceState(cmd.id);
-    const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
-    currentNohupInfo = {commandId: cmd.id, hostId: selectedHostId, logFile: `/tmp/ts_nohup_${safeName}.log`};
-    resultPre.dataset.serviceCommand = cmd.id;
-    delete resultPre.dataset.operationId;
-    delete resultPre.dataset.operationPhase;
-    resultPre.textContent = cmd.name + '\n' + runtimeText('starting') + '\n';
+async function executeManagedService(cmd, resultPre, host) {
+    const version = configurationVersion('commands'), key = version+':'+cmd.id;
+    if (serviceStartInFlight.has(key)) return;
+    serviceStartInFlight.add(key);
+    const owner = claimExecDisplay('service',resultPre);owner.user=host.username;
+    const controls=[...document.querySelectorAll('#nohup-actions button')];controls.forEach(button=>button.disabled=true);
+    resultPre.textContent = cmd.name+'\n'+runtimeText('starting')+'\n';
     try {
-        const result = requireApiSuccess(await api.call('ssh.services.start', {command_id: cmd.id}, 'POST'), 'ssh.services.start');
-        if (!Number.isInteger(result.data?.operation_id) || result.data.operation_id <= 0)
-            throw new ApiOperationError({}, 'ssh.services.start', {kind: 'format', uncertain: true});
+        const result = requireApiSuccess(await api.call('ssh.services.start',{command_id:cmd.id,active_version:version},'POST'),'ssh.services.start');
+        if (!result.data?.run_id || !Number.isInteger(result.data.operation_id) || result.data.operation_id<=0)
+            throw new ApiOperationError({},'ssh.services.start',{kind:'format',uncertain:true});
         if (!ownsExecDisplay(owner)) return;
+        const runId = result.data.run_id;
+        currentNohupInfo = {runId};resultPre.dataset.serviceRun = runId;
+        document.getElementById('nohup-view-log').disabled=false;document.getElementById('nohup-tail-log').disabled=false;
         resultPre.dataset.operationId = String(result.data.operation_id);
         resultPre.textContent += runtimeText('launch_accepted');
-    } catch (e) {
-        if (ownsExecDisplay(owner))
-            resultPre.textContent += e.uncertain || e.kind === 'timeout' || e.code === 5 ? runtimeText('outcomeUnknown') : failureText({ op: 'service.start', params: { name: cmd.name }, error: e, endpoint: 'ssh.services.start', write: true });
+        await refreshServiceStates();startServiceStatusRefresh();
+        await waitServiceOperation(runId,result.data.operation_id,()=>ownsExecDisplay(owner));
+    } catch (error) {
+        if (ownsExecDisplay(owner)) resultPre.textContent += '\n'+failureText({op:'service.start',params:{name:cmd.name,user:owner.user || ''},error,endpoint:'ssh.services.start',write:true});
     } finally {
-        advanceServiceState(cmd.id);
-        serviceStartInFlight.delete(cmd.id);
-        await updateServiceStatusInList();
+        serviceStartInFlight.delete(key);
+        if(ownsExecDisplay(owner)&&currentNohupInfo.runId)controls.forEach(button=>button.disabled=false);
     }
 }
 
 async function executeCommand(idx) {
     const cmd = sshCommands[selectedHostId]?.[idx];
     if (!cmd) return;
-    
-    const host = window._cmdHostsList?.find(h => h.id === selectedHostId);
-    if (!host) {
-        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
-        return;
-    }
-    
-    // 检查是否有正在运行的命令（nohup 模式不需要检查）
+    const host = window._cmdHostsList?.find(h=>h.id===selectedHostId);
+    if (!host) {reportFailure({op:'host.lookup',phase:'blocked',token:'list_stale'});return;}
     if (currentExecSessionId && !cmd.nohup) {
-        reportFailure({ op: 'ssh.run', phase: 'blocked', token: 'ssh_exec_busy', params: { name: cmd.name } }, { type: 'warning' });
+        reportFailure({op:'ssh.run',phase:'blocked',token:'ssh_exec_busy',params:{name:cmd.name}},{type:'warning'});return;
+    }
+    const section = document.getElementById('exec-result-section'), output = document.getElementById('exec-result');
+    const cancel = document.getElementById('cancel-exec-btn');
+    section.style.display='';cancel.style.display=cmd.nohup?'none':'';cancel.disabled=false;
+    document.getElementById('nohup-actions').style.display=cmd.nohup?'flex':'none';
+    if (cmd.nohup) {
+        try {await executeManagedService(cmd,output,host);}
+        catch (error) {reportFailure({op:'service.start',params:{name:cmd.name,user:host.username},error,write:true});}
         return;
     }
-    
-    // 显示结果区域
-    const resultSection = document.getElementById('exec-result-section');
-    const resultPre = document.getElementById('exec-result');
-    const cancelBtn = document.getElementById('cancel-exec-btn');
-    const nohupActions = document.getElementById('nohup-actions');
-    resultSection.style.display = '';
-    
-    // nohup 模式下隐藏取消按钮，显示快捷按钮
-    if (cmd.nohup) {
-        cancelBtn.style.display = 'none';
-        nohupActions.style.display = 'flex';
-    } else {
-        cancelBtn.style.display = '';
-        cancelBtn.disabled = false;
-        nohupActions.style.display = 'none';
+    const owner = claimExecDisplay('ssh',output);
+    owner.target={host:`${host.username}@${host.host}:${host.port}`,name:cmd.name,user:host.username,port:host.port};
+    let text=cmd.name+'\n'+owner.target.host+'\n'+cmd.command+'\n';
+    if (cmd.expectPattern || cmd.failPattern || cmd.extractPattern) {
+        text+=t('promptRepair.matchSettings');
+        if (cmd.expectPattern) text+=t('promptRepair.expectedPattern',{pattern:cmd.expectPattern});
+        if (cmd.failPattern) text+=t('promptRepair.failurePattern',{pattern:cmd.failPattern});
+        if (cmd.extractPattern) text+=t('promptRepair.extractPattern',{pattern:cmd.extractPattern});
+        if (cmd.stopOnMatch) text+=t('promptRepair.stopOnMatch');
+        if (cmd.varName) text+=t('promptRepair.storedVariable',{name:cmd.varName});
     }
-    
-    if (cmd.nohup && cmd.serviceMode) {
-        await executeManagedService(cmd, resultPre);
-        return;
-    }
-
-    const owner = claimExecDisplay('ssh', resultPre);
-    owner.target = { host: `${host.username}@${host.host}:${host.port}`, name: cmd.name, user: host.username, port: host.port };
-
-    // 对于 nohup 命令，包装命令以实现后台执行，并记录日志和 PID
-    let actualCommand = cmd.command;
-    let nohupLogFile = null;
-    let nohupPidFile = null;
-    if (cmd.nohup) {
-        // 基于命令名生成固定文件名（每次执行会覆盖），纯中文名 fallback 到 cmd.id
-        const safeName = cmd.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || String(cmd.id).replace(/[^a-zA-Z0-9]/g, '').slice(0, 20) || 'cmd';
-        nohupLogFile = `/tmp/ts_nohup_${safeName}.log`;
-        nohupPidFile = `/tmp/ts_nohup_${safeName}.pid`;
-        
-        // 使用 PID 文件方式（最可靠，能区分任意数量的不同命令）
-        // 启动命令：nohup cmd > log 2>&1 & echo $! > pidfile; 检测启动
-        actualCommand = `nohup ${cmd.command} > ${nohupLogFile} 2>&1 & echo $! > ${nohupPidFile}; sleep 0.3; cat ${nohupPidFile}`;
-        
-        // 保存 nohup 信息供快捷按钮使用
-        currentNohupInfo = {
-            logFile: nohupLogFile,
-            pidFile: nohupPidFile,
-            processKeyword: safeName,
-            hostId: selectedHostId
-        };
-    }
-    
-    // 构建状态信息
-    let statusInfo = (typeof t === 'function' ? t('sshPage.connecting') : 'Connecting') + `: ${cmd.name}\n` + (typeof t === 'function' ? t('securityPage.hostLabel') : 'Host') + `: ${host.username}@${host.host}:${host.port}\n` + (typeof t === 'function' ? t('common.command') : 'Command') + `: ${actualCommand}\n`;
-    if (cmd.nohup) {
-        statusInfo += `\n` + (typeof t === 'function' ? t('sshPage.nohupMode') : 'Background mode: command runs on server, unaffected by disconnect') + `\n`;
-        statusInfo += t('promptRepair.logFile', {path: nohupLogFile});
-    } else if (cmd.expectPattern || cmd.failPattern || cmd.extractPattern) {
-        statusInfo += t('promptRepair.matchSettings');
-        if (cmd.expectPattern) statusInfo += t('promptRepair.expectedPattern', {pattern: cmd.expectPattern});
-        if (cmd.failPattern) statusInfo += t('promptRepair.failurePattern', {pattern: cmd.failPattern});
-        if (cmd.extractPattern) statusInfo += t('promptRepair.extractPattern', {pattern: cmd.extractPattern});
-        if (cmd.stopOnMatch) statusInfo += t('promptRepair.stopOnMatch');
-        if (cmd.varName) statusInfo += t('promptRepair.storedVariable', {name: cmd.varName});
-    }
-    statusInfo += `\n`;
-    resultPre.textContent = statusInfo;
-    
-    // 滚动到结果区域
-    resultSection.scrollIntoView({ behavior: 'smooth' });
-    
+    output.textContent=text+'\n';section.scrollIntoView({behavior:'smooth'});
+    const params={host:host.host,port:host.port,user:host.username,keyid:host.keyid,command:cmd.command};
+    if (cmd.expectPattern) params.expect_pattern=cmd.expectPattern;
+    if (cmd.failPattern) params.fail_pattern=cmd.failPattern;
+    if (cmd.extractPattern) params.extract_pattern=cmd.extractPattern;
+    if (cmd.varName) params.var_name=cmd.varName;
+    if (cmd.timeout) params.timeout=cmd.timeout*1000;
+    if (cmd.stopOnMatch) params.stop_on_match=true;
     try {
-        // 构建 API 参数
-        const params = {
-            host: host.host,
-            port: host.port,
-            user: host.username,
-            keyid: host.keyid,
-            command: actualCommand
-        };
-        
-        // 添加高级选项（仅非 nohup 模式）
-        if (!cmd.nohup) {
-            if (cmd.expectPattern) params.expect_pattern = cmd.expectPattern;
-            if (cmd.failPattern) params.fail_pattern = cmd.failPattern;
-            if (cmd.extractPattern) params.extract_pattern = cmd.extractPattern;
-            if (cmd.varName) params.var_name = cmd.varName;
-            if (cmd.timeout) params.timeout = cmd.timeout * 1000; // 转为毫秒
-            if (cmd.stopOnMatch) params.stop_on_match = true;
-        } else {
-            // nohup 模式设置短超时，命令发送后立即返回
-            params.timeout = 5000;
-        }
-        
-        // 使用流式执行 API
-        const result = requireApiSuccess(await api.call('ssh.exec_stream', params), 'ssh.exec_stream');
-        if (!Number.isInteger(result.data?.session_id)) throw new ApiOperationError({}, 'ssh.exec_stream', {kind: 'format', uncertain: true});
-        
+        const result=requireApiSuccess(await api.call('ssh.exec_stream',params),'ssh.exec_stream');
+        if (!Number.isInteger(result.data?.session_id)) throw new ApiOperationError({},'ssh.exec_stream',{kind:'format',uncertain:true});
         if (!ownsExecDisplay(owner)) return;
-        
-        if (cmd.nohup) {
-            resultPre.textContent += t('promptRepair.sshAccepted');
-            resultPre.textContent += t('promptRepair.sshCheckOutput');
-            resultPre.textContent += t('promptRepair.logFileSpaced', {path: nohupLogFile});
-            resultPre.textContent += t('promptRepair.processKeyword', {keyword: cmd.command.split(' ')[0]});
-            // nohup 命令不跟踪会话
-            // The display still follows this session; it is not a cancellable foreground command;
-        } else {
-            resultPre.textContent += t('promptRepair.sessionWaiting', {id: result.data.session_id});
-        }
-        
-        acknowledgeExecSession(owner, result.data.session_id);
-        if (cmd.nohup) currentExecSessionId = null;
-        // 输出将通过 WebSocket 实时推送
-        
-    } catch (e) {
+        output.textContent+=t('promptRepair.sessionWaiting',{id:result.data.session_id});
+        acknowledgeExecSession(owner,result.data.session_id);
+    } catch (error) {
         if (!ownsExecDisplay(owner)) return;
-        owner.finished = true;
-        owner.messages = [];
-        if (e.uncertain || e.kind === 'timeout' || e.code === 5 || e.code === 'TIMEOUT') {
-            resultPre.textContent += '\n' + t('promptRepair.sshSubmissionUnknown');
-            showToast(t('promptRepair.sshSubmissionUnknown'), 'warning', 10000);
-            cancelBtn.style.display = 'none';
-            return;
-        }
-        const failure = describeFailure({ op: 'ssh.run', params: { host: `${host.username}@${host.host}:${host.port}`, name: cmd.name, user: host.username, port: host.port }, error: e, endpoint: 'ssh.exec_stream', write: true });
-        resultPre.textContent = failure.message;
-        showFailureToast(failure.message, failure.details, { type: failure.uncertain ? 'warning' : 'error' });
-        cancelBtn.style.display = 'none';
-        currentExecSessionId = null;
+        owner.finished=true;owner.messages=[];cancel.style.display='none';currentExecSessionId=null;
+        const failure=describeFailure({op:'ssh.run',params:owner.target,error,endpoint:'ssh.exec_stream',write:true});
+        output.textContent+='\n'+failure.message;showFailureToast(failure.message,failure.details,{type:failure.uncertain?'warning':'error'});
     }
 }
 
@@ -9617,7 +9146,7 @@ function clearExecResult() {
     if (matchPanel) matchPanel.style.display = 'none';
     currentExecSessionId = null;
     // 清除 nohup 信息
-    currentNohupInfo = { logFile: null, processKeyword: null, hostId: null };
+    currentNohupInfo = {runId:null};
 }
 
 // =========================================================================
@@ -9797,9 +9326,9 @@ async function loadSecurityPage() {
                     <span class="t-section sec-t">${t('security.keyManagement')}</span>
                     <div class="acts"><button class="btn sm" onclick="showGenerateKeyModal()"><svg class="i"><use href="#ri-add-line"/></svg>${t('securityPage.generateNewKey')}</button></div>
                 </div>
-                <div class="card" style="padding:0">
+                <div class="card data-table cols-keys" style="padding:0">
                     <div class="tr th cols-keys"><div>${t('securityPage.keysTableId')}</div><div>${t('securityPage.keysTableType')}</div><div>${t('securityPage.keysTableComment')}</div><div>${t('securityPage.keysTableCreated')}</div><div>${t('securityPage.keysTableExportable')}</div><div class="ta-r">${t('securityPage.keysTableActions')}</div></div>
-                    <div id="keys-table-body"></div>
+                    <div class="table-body" id="keys-table-body"></div>
                 </div>
             </div>
             
@@ -9809,17 +9338,17 @@ async function loadSecurityPage() {
                     <div class="acts"><button class="btn sm" onclick="showImportSshHostModal()"><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.importHost')}</button></div>
                 </div>
                 <div class="t-note hint" style="margin-bottom:8px"><svg class="i"><use href="#ri-information-line"/></svg>${t('securityPage.hostsHint')}</div>
-                <div class="card" style="padding:0">
+                <div class="card data-table cols-hosts" style="padding:0">
                     <div class="tr th cols-hosts"><div>${t('securityPage.hostId')}</div><div>${t('securityPage.address')}</div><div>${t('securityPage.port')}</div><div>${t('securityPage.username')}</div><div>${t('securityPage.deployKey')}</div><div class="ta-r">${t('securityPage.keysTableActions')}</div></div>
-                    <div id="ssh-hosts-table-body"></div>
+                    <div class="table-body" id="ssh-hosts-table-body"></div>
                 </div>
             </div>
             
             <div>
                 <div class="sec-h"><span class="t-section sec-t" title="${escapeHtml(t('securityPage.fingerprintHint'))}">${t('securityPage.knownHostFingerprints')}</span><div class="acts"></div></div>
-                <div class="card" style="padding:0">
+                <div class="card data-table cols-known" style="padding:0">
                     <div class="tr th cols-known"><div>${t('securityPage.host')}</div><div>${t('securityPage.port')}</div><div>${t('securityPage.keyType')}</div><div>${t('securityPage.fingerprintSha256')}</div><div>${t('securityPage.addedTime')}</div><div>${t('securityPage.keysTableActions')}</div></div>
-                    <div id="known-hosts-table-body"></div>
+                    <div class="table-body" id="known-hosts-table-body"></div>
                 </div>
             </div>
             
@@ -10078,11 +9607,11 @@ async function refreshSecurityPage({keysOnly = false} = {}) {
                     <div>${formatTimestamp(key.created)}</div>
                     <div>${key.exportable ? t('common.yes') : t('common.no')}</div>
                     <div class="act">
-                        <button class="btn sm" onclick="exportKey('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'}><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.publicKey')}</button>
-                        <button class="btn sm" onclick="exportPrivateKey('${escapeHtml(key.id)}')" ${key.exportable === false ? 'disabled' : ''} title="${key.exportable === false ? t('securityPage.cannotExportPrivateKey') : t('securityPage.exportPrivateKey')}"><svg class="i"><use href="#ri-key-line"/></svg>${t('securityPage.privateKey')}</button>
-                        <button class="btn sm" onclick="showDeployKeyModal('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'} title="${t('securityPage.deployToServer')}"><svg class="i"><use href="#ri-upload-line"/></svg>${t('securityPage.deploy')}</button>
-                        <button class="btn sm dg" onclick="showRevokeKeyModal('${escapeHtml(key.id)}')" ${key.has_pubkey ? '' : 'disabled'} title="${t('securityPage.revokeFromServer')}">${t('securityPage.revoke')}</button>
-                        <button class="btn sm dg" onclick="deleteKey('${escapeHtml(key.id)}')">${t('common.delete')}</button>
+                        <button class="btn sm" onclick="${configurationHandler('exportKey', key.id)}" ${key.has_pubkey ? '' : 'disabled'}><svg class="i"><use href="#ri-download-line"/></svg>${t('securityPage.publicKey')}</button>
+                        <button class="btn sm" onclick="${configurationHandler('exportPrivateKey', key.id)}" ${key.exportable === false ? 'disabled' : ''} title="${key.exportable === false ? t('securityPage.cannotExportPrivateKey') : t('securityPage.exportPrivateKey')}"><svg class="i"><use href="#ri-key-line"/></svg>${t('securityPage.privateKey')}</button>
+                        <button class="btn sm" onclick="${configurationHandler('showDeployKeyModal', key.id)}" ${key.has_pubkey ? '' : 'disabled'} title="${t('securityPage.deployToServer')}"><svg class="i"><use href="#ri-upload-line"/></svg>${t('securityPage.deploy')}</button>
+                        <button class="btn sm dg" onclick="${configurationHandler('showRevokeKeyModal', key.id)}" ${key.has_pubkey ? '' : 'disabled'} title="${t('securityPage.revokeFromServer')}">${t('securityPage.revoke')}</button>
+                        <button class="btn sm dg" onclick="${configurationHandler('deleteKey', key.id)}">${t('common.delete')}</button>
                     </div>
                 </div>
                 `;
@@ -10147,7 +9676,7 @@ async function refreshSecurityPage({keysOnly = false} = {}) {
     // A failed or superseded SSH load must not erase the existing key table.
     const keysCurrent = pageCurrent() && keysVersion === securityKeysLoadVersion;
     if (keysLoaded && keysCurrent && tbody) {
-        tbody.innerHTML = allKeysHtml || `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noKeysClickToGenerate')}</div>`;
+        tbody.innerHTML = allKeysHtml || `<div class="tr table-message" style="color:var(--ink-3)">${t('securityPage.noKeysClickToGenerate')}</div>`;
     }
     const keyResult = {keysLoaded, keysCurrent};
     if (keysOnly) return keyResult;
@@ -10180,13 +9709,14 @@ let sshHostsLoadVersion = 0;
 
 async function loadSshHostsData() {
     const version = ++sshHostsLoadVersion;
-    const pageCurrent = capturePageValidity();
+    const pageCurrent = configurationRead('hosts');
     try {
         const result = requireApiSuccess(await api.call('ssh.hosts.list', {}), 'ssh.hosts.list');
         if (!pageCurrent()) return false;
         if (version !== sshHostsLoadVersion) return null; // Superseded, leave the newer list alone.
         const hosts = result.data?.hosts;
         if (!Array.isArray(hosts)) throw new ApiOperationError({}, 'ssh.hosts.list', {kind: 'format'});
+        recordConfigurationList('hosts', result.data, hosts);
         const data = {};
         hosts.forEach(h => { data[h.id] = h; });
         window._sshHostsData = data;
@@ -10218,7 +9748,7 @@ async function refreshSshHostsList() {
         window._sshHostsList = hosts;
         
         if (hosts.length === 0) {
-            tbody.innerHTML = `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noDeployedHostsHint')}</div>`;
+            tbody.innerHTML = `<div class="tr table-message" style="color:var(--ink-3)">${t('securityPage.noDeployedHostsHint')}</div>`;
             return true;
         }
         
@@ -10231,7 +9761,7 @@ async function refreshSshHostsList() {
                 <div><span class="tag">${escapeHtml(h.keyid || 'default')}</span></div>
                 <div class="act">
                     <button class="btn sm" onclick="testSshHostByIndex(${idx})" title="${t('securityPage.testConnection')}">${t('common.test')}</button>
-                    <button class="btn sm" onclick="exportSshHost('${escapeHtml(h.id)}')" title="${t('securityPage.exportAsTscfg')}">${t('common.export')}</button>
+                    <button class="btn sm" onclick="${configurationHandler('exportSshHost', h.id)}" title="${t('securityPage.exportAsTscfg')}">${t('common.export')}</button>
                     <button class="btn sm dg" onclick="revokeKeyFromHost(${idx})" title="${t('securityPage.revokePubkey')}">${t('securityPage.revoke')}</button>
                     <button class="btn sm dg" onclick="removeHostByIndex(${idx})" title="${t('securityPage.removeLocalRecord')}">${t('securityPage.remove')}</button>
                 </div>
@@ -10242,7 +9772,7 @@ async function refreshSshHostsList() {
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Refresh SSH hosts error:', e);
-        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'host.list', error: e, endpoint: 'ssh.hosts.list', write: false })}</span></div>`;
+        tbody.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'host.list', error: e, endpoint: 'ssh.hosts.list', write: false })}</span></div>`;
         return false;
     }
 }
@@ -10259,13 +9789,13 @@ async function refreshKnownHostsList() {
         const result = await api.call('hosts.list', {});
         if (!pageCurrent()) return;
         if (result.code !== 0) {
-            tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'knownHost.list', result, endpoint: 'hosts.list', write: false })}</span></div>`;
+            tbody.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'knownHost.list', result, endpoint: 'hosts.list', write: false })}</span></div>`;
             return;
         }
         const hosts = result.data?.hosts || [];
         
         if (hosts.length === 0) {
-            tbody.innerHTML = `<div class="tr" style="--cols:1fr;color:var(--ink-3)">${t('securityPage.noKnownHostFingerprints')}</div>`;
+            tbody.innerHTML = `<div class="tr table-message" style="color:var(--ink-3)">${t('securityPage.noKnownHostFingerprints')}</div>`;
             return;
         }
         
@@ -10288,7 +9818,7 @@ async function refreshKnownHostsList() {
     } catch (e) {
         if (!pageCurrent()) return;
         console.error('Refresh known hosts error:', e);
-        tbody.innerHTML = `<div class="tr" style="--cols:1fr"><span class="state bad">${failureNote({ op: 'knownHost.list', error: e, endpoint: 'hosts.list', write: false })}</span></div>`;
+        tbody.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'knownHost.list', error: e, endpoint: 'hosts.list', write: false })}</span></div>`;
     }
 }
 
@@ -10519,151 +10049,26 @@ async function doExportSshHost(hostId, recipientCert) {
 /**
  * 显示导入 SSH 主机配置弹窗
  */
-function showImportSshHostModal() {
-    let modal = document.getElementById('import-ssh-host-modal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'import-ssh-host-modal';
-        modal.className = 'modal';
-        document.body.appendChild(modal);
-    }
-    
-    modal.innerHTML = importSheet('ssh-host', t('securityPage.importSshHostTitle'), t('securityPage.importSshHostDesc'), 'previewSshHostImport', 'confirmSshHostImport', 'hideImportSshHostModal', '', 520, t('common.confirmImport'));
-    
-    // 存储 tscfg 内容
-    window._importSshHostTscfg = null;
-    
-    modal.classList.remove('hidden');
-}
+function showImportSshHostModal() { showConfigurationImport('ssh-host'); }
 
-function hideImportSshHostModal() {
-    const modal = document.getElementById('import-ssh-host-modal');
-    if (modal) modal.classList.add('hidden');
-    window._importSshHostTscfg = null;
-}
+function hideImportSshHostModal() { hideConfigurationImport('ssh-host'); }
 
 /**
  * 预览 SSH 主机导入内容
  */
-async function previewSshHostImport() {
-    const fileInput = document.getElementById('import-ssh-host-file');
-    const resultBox = document.getElementById('import-ssh-host-result');
-    const step2 = document.getElementById('import-ssh-host-step2');
-    const previewDiv = document.getElementById('import-ssh-host-preview');
-    const importBtn = document.getElementById('import-ssh-host-btn');
-    const statusEl = document.getElementById('import-ssh-host-file-status');
-    
-    if (!fileInput.files || !fileInput.files[0]) {
-        if (statusEl) statusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : 'No file selected';
-        return;
-    }
-    
-    const file = fileInput.files[0];
-    if (statusEl) statusEl.textContent = file.name;
-    
-    resultBox.classList.remove('hidden', 'success', 'error', 'warning');
-    resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
-    importBtn.disabled = true;
-    previewDiv.innerHTML = importPlaceholder('ssh-host');
-    
-    try {
-        const content = await file.text();
-        window._importSshHostTscfg = content;
-        window._importSshHostFilename = file.name;  // 保存文件名
-        
-        // 预览模式调用（轻量级验证，不解密）
-        const result = await api.call('ssh.hosts.import', { 
-            tscfg: content,
-            filename: file.name,
-            preview: true
-        });
-        
-        if (result.code === 0 && result.data?.valid) {
-            const data = result.data;
-            renderImportPreview('ssh-host', data, '');
-            resultBox.className = 'result-box success';
-            resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
-            importBtn.disabled = false;
-        } else {
-            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshHost'), file: file.name }, result, endpoint: 'ssh.hosts.import', write: false });
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.sshHost'), file: file.name }, error: e, endpoint: 'ssh.hosts.import', write: false });
-    }
-}
+async function previewSshHostImport() { return previewConfigurationImport('ssh-host'); }
 
 /**
  * 确认导入 SSH 主机
  */
-async function confirmSshHostImport() {
-    const overwrite = document.getElementById('import-ssh-host-overwrite').checked;
-    const resultBox = document.getElementById('import-ssh-host-result');
-    const importBtn = document.getElementById('import-ssh-host-btn');
-    
-    if (!window._importSshHostTscfg) {
-        showToast((typeof t === 'function' ? t('toast.selectFileFirst') : '请先选择文件'), 'error');
-        return;
-    }
-    
-    const packParams = { kind: t('failure.kinds.sshHost'), file: window._importSshHostFilename || '' };
-    resultBox.classList.remove('hidden', 'success', 'error', 'warning');
-    resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
-    importBtn.disabled = true;
-    
-    try {
-        const result = await api.call('ssh.hosts.import', { 
-            tscfg: window._importSshHostTscfg,
-            filename: window._importSshHostFilename,
-            overwrite: overwrite
-        });
-        
-        if (result.code === 0) {
-            const data = result.data;
-            if (data?.exists && !data?.imported) {
-                resultBox.className = 'result-box warning';
-                resultBox.textContent = typeof t === 'function' ? t('securityPage.configExistsCheckOverwrite', {id: data.id}) : `Config ${data.id} exists, check "Overwrite" option`;
-                importBtn.disabled = false;
-            } else {
-                resultBox.className = 'result-box success';
-                resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(t('failure.ops.pack.import.done', packParams), 'success');
-                // 不刷新列表，因为还没加载
-                setTimeout(() => hideImportSshHostModal(), 2000);
-            }
-        } else {
-            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'ssh.hosts.import' });
-            importBtn.disabled = false;
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'ssh.hosts.import', write: true });
-        importBtn.disabled = false;
-    }
-}
+async function confirmSshHostImport() { return confirmConfigurationImport('ssh-host'); }
 
 /**
  * 通过索引移除主机记录
  */
 async function removeHostByIndex(index) {
     const host = window._sshHostsList?.[index];
-    if (!host) {
-        reportFailure({ op: 'host.lookup', phase: 'blocked', token: 'list_stale' });
-        return;
-    }
-    
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRemoveHostLocal', { id: host.id }) : `确定要从列表中移除主机 "${host.id}" 吗？\n\n注意：这只会移除本地记录，不会删除已部署到服务器上的公钥。如需撤销公钥，请点击「撤销」按钮。`, { primary: t('securityPage.remove'), tone: 'danger' })) return;
-    
-    const params = { name: host.id };
-    try {
-        const result = await api.call('ssh.hosts.remove', { id: host.id });
-        if (result.code === 0) {
-            showToast(t('failure.ops.host.remove.done', params), 'success');
-            await loadSshHostsData();
-        } else {
-            reportFailure({ op: 'host.remove', params, result, endpoint: 'ssh.hosts.remove' });
-        }
-    } catch (e) {
-        reportFailure({ op: 'host.remove', params, error: e, endpoint: 'ssh.hosts.remove', write: true });
-    }
+    if (host) return deleteConfiguration('hosts', host.id, host.id);
 }
 
 /**
@@ -10689,9 +10094,11 @@ function revokeKeyFromHost(index) {
         `<div class="t-note" style="margin-bottom:8px">${t('securityPage.revokeKeyFromHostDesc', {host: escapeHtml(host.username) + '@' + escapeHtml(host.host) + ':' + host.port, keyid: escapeHtml(host.keyid || 'default')})}</div>` +
         grp(row(t('securityPage.serverPassword'), inp('revoke-host-password', 210, t('securityPage.serverPasswordPlaceholder'), '', 'type="password"'))) +
         `<div id="revoke-host-result" class="result-box hidden" style="margin-top:12px"></div>`,
-        `<button class="btn lg" onclick="hideRevokeHostModal()">${t('common.cancel')}</button><button class="btn lg primary bad" id="revoke-host-btn" onclick="doRevokeFromHost(${index})" title="${escapeHtml(t('securityPage.revokeHostHint'))}">${t('securityPage.revokeAndRemove')}</button>`);
+        `<button class="btn lg" onclick="hideRevokeHostModal()">${t('common.cancel')}</button><button class="btn lg primary bad" id="revoke-host-btn" onclick="doRevokeFromHost()" title="${escapeHtml(t('securityPage.revokeHostHint'))}">${configText('revokeRemoteKey')}</button>`);
     
     modal.classList.remove('hidden');
+    modal._host = {...host}; modal._hostView = configurationList('hosts');
+    bindConfigurationEditor(modal, 'hosts', modal._hostView?.version);
     document.getElementById('revoke-host-password').focus();
 }
 
@@ -10700,72 +10107,35 @@ function hideRevokeHostModal() {
     if (modal) modal.classList.add('hidden');
 }
 
-async function doRevokeFromHost(index) {
-    const host = window._sshHostsList?.[index];
-    if (!host) return;
-    
-    const password = document.getElementById('revoke-host-password').value;
-    if (!password) {
-        fieldError('revoke-host-password', t('securityPage.enterPassword'));
-        return;
-    }
-    const params = { host: `${host.username}@${host.host}:${host.port}`, key: host.keyid || 'default', name: host.id, user: host.username, port: host.port };
-    
-    const resultBox = document.getElementById('revoke-host-result');
-    const revokeBtn = document.getElementById('revoke-host-btn');
-    
-    resultBox.classList.remove('hidden', 'success', 'error');
-    resultBox.textContent = typeof t === 'function' ? t('securityPage.revokingKey') : 'Revoking public key...';
-    revokeBtn.disabled = true;
-    
+async function doRevokeFromHost() {
+    const modal = document.getElementById('revoke-host-modal'), context = modal?._configuration;
+    const host = modal?._host;
+    if (!host || !context?.current() || context.busy) return;
+    const password = modal.querySelector('#revoke-host-password').value;
+    if (!password) {fieldError('revoke-host-password', t('securityPage.enterPassword'));return;}
+    const params = {host: `${host.username}@${host.host}:${host.port}`, key: host.keyid || 'default', name: host.id, user: host.username, port: host.port};
+    const box = modal.querySelector('#revoke-host-result'), button = modal.querySelector('#revoke-host-btn');
+    const openDelete = () => {
+        if (!context.current()) return;
+        const view = modal._hostView;
+        hideRevokeHostModal();
+        deleteConfiguration('hosts', host.id, host.id, view);
+    };
+    context.busy = true;button.disabled = true;
+    box.className = 'result-box';box.textContent = t('securityPage.revokingKey');
     try {
-        const result = await api.sshRevoke(host.host, host.username, password, host.keyid || 'default', host.port);
-        
+        const result = requireApiSuccess(await api.sshRevoke(host.host, host.username, password, host.keyid || 'default', host.port), 'ssh.revoke');
+        if (!context.current()) return;
+        modal.querySelector('#revoke-host-password').value = '';
         if (result.data?.revoked === true) {
-            resultBox.textContent = typeof t === 'function' ? t('securityPage.revokeSuccess', {count: result.data.removed_count || 1}) : `Revoked! Removed ${result.data.removed_count || 1} matching public key(s)`;
-            resultBox.classList.add('success');
-            
-            // 自动移除本地记录
-            const removed = await api.call('ssh.hosts.remove', { id: host.id });
-            if (removed.code !== 0) {
-                // the key is gone from the server; only the record here is left
-                packBox(resultBox, { op: 'host.removeAfterRevoke', params, result: removed, endpoint: 'ssh.hosts.remove' });
-                return;
-            }
-            showToast(t('securityPage.revokedAndRemoved'), 'success');
-            
-            setTimeout(() => {
-                hideRevokeHostModal();
-                refreshSshHostsList();
-            }, 1000);
+            showToast(configText('remoteKeyRevoked'), 'success');openDelete();
         } else if (result.data?.found === false) {
-            resultBox.textContent = typeof t === 'function' ? t('securityPage.keyNotFoundOnServer') : 'No matching public key found on server (may have been removed)\nRemove local record anyway?';
-            resultBox.classList.add('error');
-            
-            // 提供移除本地记录的选项
-            revokeBtn.innerHTML = '<svg class="i"><use href="#ri-delete-bin-line"/></svg> ' + (typeof t === 'function' ? t('securityPage.removeLocalRecord') : 'Remove Local Record Only');
-            revokeBtn.onclick = async () => {
-                try {
-                    const removed = await api.call('ssh.hosts.remove', { id: host.id });
-                    if (removed.code !== 0) { packBox(resultBox, { op: 'host.remove', params, result: removed, endpoint: 'ssh.hosts.remove' }); return; }
-                } catch (e) {
-                    packBox(resultBox, { op: 'host.remove', params, error: e, endpoint: 'ssh.hosts.remove', write: true });
-                    return;
-                }
-                showToast(t('securityPage.removedLocalRecord'), 'success');
-                hideRevokeHostModal();
-                refreshSshHostsList();
-            };
-            revokeBtn.disabled = false;
-            return;  // 不进入 finally
-        } else {
-            packBox(resultBox, { op: 'key.revoke', params, result, endpoint: 'ssh.revoke' });
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'key.revoke', params, error: e, endpoint: 'ssh.revoke', write: true });
-    } finally {
-        revokeBtn.disabled = false;
-    }
+            box.className = 'result-box';box.textContent = t('securityPage.keyNotFoundOnServer');
+            button.textContent = configText('deleteLocalHost');button.onclick = openDelete;
+        } else packBox(box, {op: 'key.revoke', params, result, endpoint: 'ssh.revoke'});
+    } catch (error) {
+        if (context.current()) packBox(box, {op: 'key.revoke', params, error, endpoint: 'ssh.revoke', write: true});
+    } finally {context.busy = false;if (context.current()) button.disabled = false;}
 }
 
 async function deleteKey(id) {
@@ -10825,7 +10195,7 @@ function showPubkeyModal(id, pubkey, type, comment) {
     
     modal.innerHTML = sheet(560, `${t('securityPage.pubkeyExport')} - ${escapeHtml(id)}`,
         `<div class="t-note" style="margin-bottom:10px">${t('securityPage.keyTypeLabel')}: ${escapeHtml(type)}${comment ? ' | ' + t('securityPage.commentLabel') + ': ' + escapeHtml(comment) : ''}</div><textarea class="field mono" id="pubkey-content" readonly style="height:150px" title="${escapeHtml(t('securityPage.pubkeyHint'))}">${escapeHtml(pubkey)}</textarea>`,
-        `<button class="btn lg" onclick="copyPubkey()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" onclick="downloadPubkey('${escapeHtml(id)}')"><svg class="i"><use href="#ri-download-line"/></svg>${t('files.downloadFile')}</button><button class="btn lg primary" onclick="closePubkeyModal()">${t('common.close')}</button>`);
+        `<button class="btn lg" onclick="copyPubkey()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" onclick="${configurationHandler('downloadPubkey', id)}"><svg class="i"><use href="#ri-download-line"/></svg>${t('files.downloadFile')}</button><button class="btn lg primary" onclick="closePubkeyModal()">${t('common.close')}</button>`);
     
     modal.classList.remove('hidden');
 }
@@ -10847,7 +10217,7 @@ function showPrivkeyModal(id, privkey, type, comment) {
     
     modal.innerHTML = sheet(560, `${t('securityPage.privkeyExport')} - ${escapeHtml(id)}`,
         `<div class="warnrow" style="margin:0 0 10px"><svg class="i"><use href="#ri-alert-line"/></svg><span><strong>${t('securityPage.securityWarning')}</strong>: ${t('securityPage.privkeyWarning')}</span></div><div class="t-note" style="margin-bottom:10px">${t('securityPage.keyTypeLabel')}: ${escapeHtml(type)}${comment ? ' | ' + t('securityPage.commentLabel') + ': ' + escapeHtml(comment) : ''}</div><textarea class="field mono" id="privkey-content" readonly style="height:200px" title="${escapeHtml(t('securityPage.privkeyHint', {id}))}">${escapeHtml(privkey)}</textarea>`,
-        `<button class="btn lg" onclick="copyPrivkey()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" onclick="downloadPrivkey('${escapeHtml(id)}')"><svg class="i"><use href="#ri-download-line"/></svg>${t('files.downloadFile')}</button><button class="btn lg primary" onclick="closePrivkeyModal()">${t('common.close')}</button>`);
+        `<button class="btn lg" onclick="copyPrivkey()"><svg class="i"><use href="#ri-file-copy-line"/></svg>${t('common.copyToClipboard')}</button><button class="btn lg" onclick="${configurationHandler('downloadPrivkey', id)}"><svg class="i"><use href="#ri-download-line"/></svg>${t('files.downloadFile')}</button><button class="btn lg primary" onclick="closePrivkeyModal()">${t('common.close')}</button>`);
     
     modal.classList.remove('hidden');
 }
@@ -10918,10 +10288,8 @@ function downloadPrivkey(id) {
 
 // ====== 部署密钥功能 ======
 
-let currentDeployKeyId = null;
 
 function showDeployKeyModal(keyId) {
-    currentDeployKeyId = keyId;
     document.getElementById('deploy-key-id').textContent = keyId;
     document.getElementById('deploy-host').value = '';
     document.getElementById('deploy-user').value = 'root';
@@ -10932,79 +10300,54 @@ function showDeployKeyModal(keyId) {
     resultBox.textContent = '';
     document.getElementById('deploy-btn').disabled = false;
     document.getElementById('deploy-key-modal').classList.remove('hidden');
+    bindConfigurationEditor(document.getElementById('deploy-key-modal'), 'hosts').keyId=keyId;
 }
 
 function hideDeployKeyModal() {
     document.getElementById('deploy-key-modal').classList.add('hidden');
-    currentDeployKeyId = null;
+    document.getElementById('deploy-password').value='';
 }
 
 async function deployKey() {
-    if (!currentDeployKeyId) return;
-    const keyId = currentDeployKeyId;
-    const pageCurrent = capturePageValidity();
-    
-    const host = document.getElementById('deploy-host').value.trim();
-    const user = document.getElementById('deploy-user').value.trim();
-    const port = parseInt(document.getElementById('deploy-port').value) || 22;
-    const password = document.getElementById('deploy-password').value;
-    
-    if (!host || !user || !password) {
-        if (!host) fieldError('deploy-host', t('toast.fillServerHost'));
-        else if (!user) fieldError('deploy-user', t('toast.fillServerUser'));
-        else fieldError('deploy-password', t('toast.fillServerPassword'));
+    const modal=document.getElementById('deploy-key-modal'), context=modal?._configuration;
+    if(!context?.current()||context.busy||context.remoteDeployed)return;
+    const keyId=context.keyId;
+    const host=modal.querySelector('#deploy-host').value.trim(),user=modal.querySelector('#deploy-user').value.trim();
+    const port=parseInt(modal.querySelector('#deploy-port').value)||22,password=modal.querySelector('#deploy-password').value;
+    if(!host||!user||!password){
+        if(!host)fieldError('deploy-host',t('toast.fillServerHost'));
+        else if(!user)fieldError('deploy-user',t('toast.fillServerUser'));
+        else fieldError('deploy-password',t('toast.fillServerPassword'));
         return;
     }
-    
-    const resultBox = document.getElementById('deploy-result');
-    const deployBtn = document.getElementById('deploy-btn');
-    
-    resultBox.classList.remove('hidden', 'success', 'warning', 'error');
-    resultBox.textContent = typeof t === 'function' ? t('sshPage.deployingKey') : '正在部署密钥...';
-    deployBtn.disabled = true;
-    
+    const box=modal.querySelector('#deploy-result'),button=modal.querySelector('#deploy-btn');
+    context.busy=true;button.disabled=true;
+    box.className='result-box';box.textContent=t('sshPage.deployingKey');
     try {
-        // 调用 ssh.copyid API（与 CLI 逻辑一致）
-        const result = await api.sshCopyid(host, user, password, keyId, port, true);
-        if (!pageCurrent()) return;
-        const data = result?.data;
-        // Registration failure must retain the acknowledged remote deployment.
-        if (!(data?.deployed === true && data.registered === false)) {
-            requireApiSuccess(result, 'ssh.copyid');
+        const options=await configurationEditorParams(modal.id,{});
+        const result=await api.sshCopyid(host,user,password,keyId,port,true,options);
+        if(!context.current())return;
+        const data=result.data;
+        if(data?.deployed!==true){requireApiSuccess(result,'ssh.copyid');throw pageFailure('result_unknown');}
+        context.remoteDeployed=true;modal.querySelector('#deploy-password').value='';
+        const registered=data.registered===true,target=`${user}@${host}:${port}`;
+        const summary=t(data.verified===true?'promptRepair.keyVerified':'promptRepair.keyUnverified',{id:keyId,target});
+        box.textContent=summary;
+        if(data.registered===false){
+            box.insertAdjacentHTML('beforeend',`<p>${configText('hostNotSaved')}</p>`+failureNote({token:data.registration_error,write:true}));
         }
-        if (data?.deployed !== true) throw new Error(t('promptRepair.resultUnknown'));
-
-        const refreshed = await refreshSshHostsList();
-        if (!pageCurrent()) return;
-        const registered = data.registered === true ||
-            (data.registered === undefined && refreshed &&
-             Object.values(window._sshHostsData || {}).some(h =>
-                 h.host === host && Number(h.port) === port &&
-                 h.username === user && h.keyid === keyId));
-        const target = `${user}@${host}`;
-        let tone = registered && data.verified === true ? 'success' : 'warning';
-        if (data.registered === false) {
-            const error = data.registration_error || '';
-            const reason = t(error === 'ESP_ERR_INVALID_STATE' ? 'promptRepair.hostRegistrationBusy'
-                           : error === 'ESP_ERR_NO_MEM' ? 'promptRepair.hostRegistrationFull'
-                           : 'promptRepair.hostRegistrationStorage', {detail: error || t('promptRepair.resultUnknown')});
-            resultBox.textContent = t('promptRepair.keyRegistrationFailed', {id: keyId, target, reason});
-        } else if (!registered) {
-            resultBox.textContent = t('promptRepair.keyRegistrationUnconfirmed', {id: keyId, target});
-        } else {
-            resultBox.textContent = t(data.verified === true ? 'promptRepair.keyVerified' : 'promptRepair.keyUnverified', {id: keyId, target});
-        }
-        if (!refreshed) {
-            resultBox.textContent += '\n' + t('promptRepair.deployedHostsRefreshFailed');
-            tone = 'warning';
-        }
-        resultBox.classList.add(tone);
-        showToast(resultBox.textContent, tone, 6000);
-    } catch (e) {
-        if (!pageCurrent()) return;
-        packBox(resultBox, { op: 'key.deploy', params: { host: `${user}@${host}:${port}`, key: keyId, user, port }, error: e, endpoint: 'ssh.copyid', write: true });
+        else if(!registered)box.textContent=t('promptRepair.keyRegistrationUnconfirmed',{id:keyId,target});
+        let tone=registered&&data.verified===true?'success':'warning';
+        // Acknowledged remote deployment is never replayed to refresh local rows.
+        if(registered){++automationUiGeneration;automationLists.clear();}
+        const refreshed=await refreshSshHostsList();
+        if(!context.current())return;
+        if(!refreshed){box.appendChild(document.createTextNode('\n'+t('promptRepair.deployedHostsRefreshFailed')));tone='warning';}
+        box.classList.add(tone);showToast(registered?summary:box.innerText,tone,6000);
+    } catch(error){
+        if(context.current())packBox(box,{op:'key.deploy',params:{host:`${user}@${host}:${port}`,key:keyId,user,port},error,endpoint:'ssh.copyid',write:true});
     } finally {
-        deployBtn.disabled = false;
+        context.busy=false;if(context.current())button.disabled=context.remoteDeployed||!context.version;
     }
 }
 
@@ -11791,14 +11134,14 @@ async function refreshConfigPackList() {
         const files = data.files || [];
         
         if (files.length === 0) {
-            tbody.innerHTML = '<div class="tr" style="--cols:1fr;color:var(--ink-3)">' + t('securityPage.noPacks') + '</div>';
+            tbody.innerHTML = '<div class="tr table-message" style="color:var(--ink-3)">' + t('securityPage.noPacks') + '</div>';
         } else {
             const yesStr = t('common.yes');
             const noStr = t('common.no');
             const validStr = t('common.valid');
             const invalidStr = t('common.invalid');
             const importStr = t('securityPage.importBtn');
-            tbody.innerHTML = '<div class="tr th cols-packs"><div>' + t('securityPage.fileName') + '</div><div>' + t('files.size') + '</div><div>' + t('securityPage.signerLabel') + '</div><div>' + t('securityPage.official') + '</div><div>' + t('common.status') + '</div><div></div></div>' + files.map(file => `
+            tbody.innerHTML = '<div class="data-table cols-packs"><div class="tr th cols-packs"><div>' + t('securityPage.fileName') + '</div><div>' + t('files.size') + '</div><div>' + t('securityPage.signerLabel') + '</div><div>' + t('securityPage.official') + '</div><div>' + t('common.status') + '</div><div></div></div>' + files.map(file => `
                 <div class="tr cols-packs">
                     <div class="mono">${escapeHtml(file.name)}</div>
                     <div>${formatBytes(file.size || 0)}</div>
@@ -11806,7 +11149,7 @@ async function refreshConfigPackList() {
                     <div>${file.is_official ? yesStr : noStr}</div>
                     <div>${file.valid ? '<span class="state ok">' + validStr + '</span>' : '<span class="state bad">' + invalidStr + '</span>'}</div>
                     <div class="act"><button class="btn sm" data-path="${escapeHtml(path + '/' + file.name)}" onclick="importPackFromList(this.dataset.path)">${importStr}</button></div>
-                </div>`).join('');
+                </div>`).join('') + '</div>';
         }
         
         loading.style.display = 'none';
@@ -12497,9 +11840,6 @@ function failureHtml(failure) {
         : '';
     return `<span class="note-msg">${escapeHtml(failure.message)}</span>${more}`;
 }
-function failureNote(spec) {
-    return failureHtml(describeFailure(spec));
-}
 // The sentence only, for a plain text pane (command output): no markup, no details.
 function failureText(spec) {
     return describeFailure(spec).message;
@@ -12813,8 +12153,6 @@ function getLevelName(level) {
     const names = { 1: 'ERROR', 2: 'WARN', 3: 'INFO', 4: 'DEBUG', 5: 'VERBOSE' };
     return names[level] || 'UNKNOWN';
 }
-
-
 
 function escapeRegex(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -14493,7 +13831,7 @@ async function refreshMemoryDetail() {
             };
             tipsHtml = sect(t('memoryPage.optimizationTips'), tips.map(tip => {
                 const [level, msg] = tip.split(':');
-                return `<div class="tr" style="--cols:1fr;min-height:36px;padding:0"><span class="state ${level === 'critical' ? 'bad' : level === 'warning' ? 'warn' : ''}">${tipMap[msg] || msg}</span></div>`;
+                return `<div class="tr table-message" style="min-height:36px;padding:0"><span class="state ${level === 'critical' ? 'bad' : level === 'warning' ? 'warn' : ''}">${tipMap[msg] || msg}</span></div>`;
             }).join(''));
         }
         
@@ -14509,7 +13847,7 @@ async function refreshMemoryDetail() {
         if (dma.total) capRows.push([t('memoryPage.capDma'), formatBytes(dma.free || 0), formatBytes(dma.total || 0), t('memoryPage.capDmaDesc')]);
 
         body.innerHTML = `
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">${gauge('DRAM', dram)}${psram.total ? gauge('PSRAM', psram) : ''}</div>
+            <div class="memory-gauges">${gauge('DRAM', dram)}${psram.total ? gauge('PSRAM', psram) : ''}</div>
             ${sect(t('memoryPage.heapShort'), grid('1.1fr repeat(5,1fr)', [t('memoryPage.typeCol'), t('memoryPage.largestBlock'), t('memoryPage.fragmentation'), t('memoryPage.allocBlocks'), t('memoryPage.freeBlocks'), t('memoryPage.minFreeEver')], heapRows))}
             ${sect(t('memoryPage.staticMemory'), kvs([
                 ['.data', formatBytes(staticMem.data_size || 0), t('memoryPage.dataDesc')],
@@ -14598,13 +13936,14 @@ async function loadAutomationPage() {
     const content = document.getElementById('page-content');
     content.innerHTML = `
         <div class="page page-automation">
-            <div class="acts">
+            <div class="acts wrap">
                 <button class="btn sm pw ok" onclick="automationControl('start')"><svg class="i"><use href="#ri-play-line"/></svg>${t('common.start')}</button>
-                <button class="btn sm pw bad" onclick="automationControl('stop')"><svg class="i"><use href="#ri-stop-line"/></svg>${t('common.stop')}</button>
+                <button class="btn sm pw" onclick="automationControl('stop')"><svg class="i"><use href="#ri-stop-line"/></svg>${t('common.stop')}</button>
                 <button class="btn sm" onclick="automationControl('pause')"><svg class="i"><use href="#ri-pause-line"/></svg>${t('common.pause')}</button>
                 <button class="btn sm" onclick="automationControl('reload')"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.reload')}</button>
             </div>
             
+            <div class="between wrap"><button type="button" class="btn sm" onclick="showServiceRuns()"><svg class="i"><use href="#ri-server-line"/></svg>${serviceRunText('title')}</button><span id="automation-config-summary" class="t-note"></span><button type="button" class="btn sm" onclick="showAutomationConfig()"><svg class="i"><use href="#ri-save-line"/></svg>${configText('title')}</button></div>
             <!-- 状态 -->
             <div class="card stat" id="automation-status" style="padding:16px 20px">
                 <div class="t-note" style="grid-column:1/-1">${t('common.loading')}</div>
@@ -14650,6 +13989,7 @@ async function loadAutomationPage() {
     
     // 加载所有数据（忽略单个失败，允许部分加载）
     await Promise.allSettled([
+        refreshConfigurationStatus(),
         refreshAutomationStatus(),
         refreshRules(),
         refreshSources(),
@@ -14720,7 +14060,7 @@ async function automationControl(action) {
  * 刷新规则列表
  */
 async function refreshRules() {
-    const pageCurrent = capturePageValidity();
+    const pageCurrent = configurationRead('rules');
     const container = document.getElementById('rules-list');
     if (!container) return;
     
@@ -14729,6 +14069,7 @@ async function refreshRules() {
         if (!pageCurrent()) return;
         if (result.code === 0 && result.data && result.data.rules) {
             const rules = result.data.rules;
+            recordConfigurationList('rules', result.data, rules);
             ruleNames.clear();
             for (const r of rules) ruleNames.set(r.id, r.name || r.id);
             if (rules.length === 0) {
@@ -14736,29 +14077,27 @@ async function refreshRules() {
                 return;
             }
             
-            const cols = 'style="--cols:1.2fr 1.4fr 1fr .6fr .6fr .7fr 196px"';
-            container.innerHTML = `
-                <div class="tr th" ${cols}>
+            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.4fr) minmax(max-content,1fr) minmax(max-content,.6fr) minmax(max-content,.6fr) minmax(max-content,.7fr) minmax(max-content,196px)';
+            container.innerHTML = gridTable(cols, `
+                <div class="tr th">
                     <div>ID</div><div>${t('automationPage.ruleNameHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.conditionHeader')}</div><div>${t('automationPage.actionHeader')}</div><div>${t('automationPage.triggerHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
                 </div>
                 ${rules.map(r => {
                     const label = r.enabled ? t('common.disabled') : t('common.enabled');
-                    const locked = r.restart_required || r.readonly;
                     const active = r.runtime_active !== false;
-                    const deleting = r.pending_change === 'delete';
                     const handler = (name, ...args) => escapeHtml(name + '(' + args.map(x => JSON.stringify(x)).join(',') + ')');
                     return `
-                    <div class="tr" ${cols}>
+                    <div class="tr">
                         <div><span class="mono">${escapeHtml(r.id)}</span></div>
-                        <div>${escapeHtml(r.name || r.id)}${r.restart_required ? ` <span class="tag">${t(deleting ? 'rulePack.pendingDelete' : 'rulePack.pending')}</span>` : ''}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
-                        <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"${locked ? ' disabled' : ''}></button></div>
+                        <div>${escapeHtml(r.name || r.id)}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
+                        <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"></button></div>
                         <div>${r.conditions_count || 0}</div>
                         <div>${r.actions_count || 0}</div>
                         <div>${r.trigger_count || 0}</div>
-                        <div class="act">${icoBtn('ri-play-line', t(deleting ? 'rulePack.pendingDelete' : r.restart_required ? 'rulePack.runCurrent' : 'automation.manualTrigger'), handler('triggerRule', r.id), '', !active || deleting)}${icoBtn('ri-edit-line', t('common.edit'), handler('editRule', r.id), '', locked)}${icoBtn('ri-download-line', t('rulePack.exportCurrent'), handler('showExportRuleModal', r.id), '', !active)}${icoBtn('ri-delete-bin-line', t('common.delete'), handler('deleteRule', r.id), 'dg', locked)}</div>
+                        <div class="act">${icoBtn('ri-play-line', t('automation.manualTrigger'), handler('triggerRule', r.id), '', !active || !r.enabled)}${icoBtn('ri-edit-line', t('common.edit'), handler('editRule', r.id))}${icoBtn('ri-download-line', t('common.export'), handler('showExportRuleModal', r.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), handler('deleteRule', r.id), 'dg')}</div>
                     </div>`;
                 }).join('')}
-            `;
+            `);
         } else {
             container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'rule.list', result, endpoint: 'automation.rules.list' }) + '</p></div>';
         }
@@ -14779,18 +14118,21 @@ async function toggleRule(id, enable) {
     const op = enable ? 'rule.enable' : 'rule.disable';
     const endpoint = enable ? 'automation.rules.enable' : 'automation.rules.disable';
     const params = { name: ruleNames.get(id) || id };
+    const current = capturePageValidity();
     try {
         const result = await ruleWriteWithRevision(endpoint, id);
+        if (!current()) return;
+        await configurationResult(result);
         if (result.code === 0) {
-            const mirror = result.data?.mirror_synced === false;
-            showToast(t(`failure.ops.${op}.done${mirror ? 'Mirror' : ''}`, params), mirror ? 'warning' : 'success');
-            await refreshRules();
+            showToast(t(`failure.ops.${op}.done`, params), 'success');
+
             return;
         }
         const failure = reportFailure({ op, params, result, endpoint: result.endpoint || endpoint });
         // The list the user acted on is stale: show the real state.
-        if (['revision_conflict', 'rule_not_found', 'commit_unknown'].includes(failure.token)) await refreshRules();
+        if (['configuration_changed', 'not_found', 'save_outcome_unknown'].includes(failure.token)) await refreshConfigurationViews();
     } catch (error) {
+        if (!current()) return;
         reportFailure({ op, params, error, endpoint, write: true });
     }
 }
@@ -14802,7 +14144,7 @@ async function triggerRule(id) {
     const params = { name: ruleNames.get(id) || id };
     const endpoint = 'automation.rules.trigger';
     try {
-        const result = await api.call(endpoint, { id });
+        const result = await api.call(endpoint, {id,active_version:configurationVersion('rules')});
         if (result.code === 0) showToast(t('failure.ops.rule.trigger.done', params), 'success');
         else reportFailure({ op: 'rule.trigger', params, result, endpoint });
     } catch (error) {
@@ -14814,7 +14156,7 @@ async function triggerRule(id) {
  * 刷新数据源列表
  */
 async function refreshSources() {
-    const pageCurrent = capturePageValidity();
+    const pageCurrent = configurationRead('sources');
     const container = document.getElementById('sources-list');
     if (!container) return;
     
@@ -14823,6 +14165,7 @@ async function refreshSources() {
         if (!pageCurrent()) return;
         if (result.code === 0 && result.data && result.data.sources) {
             const sources = result.data.sources;
+            recordConfigurationList('sources', result.data, sources);
             sourceNames.clear();
             for (const s of sources) sourceNames.set(s.id, s.label || s.id);
             if (sources.length === 0) {
@@ -14830,24 +14173,24 @@ async function refreshSources() {
                 return;
             }
             
-            const cols = 'style="--cols:1.2fr 1.2fr .8fr 1fr .8fr 156px"';
-            container.innerHTML = `
-                <div class="tr th" ${cols}>
+            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.2fr) minmax(max-content,.8fr) minmax(max-content,1fr) minmax(max-content,.8fr) minmax(max-content,156px)';
+            container.innerHTML = gridTable(cols, `
+                <div class="tr th">
                     <div>ID</div><div>${t('automationPage.labelHeader')}</div><div>${t('automationPage.typeHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.updateIntervalHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
                 </div>
                 ${sources.map(s => {
                     const label = s.enabled ? t('common.disabled') : t('common.enabled');
                     return `
-                    <div class="tr" ${cols}>
-                        <div><span class="mono">${s.id}</span></div>
-                        <div>${s.label || s.id}</div>
-                        <div>${s.type || 'unknown'}</div>
-                        <div><button class="switch ${s.enabled ? 'on' : ''}" role="switch" aria-checked="${!!s.enabled}" aria-label="${label}" title="${label}" onclick="toggleSource('${s.id}', ${!s.enabled})"></button></div>
+                    <div class="tr">
+                        <div><span class="mono">${escapeHtml(s.id)}</span></div>
+                        <div>${escapeHtml(s.label || s.id)}</div>
+                        <div>${escapeHtml(s.type || 'unknown')}</div>
+                        <div><button class="switch ${s.enabled ? 'on' : ''}" role="switch" aria-checked="${!!s.enabled}" aria-label="${label}" title="${label}" onclick="${configurationHandler('toggleSource', s.id, !s.enabled)}"></button></div>
                         <div>${s.poll_interval_ms ? (s.poll_interval_ms / 1000) + ' ' + t('time.seconds') : '-'}</div>
-                        <div class="act">${icoBtn('ri-eye-line', t('automation.viewVariables'), `showSourceVariables('${s.id}')`)}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), `showExportSourceModal('${s.id}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteSource('${s.id}')`, 'dg')}</div>
+                        <div class="act">${icoBtn('ri-eye-line', t('automation.viewVariables'), configurationHandler('showSourceVariables', s.id))}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), configurationHandler('showExportSourceModal', s.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteSource', s.id), 'dg')}</div>
                     </div>`;
                 }).join('')}
-            `;
+            `);
         } else {
             container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'source.list', result, endpoint: 'automation.sources.list' }) + '</p></div>';
         }
@@ -14925,7 +14268,7 @@ function formatVariableUpdateTime(variable) {
  * 刷新动作模板列表
  */
 async function refreshActions() {
-    const pageCurrent = capturePageValidity();
+    const pageCurrent = configurationRead('actions');
     const container = document.getElementById('actions-list');
     if (!container) return;
     
@@ -14937,28 +14280,29 @@ async function refreshActions() {
             return;
         }
         const actions = result.data?.templates || [];
+            recordConfigurationList('actions', result.data, actions);
         actionNames.clear();
         for (const a of actions) actionNames.set(a.id, a.name || a.id);
 
         if (actions.length === 0) {
             container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noActions') + '</p></div>';
         } else {
-            const cols = 'style="--cols:1.2fr 1.2fr .8fr .9fr 1.4fr 196px"';
-            container.innerHTML = `
-                <div class="tr th" ${cols}>
+            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.2fr) minmax(max-content,.8fr) minmax(max-content,.9fr) minmax(max-content,1.4fr) minmax(max-content,196px)';
+            container.innerHTML = gridTable(cols, `
+                <div class="tr th">
                     <div>ID</div><div>${t('automationPage.actionNameHeader')}</div><div>${t('automationPage.actionTypeHeader')}</div><div>${t('automationPage.actionModeHeader')}</div><div>${t('automationPage.descriptionHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
                 </div>
                 ${actions.map(a => `
-                    <div class="tr" ${cols}>
-                        <div><span class="mono">${a.id}</span></div>
-                        <div>${a.name || a.id}</div>
+                    <div class="tr">
+                        <div><span class="mono">${escapeHtml(a.id)}</span></div>
+                        <div>${escapeHtml(a.name || a.id)}</div>
                         <div>${getActionTypeLabel(a.type)}</div>
                         <div>${a.async ? t('automation.asyncAction') : t('automationPage.syncMode')}</div>
-                        <div>${a.description || '-'}</div>
-                        <div class="act">${icoBtn('ri-play-line', t('common.test'), `testAction('${a.id}')`)}${icoBtn('ri-edit-line', t('common.edit'), `editAction('${a.id}')`)}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), `showExportActionModal('${a.id}')`)}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteAction('${a.id}')`, 'dg')}</div>
+                        <div>${escapeHtml(a.description || '-')}</div>
+                        <div class="act">${icoBtn('ri-play-line', t('common.test'), configurationHandler('testAction', a.id))}${icoBtn('ri-edit-line', t('common.edit'), configurationHandler('editAction', a.id))}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), configurationHandler('showExportActionModal', a.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteAction', a.id), 'dg')}</div>
                     </div>
                 `).join('')}
-            `;
+            `);
         }
     } catch (error) {
         if (!pageCurrent()) return;
@@ -14985,7 +14329,8 @@ function getActionTypeLabel(type) {
 /**
  * 显示添加动作模板对话框
  */
-function showAddActionModal() {
+function showAddActionModal(activeVersion) {
+    document.getElementById('action-modal')?.remove();
     const modal = document.createElement('div');
     modal.className = 'modal active';
     modal.id = 'action-modal';
@@ -15004,6 +14349,7 @@ function showAddActionModal() {
             row(t('automation.asyncExecute'), swc('action-async'), t('automationPage.asyncHintShort')))}`,
         `<button class="btn lg" onclick="closeModal('action-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAction()">${t('automationPage.saveAction')}</button>`);
     document.body.appendChild(modal);
+    bindConfigurationEditor(modal, 'actions', activeVersion);
 
     // 绑定类型卡片点击事件
     modal.querySelectorAll('.action-type-grid input').forEach(radio => {
@@ -15286,11 +14632,12 @@ async function submitAction(originalId = null) {
     const endpoint = originalId ? 'automation.actions.update' : 'automation.actions.add';
     const params = { name: data.name };
     try {
-        const result = await api.call(endpoint, data);
+        const result = await configurationEditorSave('action-modal', endpoint, data);
+        if (!result) return;
         if (result.code === 0) {
             showToast(t('failure.ops.action.save.done', params), 'success');
             closeModal('action-modal');
-            await refreshActions();
+
         } else {
             reportFailure({ op: 'action.save', params, result, endpoint });
         }
@@ -15314,11 +14661,13 @@ function setCliPreset(cmd) {
  * 加载 SSH 指令列表 (用于动作模板) - 保留用于兼容
  */
 async function loadSshCommandsForAction() {
+    const accept = configurationEditorRead('action-modal');
     try {
         const select = document.getElementById('action-ssh-cmd-id');
         if (!select) return;
         
         const result = await api.call('ssh.commands.list', {});
+        if (!await accept(result.data)) return;
         select.innerHTML = ("<option value=\"\">" + t('automation.selectCommand') + "</option>");
         
         if (result.code === 0 && result.data?.commands) {
@@ -15341,6 +14690,7 @@ async function loadSshCommandsForAction() {
  * 更新 SSH 指令预览
  */
 async function updateSshCmdRefPreview() {
+    const accept = configurationEditorRead('action-modal');
     const select = document.getElementById('action-ssh-cmd-id');
     const preview = document.getElementById('ssh-cmd-preview');
     if (!select || !preview) return;
@@ -15354,6 +14704,7 @@ async function updateSshCmdRefPreview() {
     // 从 API 获取完整指令信息
     try {
         const result = await api.call('ssh.commands.get', { id: cmdId });
+        if (!await accept(result.data) || select.value !== cmdId) return;
         console.log('SSH command get result:', result);
         if (result.code === 0 && result.data) {
             const cmd = result.data;
@@ -15498,7 +14849,6 @@ function updateActionLedTypeFields() {
                 row(t('ledPage.speed'), inp('action-led-speed', 80, '', 'num', 'type="number" value="50" min="1" max="100"')) +
                 row(t('automationPage.loopScroll'), swc('action-led-loop', true));
             // 加载字体列表
-            setTimeout(loadActionLedFonts, 100);
             break;
         case 'image':
             html = row(t('automationPage.imagePath'), `<span class="inl">${inp('action-led-image-path', 200, t('automationPage.imagePathPlaceholder'), 'mono', 'value="/sdcard/images/"')}<button type="button" class="btn icon sm" onclick="browseActionImages()" title="${t('common.browse')}" aria-label="${t('common.browse')}"><svg class="i"><use href="#ri-folder-line"/></svg></button>${varBtn('action-led-image-path')}</span>`, t('automationPage.imagePathHint')) +
@@ -15515,13 +14865,13 @@ function updateActionLedTypeFields() {
             const opts = fk.map(k => `<option value="${k}">${t('automationPage.filter' + k.charAt(0).toUpperCase() + k.slice(1))}</option>`).join('') + `<option value="grayscale">${t('ledPage.filterGrayscale')}</option>`;
             html = row(t('automationPage.filterLabel'), `<select id="action-led-filter" class="field" onchange="updateActionFilterParams()" style="width:190px">${opts}</select>`) +
                 '<div class="rows" id="action-filter-params"></div>';
-            // 初始化滤镜参数
-            setTimeout(updateActionFilterParams, 50);
             break;
         }
     }
     
     paramsContainer.innerHTML = html;
+    if (ledType === 'filter') updateActionFilterParams();
+    if (ledType === 'text') loadActionLedFonts();
     syncSliders();
 }
 
@@ -15542,6 +14892,7 @@ async function loadActionLedFonts() {
             return fontExts.includes(ext);
         });
         
+        const selected = fontSelect.value;
         fontSelect.innerHTML = '<option value="">' + (typeof t === 'function' ? t('ledPage.defaultFont') : '默认') + '</option>';
         fonts.forEach(f => {
             const option = document.createElement('option');
@@ -15550,6 +14901,11 @@ async function loadActionLedFonts() {
             option.textContent = f.name;
             fontSelect.appendChild(option);
         });
+        if (selected && !Array.from(fontSelect.options).some(option => option.value === selected)) {
+            fontSelect.add(new Option(configText('fontUnavailable', {name: selected}), selected));
+        }
+        fontSelect.value = selected;
+
     } catch (e) {
         console.error('加载字体失败:', e);
     }
@@ -15697,7 +15053,7 @@ async function loadVarSelectList(asExpr = false) {
         });
         const listEl = document.getElementById('variable-select-list');
         listEl.style.display = 'block';
-        const cols = '--cols:1.4fr 1fr .8fr';
+        const cols = '--cols:minmax(max-content,1.4fr) minmax(max-content,1fr) minmax(max-content,.8fr)';
         let html = '';
         let first = true;
         for (const [sourceId, vars] of Object.entries(grouped)) {
@@ -15709,7 +15065,7 @@ async function loadVarSelectList(asExpr = false) {
                     <span class="var-group-arrow" id="${groupId}-arrow" style="display:inline-block;color:var(--ink-3)">›</span>
                     <span title="${vars.length}">${escapeHtml(sourceLabel)}</span>
                 </div>
-                <div class="var-group-items" id="${groupId}" hidden>
+                <div class="var-group-items data-table" style="${cols}" id="${groupId}" hidden>
                     <div class="tr th" style="${cols}"><div>${t('common.variable')}</div><div>${t('sshPage.varTableValue')}</div><div>${t('common.type')}</div></div>`;
             vars.forEach(v => {
                 const safeName = escapeHtml(v.name || '');
@@ -15905,15 +15261,16 @@ async function testAction(id) {
     const endpoint = 'automation.actions.execute';
     try {
         showToast(t('failure.ops.action.test.wait', params), 'info');
-        const result = await api.call(endpoint, { id });
+        const result = await api.call(endpoint, { id, active_version: configurationVersion('actions') });
         console.log('Action execute result:', result);
 
         if (result.code === 0) {
-            let msg = t('failure.ops.action.test.done', params);
+            const queued=result.data?.async===true||result.data?.status==='queued';
+            let msg = queued?configText('actionQueued',params):t('failure.ops.action.test.done', params);
             if (result.data?.output) {
                 msg += '\n' + t('promptRepair.outputPreview', {output: result.data.output.substring(0, 100)});
             }
-            showToast(msg, 'success');
+            showToast(msg, queued?'info':'success');
         } else {
             reportFailure({ op: 'action.test', params, result, endpoint });
         }
@@ -15927,9 +15284,11 @@ async function testAction(id) {
  * 编辑动作
  */
 async function editAction(id) {
+    const current = configurationRead('editAction');
     const params = { name: actionNames.get(id) || id };
     try {
         const result = await api.call('automation.actions.get', { id });
+        if (!current()) return;
         if (result.code !== 0) {
             reportFailure({ op: 'action.load', params, result, endpoint: 'automation.actions.get' });
             return;
@@ -15938,10 +15297,10 @@ async function editAction(id) {
         const tpl = result.data;
         
         // 打开添加对话框并填充数据
-        await showAddActionModal();
+        showAddActionModal(tpl.active_version);
         document.getElementById('action-modal').dataset.enabled = String(tpl.enabled ?? true);
         document.getElementById('action-modal').dataset.edit = '1';
-        const modal = document.getElementById('action-modal');
+        const modal = document.getElementById('action-modal'), context = modal._configuration;
         modal.dataset.originalFilter = tpl.led?.ctrl_type === 'filter' ? tpl.led.filter : '';
         modal._originalFilterParams = tpl.led?.filter_params === undefined ? undefined : { ...tpl.led.filter_params };
         modal._filterParamEdits = new Map();
@@ -15958,7 +15317,7 @@ async function editAction(id) {
         modal.addEventListener('change', markFilterChange);
         
         // 等待 DOM 更新
-        await new Promise(r => setTimeout(r, 100));
+
         
         // 填充基本信息
         document.getElementById('action-id').value = tpl.id;
@@ -15972,8 +15331,8 @@ async function editAction(id) {
         const typeRadio = document.querySelector(`input[name="action-type"][value="${tpl.type}"]`);
         if (typeRadio) {
             typeRadio.checked = true;
-            await updateActionTypeFields();
-            await new Promise(r => setTimeout(r, 100));
+            updateActionTypeFields();
+
             
             // 根据类型填充字段
             switch (tpl.type) {
@@ -15987,7 +15346,8 @@ async function editAction(id) {
                 case 'ssh_cmd_ref':
                     if (tpl.ssh_ref) {
                         await loadSshCommandsForAction();
-                        await new Promise(r => setTimeout(r, 100));
+                        if (!context.current()) return;
+
                         document.getElementById('action-ssh-cmd-id').value = tpl.ssh_ref.cmd_id || '';
                         updateSshCmdRefPreview();
                     }
@@ -15996,7 +15356,8 @@ async function editAction(id) {
                     if (tpl.led) {
                         // 先等待设备列表加载完成
                         await loadLedDevicesForAction();
-                        await new Promise(r => setTimeout(r, 100));
+                        if (!context.current()) return;
+
                         
                         // 设置设备
                         const deviceEl = document.getElementById('action-led-device');
@@ -16004,7 +15365,7 @@ async function editAction(id) {
                             deviceEl.value = tpl.led.device || 'board';
                         }
                         updateActionLedOptions();
-                        await new Promise(r => setTimeout(r, 100));
+
                         
                         // 设置控制类型
                         const isMatrix = tpl.led.device === 'matrix';
@@ -16015,7 +15376,7 @@ async function editAction(id) {
                             ctrlTypeEl.value = tpl.led.ctrl_type;
                             updateActionLedTypeFields();
                             // 等待字段渲染和异步加载（如字体列表）
-                            await new Promise(r => setTimeout(r, 300));
+
                         }
                         
                         // 根据控制类型填充对应字段
@@ -16065,17 +15426,13 @@ async function editAction(id) {
                                 }
                                 if (tpl.led.font) {
                                     // 字体列表可能还在加载，设置一个延迟重试
-                                    const setFont = () => {
-                                        const fontEl = document.getElementById('action-led-font');
-                                        if (fontEl) {
-                                            fontEl.value = tpl.led.font;
-                                            // 如果字体选项还没加载，等待后重试
-                                            if (fontEl.value !== tpl.led.font && fontEl.options.length <= 1) {
-                                                setTimeout(setFont, 200);
-                                            }
+                                    const fontEl = document.getElementById('action-led-font');
+                                    if (fontEl) {
+                                        if (!Array.from(fontEl.options).some(option => option.value === tpl.led.font)) {
+                                            fontEl.add(new Option(tpl.led.font, tpl.led.font));
                                         }
-                                    };
-                                    setFont();
+                                        fontEl.value = tpl.led.font;
+                                    }
                                 }
                                 if (tpl.led.color) {
                                     const colorEl = document.getElementById('action-led-color');
@@ -16185,37 +15542,7 @@ async function updateAction(originalId) {
  * 删除动作
  */
 async function deleteAction(id) {
-    const key = 'action:' + id;
-    if (configurationDeletesInFlight.has(key)) return;
-    configurationDeletesInFlight.add(key);
-    const pageCurrent = capturePageValidity();
-    const params = { name: actionNames.get(id) || id };
-    let step = 'automation.actions.get';   // which request is in flight, so a failure names the right one
-    try {
-        if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteAction', { id }) : `确定要删除动作模板 "${id}" 吗？`, { primary: t('common.delete'), tone: 'danger' }) || !pageCurrent()) return;
-        showToast(t('toast.processing'), 'info');
-        const template = requireApiSuccess(await api.call('automation.actions.get', { id }), 'automation.actions.get').data;
-        if (!pageCurrent()) return;
-        const context = {type: 'action', name: template?.name || id, commandId: template?.ssh_ref?.cmd_id};
-        if (template?.type === 'ssh_cmd_ref' && template.ssh_ref?.cmd_id &&
-            !await verifyStoppedServiceForDelete(template.ssh_ref.cmd_id, pageCurrent, context)) return;
-        if (!pageCurrent()) return;
-        step = 'automation.actions.delete';
-        const result = await api.call(step, { id });
-        if (!pageCurrent()) return;
-        if (result.code !== 0 && await showDeleteProtection(result, context, pageCurrent)) return;
-        if (result.code === 0) {
-            showToast(t('failure.ops.action.delete.done', params), 'success');
-            await refreshActions();
-        } else {
-            reportFailure({ op: 'action.delete', params, result, endpoint: step });
-        }
-    } catch (error) {
-        // reading the template first changed nothing: only a failed delete request can leave the result unknown
-        if (pageCurrent()) reportFailure({ op: 'action.delete', params, error, endpoint: step, write: step === 'automation.actions.delete' });
-    } finally {
-        configurationDeletesInFlight.delete(key);
-    }
+    return deleteConfiguration('actions', id, actionNames.get(id) || id);
 }
 
 /**
@@ -16225,19 +15552,22 @@ async function toggleSource(id, enable) {
     const op = enable ? 'source.enable' : 'source.disable';
     const endpoint = enable ? 'automation.sources.enable' : 'automation.sources.disable';
     const params = { name: sourceNames.get(id) || id };
+    const current = capturePageValidity();
     try {
-        // A data source has no revision to check (that is for rules): ask the device directly.
-        // (Until now this went through ruleWriteWithRevision, which first looked for a *rule* with the source's id.)
-        const result = await api.call(endpoint, { id });
+        // The source is checked against the displayed complete configuration.
+        const result = await api.call(endpoint, {id, active_version: configurationVersion('sources')});
+        if (!current()) return;
+        await configurationResult(result);
         if (result.code === 0) {
             showToast(t(`failure.ops.${op}.done`, params), 'success');
-            await refreshSources();
+
         } else {
             const failure = reportFailure({ op, params, result, endpoint });
             // the switch the user flipped is stale: show the real state
-            if (['not_found', 'result_unknown'].includes(failure.token)) await refreshSources();
+            if (['configuration_changed', 'not_found', 'save_outcome_unknown'].includes(failure.token)) await refreshConfigurationViews();
         }
     } catch (error) {
+        if (!current()) return;
         reportFailure({ op, params, error, endpoint, write: true });
     }
 }
@@ -16246,22 +15576,7 @@ async function toggleSource(id, enable) {
  * 删除数据源
  */
 async function deleteSource(id) {
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteSource', { id }) : `确定要删除数据源 "${id}" 吗？此操作不可撤销。`, { primary: t('common.delete'), tone: 'danger' })) {
-        return;
-    }
-
-    const params = { name: sourceNames.get(id) || id };
-    try {
-        const result = await api.call('automation.sources.delete', { id });
-        if (result.code === 0) {
-            showToast(t('failure.ops.source.delete.done', params), 'success');
-            await Promise.all([refreshSources(), refreshAutomationStatus()]);
-        } else {
-            reportFailure({ op: 'source.delete', params, result, endpoint: 'automation.sources.delete' });
-        }
-    } catch (error) {
-        reportFailure({ op: 'source.delete', params, error, endpoint: 'automation.sources.delete', write: true });
-    }
+    return deleteConfiguration('sources', id, sourceNames.get(id) || id);
 }
 
 /**
@@ -16435,35 +15750,19 @@ async function resetShutdownSettings() {
  * 删除规则
  */
 async function deleteRule(id) {
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteRule', { id }) : `确定要删除规则 "${id}" 吗？此操作不可撤销。`, { primary: t('common.delete'), tone: 'danger' })) {
-        return;
-    }
-    
-    const params = { name: ruleNames.get(id) || id };
-    const endpoint = 'automation.rules.delete';
-    try {
-        const result = await ruleWriteWithRevision(endpoint, id);
-        if (result.code === 0) {
-            showToast(t('failure.ops.rule.delete.done', params), 'success');
-            await Promise.all([refreshRules(), refreshAutomationStatus()]);
-        } else {
-            const failure = reportFailure({ op: 'rule.delete', params, result, endpoint: result.endpoint || endpoint });
-            // the list the user acted on is stale: show the real state
-            if (['revision_conflict', 'rule_not_found', 'commit_unknown'].includes(failure.token)) await refreshRules();
-        }
-    } catch (error) {
-        reportFailure({ op: 'rule.delete', params, error, endpoint, write: true });
-    }
+    return deleteConfiguration('rules', id, ruleNames.get(id) || id);
 }
 
 /**
  * 编辑规则
  */
 async function editRule(id) {
+    const current = configurationRead('editRule');
     const params = { name: ruleNames.get(id) || id };
     try {
         // 获取规则详情
         const result = await api.call('automation.rules.get', { id });
+        if (!current()) return;
         if (result.code !== 0 || !result.data) {
             reportFailure({ op: 'rule.load', params, result, endpoint: 'automation.rules.get' });
             return;
@@ -16493,7 +15792,7 @@ function showAddSourceModal() {
     const num = (id, w, val, attrs) => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
     const cfgTitle = txt => `<div class="gt" style="margin-top:16px">${txt}</div>`;
     modal.innerHTML = sheet(660, `<span id="add-source-title">${t('automation.addSourceTitle')} · REST API</span>`, `
-        <div class="seg full" id="source-type-tabs" style="display:flex">
+        <div class="seg full" id="source-type-tabs">
             <button type="button" class="on" data-type="rest" onclick="switchSourceType('rest')">${t('automation.restTab')}</button>
             <button type="button" data-type="websocket" onclick="switchSourceType('websocket')">${t('automation.wsTab')}</button>
             <button type="button" data-type="socketio" onclick="switchSourceType('socketio')">${t('automation.sioTab')}</button>
@@ -16501,10 +15800,10 @@ function showAddSourceModal() {
         </div>
         <input type="hidden" id="source-type" value="rest">
         <div style="height:14px"></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end">
-            <div class="fl"><label>${t('automation.sourceId')}</label><input class="field" id="source-id" placeholder="${t('automation.sourceIdPlaceholder')}" aria-label="${t('automation.sourceId')}"></div>
-            <div class="fl"><label>${t('automation.sourceLabel')}</label><input class="field" id="source-label" placeholder="${t('automation.sourceLabelPlaceholder')}" aria-label="${t('automation.sourceLabel')}"></div>
-        </div>
+        ${grp(
+            row(t('automation.sourceId'), inp('source-id', 200, t('automation.sourceIdPlaceholder'), '', `aria-label="${t('automation.sourceId')}"`)) +
+            row(t('automation.sourceLabel'), inp('source-label', 200, t('automation.sourceLabelPlaceholder'), '', `aria-label="${t('automation.sourceLabel')}"`)) +
+            row(t('automation.enableAfterCreate'), swc('source-enabled', true)))}
         <div id="source-rest-config">
             ${cfgTitle(t('automation.restConfigTitle'))}
             ${testRow(t('automation.requestUrlReq'), 'source-rest-url', 'http://192.168.1.100/api/status', 'btn-test-rest', 'testRestConnection')}
@@ -16551,9 +15850,10 @@ function showAddSourceModal() {
             </div>
             <div class="t-note" style="margin-top:10px">${t('automation.varsPreviewTitle')} <span id="ssh-vars-list" class="ssh-vars-list"><span class="t-note">${t('automation.selectHostCmdFirst')}</span></span></div>
         </div>`,
-        `<span class="inl" style="margin-right:auto;gap:8px"><input type="checkbox" class="switch" role="switch" id="source-enabled" checked><span class="t-body">${t('automation.enableAfterCreate')}</span></span><button class="btn lg" onclick="closeModal('add-source-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAddSource()">${t('automation.addSource')}</button>`);
+        `<button class="btn lg" onclick="closeModal('add-source-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAddSource()">${t('automation.addSource')}</button>`);
     
     document.body.appendChild(modal);
+    bindConfigurationEditor(modal, 'sources');
     setTimeout(() => modal.classList.add('show'), 10);
 }
 
@@ -16929,6 +16229,7 @@ function switchSourceType(type) {
  * 加载 SSH 主机列表（用于数据源配置）
  */
 async function loadSshHostsForSource() {
+    const accept = configurationEditorRead('add-source-modal');
     const hostSelect = document.getElementById('source-ssh-host');
     if (!hostSelect) return;
     
@@ -16950,6 +16251,7 @@ async function loadSshHostsForSource() {
     
     try {
         const result = await api.call('ssh.hosts.list');
+        if (!await accept(result.data)) return;
         if (result.code === 0 && result.data && result.data.hosts) {
             const hosts = result.data.hosts;
             
@@ -16976,45 +16278,20 @@ async function loadSshHostsForSource() {
  * SSH 主机选择变化时的处理（数据源配置用）
  */
 async function onSshHostChangeForSource() {
+    const modal = document.getElementById('add-source-modal');
     const hostId = document.getElementById('source-ssh-host').value;
-    const cmdSelect = document.getElementById('source-ssh-cmd');
-    
-    if (!cmdSelect) return;
-    
-    // 隐藏命令预览
-    const preview = document.getElementById('source-ssh-cmd-preview');
-    if (preview) preview.style.display = 'none';
-    
-    // 重置变量预览
-    const varsListDiv = document.getElementById('ssh-vars-list');
-    if (varsListDiv) varsListDiv.innerHTML = ("<span class=\"text-muted\">" + t('ui.selectCmdFirst') + "</span>");
-    
-    if (!hostId) {
-        cmdSelect.innerHTML = '<option value="">' + (typeof t === 'function' ? t('automation.selectHostFirst') : '-- 先选择主机 --') + '</option>';
-        return;
-    }
-    
-    // 确保 sshCommands 已加载（异步操作）
-    if (typeof sshCommands === 'undefined' || Object.keys(sshCommands).length === 0) {
-        cmdSelect.innerHTML = '<option value="">-- ' + t('common.loading') + ' --</option>';
-        await loadSshCommands();
-    }
-    
-    // 获取该主机下的命令列表
-    const commands = sshCommands[hostId] || [];
-    
-    if (commands.length === 0) {
-        cmdSelect.innerHTML = '<option value="">' + t('promptRepair.noCommands') + '</option>';
-        return;
-    }
-    
-    let html = '<option value="">' + t('promptRepair.chooseCommand') + '</option>';
-    commands.forEach((cmd, idx) => {
-        const icon = cmd.icon || 'ri-rocket-line';
-        const label = (icon && icon.startsWith && icon.startsWith('ri-')) ? cmd.name : `${icon} ${cmd.name}`;
-        html += `<option value="${idx}">${escapeHtml(label)}</option>`;
-    });
-    cmdSelect.innerHTML = html;
+    const select = document.getElementById('source-ssh-cmd'), accept = configurationEditorRead('add-source-modal');
+    modal._sourceCommands = [];
+    document.getElementById('source-ssh-cmd-preview').style.display = 'none';
+    if (!hostId) {select.innerHTML = `<option value="">${t('automation.selectHostFirst')}</option>`;return;}
+    select.innerHTML = `<option value="">${t('common.loading')}</option>`;
+    try {
+        const result = requireApiSuccess(await api.call('ssh.commands.list', {host_id: hostId}), 'ssh.commands.list');
+        if (!await accept(result.data) || document.getElementById('source-ssh-host').value !== hostId) return;
+        modal._sourceCommands = result.data.commands || [];
+        select.innerHTML = `<option value="">${t('promptRepair.chooseCommand')}</option>` + modal._sourceCommands.map((command,index) =>
+            `<option value="${index}">${escapeHtml(command.name || command.id)}</option>`).join('');
+    } catch (error) {if (modal._configuration?.current()) select.innerHTML = `<option value="">${escapeHtml(failureText({error, write: false}))}</option>`;}
 }
 
 /**
@@ -17035,7 +16312,7 @@ function onSshCmdChange() {
     }
     
     // 获取选中的命令
-    const cmd = sshCommands[hostId]?.[parseInt(cmdIdx)];
+    const cmd = document.getElementById('add-source-modal')._sourceCommands?.[parseInt(cmdIdx)];
     if (!cmd) {
         if (preview) preview.style.display = 'none';
         if (varsListDiv) varsListDiv.innerHTML = ("<span class=\"text-muted\">" + t('ui.cmdNotExist') + "</span>");
@@ -17145,7 +16422,7 @@ async function submitAddSource() {
         }
         
         // 获取选中的命令配置
-        const cmd = sshCommands[hostId]?.[parseInt(cmdIdx)];
+        const cmd = document.getElementById('add-source-modal')._sourceCommands?.[parseInt(cmdIdx)];
         if (!cmd) {
             fieldError('source-ssh-cmd', t('ui.alertCmdNotExist'));
             return;
@@ -17172,11 +16449,11 @@ async function submitAddSource() {
     
     const messageParams = { name: label };
     try {
-        const result = await api.call('automation.sources.add', params);
+        const result = await configurationEditorSave('add-source-modal', 'automation.sources.add', params);
+        if (!result) return;
         if (result.code === 0) {
             showToast(t('failure.ops.source.add.done', messageParams), 'success');
             closeModal('add-source-modal');
-            await Promise.all([refreshSources(), refreshAutomationStatus()]);
         } else {
             reportFailure({ op: 'source.add', params: messageParams, result, endpoint: 'automation.sources.add' });
         }
@@ -17280,6 +16557,7 @@ function showAddRuleModal(ruleData = null) {
         `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAddRule(${isEdit ? "'" + ruleData.id + "'" : ''})">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
     
     document.body.appendChild(modal);
+    bindConfigurationEditor(modal, 'rules', ruleData?.active_version);
     setTimeout(() => modal.classList.add('show'), 10);
     
     // 如果是编辑模式，填充现有数据
@@ -17578,24 +16856,26 @@ function handleConditionVarSelect(varName) {
 // 动作行计数器
 let actionRowCount = 0;
 
-// 缓存的动作模板列表
-let cachedActionTemplates = [];
 
 /**
  * 加载动作模板列表
  */
 // Returns null when the list was read, otherwise what describeFailure needs to explain why not.
 async function loadActionTemplatesForRule() {
+    const modal = document.getElementById('add-rule-modal');
+    const accept = configurationEditorRead('add-rule-modal');
     try {
         const result = await api.call('automation.actions.list', {});
+        if (!await accept(result.data)) return {token: 'configuration_changed', write: false};
         if (result.code === 0 && result.data?.templates) {
-            cachedActionTemplates = result.data.templates;
+            modal._actionTemplates = result.data.templates;
             return null;
         }
+        if (modal?._configuration?.current()) modal._actionTemplates = [];
         return { op: 'action.list', result, endpoint: 'automation.actions.list' };
     } catch (e) {
         console.error('加载动作模板失败:', e);
-        cachedActionTemplates = [];
+        if (modal?._configuration?.current()) modal._actionTemplates = [];
         return { op: 'action.list', error: e, endpoint: 'automation.actions.list' };
     }
 }
@@ -17610,6 +16890,7 @@ async function loadActionTemplatesForRule() {
  * @param {Object|null} condition - 动作条件配置 {variable, operator, value}
  */
 async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = 'once', repeatCount = 1, repeatIntervalMs = 1000, condition = null, original = null) {
+    const modal = document.getElementById('add-rule-modal'), context = modal?._configuration;
     const container = document.getElementById('actions-container');
     
     if (original && !templateId) {
@@ -17621,6 +16902,8 @@ async function addActionTemplateRow(templateId = '', delayMs = 0, repeatMode = '
     }
     // 先加载模板列表
     const loadFailure = await loadActionTemplatesForRule();
+    if (!context?.current()) return;
+    const cachedActionTemplates = modal._actionTemplates || [];
 
     if (cachedActionTemplates.length === 0 && !original) {
         // an empty list is a different problem from a list that could not be read
@@ -17748,7 +17031,8 @@ function updateActionTemplatePreview(selectElement) {
     const templateId = selectElement.value;
     if (!templateId) return;
     
-    const tpl = cachedActionTemplates.find(t => t.id === templateId);
+    const templates = selectElement.closest('.modal')?._actionTemplates || [];
+    const tpl = templates.find(t => t.id === templateId);
     if (tpl) {
         console.log('选择动作模板:', tpl);
     }
@@ -17895,7 +17179,7 @@ async function submitAddRule(originalId = null) {
         }
     }
     
-    if (actions.length === 0) {
+    if (actions.length === 0 && enabled) {
         fieldError('actions-container', t('ui.alertSelectAction'));
         return;
     }
@@ -17925,12 +17209,12 @@ async function submitAddRule(originalId = null) {
     const endpoint = isEdit ? 'automation.rules.update' : 'automation.rules.add';
     const messageParams = { name: name || id };
     try {
-        const result = await api.call(endpoint, params);
+        const result = await configurationEditorSave('add-rule-modal', endpoint, params);
+        if (!result) return;
         if (result.code === 0) {
-            const mirror = result.data?.mirror_synced === false;
-            showToast(t(mirror ? 'failure.ops.rule.save.doneMirror' : 'failure.ops.rule.save.done', messageParams), mirror ? 'warning' : 'success');
+            showToast(t('failure.ops.rule.save.done', messageParams), 'success');
             closeModal('add-rule-modal');
-            await Promise.all([refreshRules(), refreshAutomationStatus()]);
+
         } else {
             const missingId = result.data?.error_code === 'action_missing' ? result.data.missing_template_id : undefined;
             const missingTemplate = missingId ? (selectedTemplateNames.get(missingId) || missingId) : undefined;
@@ -17939,11 +17223,7 @@ async function submitAddRule(originalId = null) {
         }
     } catch (error) {
         reportFailure({ op: 'rule.save', params: messageParams, error, endpoint, write: true });
-        // Re-read once, never replay the write. Keep the editor and its draft.
-        try {
-            const current = await api.call('automation.rules.get', { id });
-            if (current.code === 0) document.getElementById('rule-revision').dataset.observedRevision = current.data.revision;
-        } catch (_) { /* Remain explicitly uncertain. */ }
+
     } finally { modal.dataset.saving = 'false'; }
 }
 
@@ -17953,8 +17233,9 @@ async function submitAddRule(originalId = null) {
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
-        modal.classList.remove('show');
-        setTimeout(() => modal.remove(), 300);
+        modal.dataset.configurationClosed = 'true';
+        modal.classList.remove('show', 'active');
+        setTimeout(() => {if (!modal.classList.contains('show') && !modal.classList.contains('active')) modal.remove();}, 300);
     }
 }
 
@@ -18086,120 +17367,13 @@ async function doExportSource(sourceId) {
 /**
  * 显示导入数据源配置模态框
  */
-function showImportSourceModal() {
-    let modal = document.getElementById('import-source-modal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'import-source-modal';
-        modal.className = 'modal';
-        document.body.appendChild(modal);
-    }
-    
-    modal.innerHTML = importSheet('source', t('automation.importSourceTitle'), t('automation.importSourceDesc'), 'previewSourceImport', 'confirmSourceImport', 'hideImportSourceModal');
-    
-    window._importSourceTscfg = null;
-    const statusEl = document.getElementById('import-source-file-status');
-    if (statusEl) statusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件';
-    modal.classList.remove('hidden');
-}
+function showImportSourceModal() { showConfigurationImport('source'); }
 
-function hideImportSourceModal() {
-    const modal = document.getElementById('import-source-modal');
-    if (modal) modal.classList.add('hidden');
-    window._importSourceTscfg = null;
-}
+function hideImportSourceModal() { hideConfigurationImport('source'); }
 
-async function previewSourceImport() {
-    const fileInput = document.getElementById('import-source-file');
-    const resultBox = document.getElementById('import-source-result');
-    const step2 = document.getElementById('import-source-step2');
-    const previewDiv = document.getElementById('import-source-preview');
-    const importBtn = document.getElementById('import-source-btn');
-    const statusEl = document.getElementById('import-source-file-status');
-    
-    if (!fileInput.files || !fileInput.files[0]) {
-        if (statusEl) statusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件';
-        return;
-    }
-    
-    const file = fileInput.files[0];
-    if (statusEl) statusEl.textContent = file.name;
-    
-    resultBox.classList.remove('hidden', 'success', 'error');
-    resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
-    importBtn.disabled = true;
-    previewDiv.innerHTML = importPlaceholder('source');
-    
-    try {
-        const content = await file.text();
-        window._importSourceTscfg = content;
-        window._importSourceFilename = file.name;
-        
-        const result = await api.call('automation.sources.import', { 
-            tscfg: content,
-            filename: file.name,
-            preview: true
-        });
-        
-        if (result.code === 0 && result.data?.valid) {
-            const data = result.data;
-            renderImportPreview('source', data, t('automation.packTypeSource'));
-            resultBox.className = 'result-box success';
-            resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
-            importBtn.disabled = false;
-        } else {
-            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.source'), file: file.name }, result, endpoint: 'automation.sources.import', write: false });
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.source'), file: file.name }, error: e, endpoint: 'automation.sources.import', write: false });
-    }
-}
+async function previewSourceImport() { return previewConfigurationImport('source'); }
 
-async function confirmSourceImport() {
-    const overwrite = document.getElementById('import-source-overwrite').checked;
-    const resultBox = document.getElementById('import-source-result');
-    const importBtn = document.getElementById('import-source-btn');
-    
-    if (!window._importSourceTscfg) {
-        showToast((typeof t === 'function' ? t('toast.selectFileFirst') : '请先选择文件'), 'error');
-        return;
-    }
-    
-    const packParams = { kind: t('failure.kinds.source'), file: window._importSourceFilename || '' };
-    resultBox.classList.remove('hidden', 'success', 'error');
-    resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
-    importBtn.disabled = true;
-    
-    try {
-        const params = { 
-            tscfg: window._importSourceTscfg,
-            filename: window._importSourceFilename,
-            overwrite: overwrite
-        };
-        
-        const result = await api.call('automation.sources.import', params);
-        
-        if (result.code === 0) {
-            const data = result.data;
-            if (data?.exists && !data?.imported) {
-                resultBox.className = 'result-box warning';
-                resultBox.textContent = typeof t === 'function' ? t('securityPage.configExistsCheckOverwrite', { id: data.id }) : `配置 ${data.id} 已存在，请勾选「覆盖」选项`;
-                importBtn.disabled = false;
-            } else {
-                resultBox.className = 'result-box success';
-                resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(t('failure.ops.pack.import.done', packParams), 'success');
-                setTimeout(() => hideImportSourceModal(), 2000);
-            }
-        } else {
-            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'automation.sources.import' });
-                importBtn.disabled = false;
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'automation.sources.import', write: true });
-        importBtn.disabled = false;
-    }
-}
+async function confirmSourceImport() { return confirmConfigurationImport('source'); }
 
 /**
  * 显示导出规则配置模态框
@@ -18269,134 +17443,12 @@ async function doExportRule(ruleId) {
 /**
  * 显示导入规则配置模态框
  */
-function showImportRuleModal() {
-    ++rulePackPreviewAttempt; rulePackPreview = null;
-    let modal = document.getElementById('import-rule-modal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'import-rule-modal';
-        modal.className = 'modal';
-        document.body.appendChild(modal);
-    }
-    
-    modal.innerHTML = importSheet('rule', t('automation.importRuleTitle'), t('automation.importRuleDesc'), 'previewRuleImport', 'confirmRuleImport', 'hideImportRuleModal');
-    
-    window._importRuleTscfg = null;
-    const ruleStatusEl = document.getElementById('import-rule-file-status');
-    if (ruleStatusEl) ruleStatusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件';
-    modal.classList.remove('hidden');
-}
+function showImportRuleModal() { showConfigurationImport('rule'); }
 
-function hideImportRuleModal() {
-    ++rulePackPreviewAttempt; rulePackPreview = null;
-    const modal = document.getElementById('import-rule-modal');
-    if (modal) modal.classList.add('hidden');
-    window._importRuleTscfg = null;
-}
+function hideImportRuleModal() { hideConfigurationImport('rule'); }
 
-let rulePackPreviewAttempt = 0;
-let rulePackPreview = null;
-async function previewRuleImport() {
-    const attempt = ++rulePackPreviewAttempt;
-    rulePackPreview = null;
-    window._importRuleTscfg = null;
-    const input = document.getElementById('import-rule-file');
-    const box = document.getElementById('import-rule-result');
-    const button = document.getElementById('import-rule-btn');
-    const preview = document.getElementById('import-rule-preview');
-    button.disabled = true;
-    if (!input.files?.[0]) return;
-    const file = input.files[0];
-    document.getElementById('import-rule-file-status').textContent = file.name;
-    box.className = 'result-box'; box.textContent = t('ssh.verifyingPack');
-    preview.innerHTML = importPlaceholder('rule');
-    try {
-        const buffer = await file.arrayBuffer();
-        let bytes;
-        try { bytes = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(buffer); } catch (_) { throw pageFailure('invalid_rule_pack'); }
-        if (attempt !== rulePackPreviewAttempt) return;
-        const result = await api.call('automation.rules.import', {tscfg: bytes, filename: file.name, preview: true});
-        if (attempt !== rulePackPreviewAttempt) return;
-        const data = result.data;
-        if (result.code !== 0 || data?.valid !== true || data?.trusted !== true || data?.target_matches !== true ||
-            !data.rule || data.rule.id !== data.id || !Array.isArray(data.rule.actions) || !data.rule.actions.length ||
-            !Number.isInteger(data.expected_revision) || !Number.isInteger(data.expected_generation) ||
-            !Number.isInteger(data.credential_generation) || !/^[0-9a-f]{64}$/.test(data.package_digest || '')) {
-            packBox(box, { op: 'pack.verify', params: { kind: t('failure.kinds.rule'), file: file.name }, result, endpoint: 'automation.rules.import', write: false,
-                token: data?.error_code || (result.code === 0 ? (data?.valid !== true ? 'invalid_pack' : data?.trusted !== true ? 'signer_untrusted' : data?.target_matches !== true ? 'wrong_device' : 'invalid_response') : undefined) }); return;
-        }
-        rulePackPreview = data;
-        window._importRuleTscfg = bytes; window._importRuleFilename = file.name;
-        renderImportPreview('rule', data, t('automation.packTypeRule'));
-        const conditions = Array.isArray(data.rule.conditions) ? data.rule.conditions.length : data.rule.conditions?.items?.length || 0;
-        preview.insertAdjacentHTML('afterbegin', row(t('common.name'), escapeHtml(data.rule.name || data.id)));
-        preview.insertAdjacentHTML('beforeend', row(t('rulePack.summaryLabel'), escapeHtml(t('rulePack.summary', {conditions, actions: data.rule.actions?.length || 0}))));
-        preview.insertAdjacentHTML('beforeend', `<details><summary>${escapeHtml(t('rulePack.content'))}</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(JSON.stringify(data.rule, null, 2))}</pre></details>`);
-        if (data.exists) preview.insertAdjacentHTML('beforeend', row(t('rulePack.overwriteLabel'), escapeHtml(t('rulePack.overwriteImpact', {revision: data.expected_revision}))));
-        for (const warning of data.warnings || []) {
-            const key = warning === 'dynamic_inputs' ? 'rulePack.dynamicInputs'
-                : warning === 'dependency_disabled' ? 'rulePack.disabledDependency' : null;
-            if (key) preview.insertAdjacentHTML('beforeend', row(t('securityPage.noteLabel'), escapeHtml(t(key))));
-        }
-        box.className = 'result-box success'; box.textContent = t('rulePack.verified');
-        button.disabled = false;
-    } catch (error) {
-        if (attempt !== rulePackPreviewAttempt) return;
-        packBox(box, { op: 'pack.verify', params: { kind: t('failure.kinds.rule'), file: file.name }, error, endpoint: 'automation.rules.import', write: false });
-    }
-}
-async function confirmRuleImport() {
-    const attempt = rulePackPreviewAttempt;
-    const preview = rulePackPreview;
-    const box = document.getElementById('import-rule-result');
-    const button = document.getElementById('import-rule-btn');
-    const packParams = { kind: t('failure.kinds.rule'), file: window._importRuleFilename || '' };
-    if (!preview || !window._importRuleTscfg) { packBox(box, { op: 'pack.import', params: packParams, token: 'preview_required' }); return; }
-    const bytes = window._importRuleTscfg;
-    button.disabled = true;
-    box.className = 'result-box'; box.textContent = t('ssh.savingConfig');
-    let uncertain = false;
-    try {
-        const result = await api.call('automation.rules.import', {
-            tscfg: bytes, filename: window._importRuleFilename,
-            overwrite: document.getElementById('import-rule-overwrite').checked,
-            expected_revision: preview.expected_revision, expected_generation: preview.expected_generation,
-            credential_generation: preview.credential_generation, package_digest: preview.package_digest
-        });
-        if (attempt !== rulePackPreviewAttempt) return;
-        const data = result.data;
-        if (result.code === 0 && data?.saved === true && data?.durable === true && data?.runtime_applied === false) {
-            box.className = data.cleanup_pending ? 'result-box warning' : 'result-box success';
-            box.textContent = t(data.restart_required ? 'rulePack.saved' : 'rulePack.alreadyActive') + (data.cleanup_pending ? ' ' + t('rulePack.cleanupPending') : '');
-            rulePackPreview = null;
-            await refreshRules();
-            return;
-        }
-        uncertain = result.code === 0 || data?.result_unknown === true || ['commit_unknown', 'recovery_required'].includes(result.rawMessage || result.error || result.message);
-        if (!uncertain) {
-            packBox(box, { op: 'pack.import', params: packParams, result, token: data?.error_code, endpoint: 'automation.rules.import', write: true });
-            if ((result.rawMessage || result.error || result.message) === 'overwrite_required') button.disabled = false;
-            else rulePackPreview = null;
-            return;
-        }
-    } catch (error) { uncertain = true; }
-    if (attempt !== rulePackPreviewAttempt) return;
-    if (uncertain) {
-        // Observe once; never replay an uncertain write.
-        packBox(box, { op: 'pack.import', params: packParams, token: 'commit_unknown', endpoint: 'automation.rules.import', write: true });
-        box.classList.remove('error'); box.classList.add('warning');
-        rulePackPreview = null;
-        try {
-            const state = await api.call('automation.rules.list');
-            if (attempt !== rulePackPreviewAttempt) return;
-            const saved = state.code === 0 && state.data?.loaded !== false && state.data?.recovery_required !== true && state.data?.rules?.find(r => r.id === preview.id && r.saved_exists !== false && r.pending_change !== 'delete' && r.package_digest === preview.package_digest);
-            if (saved && Number.isInteger(saved.saved_revision) && saved.saved_generation >= preview.expected_generation) {
-                box.className = 'result-box success'; box.textContent = t(saved.restart_required ? 'rulePack.saved' : 'rulePack.alreadyActive');
-                await refreshRules();
-            }
-        } catch (error) { /* Keep the explicit unknown result. */ }
-    }
-}
+async function previewRuleImport() { return previewConfigurationImport('rule'); }
+async function confirmRuleImport() { return confirmConfigurationImport('rule'); }
 
 /**
  * 显示导出动作模板配置模态框
@@ -18466,120 +17518,13 @@ async function doExportAction(actionId) {
 /**
  * 显示导入动作模板配置模态框
  */
-function showImportActionModal() {
-    let modal = document.getElementById('import-action-modal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'import-action-modal';
-        modal.className = 'modal';
-        document.body.appendChild(modal);
-    }
-    
-    modal.innerHTML = importSheet('action', t('automation.importActionTitle'), t('automation.importActionDesc'), 'previewActionImport', 'confirmActionImport', 'hideImportActionModal');
-    
-    window._importActionTscfg = null;
-    const actionStatusEl = document.getElementById('import-action-file-status');
-    if (actionStatusEl) actionStatusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件';
-    modal.classList.remove('hidden');
-}
+function showImportActionModal() { showConfigurationImport('action'); }
 
-function hideImportActionModal() {
-    const modal = document.getElementById('import-action-modal');
-    if (modal) modal.classList.add('hidden');
-    window._importActionTscfg = null;
-}
+function hideImportActionModal() { hideConfigurationImport('action'); }
 
-async function previewActionImport() {
-    const fileInput = document.getElementById('import-action-file');
-    const resultBox = document.getElementById('import-action-result');
-    const step2 = document.getElementById('import-action-step2');
-    const previewDiv = document.getElementById('import-action-preview');
-    const importBtn = document.getElementById('import-action-btn');
-    const statusEl = document.getElementById('import-action-file-status');
-    
-    if (!fileInput.files || !fileInput.files[0]) {
-        if (statusEl) statusEl.textContent = typeof t === 'function' ? t('common.noFileSelected') : '未选择任何文件';
-        return;
-    }
-    
-    const file = fileInput.files[0];
-    if (statusEl) statusEl.textContent = file.name;
-    
-    resultBox.classList.remove('hidden', 'success', 'error');
-    resultBox.textContent = (typeof t === 'function' ? t('ssh.verifyingPack') : '正在验证配置包...');
-    importBtn.disabled = true;
-    previewDiv.innerHTML = importPlaceholder('action');
-    
-    try {
-        const content = await file.text();
-        window._importActionTscfg = content;
-        window._importActionFilename = file.name;
-        
-        const result = await api.call('automation.actions.import', { 
-            tscfg: content,
-            filename: file.name,
-            preview: true
-        });
-        
-        if (result.code === 0 && result.data?.valid) {
-            const data = result.data;
-            renderImportPreview('action', data, t('automation.packTypeAction'));
-            resultBox.className = 'result-box success';
-            resultBox.textContent = typeof t === 'function' ? t('ssh.signatureVerified') : '签名验证通过';
-            importBtn.disabled = false;
-        } else {
-            packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.action'), file: file.name }, result, endpoint: 'automation.actions.import', write: false });
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.verify', params: { kind: t('failure.kinds.action'), file: file.name }, error: e, endpoint: 'automation.actions.import', write: false });
-    }
-}
+async function previewActionImport() { return previewConfigurationImport('action'); }
 
-async function confirmActionImport() {
-    const overwrite = document.getElementById('import-action-overwrite').checked;
-    const resultBox = document.getElementById('import-action-result');
-    const importBtn = document.getElementById('import-action-btn');
-    
-    if (!window._importActionTscfg) {
-        showToast((typeof t === 'function' ? t('toast.selectFileFirst') : '请先选择文件'), 'error');
-        return;
-    }
-    
-    const packParams = { kind: t('failure.kinds.action'), file: window._importActionFilename || '' };
-    resultBox.classList.remove('hidden', 'success', 'error');
-    resultBox.textContent = typeof t === 'function' ? t('ssh.savingConfig') : '正在保存配置...';
-    importBtn.disabled = true;
-    
-    try {
-        const params = { 
-            tscfg: window._importActionTscfg,
-            filename: window._importActionFilename,
-            overwrite: overwrite
-        };
-        
-        const result = await api.call('automation.actions.import', params);
-        
-        if (result.code === 0) {
-            const data = result.data;
-            if (data?.exists && !data?.imported) {
-                resultBox.className = 'result-box warning';
-                resultBox.textContent = typeof t === 'function' ? t('securityPage.configExistsCheckOverwrite', { id: data.id }) : `配置 ${data.id} 已存在，请勾选「覆盖」选项`;
-                importBtn.disabled = false;
-            } else {
-                resultBox.className = 'result-box success';
-                resultBox.innerHTML = `${typeof t === 'function' ? t('securityPage.savedConfig') : 'Saved config'}: <code>${escapeHtml(data?.id)}</code><br><small style="color:#6b7280">${typeof t === 'function' ? t('securityPage.restartToApply') : 'Restart to apply'}</small>`;
-                showToast(t('failure.ops.pack.import.done', packParams), 'success');
-                setTimeout(() => hideImportActionModal(), 2000);
-            }
-        } else {
-            packBox(resultBox, { op: 'pack.import', params: packParams, result, endpoint: 'automation.actions.import' });
-            importBtn.disabled = false;
-        }
-    } catch (e) {
-        packBox(resultBox, { op: 'pack.import', params: packParams, error: e, endpoint: 'automation.actions.import', write: true });
-        importBtn.disabled = false;
-    }
-}
+async function confirmActionImport() { return confirmConfigurationImport('action'); }
 
 // 导出导入函数
 window.showExportSourceModal = showExportSourceModal;
