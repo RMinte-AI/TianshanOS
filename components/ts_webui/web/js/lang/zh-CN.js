@@ -826,6 +826,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
     
     // SSH 命令
     ssh: {
+        showCommand: "展开命令",
+        hideCommand: "收起命令",
         cmdIdPlaceholderShort: '例如：restart_nginx',
         runMode: '运行方式',
         nohupShort: '后台运行 (nohup)',
@@ -3922,6 +3924,21 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         "stopFollow": "停止查看"
 },
     automationConfig: {
+        "saveCurrent": "保存当前配置",
+        "saveCurrentNote": "手动更新内部副本，替换上一次保存的内容。",
+        "restoreSaved": "恢复已保存的配置",
+        "restoreSavedNote": "用内部副本恢复当前配置；确认前会显示差异。",
+        "copyContents": "副本内容",
+        "cardStatus": "SD 卡状态",
+        "checkCardNote": "重新检查 SD 卡是否可用。",
+        "automationState": "自动化启用状态",
+        "disableNote": "停用后不再自动触发规则。",
+        "enableNote": "启用后，自动规则按原条件运行。",
+        "useSdNote": "切换到卡内配置，内部配置保持不变。",
+        "saveToSdNote": "确认差异后，将当前配置写入 SD 卡并切换使用。",
+        "deletionMethod": "删除方式",
+        "referenceCheck": "关联检查",
+
         "notLoaded": "自动化配置尚未加载",
         "storageSource": "配置位置",
         "actionQueued": "动作“{name}”已排队，请在系统日志中查看实际执行结果。",

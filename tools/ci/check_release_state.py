@@ -1,4 +1,4 @@
-"""Read-only preflight for an already eligible release job; never writes GitHub."""
+"""Validate a gated release; main builds may advance an existing tag without force."""
 import json
 import os
 from pathlib import Path
@@ -29,8 +29,6 @@ def query(path):
 
 def prepare_release(repository, mode, tag, build_commit, get=query):
     release = get(f'repos/{repository}/releases/tags/{urllib.parse.quote(tag, safe="")}')
-    if mode == 'main' and release is not None:
-        return True, '该版本已存在，本次未发布新资产'
     if mode == 'published' and release is None:
         raise ValueError('The published Release no longer exists')
     ref = get(f'repos/{repository}/git/ref/tags/{urllib.parse.quote(tag, safe="")}')
@@ -44,9 +42,30 @@ def prepare_release(repository, mode, tag, build_commit, get=query):
             if annotated is None:
                 raise ValueError('Cannot resolve annotated release tag')
             obj = annotated['object']
-        if obj['type'] != 'commit' or obj['sha'] != build_commit:
-            raise ValueError('Release tag differs from the actual build commit; will not move the tag')
+        if obj['type'] != 'commit':
+            raise ValueError('Release tag does not resolve to a commit')
+        if obj['sha'] != build_commit:
+            if mode != 'main' or release is None:
+                raise ValueError('Release tag differs from the actual build commit')
+            comparison = get(f'repos/{repository}/compare/{obj["sha"]}...{build_commit}')
+            if comparison is None or comparison.get('status') != 'ahead':
+                raise ValueError('Existing release tag must be an ancestor of this build; refusing rollback or divergent history')
+            return True, 'Advance the existing release tag to this verified descendant build'
     return False, 'Release preflight passed for this build'
+
+
+def advance_tag(repository, tag, commit):
+    request = urllib.request.Request(
+        f'https://api.github.com/repos/{repository}/git/refs/tags/{urllib.parse.quote(tag, safe="")}',
+        data=json.dumps({'sha': commit, 'force': False}).encode(), method='PATCH', headers={
+            'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+            'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json'})
+    # GitHub also enforces fast-forward at the write, including concurrent tag changes.
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.load(response)
+    if result['object']['sha'] != commit:
+        raise ValueError('Updated release tag does not point to this build')
 
 
 def main():
@@ -66,9 +85,11 @@ def main():
     commit = os.environ['BUILD_COMMIT']
     if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != commit:
         raise ValueError('Release checkout is not the build commit')
-    skip, message = prepare_release(os.environ['GITHUB_REPOSITORY'], mode, tag, commit)
+    advance, message = prepare_release(os.environ['GITHUB_REPOSITORY'], mode, tag, commit)
+    if advance:
+        advance_tag(os.environ['GITHUB_REPOSITORY'], tag, commit)
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-        output.write(f'tag={tag}\nskip_release={str(skip).lower()}\n')
+        output.write(f'tag={tag}\n')
     print(message)
 
 

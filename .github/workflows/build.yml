@@ -311,8 +311,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD_VERSION: ${{ needs.build.outputs.version }}
           BUILD_COMMIT: ${{ needs.build.outputs.commit }}
+      - name: Add build identity to the Chinese release notes
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          notes = Path('docs/releases') / (os.environ['RELEASE_TAG'] + '.md')
+          with notes.open('a') as output:
+              output.write('\n\n## 本次构建\n\n')
+              output.write('固件版本：`' + os.environ['BUILD_VERSION'] + '`\n\n')
+              output.write('源码提交：`' + os.environ['BUILD_COMMIT'] + '`\n')
+          PYTHON
+        env:
+          RELEASE_TAG: ${{ steps.preflight.outputs.tag }}
+          BUILD_VERSION: ${{ needs.build.outputs.version }}
+          BUILD_COMMIT: ${{ needs.build.outputs.commit }}
       - name: Create or upload the release assets
-        if: steps.preflight.outputs.skip_release == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.preflight.outputs.tag }}
@@ -325,5 +339,7 @@ jobs:
           target_commitish: ${{ needs.build.outputs.commit }}
           body_path: docs/releases/${{ steps.preflight.outputs.tag }}.md
           generate_release_notes: false
+          overwrite_files: "true"
+          make_latest: "true"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -171,7 +171,7 @@ async function showAutomationConfig() {
     document.body.appendChild(modal);
     if (typeof router !== 'undefined') router.navigation?.onDispose(() => modal.remove());
     modal.onkeydown = event => {if (event.key === 'Escape') {event.stopPropagation();if(modal.dataset.busy !== 'true')closeModal(modal.id);}};
-    modal.innerHTML = sheet(640, configText('title'), '<div id="automation-config-body" class="mgrid"><p class="t-note">' + t('common.loading') + '</p></div>',
+    modal.innerHTML = sheet(760, configText('title'), '<div id="automation-config-body" class="config-layout"><p class="t-note">' + t('common.loading') + '</p></div>',
         `<button type="button" class="btn lg" onclick="closeModal('automation-config-modal')">${t('common.close')}</button>`);
     modal.querySelector('.sf button').focus();
     try {const status = await refreshConfigurationStatus(); if (modal.isConnected && modal.dataset.configurationClosed !== 'true' && status) renderAutomationConfig(modal, status);}
@@ -182,18 +182,29 @@ function renderAutomationConfig(modal, d) {
     const saved = d.internal_exists ? (d.internal_saved_at ? new Date(d.internal_saved_at * 1000).toLocaleString() : configText('savedTimeUnknown')) : configText('noBackup');
     const backup = !d.internal_exists ? configText('noBackup') : !d.internal_valid ? configText('backupUnreadable') :
         !d.comparison_known ? configText('comparisonUnknown') : configText(d.backup_matches ? 'backupCurrent' : 'backupBehind');
-    const button = (operation, label, disabled = false) => `<button type="button" class="btn sm" data-config-operation="${operation}"${disabled ? ' disabled' : ''}>${configText(label)}</button>`;
+    const icons = {backup: 'ri-save-line', restore_internal: 'ri-download-line', check: 'ri-refresh-line', disable: 'ri-stop-circle-line', enable: 'ri-play-line'};
+    const button = (operation, label, disabled = false) => `<button type="button" class="btn sm" data-config-operation="${operation}"${disabled ? ' disabled' : ''}>${icons[operation] ? `<svg class="i" aria-hidden="true"><use href="#${icons[operation]}"/></svg>` : ''}${configText(label)}</button>`;
+    const operationRow = (title, note, operation, label, disabled = false) =>
+        `<div class="config-operation"><div><h3>${configText(title)}</h3><p class="t-note">${configText(note)}</p></div>${button(operation, label, disabled)}</div>`;
     modal.querySelector('#automation-config-body').innerHTML =
-        `<p class="t-body">${configText(!d.loaded ? 'notLoaded' : d.source === 'sd' ? 'sdExplanation' : 'internalExplanation')}</p>` +
+        `<p class="t-body config-intro">${configText(!d.loaded ? 'notLoaded' : d.source === 'sd' ? 'sdExplanation' : 'internalExplanation')}</p>` +
         (!d.loaded && d.load_error ? failureNote({token: d.load_error, write: false}) : '') +
         grp(row(configText(d.loaded ? 'currentSource' : 'storageSource'), value(configText(d.source === 'sd' ? 'sd' : 'internal'))) +
             row(configText('card'), value(configText(d.sd_available ? 'cardAvailable' : 'cardUnavailable'))) +
             row(configText('backupTime'), value(saved)) + row(configText('backupState'), value(backup))) +
         `<section class="config-section"><h3 class="gt">${configText(d.source === 'sd' ? 'backupGroup' : 'sourceGroup')}</h3>` +
-        (d.source === 'sd' ? `<p class="t-note">${configText('included')}</p><div class="acts wrap">${button('backup', 'saveBackup', !d.loaded || d.uncertain)}${button('restore_internal', 'restoreBackup', !d.internal_valid)}</div><p class="t-note">${configText('backupManual')}</p>` :
-            `<p class="t-note">${configText(d.sd_available ? 'chooseCard' : 'insertCard')}</p><div class="acts wrap">${button('use_sd', 'useSd', !d.sd_available)}${button('save_to_sd', 'saveToSd', !d.sd_available || !d.loaded || d.uncertain)}</div>`) +
-        (d.sd_available===false ? `<p class="t-note" role="status">${configText('resourcesUnavailable')}</p>` : '') +
-        `</section><section class="config-section"><h3 class="gt">${configText('operationsGroup')}</h3><div class="acts wrap">${button('check', 'checkCard')}${button(d.paused ? 'enable' : 'disable', d.paused ? 'enable' : 'disable', !d.loaded)}</div></section><div id="automation-config-result" class="t-note" role="status"></div>`;
+        (d.source === 'sd' ? grp(
+            operationRow('saveCurrent', 'saveCurrentNote', 'backup', 'saveBackup', !d.loaded || d.uncertain) +
+            operationRow('restoreSaved', 'restoreSavedNote', 'restore_internal', 'restoreBackup', !d.internal_valid)) +
+            `<div class="config-scope t-note"><h4>${configText('copyContents')}</h4><p>${configText('included')}</p><p>${configText('backupManual')}</p></div>` :
+            `<p class="t-note config-source-note">${configText(d.sd_available ? 'chooseCard' : 'insertCard')}</p>` + grp(
+                operationRow('useSd', 'useSdNote', 'use_sd', 'useSd', !d.sd_available) +
+                operationRow('saveToSd', 'saveToSdNote', 'save_to_sd', 'saveToSd', !d.sd_available || !d.loaded || d.uncertain))) +
+        (d.sd_available===false ? `<p class="t-note config-source-note" role="status">${configText('resourcesUnavailable')}</p>` : '') +
+        `</section><section class="config-section"><h3 class="gt">${configText('operationsGroup')}</h3>` + grp(
+            operationRow('cardStatus', 'checkCardNote', 'check', 'checkCard') +
+            operationRow('automationState', d.paused ? 'enableNote' : 'disableNote', d.paused ? 'enable' : 'disable', d.paused ? 'enable' : 'disable', !d.loaded)) +
+        `</section><div id="automation-config-result" class="t-note" role="status"></div>`;
     modal.querySelectorAll('[data-config-operation]').forEach(button => button.onclick = () => automationConfigOperation(button.dataset.configOperation, modal));
 }
 function configurationChanges(diff) {
@@ -269,9 +280,10 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
     configurationDeletesInFlight.add(key);
     const modal = document.createElement('div'); modal.className = 'modal show'; modal.id = 'configuration-delete-modal';
     modal.innerHTML = sheet(560, configText('deleteTitle', {name: escapeHtml(name)}),
-        `<div class="seg"><button type="button" class="on" data-delete-mode="normal">${configText('normalDelete')}</button><button type="button" data-delete-mode="force">${configText('forceDelete')}</button></div>` +
-        `<p class="t-note">${configText('deleteDoesNotStop')}</p><div id="configuration-delete-impact">${t('common.loading')}</div>` +
-        `<div id="configuration-delete-options"></div><div id="configuration-delete-result" class="t-note" role="status"></div>`,
+        `<h3 class="gt delete-method-label">${configText('deletionMethod')}</h3><div class="seg delete-method"><button type="button" class="on" aria-pressed="true" data-delete-mode="normal">${configText('normalDelete')}</button><button type="button" aria-pressed="false" data-delete-mode="force">${configText('forceDelete')}</button></div>` +
+        `<section class="delete-impact"><h3>${configText('referenceCheck')}</h3><div id="configuration-delete-impact">${t('common.loading')}</div><div id="configuration-delete-options"></div></section>` +
+        `<p class="t-note delete-service-note"><svg class="i" aria-hidden="true"><use href="#ri-information-line"/></svg><span>${configText('deleteDoesNotStop')}</span></p>` +
+        `<div id="configuration-delete-result" class="t-note" role="status"></div>`,
         `<button type="button" class="btn lg" data-delete-cancel>${t('common.cancel')}</button><button type="button" class="btn lg primary bad" data-delete-submit disabled>${t('common.delete')}</button>`);
     document.body.appendChild(modal);
     const pageCurrent = capturePageValidity();
@@ -290,7 +302,10 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
         const selection = modal.querySelector('#configuration-delete-replacement'), pause = modal.querySelector('#configuration-delete-pause');
         if (selection) replacementChoice = selection.value;
         if (pause) pauseConfirmed = pause.checked;
-        modal.querySelectorAll('[data-delete-mode]').forEach(button => button.classList.toggle('on', (button.dataset.deleteMode === 'force') === force));
+        modal.querySelectorAll('[data-delete-mode]').forEach(button => {
+            const selected = (button.dataset.deleteMode === 'force') === force;
+            button.classList.toggle('on', selected);button.setAttribute('aria-pressed', String(selected));
+        });
         const options = modal.querySelector('#configuration-delete-options');
         if (force) options.innerHTML = `<p class="t-body">${configText('forceExplanation')}</p>` +
             (pauseRequired || impact?.requires_pause ? `<label class="t-body"><input type="checkbox" id="configuration-delete-pause"> ${configText('confirmPause')}</label>` : '');
@@ -336,7 +351,7 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
             } finally {busy = false; if (current()) render();}
         };
     };
-    modal.querySelectorAll('[data-delete-mode]').forEach(button => button.onclick = () => {if (!busy) {force = button.dataset.deleteMode === 'force';render();}});
+    modal.querySelectorAll('[data-delete-mode]').forEach(button => button.onclick = () => {if (!busy) {force = button.dataset.deleteMode === 'force';render();button.focus();}});
     modal.querySelector('[data-delete-submit]').onclick = async () => {
         if (busy || stale || (!force && !ready)) return;
         const pause = modal.querySelector('#configuration-delete-pause');
@@ -7816,7 +7831,7 @@ async function loadCommandsPage() {
                     <span class="t-section sec-t">${t('ssh.commandList')}</span>
                     <div class="acts"></div>
                 </div>
-                <div id="commands-list" class="card" style="padding:0">
+                <div id="commands-list">
                     <div class="empty"><p class="t-note">${t('ssh.selectHostFirst')}</p></div>
                 </div>
             </div>
@@ -8028,12 +8043,7 @@ function refreshCommandsList() {
         return;
     }
     
-    // 操作列宽按最多的按钮数定，保证各行对齐（默认 执行 / 编辑 / 删除 三个 = 96px）
-    const extraCount = c => (c.varName ? 1 : 0) + (c.nohup && c.serviceMode ? 3 : 0) + 1;
-    const nBtn = 3 + Math.max(...hostCommands.map(extraCount));
-    const cols = `minmax(max-content,32px) minmax(max-content,1fr) minmax(max-content,1.6fr) minmax(max-content,${nBtn * 28 + (nBtn - 1) * 6}px)`;
-
-    container.innerHTML = gridTable(cols, hostCommands.map((cmd, idx) => {
+    container.innerHTML = hostCommands.map((cmd, idx) => {
         const isOrphan = cmd.orphan === true;
         
         // 模式匹配 / nohup 标签
@@ -8056,39 +8066,42 @@ function refreshCommandsList() {
             iconHtml = escapeHtml(iconValue);
         }
         
-        // 服务模式按钮（日志、停止）
+        // Background run management remains separate from command execution.
         const serviceActions = cmd.nohup ? icoBtn('ri-server-line',serviceRunText('title'),'showServiceRuns()') : '';
         const varBtn = cmd.varName ? `<button class="btn icon sm cmd-variables" data-variable="${escapeHtml(cmd.varName)}" title="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}" aria-label="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}"><svg class="i"><use href="#ri-bar-chart-line"/></svg></button>` : '';
         const runTitle = isOrphan ? t('ssh.hostNotExistCannotExec') : t('common.run');
         const runBtn = `<button class="btn icon sm btn-exec" onclick="executeCommand(${idx})" title="${runTitle}" aria-label="${runTitle}" ${isOrphan ? 'disabled' : ''}><svg class="i"><use href="#ri-play-line"/></svg></button>`;
         
         return `
-        <div class="tr command-card ${isOrphan ? 'orphan-command' : ''}" data-cmd-idx="${idx}" data-has-service="${cmd.serviceMode || false}">
-            <span class="command-icon" style="color:var(--accent-text)">${iconHtml}</span>
-            <div>
-                <div class="t-body cmd-name" style="font-weight:500" title="${escapeHtml(cmd.name)}">${escapeHtml(cmd.name)}${tagsHtml ? ' ' + tagsHtml : ''}</div>
-                <div class="t-note" style="color:var(--warn)" data-command-image-note hidden>${escapeHtml(configText('imageUnavailable'))}</div>
-                <div class="t-note mono">${escapeHtml(cmd.id || '')}</div>
-                ${isOrphan ? `<div class="t-note" style="color:var(--warn)">${escapeHtml(t('promptRepair.orphanHost', {id: cmd.originalHostId || '?'}))}</div>` : ''}
-                ${cmd.desc ? `<div class="t-note" title="${escapeHtml(cmd.desc)}">${escapeHtml(cmd.desc)}</div>` : ''}
+        <div class="command-card ${isOrphan ? 'orphan-command' : ''}" data-cmd-idx="${idx}" data-has-service="${cmd.serviceMode || false}">
+            <div class="command-top">
+                <div class="command-body">
+                    <div class="command-heading"><span class="command-icon">${iconHtml}</span><div class="command-meta">
+                        <div class="t-body cmd-name" style="font-weight:500">${escapeHtml(cmd.name)}${tagsHtml ? ' ' + tagsHtml : ''}</div>
+                        <div class="t-note" style="color:var(--warn)" data-command-image-note hidden>${escapeHtml(configText('imageUnavailable'))}</div>
+                        <div class="t-note mono">${escapeHtml(cmd.id || '')}</div>
+                        ${isOrphan ? `<div class="t-note" style="color:var(--warn)">${escapeHtml(t('promptRepair.orphanHost', {id: cmd.originalHostId || '?'}))}</div>` : ''}
+                        ${cmd.desc ? `<div class="t-note">${escapeHtml(cmd.desc)}</div>` : ''}
+                    </div></div>
+                    <button type="button" class="command-toggle" aria-expanded="false" aria-controls="command-code-${idx}"><svg class="i" aria-hidden="true"><use href="#ri-arrow-down-line"/></svg><span>${t('ssh.showCommand')}</span></button>
+                </div>
+                <div class="act">${runBtn}${serviceActions}${varBtn}${icoBtn('ri-edit-line', t('common.edit'), `editCommand(${idx})`)}${icoBtn('ri-upload-line', t('ssh.exportConfig'), configurationHandler('exportSshCommand', cmd.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteCommand(${idx})`, 'dg')}</div>
             </div>
-            <span class="mono t-label cmd-code" title="${escapeHtml(cmd.command)}">${escapeHtml(cmd.command.split('\n')[0])}${cmd.command.includes('\n') ? ' ...' : ''}</span>
-            <div class="act">${runBtn}${serviceActions}${varBtn}${icoBtn('ri-edit-line', t('common.edit'), `editCommand(${idx})`)}${icoBtn('ri-upload-line', t('ssh.exportConfig'), configurationHandler('exportSshCommand', cmd.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteCommand(${idx})`, 'dg')}</div>
+            <pre class="cmd-code" id="command-code-${idx}" hidden>${escapeHtml(cmd.command)}</pre>
         </div>
-    `}).join(''));
-    
+    `}).join('');
+    container.querySelectorAll('.command-toggle').forEach(button => {
+        button.onclick = () => {
+            const expanded = button.getAttribute('aria-expanded') === 'true';
+            button.setAttribute('aria-expanded', String(!expanded));
+            button.querySelector('span').textContent = t(expanded ? 'ssh.showCommand' : 'ssh.hideCommand');
+            document.getElementById(button.getAttribute('aria-controls')).hidden = expanded;
+        };
+    });
     container.querySelectorAll('.cmd-variables').forEach(button => {
         button.addEventListener('click', () => showCommandVariables(button.dataset.variable));
     });
-    // 更新服务模式状态
-
 }
-
-/**
- * 更新指令列表中的服务状态
- * 查询每个服务模式指令的变量状态并更新显示
- */
-
 
 function showAddCommandModal() {
     if (!selectedHostId) {
