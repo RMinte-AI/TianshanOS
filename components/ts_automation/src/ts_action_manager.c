@@ -670,6 +670,7 @@ static esp_err_t exec_ssh_bound(const ts_auto_action_ssh_t *ssh,const ts_action_
             ESP_LOGI(TAG, "Loaded SSH key '%s' from keystore (%zu bytes)", keyid, key_len);
         } else {
             free(key_data);
+            free(expanded_cmd);
             result->reason="ssh_key_unavailable";
             result->status=TS_ACTION_STATUS_FAILED;
             snprintf(result->output,sizeof(result->output),"SSH key unavailable: %s",keyid);
@@ -727,8 +728,6 @@ static esp_err_t exec_ssh_bound(const ts_auto_action_ssh_t *ssh,const ts_action_
                        ? TS_ACTION_STATUS_SUCCESS 
                        : TS_ACTION_STATUS_FAILED;
         
-        /* Free result strings */
-        ts_ssh_exec_result_free(&exec_result);
     } else {
         snprintf(result->output, sizeof(result->output), 
                  "SSH exec failed: %s", esp_err_to_name(ret));
