@@ -78,12 +78,12 @@ jobs:
         with:
           python-version: '3.11'
       - run: python3 -m pip install -r tests/certificate/requirements.txt
-      - name: Fetch matching ESP-IDF cJSON and MbedTLS sources for host tests
+      - name: Fetch matching ESP-IDF host-test dependencies
         run: |
           export IDF_PATH="$RUNNER_TEMP/runtime-idf"
           echo "IDF_PATH=$IDF_PATH" >> "$GITHUB_ENV"
           git clone --depth 1 --branch "$IDF_VERSION" --filter=blob:none --sparse https://github.com/espressif/esp-idf.git "$IDF_PATH"
-          git -C "$IDF_PATH" sparse-checkout set components/json components/mbedtls
+          git -C "$IDF_PATH" sparse-checkout set components/json components/mbedtls components/nvs_flash
           git -C "$IDF_PATH" submodule update --init --recursive --depth 1 components/json/cJSON components/mbedtls/mbedtls
       - uses: actions/setup-node@v4
         with:
