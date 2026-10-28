@@ -13,7 +13,7 @@
 #include "ts_config_pack.h"
 #include "freertos/semphr.h"
 
-static char root[] = "/private/tmp/tianshan-storage-paths-XXXXXX";
+static char root[] = "/tmp/tianshan-storage-paths-XXXXXX";
 static unsigned mutations;
 static pthread_mutex_t gate;
 static const char *mapped(const char *path)

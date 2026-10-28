@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 : "${IDF_PATH:=/Users/massif/esp/v5.5.2/esp-idf}"
-: "${STORAGE_PATH_TEST_BUILD:=/private/tmp/tianshan-storage-path-tests}"
+: "${STORAGE_PATH_TEST_BUILD:=/tmp/tianshan-storage-path-tests}"
 mkdir -p "$STORAGE_PATH_TEST_BUILD"
 python3 - "$STORAGE_PATH_TEST_BUILD/storage_upload.inc" <<'PYTHON'
 from pathlib import Path
