@@ -254,7 +254,7 @@ def compile_and_run(code, name):
     subprocess.run(['cc', '-std=c11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined',
                     '-include', 'ts_ssh_probe.h', *[f'-I{x}' for x in includes], str(file),
                     'components/ts_security/src/ts_ssh_probe.c', 'components/ts_security/src/ts_ssh_config_codec.c', str(idf / 'components/json/cJSON/cJSON.c'),
-                    '-o', str(build / name)], check=True, env=env)
+                    '-lm', '-o', str(build / name)], check=True, env=env)
     subprocess.run([str(build / name)], check=True, env=env)
 
 compile_and_run(code, 'ssh_copyid')

@@ -27,6 +27,7 @@ prefix=r'''
 #include "ts_storage.h"
 #include <stdatomic.h>
 #include <ctype.h>
+#include <sys/stat.h>
 #define CONFIG_TS_CONFIG_PACK_MAX_SIZE 65536
 #define TS_LOGI(...) ((void)0)
 #define TS_LOGE(...) ((void)0)
