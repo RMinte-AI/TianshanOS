@@ -826,6 +826,8 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
     
     // SSH Commands
     ssh: {
+        showCommand: "Show command",
+        hideCommand: "Hide command",
         cmdIdPlaceholderShort: 'e.g. restart_nginx',
         runMode: 'Run mode',
         nohupShort: 'Run in background (nohup)',
@@ -3960,6 +3962,21 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         "stopFollow": "Stop following"
 },
     automationConfig: {
+        "saveCurrent": "Save current configuration",
+        "saveCurrentNote": "Update the internal copy, replacing the previous copy.",
+        "restoreSaved": "Restore saved configuration",
+        "restoreSavedNote": "Restore from the internal copy. Review changes before confirming.",
+        "copyContents": "Included in the copy",
+        "cardStatus": "SD card status",
+        "checkCardNote": "Check whether the SD card is available.",
+        "automationState": "Automation state",
+        "disableNote": "Disable automatic rule triggers.",
+        "enableNote": "Enabled rules will run when their conditions are met.",
+        "useSdNote": "Switch to the card configuration. Keep the internal copy unchanged.",
+        "saveToSdNote": "Review changes, then write the current configuration to the SD card and use it.",
+        "deletionMethod": "Deletion method",
+        "referenceCheck": "Reference check",
+
         "notLoaded": "Automation configuration has not loaded",
         "storageSource": "Configuration location",
         "actionQueued": "Action “{name}” is queued. Check System log for its execution result.",

@@ -416,3 +416,71 @@ test('deletion rechecks a changed configuration before another confirmation',asy
   });
  }
 });
+
+for (const lang of ['zh-CN','en-US']) test(`${lang}: approved command disclosure and management sheet geometry`, async () => {
+ const d=fixture();let noReferences=false;
+ const respond=call=>noReferences&&call.endpoint==='automation/actions/delete'&&call.params.preview?{code:0,data:{...d.status(),impact:{rules:[],actions:[],commands:[],sources:[]}}}:call.endpoint==='ssh/hosts/list'?{code:0,data:{...d.status(),hosts:[{id:'layout-host',host:'192.0.2.4',username:'fixture',port:22}]}}:
+  call.endpoint==='ssh/commands/list'?{code:0,data:{...d.status(),commands:[{id:'long-command',host_id:'layout-host',name:'Qwen3.8-27B-NVFP4',command:'printf "<literal>" '+('long-command-argument '.repeat(45))+'\nprintf second-line',nohup:true,varName:'model',icon:'ri-rocket-line'}]}}:d.respond(call);
+ await kit.withPage(lang,respond,async({page,calls})=>{
+  const out=path.resolve(__dirname,'../../output/playwright/approved-layouts');fs.mkdirSync(out,{recursive:true});
+  for(const width of [1440,390]){
+   await page.setViewportSize({width,height:1000});await page.evaluate(()=>loadCommandsPage());await page.locator('[data-host-id="layout-host"]').click();
+   const card=page.locator('.command-card');await card.locator('.command-toggle').waitFor();
+   const geometry=await card.evaluate(e=>{
+    const r=s=>e.querySelector(s).getBoundingClientRect(),b=r('.command-body'),a=r('.act'),c=e.getBoundingClientRect();
+    const buttons=[...e.querySelectorAll('.act button')].map(x=>{const z=x.getBoundingClientRect();return {x:z.x,y:z.y,h:z.height}});
+    return {center:Math.abs(b.y+b.height/2-a.y-a.height/2),top:Math.min(a.y,b.y)-c.y,bottom:c.bottom-Math.max(a.bottom,b.bottom),buttons};
+   });
+   assert(geometry.center<.1&&Math.abs(geometry.top-geometry.bottom)<.1,'header contents centered in the complete gray row');
+   assert.equal(geometry.buttons.length,6);
+   const headingLines=await page.locator('.page-commands>.sec-h:first-child>.sec-t').evaluate(e=>{const r=document.createRange();r.selectNodeContents(e);return r.getClientRects().length;});assert.equal(headingLines,1,'host heading remains on one line');assert.equal(new Set(geometry.buttons.map(x=>x.x)).size,3);assert.equal(new Set(geometry.buttons.map(x=>x.y)).size,2);assert.equal(new Set(geometry.buttons.map(x=>x.h)).size,1);
+   assert.equal(await card.locator('.cmd-code').isVisible(),false);await page.screenshot({path:path.join(out,`commands-${lang}-${width}.png`)});
+   await card.locator('.command-toggle').click();assert.equal(await card.locator('.command-toggle').getAttribute('aria-expanded'),'true');
+   const expanded=await card.evaluate(e=>{const a=e.getBoundingClientRect(),b=e.querySelector('.cmd-code').getBoundingClientRect(),s=getComputedStyle(e);return {expected:a.width-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight),actual:b.width,left:b.left-a.left,right:a.right-b.right};});
+   assert(Math.abs(expanded.expected-expanded.actual)<.1&&Math.abs(expanded.left-expanded.right)<.1,'expanded command fills both columns');
+   assert.match(await card.locator('.cmd-code').innerText(),/\n.*second-line/);assert.equal(await card.locator('.cmd-code script').count(),0);
+   await page.screenshot({path:path.join(out,`commands-expanded-${lang}-${width}.png`)});
+   await card.locator('.command-toggle').click();assert.equal(await card.locator('.cmd-code').isVisible(),false);
+   await automation(page);await page.evaluate(()=>showAutomationConfig());await page.locator('.config-operation').first().waitFor();
+   assert.equal(await page.locator('.config-operation').count(),4);
+   const operations=await page.locator('.config-operation').evaluateAll(es=>es.map(e=>{const b=e.querySelector('button').getBoundingClientRect(),d=e.querySelector('.t-note').getBoundingClientRect();return {gap:innerWidth<=600?b.top-d.bottom:b.left-d.right}}));
+   assert(operations.every(x=>x.gap>=11.9),'each operation is separated from its explanation');
+   const sheet=await page.locator('#automation-config-modal .sheet').boundingBox();assert(sheet.x>=0&&sheet.x+sheet.width<=width);
+   await page.screenshot({path:path.join(out,`backup-${lang}-${width}.png`)});await page.keyboard.press('Escape');await page.locator('#automation-config-modal').waitFor({state:'detached'});
+   await page.evaluate(()=>deleteAction('act'));await page.locator('#configuration-delete-replacement').waitFor();
+   const gaps=await page.locator('#configuration-delete-modal').evaluate(e=>{let r=s=>e.querySelector(s).getBoundingClientRect();return {impact:r('.delete-impact').top-r('.delete-method').bottom,note:r('.delete-service-note').top-r('.delete-impact').bottom,foot:r('.sf').top-r('.delete-service-note').bottom};});
+   assert(gaps.impact>=23.9&&gaps.note>=19.9&&gaps.foot>=23.9,'delete mode, references, note and footer have independent spacing');
+   await page.screenshot({path:path.join(out,`delete-${lang}-${width}.png`)});
+   await page.locator('[data-delete-mode="force"]').click();assert.equal(await page.locator('[data-delete-mode="force"]').getAttribute('aria-pressed'),'true');
+   await page.screenshot({path:path.join(out,`delete-force-${lang}-${width}.png`)});await page.keyboard.press('Escape');await page.locator('#configuration-delete-modal').waitFor({state:'detached'});
+   noReferences=true;await page.evaluate(()=>deleteAction('act'));await page.waitForFunction(()=>!document.querySelector('[data-delete-submit]').disabled);
+   assert.equal(await page.locator('#configuration-delete-impact').innerText(),await page.evaluate(()=>configText('noReferences')));
+   assert.equal(await page.locator('#configuration-delete-replacement').count(),0);
+   await page.screenshot({path:path.join(out,`delete-empty-${lang}-${width}.png`)});
+   await page.keyboard.press('Escape');await page.locator('#configuration-delete-modal').waitFor({state:'detached'});noReferences=false;
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  }
+  assert(!calls.some(c=>/\/delete$|\/backup$|\/apply$/.test(c.endpoint)&&!c.params.preview),'layout review performs no configuration write');
+ });
+});
+
+for(const lang of ['zh-CN','en-US'])test(lang+': long names and emergency controls fit compact viewports',async()=>{
+ const d=fixture();const name='W'.repeat(63);
+ await kit.withPage(lang,call=>call.endpoint==='automation/actions/delete'&&call.params.preview?{code:0,data:{...d.status(),impact:{rules:[{id:name,name}],actions:[],commands:[],sources:[]}}}:d.respond(call),async({page})=>{
+  await page.evaluate(()=>loadAutomationPage());await page.waitForFunction(()=>configurationList('actions')?.version);
+  for(const viewport of [{width:320,height:568},{width:844,height:390}]){
+   await page.setViewportSize(viewport);await page.evaluate(n=>deleteConfiguration('actions','act',n),name);await page.locator('#configuration-delete-replacement').waitFor();
+   const b=await page.locator('#configuration-delete-modal').evaluate(m=>{const s=m.querySelector('.sheet').getBoundingClientRect(),t=m.querySelector('.st').getBoundingClientRect(),body=m.querySelector('.sb');return {title:t.right<=s.right,body:body.scrollWidth<=body.clientWidth,sheet:s.top>=0&&s.bottom<=innerHeight}});assert.deepEqual(b,{title:true,body:true,sheet:true});
+   await page.locator('[data-delete-cancel]').click();
+   d.state.source='internal';d.state.sd_available=false;await page.evaluate(()=>showAutomationConfig());await page.locator('[data-config-operation="check"]').waitFor();
+   assert(await page.locator('[data-config-operation="use_sd"]').isDisabled());assert(await page.locator('[data-config-operation="save_to_sd"]').isDisabled());
+   const overflow=await page.locator('#automation-config-modal .sb').evaluate(e=>e.scrollWidth>e.clientWidth);assert.equal(overflow,false);
+   await page.locator('[data-config-operation="check"]').click();await page.waitForFunction(()=>document.getElementById('automation-config-modal').dataset.busy==='false');
+   await page.locator('#automation-config-modal .sf button').click();await page.locator('#automation-config-modal').waitFor({state:'detached'});
+   d.state.sd_available=true;await page.evaluate(()=>showAutomationConfig());await page.locator('[data-config-operation="use_sd"]').waitFor();
+   assert.equal(await page.locator('[data-config-operation="use_sd"]').isDisabled(),false);
+   assert.equal(await page.locator('#automation-config-modal .sb').evaluate(e=>e.scrollWidth>e.clientWidth),false);
+   await page.locator('#automation-config-modal .sf button').click();await page.locator('#automation-config-modal').waitFor({state:'detached'});
+  }
+ });
+});

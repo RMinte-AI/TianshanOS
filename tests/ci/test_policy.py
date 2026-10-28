@@ -98,11 +98,25 @@ class PolicyTests(unittest.TestCase):
         n=self.needs(False);n['build']['result']='success'
         with self.assertRaises(ValueError):gate.check_gate(n,False)
 
-    def test_release_main_skip_precedes_old_tag_lookup(self):
-        calls=[]
-        def get(path):calls.append(path);return {'tag_name':'v0.6.1'}
-        skip,message=release.prepare_release(profile.UPSTREAM,'main','v0.6.1','new',get)
-        self.assertTrue(skip);self.assertEqual(message,'该版本已存在，本次未发布新资产');self.assertEqual(len(calls),1)
+    def test_same_version_release_only_advances_on_main_to_descendant(self):
+        for status in ('ahead','behind','diverged','identical',None):
+            def get(path):
+                if '/releases/' in path:return {'tag_name':'v0.6.3'}
+                if '/compare/' in path:return {'status':status} if status else None
+                return {'object':{'type':'commit','sha':'old'}}
+            if status=='ahead':self.assertTrue(release.prepare_release(profile.UPSTREAM,'main','v0.6.3','new',get)[0])
+            else:
+                with self.assertRaises(ValueError):release.prepare_release(profile.UPSTREAM,'main','v0.6.3','new',get)
+            for mode in ('tag','published'):
+                with self.assertRaises(ValueError):release.prepare_release(profile.UPSTREAM,mode,'v0.6.3','new',get)
+
+    def test_tag_write_disallows_force(self):
+        from unittest.mock import patch,MagicMock
+        response=MagicMock();response.__enter__.return_value.read.return_value=json.dumps({'object':{'sha':'new'}}).encode()
+        with patch.dict('os.environ',{'GH_TOKEN':'fixture'}),patch.object(release.urllib.request,'urlopen',return_value=response) as call:
+            release.advance_tag(profile.UPSTREAM,'v0.6.3','new')
+            request=call.call_args.args[0]
+            self.assertEqual(request.method,'PATCH');self.assertEqual(json.loads(request.data),{'sha':'new','force':False})
 
     def test_main_new_release_allows_absent_tag_but_refuses_wrong_commit(self):
         self.assertFalse(release.prepare_release(profile.UPSTREAM,'main','v0.6.1','new',lambda path:None)[0])
