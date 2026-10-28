@@ -6,6 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include "freertos/task.h"
 #include "ts_ssh_service.h"
 #include "ts_ssh_log_watch.h"
@@ -77,6 +82,14 @@ const char *ts_ssh_connect_reason(ts_ssh_session_t session,const char **stage){(
 esp_err_t ts_ssh_exec(ts_ssh_session_t session,const char *text,ts_ssh_exec_result_t *result)
 {
     (void)session;strcpy(last_command,text);if(fail_transport)return ESP_ERR_TIMEOUT;
+    if(getenv("TS_REAL_REMOTE")) {
+        FILE *pipe=popen(text,"r");assert(pipe);char output[256];size_t n=fread(output,1,sizeof(output)-1,pipe);output[n]=0;
+        int status=pclose(pipe);assert(WIFEXITED(status));result->exit_code=WEXITSTATUS(status);
+        result->stdout_data=strdup(output);result->stdout_len=n;
+        struct timespec pause={0,200000000};nanosleep(&pause,NULL);
+        while(waitpid(-1,NULL,WNOHANG)>0){}
+        return ESP_OK;
+    }
     const char *token;char response[128];
     if(!strncmp(text,"mkdir /tmp/ts_nohup_",20)){
         bool saved=false;for(unsigned i=0;i<TS_SSH_RUNS_MAX;++i)if(stored_size[i])saved=true;
@@ -118,12 +131,46 @@ static void start(char id[32],bool fail_receipt_save)
     assert(ret==(fail_receipt_save?ESP_FAIL:ESP_OK));ts_ssh_service_complete_operation(id,operation,ret);
     ts_ssh_exec_result_free(&result);ts_ssh_session_destroy(session);free(key);
 }
+static void *reap_remote(void *pid){while(waitpid(-(pid_t)(intptr_t)pid,NULL,0)>0){}return NULL;}
+static int real_remote_cases(void)
+{
+#ifdef __linux__
+    assert(!prctl(PR_SET_CHILD_SUBREAPER,1));
+#endif
+    for(unsigned pass=0;pass<3;++pass){
+        char id[32],text[8192];uint32_t operation,generation;
+        ts_ssh_run_origin_t source=origin();ts_ssh_session_t session=NULL;char *key=NULL;
+        assert(ts_ssh_service_prepare(&command,&current_host,&source,id,&operation,NULL)==ESP_OK);
+        assert(ts_ssh_service_connect(&current_host,&session,&key,NULL,NULL)==ESP_OK);
+        assert(ts_ssh_service_begin_reserved(id,session,operation,&generation)==ESP_OK);
+        assert(ts_ssh_service_launch_command(id,pass==2?"sleep 20":"true",text,sizeof(text)));
+        ts_ssh_exec_result_t receipt={0};assert(ts_ssh_exec(session,text,&receipt)==ESP_OK&&receipt.exit_code==0);
+        assert(instance_receipt(receipt.stdout_data,"STARTED ",NULL));
+        if(pass==1){reboot_registry();assert(!strcmp(cached(id).state,"unknown"));assert(control(id,TS_SERVICE_VERIFY)==ESP_OK);}
+        else {
+            assert(ts_ssh_service_finish(id,generation,receipt.stdout_data,session)==ESP_OK);
+            ts_ssh_service_complete_operation(id,operation,ESP_OK);
+            if(pass==2){
+                assert(!strcmp(cached(id).state,"running"));
+                char *separator=strchr(receipt.stdout_data,':');assert(separator);pid_t pid=atoi(separator+1);
+                pthread_t reaper;assert(!pthread_create(&reaper,NULL,reap_remote,(void *)(intptr_t)pid));
+                assert(control(id,TS_SERVICE_STOP)==ESP_OK);pthread_join(reaper,NULL);
+            }
+        }
+        assert(!strcmp(cached(id).state,"stopped")&&!durable_count());
+        assert(ts_ssh_service_start_admissible(command.id));
+        ts_ssh_exec_result_free(&receipt);ts_ssh_session_destroy(session);free(key);
+    }
+    puts("PASS real Linux launcher/probe: fast exit, restart verification, relaunch and live group stop");
+    return 0;
+}
 int main(void)
 {
     strcpy(command.id,"command");strcpy(command.host_id,"host");strcpy(command.name,"job");strcpy(command.var_name,"job");
     command.instance=3;command.enabled=command.nohup=true; /* ordinary nohup is managed too */
     strcpy(current_host.id,"host");strcpy(current_host.host,"192.0.2.8");strcpy(current_host.username,"original-user");strcpy(current_host.keyid,"original-key");current_host.port=22;
     assert(ts_ssh_service_init()==ESP_OK&&ts_ssh_log_watch_init()==ESP_OK);
+    if(getenv("TS_REAL_REMOTE"))return real_remote_cases();
     char id[32];uint32_t operation;ts_ssh_run_origin_t source=origin();
     const char *reason=NULL;fail_store=true;assert(ts_ssh_service_prepare(&command,&current_host,&source,id,&operation,&reason)==ESP_FAIL&&!strcmp(reason,"service_record_save_failed"));
     fail_store=false;assert(!durable_count()&&!launches&&!connections);

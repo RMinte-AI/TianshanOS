@@ -280,7 +280,18 @@ static void rule_config_cases(void)
     assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"svc\",\"host_id\":\"host\",\"name\":\"Service\",\"command\":\"true\"}",NULL,NULL)==ESP_OK);
     assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"eval\",\"name\":\"Service\",\"enabled\":true,\"allow_manual_trigger\":true,\"manual_trigger\":true,\"actions\":[{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"svc\"}]}",NULL,NULL)==ESP_OK);
     refuse_service=true;assert(ts_rule_trigger_ex("eval",&why)==ESP_ERR_INVALID_STATE && why==TS_RULE_REJECT_SERVICE_STATE);refuse_service=false;
+    assert(write_object(TS_AUTO_CONFIG_ACTION,"{\"id\":\"svc_template\",\"name\":\"Service template\",\"enabled\":true,\"type\":\"ssh_cmd_ref\",\"ssh_ref\":{\"cmd_id\":\"svc\"}}",NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"eval\",\"name\":\"Service\",\"enabled\":true,\"allow_manual_trigger\":true,\"cooldown_ms\":5000,\"actions\":[{\"type\":\"log\",\"message\":\"must not run\"},{\"template_id\":\"svc_template\"}]}",NULL,NULL)==ESP_OK);
+    unsigned actions_before=rule_actions;ts_auto_rule_t before_rule,after_rule;
+    assert(ts_rule_acquire("eval",&before_rule)==ESP_OK);refuse_service=true;
+    assert(ts_rule_trigger_ex("eval",&why)==ESP_ERR_INVALID_STATE&&why==TS_RULE_REJECT_SERVICE_STATE);
+    bool fired=true;assert(ts_rule_evaluate("eval",&fired)==ESP_OK&&!fired);
+    assert(ts_rule_acquire("eval",&after_rule)==ESP_OK&&rule_actions==actions_before);
+    assert(before_rule.trigger_count==after_rule.trigger_count&&before_rule.last_trigger_ms==after_rule.last_trigger_ms);
+    ts_rule_release(&before_rule);ts_rule_release(&after_rule);
+    refuse_service=false;assert(ts_rule_trigger_ex("eval",&why)==ESP_OK&&rule_actions==actions_before+2);
     assert(ts_rule_unregister("eval")==ESP_OK);
+    assert(ts_action_template_remove("svc_template")==ESP_OK);
     assert(ts_ssh_commands_config_remove("svc")==ESP_OK);
     const char *package="{\"type\":\"automation_rule\",\"rule\":{\"id\":\"imported\",\"name\":\"Imported\",\"enabled\":true,\"actions\":[{\"type\":\"log\",\"message\":\"imported\"}]}}";
     cJSON *preview=NULL,*applied=NULL;const char *reason=NULL;

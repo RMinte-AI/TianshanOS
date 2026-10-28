@@ -12,3 +12,8 @@ cc -std=c11 -D_DEFAULT_SOURCE -g -fsanitize=address,undefined -Wno-deprecated-de
   components/ts_security/src/ts_ssh_run_store.c components/ts_security/src/ts_ssh_log_watch.c \
   components/ts_security/src/ts_ssh_probe.c -lpthread -o "$SERVICE_TEST_BUILD/runs"
 "$SERVICE_TEST_BUILD/runs"
+
+# Exercise the emitted shell against Linux /proc; use only local test processes.
+if [[ "$(uname -s)" == Linux ]]; then
+  TS_REAL_REMOTE=1 "$SERVICE_TEST_BUILD/runs"
+fi

@@ -231,7 +231,7 @@ static esp_err_t probe(ts_ssh_session_t session,const ts_ssh_run_record_t *recor
     const char *body=
         "if [ ! -f \"$f\" ]; then echo STOPPED; exit 0; fi; "
         "read p stamp < \"$f\" || exit 2; case $p in ''|*[!0-9]*) exit 2;; esac; [ \"$p\" -gt 1 ] || exit 2; "
-        "if [ ! -r /proc/$p/stat ]; then if kill -0 -- -$p 2>/dev/null; then exit 2; "
+        "if [ ! -r /proc/$p/stat ]; then if kill -0 -$p 2>/dev/null; then exit 2; "
         "else rm -f -- \"$f\"; [ -z \"$d\" ] || [ ! -d \"$d\" ] || rmdir -- \"$d\" || exit 2; echo STOPPED; exit 0; fi; fi; "
         "info=$(sed 's/^.*) //' /proc/$p/stat) || exit 2; set -- $info; pg=$3; shift 19; actual=$1; "
         "[ -z \"$stamp\" ] || [ \"$stamp\" = \"$actual\" ] || exit 2; "
@@ -242,8 +242,8 @@ static esp_err_t probe(ts_ssh_session_t session,const ts_ssh_run_record_t *recor
         if(record->instance[0])n+=snprintf(command+n,3072-n,"[ \"$identity\" = '%s' ] || exit 2; ",record->instance);
         if(record->kind!=TS_SSH_RUN_LEGACY_PID)n+=snprintf(command+n,3072-n,"[ -n \"$stamp\" ] && [ \"$pg\" = \"$p\" ] || exit 2; ");
         n+=snprintf(command+n,3072-n,
-            "target=%s; kill -TERM -- \"$target\" || exit 2; i=0; while [ $i -lt 30 ]; do "
-            "if ! kill -0 -- \"$target\" 2>/dev/null; then rm -f -- \"$f\"; "
+            "target=%s; kill -TERM \"$target\" || exit 2; i=0; while [ $i -lt 30 ]; do "
+            "if ! kill -0 \"$target\" 2>/dev/null; then rm -f -- \"$f\"; "
             "[ -z \"$d\" ] || [ ! -d \"$d\" ] || rmdir -- \"$d\" || exit 2; echo STOPPED; exit 0; fi; "
             "sleep 0.1; i=$((i+1)); done; exit 3",record->kind==TS_SSH_RUN_LEGACY_PID?"$p":"-$p");
     }else n+=snprintf(command+n,3072-n,"printf 'RUNNING %%s\\n' \"$identity\"");
@@ -330,6 +330,11 @@ esp_err_t ts_ssh_service_finish(const char *id,uint32_t generation,const char *r
     launched=ret==ESP_OK&&running&&!strcmp(actual,expected);
     xSemaphoreTake(mutex,portMAX_DELAY);s=find(id);s->status.busy=false;s->operation=0;
     if(launched){strcpy(s->record.instance,actual);ret=ts_ssh_run_save(index_of(s),&s->record);state_set(s,"running","launch");}
+    else if(ret==ESP_OK&&!running){
+        ret=ts_ssh_run_remove(index_of(s));
+        if(ret==ESP_OK){s->durable=false;s->record.instance[0]=0;state_set(s,"stopped","launch");}
+        else state_set(s,"unknown","launch");
+    }
     else {state_set(s,"unknown","launch");if(ret==ESP_OK)ret=ESP_ERR_INVALID_RESPONSE;}
     xSemaphoreGive(mutex);publish(id,generation);return ret;
 }
@@ -340,15 +345,24 @@ bool ts_ssh_service_launch_command(const char *id,const char *expanded,char *out
     if(valid)strcpy(name,s->record.locator);
     xSemaphoreGive(mutex);if(!valid)return false;
     int n=snprintf(out,cap,"mkdir /tmp/ts_nohup_%s.lock || exit 2; nohup setsid sh -c ",name);
-    if(n<0||(size_t)n>=cap||!ts_ssh_shell_quote(expanded,out+n,cap-n))return false;
-    n+=strlen(out+n);
-    int more=snprintf(out+n,cap-n,
-        " > /tmp/ts_nohup_%s.log 2>&1 < /dev/null & p=$!; "
-        "sleep 0.1; info=$(sed 's/^.*) //' /proc/$p/stat) || exit 2; "
+    if(n<0||(size_t)n>=cap)return false;
+    /* The group leader records its identity before the user command can exit. */
+    char child[1024];
+    int length=snprintf(child,sizeof(child),
+        "cmd=$1; p=$$; info=$(sed 's/^.*) //' /proc/$p/stat) || exit 2; "
         "set -- $info; [ \"$3\" = \"$p\" ] || exit 2; shift 19; "
-        "printf '%%s %%s\\n' \"$p\" \"$1\" > /tmp/ts_nohup_%s.lock/pid || exit 2; "
         "boot=$(cat /proc/sys/kernel/random/boot_id) || exit 2; "
-        "printf 'STARTED %%s:%%s:%%s\\n' \"$boot\" \"$p\" \"$1\"",name,name);
+        "printf '%%s %%s\\n' \"$p\" \"$1\" > /tmp/ts_nohup_%s.lock/pid || exit 2; "
+        "printf 'STARTED %%s:%%s:%%s\\n' \"$boot\" \"$p\" \"$1\"; "
+        "exec sh -c \"$cmd\" > /tmp/ts_nohup_%s.log 2>&1",name,name);
+    if(length<0||(size_t)length>=sizeof(child)||!ts_ssh_shell_quote(child,out+n,cap-n))return false;
+    n+=strlen(out+n);
+    int more=snprintf(out+n,cap-n," sh ");
+    if(more<0||(size_t)more>=cap-n)return false;
+    n+=more;
+    if(!ts_ssh_shell_quote(expanded,out+n,cap-n))return false;
+    n+=strlen(out+n);
+    more=snprintf(out+n,cap-n," < /dev/null 2> /tmp/ts_nohup_%s.log &",name);
     return more>=0&&(size_t)more<cap-n;
 }
 esp_err_t ts_ssh_service_connect(const ts_ssh_host_config_t *host,ts_ssh_session_t *session,char **key,

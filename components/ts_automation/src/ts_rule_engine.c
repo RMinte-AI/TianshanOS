@@ -673,13 +673,6 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
         ts_rule_release(&r);
         return manual ? refuse(why, busy) : ESP_OK;
     }
-    for (unsigned n = 0; n < r.action_count; n++) {
-        if (r.actions[n].type == TS_AUTO_ACT_SSH_CMD_REF &&
-            !ts_ssh_service_start_admissible(r.actions[n].ssh_ref.cmd_id)) {
-            ts_rule_release(&r);
-            return manual ? refuse(why, TS_RULE_REJECT_SERVICE_STATE) : ESP_OK;
-        }
-    }
     /* Freeze all referenced actions/SSH bindings once at admission. No allocation
      * on unmatched evaluations; queue entries retain their own binding lease. */
     ts_auto_action_t *frozen =
@@ -702,12 +695,25 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
         if (ret != ESP_OK)
             break;
     }
+    bool service_blocked = false;
+    if (ret == ESP_OK) {
+        for (unsigned n = 0; n < prepared; ++n) {
+            if (frozen[n].type == TS_AUTO_ACT_SSH_CMD_REF &&
+                !ts_ssh_service_start_admissible(frozen[n].ssh_ref.cmd_id)) {
+                service_blocked = true;
+                ret = ESP_ERR_INVALID_STATE;
+                break;
+            }
+        }
+    }
     if (ret != ESP_OK) {
         ts_ssh_binding_unlock();
         for (unsigned n = 0; n < prepared; n++)
             ts_action_snapshot_release(&frozen[n]);
         free(frozen);
         ts_rule_release(&r);
+        if (service_blocked)
+            return manual ? refuse(why, TS_RULE_REJECT_SERVICE_STATE) : ESP_OK;
         return ret;
     }
     int64_t now = esp_timer_get_time() / 1000;
