@@ -53,6 +53,8 @@ const ts_auto_config_view_t *ts_auto_config_acquire(void);
 const ts_auto_config_view_t *ts_auto_config_acquire_status(ts_auto_config_status_t *status);
 void ts_auto_config_release(const ts_auto_config_view_t *view);
 uint64_t ts_auto_config_execution_epoch(void);
+/** Configuration ownership for live service state; unchanged by user pause. */
+uint64_t ts_auto_config_binding_epoch(void);
 uint64_t ts_auto_config_template_instance(const char *id);
 uint64_t ts_auto_config_host_instance(const char *id);
 bool ts_auto_config_template_current(uint64_t instance);

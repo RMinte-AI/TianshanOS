@@ -7,7 +7,8 @@
 typedef struct ts_rule_config_view ts_rule_config_view_t;
 esp_err_t ts_rule_config_prepare(const ts_auto_rule_t *rules, int count, bool keep_runtime, ts_rule_config_view_t **out);
 void ts_rule_config_discard(ts_rule_config_view_t *view);
-void ts_rule_config_publish(ts_rule_config_view_t *view, bool enabled);
+void ts_rule_config_publish(ts_rule_config_view_t *view, bool enabled,
+    const ts_auto_document_t *previous,const ts_auto_document_t *document);
 void ts_rule_config_pause(void);
 void ts_rule_config_clear(void);
 

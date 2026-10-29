@@ -54,7 +54,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <ctype.h>
 
 static const char *TAG = "ts_action_mgr";
 
@@ -460,7 +459,7 @@ static esp_err_t prepare_action_entry(const ts_auto_action_t *action,
 }
 
 static esp_err_t action_manager_execute(const ts_auto_action_t *action,
-                                        ts_action_result_t *result, bool delay_handled) {
+                                        ts_action_result_t *result, bool delay_handled, bool service_check) {
     if (!s_ctx || !action || !s_ctx->running || !s_ctx->executor_task)
         return ESP_ERR_INVALID_STATE;
     if (!action_admit()) return ESP_ERR_INVALID_STATE;
@@ -484,6 +483,7 @@ static esp_err_t action_manager_execute(const ts_auto_action_t *action,
     entry.completion = c;
     entry.done_sem = c->semaphore;
     entry.result_ptr = &c->result;
+    entry.service_check = service_check;
     if (xQueueSend(s_ctx->action_queue, &entry, pdMS_TO_TICKS(100)) != pdTRUE) {
         ts_action_snapshot_release(&entry.action);
         completion_release(c);
@@ -494,10 +494,15 @@ static esp_err_t action_manager_execute(const ts_auto_action_t *action,
     uint32_t timeout =
         action->type == TS_AUTO_ACT_SSH_CMD || action->type == TS_AUTO_ACT_SSH_CMD_REF ? 60000
                                                                                        : 30000;
+    if(action->runtime_deadline_ms){
+        int64_t remaining=action->runtime_deadline_ms-esp_timer_get_time()/1000;
+        if(remaining<(int64_t)timeout)timeout=remaining>0?(uint32_t)remaining:0;
+    }
     if (xSemaphoreTake(c->semaphore, pdMS_TO_TICKS(timeout)) != pdTRUE) {
         if (result) {
             memset(result, 0, sizeof(*result));
             result->status = TS_ACTION_STATUS_TIMEOUT;
+            if(action->runtime_deadline_ms)result->reason="service_outcome_unknown";
         }
         ret = ESP_ERR_TIMEOUT;
     } else {
@@ -511,7 +516,30 @@ static esp_err_t action_manager_execute(const ts_auto_action_t *action,
 }
 
 esp_err_t ts_action_manager_execute(const ts_auto_action_t *action, ts_action_result_t *result) {
-    return action_manager_execute(action, result, false);
+    return action_manager_execute(action, result, false, false);
+}
+bool ts_action_is_background(const ts_auto_action_t *action) {
+    const action_binding_t *binding=action->runtime_binding;
+    return action->type==TS_AUTO_ACT_SSH_CMD_REF && binding && binding->command.nohup;
+}
+esp_err_t ts_action_submit_background(const ts_auto_action_t *action, ts_action_result_t *result) {
+    return action_manager_execute(action,result,true,false);
+}
+esp_err_t ts_action_manager_check_start(const ts_auto_action_t *action, ts_action_result_t *result, bool automatic) {
+    if(action->type!=TS_AUTO_ACT_SSH_CMD_REF)return ESP_OK;
+    const action_binding_t *binding=action->runtime_binding;
+    if(!binding)return ESP_ERR_INVALID_STATE;
+    if(!binding->command.nohup)return ESP_OK;
+    if(automatic){
+        ts_ssh_host_config_t host={.port=binding->host.port};
+        strcpy(host.host,binding->host.host);strcpy(host.username,binding->host.username);
+        ts_ssh_service_status_t current;char run[TS_SSH_RUN_ID_MAX];
+        if(ts_ssh_service_current(binding->command.id,&host,0,run,&current)&&
+           (!strcmp(current.state,"running")||!strcmp(current.state,"ready"))){
+            result->reason="service_already_running";return ESP_ERR_INVALID_STATE;
+        }
+    }
+    return action_manager_execute(action,result,true,true);
 }
 
 static esp_err_t action_queue(const ts_auto_action_t *action,
@@ -559,7 +587,7 @@ esp_err_t ts_action_submit_prepared(const ts_auto_action_t *action) {
     if (!action || !action->runtime_snapshot)
         return ESP_ERR_INVALID_ARG;
     return action->async ? action_queue(action, NULL, NULL, 5, true)
-                         : action_manager_execute(action, NULL, true);
+                         : action_manager_execute(action, NULL, true, false);
 }
 
 esp_err_t ts_action_execute_sequence(const ts_auto_action_t *actions,
@@ -1344,21 +1372,21 @@ static esp_err_t execute_webhook(const ts_auto_action_t *action)
 static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *, const action_binding_t *,
                                     const char *,uint32_t, ts_action_result_t *,const ts_auto_action_t *);
 static esp_err_t prepare_run(const ts_auto_action_t *action,const action_binding_t *binding,
-    char run_id[TS_SSH_RUN_ID_MAX],uint32_t *operation,const char **reason)
+    char run_id[TS_SSH_RUN_ID_MAX],uint32_t *operation,const char **reason,bool queued)
 {
     ts_ssh_host_config_t host={.port=binding->host.port,
         .auth_type=binding->host.use_key_auth?TS_SSH_HOST_AUTH_KEY:TS_SSH_HOST_AUTH_PASSWORD};
     strcpy(host.id,binding->host.id);strcpy(host.host,binding->host.host);strcpy(host.username,binding->host.username);
     snprintf(host.keyid,sizeof(host.keyid),"%.31s",binding->host.key_path);
-    ts_ssh_run_origin_t origin={.epoch=action->runtime_epoch,.rule_instance=action->runtime_rule_instance,
-        .template_instance=action->runtime_template_instance,
+    ts_ssh_run_origin_t origin={.epoch=ts_auto_config_binding_epoch(),.deadline_ms=action->runtime_deadline_ms,
         .command_instance=binding->command.instance,.host_instance=binding->host_instance};
     strcpy(origin.rule,binding->owner_rule);strcpy(origin.config_version,binding->config_version);
     if(binding->command.var_name[0]){
         char key[64];snprintf(key,sizeof(key),"%s.status",binding->command.var_name);origin.variables[0]=ts_variable_instance(key);
         snprintf(key,sizeof(key),"%s.ready_time",binding->command.var_name);origin.variables[1]=ts_variable_instance(key);
     }
-    return ts_ssh_service_prepare(&binding->command,&host,&origin,run_id,operation,reason);
+    return queued?ts_ssh_service_plan(&binding->command,&host,&origin,run_id,operation,reason):
+        ts_ssh_service_prepare(&binding->command,&host,&origin,run_id,operation,reason);
 }
 /* Starts address a saved command; verify/stop address an independent run. */
 esp_err_t ts_action_service_control(const char *id,ts_service_operation_t kind,
@@ -1379,7 +1407,7 @@ esp_err_t ts_action_service_control(const char *id,ts_service_operation_t kind,
         action_binding_t *binding=entry->action.runtime_binding;
         if(ret==ESP_OK&&!binding->command.nohup){ret=ESP_ERR_INVALID_ARG;*reason="background_command_required";}
         if(ret==ESP_OK){
-            ret=prepare_run(&entry->action,binding,entry->service_run_id,&entry->service_operation_id,reason);
+            ret=prepare_run(&entry->action,binding,entry->service_run_id,&entry->service_operation_id,reason,true);
             if(ret==ESP_OK){strcpy(binding->run_id,entry->service_run_id);binding->control_id=entry->service_operation_id;}
         }
     }else{
@@ -1398,6 +1426,10 @@ esp_err_t ts_action_service_control(const char *id,ts_service_operation_t kind,
 esp_err_t ts_action_exec_ssh_ref(const ts_auto_action_ssh_ref_t *ref, ts_action_result_t *result) {
     if(!ref)return ESP_ERR_INVALID_ARG;
     ts_auto_action_t action={.type=TS_AUTO_ACT_SSH_CMD_REF,.ssh_ref=*ref};return ts_action_manager_execute(&action,result);
+}
+static bool automatic_start_expired(void *context) {
+    const ts_auto_action_t *action=context;
+    return action->runtime_deadline_ms && esp_timer_get_time()/1000>=action->runtime_deadline_ms;
 }
 static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
                                     const action_binding_t *binding,const char *run_id, uint32_t launch_id, ts_action_result_t *result,const ts_auto_action_t *origin) {
@@ -1469,6 +1501,12 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
     config.port = host.port;
     config.username = host.username;
     config.timeout_ms = cmd_config.timeout_sec > 0 ? cmd_config.timeout_sec * 1000 : TS_ACTION_SSH_TIMEOUT_MS;
+    if (origin->runtime_deadline_ms) {
+        config.cancelled=automatic_start_expired;config.cancel_context=(void *)origin;
+        int64_t remaining=origin->runtime_deadline_ms-esp_timer_get_time()/1000;
+        if(remaining<=0){free(expanded_cmd);free(nohup_cmd);result->reason="automatic_start_timeout";return ESP_ERR_TIMEOUT;}
+        if(config.timeout_ms>remaining)config.timeout_ms=(uint32_t)remaining;
+    }
     
     /* Load SSH key from keystore if using key auth */
     char *key_data = NULL;
@@ -1514,7 +1552,9 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
     ret = ts_ssh_connect(session);
     if (ret != ESP_OK) {
         const char *stage;
-        if(cmd_config.nohup)ts_ssh_service_set_operation_reason(run_id,launch_id,ts_ssh_connect_reason(session,&stage));
+        result->reason=ret==TS_SSH_ERR_HOST_UNKNOWN?"ssh_host_key_unknown":
+            ret==TS_SSH_ERR_HOST_CHANGED?"ssh_host_key_changed":ts_ssh_connect_reason(session,&stage);
+        if(cmd_config.nohup)ts_ssh_service_set_operation_reason(run_id,launch_id,result->reason);
         snprintf(result->output, sizeof(result->output), 
                  "SSH connect failed: %s", esp_err_to_name(ret));
         result->status = TS_ACTION_STATUS_FAILED;
@@ -1527,11 +1567,12 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
 
     uint32_t run_generation = 0;
     if (cmd_config.nohup) {
-        ret = ts_ssh_service_begin_reserved(run_id, session, launch_id, &run_generation);
+        ret = ts_ssh_service_begin_reserved(run_id, session, launch_id, &run_generation,&result->reason);
         if (ret != ESP_OK) {
             result->status = TS_ACTION_STATUS_FAILED;
             snprintf(result->output, sizeof(result->output),
                      "Service busy or remote state unknown; verify before retry");
+
             ts_ssh_session_destroy(session);
             free(expanded_cmd);
             free(nohup_cmd);
@@ -1549,6 +1590,7 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
         esp_err_t finish=ts_ssh_service_finish(run_id,run_generation,
             ret==ESP_OK && exec_result.exit_code==0?exec_result.stdout_data:NULL,session);
         if(ret==ESP_OK)ret=finish;
+        if(ret!=ESP_OK)result->reason="service_outcome_unknown";
     }
 
     if (ret == ESP_OK) {
@@ -1572,7 +1614,7 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
                        : TS_ACTION_STATUS_FAILED;
         
         /* Update variables if var_name is configured */
-        if (cmd_config.var_name[0] && !run_generation && action_result_begin(origin)) {
+        if (cmd_config.var_name[0] && (!run_generation || !cmd_config.service_mode) && action_result_begin(origin)) {
             char var_full[64];
             
             /* Set exit_code variable */
@@ -1580,20 +1622,15 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
             ts_variable_set_int(var_full, exec_result.exit_code);
             
             /* Set status variable */
-            snprintf(var_full, sizeof(var_full), "%s.status", cmd_config.var_name);
-            ts_variable_set_string(var_full, 
-                exec_result.exit_code == 0 ? "success" : "failed");
+            if (!run_generation) {
+                snprintf(var_full, sizeof(var_full), "%s.status", cmd_config.var_name);
+                ts_variable_set_string(var_full, exec_result.exit_code == 0 ? "success" : "failed");
+            }
             
             /* Set timestamp variable */
             snprintf(var_full, sizeof(var_full), "%s.timestamp", cmd_config.var_name);
             ts_variable_set_int(var_full, (int32_t)(esp_timer_get_time() / 1000000));
             
-            /* Debug: set execution info */
-            snprintf(var_full, sizeof(var_full), "%s.exec_info", cmd_config.var_name);
-            char debug_info[256];
-            snprintf(debug_info, sizeof(debug_info), "nohup=%d,svcmode=%d,pattern=%.64s", 
-                     cmd_config.nohup, cmd_config.service_mode, cmd_config.ready_pattern);
-            ts_variable_set_string(var_full, debug_info);
             action_result_end();
         }
 
@@ -1760,7 +1797,7 @@ static esp_err_t execute_bound_ref(const ts_auto_action_t *action, ts_action_res
     uint32_t launch_id=binding->control_id;char run_id[TS_SSH_RUN_ID_MAX];strcpy(run_id,binding->run_id);
     bool own_reservation=binding->command.nohup&&!launch_id;
     if(own_reservation){
-        esp_err_t ret=prepare_run(action,binding,run_id,&launch_id,NULL);
+        esp_err_t ret=prepare_run(action,binding,run_id,&launch_id,&result->reason,false);
         if(ret!=ESP_OK){result->status=TS_ACTION_STATUS_FAILED;return ret;}
     }
     esp_err_t ret=launch_id?ts_ssh_service_operation_begin(run_id,launch_id):ESP_OK;
@@ -1851,7 +1888,18 @@ static esp_err_t execute_entry(const ts_action_queue_entry_t *entry,ts_action_re
         ts_action_snapshot_current(&entry->action);
     bool admitted=current && (entry->service_operation_id || s_ctx->accepting);
     ts_ssh_binding_unlock();
-    if (admitted && entry->service_operation_id)
+    if(admitted && entry->action.runtime_deadline_ms &&
+       esp_timer_get_time()/1000>=entry->action.runtime_deadline_ms){
+        result->reason="automatic_start_timeout";result->status=TS_ACTION_STATUS_TIMEOUT;return ESP_ERR_TIMEOUT;
+    }
+    if(admitted && entry->service_check){
+        const action_binding_t *binding=entry->action.runtime_binding;
+        ts_ssh_host_config_t host={.port=binding->host.port};
+        strcpy(host.host,binding->host.host);strcpy(host.username,binding->host.username);
+        execution_error=ts_ssh_service_check_start(binding->command.id,&host,NULL,entry->action.runtime_deadline_ms,&result->reason);
+        result->status=execution_error==ESP_OK?TS_ACTION_STATUS_SUCCESS:TS_ACTION_STATUS_FAILED;
+    }
+    else if (admitted && entry->service_operation_id)
         execution_error = execute_service_control(entry, result);
     else if (admitted)
         execution_error = execute_action_internal(&entry->action, result);
@@ -1893,17 +1941,19 @@ static void action_executor_task(void *arg)
             
             /* Signal completion (sync mode) */
 
-            /* Update stats */
-            xSemaphoreTake(s_ctx->stats_mutex, portMAX_DELAY);
-            s_ctx->stats.total_executed++;
-            if (result->status == TS_ACTION_STATUS_SUCCESS) {
-                s_ctx->stats.total_success++;
-            } else if (result->status == TS_ACTION_STATUS_TIMEOUT) {
-                s_ctx->stats.total_timeout++;
-            } else {
-                s_ctx->stats.total_failed++;
+            /* Admission checks are not user actions. */
+            if (!entry.service_check) {
+                xSemaphoreTake(s_ctx->stats_mutex, portMAX_DELAY);
+                s_ctx->stats.total_executed++;
+                if (result->status == TS_ACTION_STATUS_SUCCESS) {
+                    s_ctx->stats.total_success++;
+                } else if (result->status == TS_ACTION_STATUS_TIMEOUT) {
+                    s_ctx->stats.total_timeout++;
+                } else {
+                    s_ctx->stats.total_failed++;
+                }
+                xSemaphoreGive(s_ctx->stats_mutex);
             }
-            xSemaphoreGive(s_ctx->stats_mutex);
             ts_action_snapshot_release(&entry.action);
             if (entry.done_sem)
                 xSemaphoreGive(entry.done_sem);
@@ -2026,67 +2076,6 @@ overflow:
     return -1;
 }
 
-esp_err_t ts_action_parse_color(const char *color_str, uint8_t *r, uint8_t *g, uint8_t *b)
-{
-    if (!color_str || !r || !g || !b) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    /* Skip whitespace */
-    while (isspace((unsigned char)*color_str)) color_str++;
-    
-    /* Hex format: #RRGGBB */
-    if (color_str[0] == '#') {
-        unsigned int rgb;
-        if (sscanf(color_str + 1, "%6x", &rgb) == 1) {
-            *r = (rgb >> 16) & 0xFF;
-            *g = (rgb >> 8) & 0xFF;
-            *b = rgb & 0xFF;
-            return ESP_OK;
-        }
-    }
-    
-    /* RGB format: rgb(r,g,b) */
-    if (strncasecmp(color_str, "rgb(", 4) == 0) {
-        int rv, gv, bv;
-        if (sscanf(color_str + 4, "%d,%d,%d", &rv, &gv, &bv) == 3) {
-            *r = (uint8_t)rv;
-            *g = (uint8_t)gv;
-            *b = (uint8_t)bv;
-            return ESP_OK;
-        }
-    }
-    
-    /* Named colors */
-    static const struct {
-        const char *name;
-        uint8_t r, g, b;
-    } colors[] = {
-        {"red", 255, 0, 0},
-        {"green", 0, 255, 0},
-        {"blue", 0, 0, 255},
-        {"white", 255, 255, 255},
-        {"black", 0, 0, 0},
-        {"yellow", 255, 255, 0},
-        {"cyan", 0, 255, 255},
-        {"magenta", 255, 0, 255},
-        {"orange", 255, 165, 0},
-        {"purple", 128, 0, 128},
-        {"pink", 255, 192, 203},
-        {NULL, 0, 0, 0}
-    };
-    
-    for (int i = 0; colors[i].name; i++) {
-        if (strcasecmp(color_str, colors[i].name) == 0) {
-            *r = colors[i].r;
-            *g = colors[i].g;
-            *b = colors[i].b;
-            return ESP_OK;
-        }
-    }
-    
-    return ESP_ERR_INVALID_ARG;
-}
 
 const char *ts_action_type_name(ts_auto_action_type_t type)
 {

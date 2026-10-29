@@ -66,7 +66,7 @@ static struct {
     ts_auto_config_error_t load_error;
     ts_auto_control_t control;
     uint32_t nonce[2];
-    uint64_t generation, execution_epoch;
+    uint64_t generation, execution_epoch, binding_epoch;
     uint64_t next_command_instance;
     uint64_t next_template_instance;
     uint64_t next_host_instance;
@@ -120,7 +120,7 @@ static void initialize(void)
     s_config.writer = xSemaphoreCreateRecursiveMutexStatic(&s_config.writer_storage);
     s_config.state = xSemaphoreCreateMutexStatic(&s_config.state_storage);
     esp_fill_random(s_config.nonce, sizeof(s_config.nonce));
-    next_version();s_config.execution_epoch=1;
+    next_version();s_config.execution_epoch=1;s_config.binding_epoch=1;
 }
 
 static void status_locked(ts_auto_config_status_t *out)
@@ -185,6 +185,12 @@ uint64_t ts_auto_config_execution_epoch(void)
 {
     if(!s_config.state)return 0;
     xSemaphoreTake(s_config.state,portMAX_DELAY);uint64_t epoch=s_config.execution_epoch;
+    xSemaphoreGive(s_config.state);return epoch;
+}
+uint64_t ts_auto_config_binding_epoch(void)
+{
+    if(!s_config.state)return 0;
+    xSemaphoreTake(s_config.state,portMAX_DELAY);uint64_t epoch=s_config.binding_epoch;
     xSemaphoreGive(s_config.state);return epoch;
 }
 bool ts_auto_config_template_current(uint64_t instance)
@@ -425,7 +431,10 @@ static void publish(ts_auto_config_view_t *view, prepared_runtime_t *runtime, ts
     ts_ssh_binding_lock();
     xSemaphoreTake(s_config.state, portMAX_DELAY);
     ts_auto_config_view_t *old = s_config.current;
-    if(!old || source!=s_config.source || !view->definitions)++s_config.execution_epoch;
+    if(!old || source!=s_config.source || !view->definitions){
+        ++s_config.execution_epoch;
+        ++s_config.binding_epoch;
+    }
     ts_auto_document_t *next = view->definitions;
     const ts_auto_document_t *previous = old ? old->definitions : NULL;
     for(int i=0;next&&i<next->host_count;++i){
@@ -484,7 +493,7 @@ static void publish(ts_auto_config_view_t *view, prepared_runtime_t *runtime, ts
     if (runtime->sources) ts_source_config_publish(runtime->sources);
     else ts_source_config_clear();
     if (runtime->variables) ts_variable_config_publish(runtime->variables);
-    if (runtime->rules) ts_rule_config_publish(runtime->rules, enabled);
+    if (runtime->rules) ts_rule_config_publish(runtime->rules, enabled, previous, next);
     else ts_rule_config_clear();
     *runtime = (prepared_runtime_t){0};
     ts_ssh_binding_unlock();
@@ -649,7 +658,7 @@ void ts_auto_config_close(void)
     xSemaphoreTake(s_config.state,portMAX_DELAY);
     ts_auto_config_view_t *old=s_config.current;
     s_config.current=NULL;s_config.paused=true;s_config.uncertain=false;
-    ++s_config.execution_epoch;next_version();
+    ++s_config.execution_epoch;++s_config.binding_epoch;next_version();
     bool destroy=old&&--old->refs==0;
     xSemaphoreGive(s_config.state);
     ts_variable_config_clear(old?old->definitions:NULL);

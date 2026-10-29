@@ -56,7 +56,7 @@ static void action_lifecycle_cases(void)
     lifecycle_seed();action=frozen_rule();action.delay_ms=200;delay_hook=delete_waiting_rule;cancelled_entry(&action);
     lifecycle_seed();action=frozen_rule();action.repeat_mode=TS_AUTO_REPEAT_COUNT;action.repeat_count=3;action.repeat_interval_ms=10;
     delay_hook=delete_waiting_rule;before=execution_io;
-    assert(execute_action_with_repeat(&action,NULL,NULL)==ESP_ERR_INVALID_STATE&&execution_io==before+1);ts_action_snapshot_release(&action);
+    assert(execute_action_with_repeat(&action,NULL,NULL,NULL)==ESP_ERR_INVALID_STATE&&execution_io==before+1);ts_action_snapshot_release(&action);
     /* A completed CLI operation does not write its reply into a recreated variable. */
     lifecycle_seed();
     assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"reply.exit_code\",\"source_id\":\"user\",\"value_type\":2,\"value\":9}",NULL,NULL)==ESP_OK);

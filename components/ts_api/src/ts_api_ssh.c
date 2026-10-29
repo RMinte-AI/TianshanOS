@@ -1282,7 +1282,10 @@ static esp_err_t api_ssh_hosts_list(const cJSON *params,ts_api_result_t *result)
  * }
  */
 static esp_err_t api_ssh_hosts_add(const cJSON *params,ts_api_result_t *result)
-{ return ts_api_auto_write(TS_AUTO_CONFIG_HOST,params,TS_API_AUTO_UPSERT,result); }
+{ return ts_api_auto_write(TS_AUTO_CONFIG_HOST,params,TS_API_AUTO_CREATE,result); }
+
+static esp_err_t api_ssh_hosts_update(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_HOST,params,TS_API_AUTO_UPDATE,result); }
 
 /**
  * @brief ssh.hosts.remove - 删除 SSH 主机配置
@@ -1486,7 +1489,10 @@ static esp_err_t api_ssh_commands_list(const cJSON *params,ts_api_result_t *resu
  * @brief ssh.commands.add - 添加 SSH 指令配置
  */
 static esp_err_t api_ssh_commands_add(const cJSON *params,ts_api_result_t *result)
-{ return ts_api_auto_write(TS_AUTO_CONFIG_COMMAND,params,TS_API_AUTO_UPSERT,result); }
+{ return ts_api_auto_write(TS_AUTO_CONFIG_COMMAND,params,TS_API_AUTO_CREATE,result); }
+
+static esp_err_t api_ssh_commands_update(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_COMMAND,params,TS_API_AUTO_UPDATE,result); }
 
 /**
  * @brief ssh.commands.remove - 删除 SSH 指令配置
@@ -1791,6 +1797,13 @@ static const ts_api_endpoint_t ssh_endpoints[] = {
         .requires_auth = true,
     },
     {
+        .name = "ssh.hosts.update",
+        .description = "Update an existing SSH hosts configuration",
+        .category = TS_API_CAT_SECURITY,
+        .handler = api_ssh_hosts_update,
+        .requires_auth = true,
+    },
+    {
         .name = "ssh.hosts.remove",
         .description = "Remove SSH host configuration",
         .category = TS_API_CAT_SECURITY,
@@ -1831,6 +1844,13 @@ static const ts_api_endpoint_t ssh_endpoints[] = {
         .description = "Add or update SSH command configuration",
         .category = TS_API_CAT_SECURITY,
         .handler = api_ssh_commands_add,
+        .requires_auth = true,
+    },
+    {
+        .name = "ssh.commands.update",
+        .description = "Update an existing SSH commands configuration",
+        .category = TS_API_CAT_SECURITY,
+        .handler = api_ssh_commands_update,
         .requires_auth = true,
     },
     {

@@ -10,7 +10,6 @@
 #include "ts_ssh_log_watch.h"
 #include "ts_ssh_probe.h"
 #include "ts_automation_config.h"
-#include "ts_rule_engine.h"
 #include "ts_variable.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +20,10 @@ typedef struct {
     ts_ssh_run_record_t record;
     ts_ssh_run_origin_t origin;
     ts_ssh_service_status_t status;
-    bool durable, launch_attempted, ready_evidence;
+    bool durable, launch_attempted, owns_variables;
+    /* Readiness belongs to the observed process, independently of a control
+     * operation's temporary state. Never restored from a historical record. */
+    char readiness[16];
     uint32_t pending_control, operation;
 } service_t;
 static service_t *services;
@@ -34,7 +36,7 @@ bool ts_ssh_binding_try_lock(void) { return !binding_gate||xSemaphoreTakeRecursi
 void ts_ssh_binding_unlock(void) { if(binding_gate)xSemaphoreGiveRecursive(binding_gate); }
 static service_t *find(const char *id)
 {
-    for(unsigned i=0;i<TS_SSH_RUNS_MAX;++i)
+    for(unsigned i=0;i<TS_SSH_RUN_SLOTS;++i)
         if(services[i].record.run_id[0]&&!strcmp(services[i].record.run_id,id))return &services[i];
     return NULL;
 }
@@ -49,10 +51,11 @@ static bool same_target(const ts_ssh_host_config_t *a,const ts_ssh_host_config_t
 {
     return !strcmp(a->host,b->host)&&a->port==b->port&&!strcmp(a->username,b->username);
 }
-static bool duplicate(const char *command,const ts_ssh_host_config_t *host)
+static bool duplicate_busy(const char *command,const ts_ssh_host_config_t *host)
 {
-    for(unsigned i=0;i<TS_SSH_RUNS_MAX;++i)
-        if(services[i].durable&&!strcmp(services[i].record.command_id,command)&&same_target(&services[i].record.host,host))return true;
+    for(unsigned i=0;i<TS_SSH_RUN_SLOTS;++i)
+        if(services[i].record.run_id[0]&&!strcmp(services[i].record.command_id,command)&&same_target(&services[i].record.host,host)&&
+           (services[i].pending_control||services[i].status.busy))return true;
     return false;
 }
 static void state_set(service_t *s,const char *state,const char *source)
@@ -69,23 +72,21 @@ static void state_set(service_t *s,const char *state,const char *source)
 static void publish(const char *id,uint32_t generation)
 {
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *entry=find(id);
-    uint64_t epoch=entry&&entry->status.generation==generation?entry->origin.epoch:0;
+    uint64_t epoch=entry&&entry->owns_variables&&entry->status.generation==generation?entry->origin.epoch:0;
     xSemaphoreGive(mutex);
     /* Restored records have no permission to access the variable registry,
      * which may not yet be initialized when security becomes available. */
-    if(!epoch||epoch!=ts_auto_config_execution_epoch())return;
+    if(!epoch||epoch!=ts_auto_config_binding_epoch())return;
     ts_variable_registration_begin();ts_ssh_binding_lock();
     ts_ssh_run_origin_t origin={0};char command_id[TS_SSH_CMD_ID_MAX]={0},host_id[TS_SSH_HOST_ID_MAX]={0};
     char variable[TS_SSH_CMD_VARNAME_MAX]={0},state[16]={0};
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
-    if(s&&s->status.generation==generation){
+    if(s&&s->owns_variables&&s->status.generation==generation){
         origin=s->origin;strcpy(command_id,s->record.command_id);strcpy(host_id,s->record.host.id);
         strcpy(variable,s->record.variable);strcpy(state,s->status.state);
     }
     xSemaphoreGive(mutex);
-    bool current=origin.epoch&&origin.epoch==ts_auto_config_execution_epoch()&&
-        (!origin.rule_instance||ts_rule_instance_current(origin.rule_instance))&&
-        (!origin.template_instance||ts_auto_config_template_current(origin.template_instance))&&
+    bool current=origin.epoch&&origin.epoch==ts_auto_config_binding_epoch()&&
         ts_auto_config_host_instance(host_id)==origin.host_instance&&
         ts_auto_config_command_current(command_id,origin.command_instance);
     if(current&&variable[0]){
@@ -102,7 +103,7 @@ esp_err_t ts_ssh_service_init(void)
     if(initialized)return ESP_OK;
     if(!binding_gate)binding_gate=xSemaphoreCreateRecursiveMutex();
     if(!mutex)mutex=xSemaphoreCreateMutex();
-    if(!services)services=heap_caps_calloc(TS_SSH_RUNS_MAX,sizeof(*services),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!services)services=heap_caps_calloc(TS_SSH_RUN_SLOTS,sizeof(*services),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(!binding_gate||!mutex||!services)return ESP_ERR_NO_MEM;
     for(unsigned i=0;i<TS_SSH_RUNS_MAX;++i){
         service_t *s=&services[i];memset(s,0,sizeof(*s));
@@ -112,6 +113,7 @@ esp_err_t ts_ssh_service_init(void)
         s->durable=true;s->status.generation=ticket();
         strcpy(s->status.state,"unknown");strcpy(s->status.source,"restart");
     }
+    memset(&services[TS_SSH_RUNS_MAX],0,sizeof(*services));
     initialized=true;return ESP_OK;
 }
 static void new_identity(char out[32])
@@ -119,20 +121,8 @@ static void new_identity(char out[32])
     uint8_t random[12];esp_fill_random(random,sizeof(random));
     for(unsigned i=0;i<sizeof(random);++i)snprintf(out+i*2,3,"%02x",random[i]);
 }
-bool ts_ssh_service_start_admissible(const char *command_id)
-{
-    if(!initialized)return false;
-    ts_ssh_binding_lock();ts_ssh_command_config_t command;ts_ssh_host_config_t host;
-    esp_err_t ret=ts_ssh_commands_config_get(command_id,&command);
-    bool allowed=ret==ESP_OK&&!command.nohup;
-    if(ret==ESP_OK&&command.nohup&&ts_ssh_hosts_config_get(command.host_id,&host)==ESP_OK){
-        host.port=host.port?host.port:22;
-        xSemaphoreTake(mutex,portMAX_DELAY);allowed=!duplicate(command_id,&host)&&free_slot();xSemaphoreGive(mutex);
-    }
-    ts_ssh_binding_unlock();return allowed;
-}
-esp_err_t ts_ssh_service_prepare(const ts_ssh_command_config_t *command,const ts_ssh_host_config_t *host,
-    const ts_ssh_run_origin_t *origin,char run_id[TS_SSH_RUN_ID_MAX],uint32_t *operation_id,const char **reason)
+static esp_err_t prepare(const ts_ssh_command_config_t *command,const ts_ssh_host_config_t *host,
+    const ts_ssh_run_origin_t *origin,char run_id[TS_SSH_RUN_ID_MAX],uint32_t *operation_id,const char **reason,bool queued)
 {
     if(reason)*reason="invalid_request";
     if(!initialized){if(reason)*reason="service_controls_unavailable";return ESP_ERR_INVALID_STATE;}
@@ -142,10 +132,11 @@ esp_err_t ts_ssh_service_prepare(const ts_ssh_command_config_t *command,const ts
     run_id[0]=0;*operation_id=0;
     xSemaphoreTake(mutex,portMAX_DELAY);
     ts_ssh_host_config_t target=*host;target.port=target.port?target.port:22;
-    bool existing=duplicate(command->id,&target);
-    service_t *s=existing?NULL:free_slot();
+    bool existing=duplicate_busy(command->id,&target);
+    service_t *s=existing?NULL:queued?&services[TS_SSH_RUNS_MAX]:free_slot();
+    if(s&&queued&&(s->pending_control||s->status.busy)){s=NULL;existing=true;}
     esp_err_t ret=s?ESP_OK:existing?ESP_ERR_INVALID_STATE:ESP_ERR_INVALID_SIZE;uint32_t token=s?ticket():0;
-    if(!s&&reason)*reason=existing?"service_run_exists":"service_record_limit";
+    if(!s&&reason)*reason=existing?"service_control_busy":"service_record_limit";
     if(s&&!token){ret=ESP_ERR_INVALID_STATE;if(reason)*reason="service_operation_limit";}
     if(ret==ESP_OK){
         memset(s,0,sizeof(*s));new_identity(s->record.run_id);
@@ -155,15 +146,25 @@ esp_err_t ts_ssh_service_prepare(const ts_ssh_command_config_t *command,const ts
         strcpy(s->record.variable,command->var_name);s->record.host=target;
         snprintf(s->record.locator,sizeof(s->record.locator),"r_%.24s",s->record.run_id);
         if(origin){s->origin=*origin;strcpy(s->record.rule,origin->rule);strcpy(s->record.config_version,origin->config_version);}
-        if(ret==ESP_OK){ret=ts_ssh_run_save(index_of(s),&s->record);if(ret!=ESP_OK&&reason)*reason=ret==ESP_ERR_NO_MEM?"out_of_memory":"service_record_save_failed";}
+        if(ret==ESP_OK&&!queued){ret=ts_ssh_run_save(index_of(s),&s->record);if(ret!=ESP_OK&&reason)*reason=ret==ESP_ERR_NO_MEM?"out_of_memory":"service_record_save_failed";}
         if(ret==ESP_OK){
-            s->durable=true;s->pending_control=token;s->status.generation=token;s->status.operation_id=token;
+            s->durable=!queued;s->pending_control=token;s->status.generation=token;s->status.operation_id=token;
             strcpy(s->status.state,"unknown");strcpy(s->status.source,"planned");
             strcpy(s->status.operation_phase,"queued");strcpy(s->status.operation_kind,"start");
             strcpy(run_id,s->record.run_id);*operation_id=token;
         }else memset(s,0,sizeof(*s));
     }
     xSemaphoreGive(mutex);return ret;
+}
+esp_err_t ts_ssh_service_prepare(const ts_ssh_command_config_t *command,const ts_ssh_host_config_t *host,
+    const ts_ssh_run_origin_t *origin,char run_id[TS_SSH_RUN_ID_MAX],uint32_t *operation_id,const char **reason)
+{
+    return prepare(command,host,origin,run_id,operation_id,reason,false);
+}
+esp_err_t ts_ssh_service_plan(const ts_ssh_command_config_t *command,const ts_ssh_host_config_t *host,
+    const ts_ssh_run_origin_t *origin,char run_id[TS_SSH_RUN_ID_MAX],uint32_t *operation_id,const char **reason)
+{
+    return prepare(command,host,origin,run_id,operation_id,reason,true);
 }
 static void legacy_name(const ts_ssh_command_config_t *cmd, char out[32]) {
     unsigned n = 0;
@@ -257,6 +258,81 @@ static esp_err_t probe(ts_ssh_session_t session,const ts_ssh_run_record_t *recor
     ts_ssh_exec_result_free(&result);return ret;
 }
 
+/* One owner applies process observations for verification, stop and start checks.
+ * Caller holds the registry mutex and has reserved the slot against reuse. */
+static esp_err_t apply_probe(service_t *s,esp_err_t ret,bool running,const char *identity,
+    const char **reason,bool *cancel_watch)
+{
+    *cancel_watch=false;
+    if(ret!=ESP_OK){state_set(s,"unknown","pid");return ret;}
+    /* A check of the same process preserves its readiness observer. Only a
+     * confirmed end/replacement invalidates observations from the old process. */
+    if(!running||strcmp(identity,s->record.instance)){
+        *cancel_watch=true;
+        if(strcmp(s->status.state,"stopping"))s->status.generation=ticket();
+        s->readiness[0]=0;
+    }
+    if(!running){
+        ret=ts_ssh_run_remove(index_of(s));
+        if(ret==ESP_OK){s->durable=false;s->record.instance[0]=0;state_set(s,"stopped","pid");}
+        else {if(reason)*reason="service_record_save_failed";state_set(s,"unknown","pid");}
+    }else{
+        bool same=!strcmp(identity,s->record.instance);
+        if(!same){strcpy(s->record.instance,identity);ret=ts_ssh_run_save(index_of(s),&s->record);}
+        bool observed=s->readiness[0]&&strcmp(s->readiness,"unknown");
+        state_set(s,observed?s->readiness:"running",observed?"pid+log":"pid");
+        if(ret!=ESP_OK&&reason)*reason="service_record_save_failed";
+    }
+    return ret;
+}
+
+static bool start_deadline_passed(void *context)
+{
+    int64_t deadline=*(const int64_t *)context;
+    return deadline && esp_timer_get_time()/1000>=deadline;
+}
+esp_err_t ts_ssh_service_check_start(const char *command_id,const ts_ssh_host_config_t *host,
+    const char *exclude_run,int64_t deadline,const char **reason)
+{
+    if(reason)*reason=NULL;
+    if(!initialized||!command_id||!host)return ESP_ERR_INVALID_STATE;
+    for(unsigned i=0;i<TS_SSH_RUN_SLOTS;++i){
+        if(start_deadline_passed(&deadline)){if(reason)*reason="automatic_start_timeout";return ESP_ERR_TIMEOUT;}
+        ts_ssh_run_record_t record;uint32_t generation=0;
+        xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=&services[i];
+        bool matches=s->record.run_id[0]&&(s->durable||s->pending_control)&&!strcmp(s->record.command_id,command_id)&&same_target(&s->record.host,host)&&
+            (!exclude_run||strcmp(s->record.run_id,exclude_run));
+        if(matches&&(s->pending_control||s->status.busy)){
+            xSemaphoreGive(mutex);if(reason)*reason="service_control_busy";return ESP_ERR_INVALID_STATE;
+        }
+        if(matches){s->status.busy=true;record=s->record;}
+        xSemaphoreGive(mutex);if(!matches)continue;
+        ts_ssh_session_t session=NULL;char *key=NULL;const char *failed=NULL,*stage=NULL;
+        bool running=true;char identity[96]={0};
+        esp_err_t ret=ts_ssh_service_connect(&record.host,&session,&key,start_deadline_passed,&deadline);
+        if(ret!=ESP_OK)failed=ret==TS_SSH_ERR_HOST_UNKNOWN?"ssh_host_key_unknown":
+            ret==TS_SSH_ERR_HOST_CHANGED?"ssh_host_key_changed":ret==ESP_ERR_NO_MEM?"out_of_memory":!key?"ssh_key_unavailable":
+            session?ts_ssh_connect_reason(session,&stage):"ssh_connect_failed";
+        if(ret==ESP_OK){ret=probe(session,&record,false,&running,identity);if(ret!=ESP_OK)failed="service_process_unconfirmed";}
+        if(session)ts_ssh_session_destroy(session);
+        free(key);
+        xSemaphoreTake(mutex,portMAX_DELAY);s=&services[i];
+        bool cancel_watch=false;
+        ret=apply_probe(s,ret,running,identity,&failed,&cancel_watch);
+        generation=s->status.generation;
+        if(ret==ESP_OK&&running){failed="service_already_running";ret=ESP_ERR_INVALID_STATE;}
+        s->status.busy=false;xSemaphoreGive(mutex);
+        if(cancel_watch)ts_ssh_log_watch_cancel_run(record.run_id);
+        publish(record.run_id,generation);
+        if(ret!=ESP_OK){if(reason)*reason=failed;return ret;}
+    }
+    if(!exclude_run){
+        xSemaphoreTake(mutex,portMAX_DELAY);bool room=free_slot()!=NULL;xSemaphoreGive(mutex);
+        if(!room){if(reason)*reason="service_record_limit";return ESP_ERR_INVALID_SIZE;}
+    }
+    return ESP_OK;
+}
+
 esp_err_t ts_ssh_service_reserve_operation(const char *id,ts_service_operation_t kind,uint32_t *operation_id,const char **reason)
 {
     if(reason)*reason="invalid_request";
@@ -304,18 +380,50 @@ bool ts_ssh_service_complete_operation(const char *id,uint32_t operation_id,esp_
     }
     xSemaphoreGive(mutex);if(generation)publish(id,generation);return executed;
 }
-esp_err_t ts_ssh_service_begin_reserved(const char *id,ts_ssh_session_t session,uint32_t operation_id,uint32_t *generation)
+esp_err_t ts_ssh_service_begin_reserved(const char *id,ts_ssh_session_t session,uint32_t operation_id,uint32_t *generation,const char **failure)
 {
+    if(failure)*failure=NULL;
     if(!session||!generation)return ESP_ERR_INVALID_ARG;
-    ts_ssh_run_record_t record;
+    ts_ssh_run_record_t record;int64_t deadline=0;
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
-    bool current=s&&operation_id&&s->pending_control==operation_id&&!s->status.busy&&s->durable;
-    if(current){s->operation=operation_id;s->status.busy=true;record=s->record;}
+    bool current=s&&operation_id&&s->pending_control==operation_id&&!s->status.busy&&(s->durable||index_of(s)==TS_SSH_RUNS_MAX);
+    if(current){s->operation=operation_id;s->status.busy=true;record=s->record;deadline=s->origin.deadline_ms;}
     xSemaphoreGive(mutex);if(!current)return ESP_ERR_INVALID_STATE;
-    bool running=true;esp_err_t ret=probe(session,&record,false,&running,NULL);
+    const char *reason=NULL;
+    esp_err_t ret=ts_ssh_service_check_start(record.command_id,&record.host,id,deadline,&reason);
+    if(ret!=ESP_OK){
+        if(failure)*failure=reason;
+        ts_ssh_service_set_operation_reason(id,operation_id,reason);
+        xSemaphoreTake(mutex,portMAX_DELAY);s=find(id);s->status.busy=false;xSemaphoreGive(mutex);
+        return ret;
+    }
+    /* A queued request owns an identity, but no durable slot until old runs
+     * have been checked. Save before any remote launch can be attempted. */
     xSemaphoreTake(mutex,portMAX_DELAY);s=find(id);
+    if(!s->durable){
+        service_t *destination=free_slot();
+        if(!destination){ret=ESP_ERR_INVALID_SIZE;reason="service_record_limit";}
+        else {
+            ret=ts_ssh_run_save(index_of(destination),&s->record);
+            if(ret==ESP_OK){*destination=*s;destination->durable=true;memset(s,0,sizeof(*s));s=destination;}
+            else reason="service_record_save_failed";
+        }
+    }
+    if(ret!=ESP_OK){s->status.busy=false;snprintf(s->status.operation_reason,sizeof(s->status.operation_reason),"%s",reason);}
+    xSemaphoreGive(mutex);if(ret!=ESP_OK){if(failure)*failure=reason;return ret;}
+    bool running=true;ret=probe(session,&record,false,&running,NULL);
+    xSemaphoreTake(mutex,portMAX_DELAY);s=find(id);
+    /* Only a real launch may own the command variables. Local rejected requests
+     * never acquire ownership; older runs lose it when a new launch takes over. */
+    if(ret==ESP_OK){
+        for(unsigned n=0;n<TS_SSH_RUN_SLOTS;++n)
+            if(services[n].origin.epoch==s->origin.epoch &&
+               services[n].origin.variables[0]==s->origin.variables[0])services[n].owns_variables=false;
+        s->owns_variables=true;
+    }
     if(ret==ESP_OK&&!running){s->launch_attempted=true;*generation=s->status.generation;state_set(s,"starting","request");}
     else {s->status.busy=false;state_set(s,ret==ESP_OK?"running":"unknown","pid");if(ret==ESP_OK){s->launch_attempted=true;ret=ESP_ERR_INVALID_STATE;}}
+    if(ret!=ESP_OK&&failure)*failure=running&&ret==ESP_ERR_INVALID_STATE?"service_already_running":"service_process_unconfirmed";
     uint32_t gen=s->status.generation;xSemaphoreGive(mutex);publish(id,gen);return ret;
 }
 esp_err_t ts_ssh_service_finish(const char *id,uint32_t generation,const char *receipt,ts_ssh_session_t session)
@@ -341,7 +449,7 @@ esp_err_t ts_ssh_service_finish(const char *id,uint32_t generation,const char *r
 bool ts_ssh_service_launch_command(const char *id,const char *expanded,char *out,size_t cap)
 {
     char name[32];xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
-    bool valid=s&&s->durable&&s->record.kind==TS_SSH_RUN_GROUP;
+    bool valid=s&&(s->durable||s->pending_control)&&s->record.kind==TS_SSH_RUN_GROUP;
     if(valid)strcpy(name,s->record.locator);
     xSemaphoreGive(mutex);if(!valid)return false;
     int n=snprintf(out,cap,"mkdir /tmp/ts_nohup_%s.lock || exit 2; nohup setsid sh -c ",name);
@@ -382,11 +490,15 @@ esp_err_t ts_ssh_service_execute_control(const char *id,uint32_t operation_id,ts
     ts_ssh_run_record_t record;uint32_t generation=0;
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
     bool current=s&&s->pending_control==operation_id&&!s->status.busy;
-    if(current){s->operation=operation_id;s->status.busy=true;s->status.generation=operation_id;
-        generation=operation_id;record=s->record;state_set(s,kind==TS_SERVICE_STOP?"stopping":"checking","request");}
+    if(current){s->operation=operation_id;s->status.busy=true;
+        if(kind==TS_SERVICE_STOP){
+            s->status.generation=operation_id;
+            if(!strcmp(s->readiness,"checking"))s->readiness[0]=0;
+        }
+        record=s->record;state_set(s,kind==TS_SERVICE_STOP?"stopping":"checking","request");}
     xSemaphoreGive(mutex);if(!current)return ESP_ERR_INVALID_STATE;
-    /* Only this run's log observation is cancelled. Other runs may share a prefix. */
-    ts_ssh_log_watch_cancel_run(id);
+    /* Verification is an operation on a run, not a new observation generation. */
+    if(kind==TS_SERVICE_STOP)ts_ssh_log_watch_cancel_run(id);
     ts_ssh_session_t session=NULL;char *key=NULL;bool running=true;char identity[96]={0};
     esp_err_t ret=ts_ssh_service_connect(&record.host,&session,&key,NULL,NULL);
     const char *reason=NULL,*stage=NULL;
@@ -399,18 +511,13 @@ esp_err_t ts_ssh_service_execute_control(const char *id,uint32_t operation_id,ts
     free(key);
     xSemaphoreTake(mutex,portMAX_DELAY);s=find(id);
     s->operation=0;s->status.busy=false;
-    if(ret!=ESP_OK)state_set(s,"unknown","pid");
-    else if(!running){
-        s->ready_evidence=false;s->record.instance[0]=0;state_set(s,"stopped","pid");
-        ret=ts_ssh_run_remove(index_of(s));if(ret==ESP_OK)s->durable=false;else reason="service_record_save_failed";
-    }else{
-        bool same=!strcmp(identity,s->record.instance);
-        strcpy(s->record.instance,identity);if(!same)s->ready_evidence=false;
-        state_set(s,s->ready_evidence?"ready":"running",s->ready_evidence?"pid+log":"pid");
-        if(!same){ret=ts_ssh_run_save(index_of(s),&s->record);if(ret!=ESP_OK)reason="service_record_save_failed";}
-    }
+    bool cancel_watch=false;
+    ret=apply_probe(s,ret,running,identity,&reason,&cancel_watch);
+    generation=s->status.generation;
     if(reason)snprintf(s->status.operation_reason,sizeof(s->status.operation_reason),"%s",reason);
-    *out=s->status;xSemaphoreGive(mutex);publish(id,generation);return ret;
+    *out=s->status;xSemaphoreGive(mutex);
+    if(cancel_watch&&kind!=TS_SERVICE_STOP)ts_ssh_log_watch_cancel_run(id);
+    publish(id,generation);return ret;
 }
 esp_err_t ts_ssh_service_cached(const char *id,ts_ssh_service_status_t *out)
 {
@@ -420,9 +527,28 @@ esp_err_t ts_ssh_service_cached(const char *id,ts_ssh_service_status_t *out)
     else {*out=(ts_ssh_service_status_t){0};strcpy(out->state,"unknown");strcpy(out->source,"none");}
     xSemaphoreGive(mutex);return s?ESP_OK:ESP_ERR_NOT_FOUND;
 }
+bool ts_ssh_service_current(const char *command,const ts_ssh_host_config_t *host,
+    uint64_t command_instance,char run_id[TS_SSH_RUN_ID_MAX],ts_ssh_service_status_t *status)
+{
+    if(!initialized)return false;
+    xSemaphoreTake(mutex,portMAX_DELAY);service_t *selected=NULL;unsigned rank=0;
+    for(unsigned i=0;i<TS_SSH_RUN_SLOTS;++i){
+        service_t *s=&services[i];
+        if(!s->record.run_id[0]||strcmp(s->record.command_id,command)||!same_target(&s->record.host,host))continue;
+        /* Live observations belong to the definition that launched them.
+         * Restored records have no local instance or readiness evidence. */
+        if(command_instance&&s->origin.command_instance&&s->origin.command_instance!=command_instance)continue;
+        unsigned candidate=s->durable?2:s->pending_control?1:0;
+        if(!selected||candidate>rank||(candidate==rank&&s->status.operation_id>selected->status.operation_id)){
+            selected=s;rank=candidate;
+        }
+    }
+    if(selected){strcpy(run_id,selected->record.run_id);*status=selected->status;}
+    xSemaphoreGive(mutex);return selected!=NULL;
+}
 esp_err_t ts_ssh_service_get(unsigned index,ts_ssh_run_record_t *record,ts_ssh_service_status_t *status)
 {
-    if(!initialized||index>=TS_SSH_RUNS_MAX||!record||!status)return ESP_ERR_INVALID_ARG;
+    if(!initialized||index>=TS_SSH_RUN_SLOTS||!record||!status)return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=&services[index];bool found=s->record.run_id[0];
     if(found){*record=s->record;*status=s->status;}
     xSemaphoreGive(mutex);return found?ESP_OK:ESP_ERR_NOT_FOUND;
@@ -454,7 +580,7 @@ void ts_ssh_service_observe(const char *id,uint32_t generation,const char *state
 {
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
     bool valid=s&&s->status.generation==generation&&s->record.instance[0]&&strcmp(s->status.state,"stopped")&&strcmp(s->status.state,"stopping");
-    if(valid){if(!strcmp(state,"ready"))s->ready_evidence=true;state_set(s,state,"log");}
+    if(valid){snprintf(s->readiness,sizeof(s->readiness),"%s",state);state_set(s,state,"log");}
     xSemaphoreGive(mutex);if(valid)publish(id,generation);
 }
 void ts_ssh_service_cancel_observation(const char *id,uint32_t generation)
@@ -462,6 +588,10 @@ void ts_ssh_service_cancel_observation(const char *id,uint32_t generation)
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
     bool valid=s&&s->status.generation==generation&&strcmp(s->status.state,"stopped")&&strcmp(s->status.state,"stopping");
     uint32_t next=valid?ticket():0;
-    if(next){s->status.generation=next;state_set(s,"unknown","cancelled");}
+    if(next){
+        s->status.generation=next;
+        if(!strcmp(s->readiness,"checking"))s->readiness[0]=0;
+        state_set(s,"unknown","cancelled");
+    }
     xSemaphoreGive(mutex);if(next)publish(id,next);
 }

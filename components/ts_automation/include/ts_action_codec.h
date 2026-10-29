@@ -7,6 +7,7 @@ extern "C" {
 
 /* Pure configuration conversions: no manager, NVS, SSH or variable lookups.
  * Encoded strings belong to the caller. */
+esp_err_t ts_action_parse_color(const char *color, uint8_t *r, uint8_t *g, uint8_t *b);
 char *ts_action_template_encode(const ts_action_template_t *value);
 esp_err_t ts_action_template_decode(const char *json, ts_action_template_t *value);
 char *ts_source_config_encode(const ts_auto_source_t *value);

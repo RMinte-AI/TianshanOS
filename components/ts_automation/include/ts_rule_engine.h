@@ -93,7 +93,6 @@ typedef struct {
 esp_err_t ts_rule_acquire(const char *id,ts_auto_rule_t *out);
 /* Copies the saved definition. Caller disposes its arrays with ts_rule_dispose. */
 esp_err_t ts_rule_definition_get(const char *id,ts_auto_rule_t *out);
-void ts_rule_resolve_presentation(ts_auto_rule_t *rule);
 void ts_rule_release(ts_auto_rule_t *rule);
 esp_err_t ts_rule_commit(const ts_auto_rule_t *candidate,const char *id,uint32_t expected_revision,ts_rule_commit_result_t *result);
 
@@ -163,7 +162,7 @@ typedef enum {
  */
 esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why);
 /* Check a displayed configuration version while freezing the admitted actions. */
-esp_err_t ts_rule_trigger_versioned(const char *id, const char *active_version, ts_rule_reject_t *why);
+esp_err_t ts_rule_trigger_versioned(const char *id, const char *active_version, ts_rule_reject_t *why, const char **reason);
 
 /*===========================================================================*/
 /*                           Condition Evaluation                             */
@@ -359,6 +358,11 @@ esp_err_t ts_rule_clear_exec_history(void);
 const char *ts_rule_exec_status_str(ts_rule_exec_status_t status);
 
 bool ts_rule_edit_begin(void);
+typedef struct {
+    const char *state, *reason;
+    uint32_t retry_after_ms;
+} ts_rule_start_status_t;
+bool ts_rule_start_status(const char *id,ts_rule_start_status_t *out);
 bool ts_rule_instance_current(uint32_t instance);
 void ts_rule_edit_end(void);
 esp_err_t ts_rule_import_pack(const char *bytes, size_t length, bool preview, bool overwrite,

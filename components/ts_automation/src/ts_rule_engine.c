@@ -58,7 +58,15 @@ typedef struct {
     const char *load_error;
     uint32_t next_instance;
     unsigned retired;
-    struct { bool executing; } meta[CONFIG_TS_AUTOMATION_MAX_RULES];
+    struct {
+        bool executing;
+        struct {
+            int64_t first_ms, next_ms;
+            unsigned action;
+            bool awaiting_launch, counted;
+            const char *state, *reason;
+        } start;
+    } meta[CONFIG_TS_AUTOMATION_MAX_RULES];
     ts_rule_engine_stats_t stats;        // 统计信息
 } ts_rule_engine_ctx_t;
 
@@ -71,6 +79,8 @@ static ts_rule_engine_ctx_t s_rule_ctx = {
     .config_enabled = true,
 };
 
+enum { AUTO_START_RETRY_MS=30000, AUTO_START_WINDOW_MS=360000 };
+
 typedef struct {
     unsigned refs;
     bool retired;
@@ -78,6 +88,7 @@ typedef struct {
     ts_auto_action_t *actions;
 } rule_payload_t;
 struct ts_rule_config_view {
+    __typeof__(s_rule_ctx.meta) metadata;
     bool keep_runtime;
     ts_auto_rule_t *rules;
     int count;
@@ -99,51 +110,6 @@ static rule_payload_t *payload_adopt(ts_auto_rule_t *r) {
     return p;
 }
 static int find_rule_index(const char *id);
-void ts_rule_resolve_presentation(ts_auto_rule_t *r) {
-    bool service = false, unresolved = false;
-    for (unsigned i = 0; i < r->action_count; ++i) {
-        ts_auto_action_t *a = &r->actions[i];
-        ts_action_template_t *tpl = NULL;
-        if (a->template_id[0]) {
-            tpl = heap_caps_calloc(1, sizeof(*tpl), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!tpl || ts_action_template_get(a->template_id, tpl) != ESP_OK) {
-                free(tpl);
-                unresolved = true;
-                continue;
-            }
-            a = &tpl->action;
-        }
-        if (a->type == TS_AUTO_ACT_SSH_CMD_REF) {
-            ts_ssh_command_config_t *cmd =
-                heap_caps_calloc(1, sizeof(*cmd), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!cmd || ts_ssh_commands_config_get(a->ssh_ref.cmd_id, cmd) != ESP_OK)
-                unresolved = true;
-            else
-                service |= cmd->service_mode;
-            free(cmd);
-        }
-        free(tpl);
-    }
-    if (!(r->presentation_fields & 1))
-        r->show_on_dashboard = (r->enabled && r->manual_trigger) || service;
-    if (!(r->presentation_fields & 2))
-        r->allow_manual_trigger = r->manual_trigger || service;
-    r->reference_unresolved = unresolved;
-    if (!unresolved)
-        r->presentation_fields = 3;
-    if (r->lease && s_rule_ctx.initialized) {
-        xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-        int index = find_rule_index(r->id);
-        if (index >= 0 && s_rule_ctx.rules[index].revision == r->revision &&
-            s_rule_ctx.rules[index].instance == r->instance) {
-            s_rule_ctx.rules[index].show_on_dashboard = r->show_on_dashboard;
-            s_rule_ctx.rules[index].allow_manual_trigger = r->allow_manual_trigger;
-            s_rule_ctx.rules[index].reference_unresolved = unresolved;
-            s_rule_ctx.rules[index].presentation_fields = r->presentation_fields;
-        }
-        xSemaphoreGive(s_rule_ctx.mutex);
-    }
-}
 
 /*===========================================================================*/
 /*                      执行历史环形缓冲区                                    */
@@ -205,8 +171,10 @@ static void record_execution(const char *rule_id,
 
 static int find_rule_index(const char *id);
 static int compare_values(const ts_auto_value_t *a, const ts_auto_value_t *b);
+static bool check_action_condition(const ts_auto_action_t *action);
 static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int count,
-                                             int *success_count, int *fail_count);
+                                             int *success_count, int *fail_count,
+                                             unsigned *resume, ts_action_result_t *start_result);
 
 /*===========================================================================*/
 /*                              辅助函数                                      */
@@ -453,19 +421,56 @@ oom:
     return ESP_ERR_NO_MEM;
 }
 
-void ts_rule_config_publish(ts_rule_config_view_t *view, bool enabled)
+/* The retry belongs to these definitions, not to the version of the whole SD document. */
+static const void *binding_definition(const ts_auto_document_t *doc,ts_auto_config_kind_t kind,const char *id)
+{
+    if(!doc)return NULL;
+    const char *base;size_t stride;int count;
+    if(kind==TS_AUTO_CONFIG_ACTION){base=(const char *)doc->actions;stride=sizeof(*doc->actions);count=doc->action_count;}
+    else if(kind==TS_AUTO_CONFIG_COMMAND){base=(const char *)doc->commands;stride=sizeof(*doc->commands);count=doc->command_count;}
+    else {base=(const char *)doc->hosts;stride=sizeof(*doc->hosts);count=doc->host_count;}
+    for(int i=0;i<count;++i)if(!strcmp(base+i*stride,id))return base+i*stride;
+    return NULL;
+}
+static bool rule_dependencies_same(const ts_auto_rule_t *rule,const ts_auto_document_t *previous,const ts_auto_document_t *next)
+{
+    for(unsigned i=0;i<rule->action_count;++i){
+        const ts_auto_action_t *action=&rule->actions[i];
+        if(action->template_id[0]){
+            const ts_action_template_t *a=binding_definition(previous,TS_AUTO_CONFIG_ACTION,action->template_id);
+            const ts_action_template_t *b=binding_definition(next,TS_AUTO_CONFIG_ACTION,action->template_id);
+            if(!a||!b||memcmp(a,b,offsetof(ts_action_template_t,last_used_at)))return false;
+            action=&b->action;
+        }
+        const char *host=NULL;
+        if(action->type==TS_AUTO_ACT_SSH_CMD_REF){
+            const ts_ssh_command_config_t *a=binding_definition(previous,TS_AUTO_CONFIG_COMMAND,action->ssh_ref.cmd_id);
+            const ts_ssh_command_config_t *b=binding_definition(next,TS_AUTO_CONFIG_COMMAND,action->ssh_ref.cmd_id);
+            if(!a||!b||memcmp(a,b,offsetof(ts_ssh_command_config_t,last_exec_time)))return false;
+            host=b->host_id;
+        }else if(action->type==TS_AUTO_ACT_SSH_CMD)host=action->ssh.host_ref;
+        if(host){
+            const ts_ssh_host_config_t *a=binding_definition(previous,TS_AUTO_CONFIG_HOST,host);
+            const ts_ssh_host_config_t *b=binding_definition(next,TS_AUTO_CONFIG_HOST,host);
+            if(!a||!b||memcmp(a,b,sizeof(*a)))return false;
+        }
+    }
+    return true;
+}
+void ts_rule_config_publish(ts_rule_config_view_t *view, bool enabled,
+    const ts_auto_document_t *previous,const ts_auto_document_t *document)
 {
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
-    __typeof__(s_rule_ctx.meta) metadata = {0};
+    __typeof__(s_rule_ctx.meta[0]) *metadata = view->metadata;
     for (int i = 0; i < view->count; ++i) {
         ts_auto_rule_t *next = &view->rules[i];
         int old = find_rule_index(next->id);
         if (view->keep_runtime && old >= 0) {
             next->last_trigger_ms = s_rule_ctx.rules[old].last_trigger_ms;
             next->trigger_count = s_rule_ctx.rules[old].trigger_count;
-            if (same_config(&s_rule_ctx.rules[old], next)) {
+            if (same_config(&s_rule_ctx.rules[old], next)&&rule_dependencies_same(next,previous,document)) {
                 next->instance = s_rule_ctx.rules[old].instance;
-                metadata[i].executing = s_rule_ctx.meta[old].executing;
+                metadata[i] = s_rule_ctx.meta[old];
             }
         }
         if (!next->instance) next->instance = ++s_rule_ctx.next_instance;
@@ -480,7 +485,7 @@ void ts_rule_config_publish(ts_rule_config_view_t *view, bool enabled)
     }
     s_rule_ctx.rules = view->rules;
     s_rule_ctx.count = view->count;
-    memcpy(s_rule_ctx.meta, metadata, sizeof(metadata));
+    memcpy(s_rule_ctx.meta, metadata, sizeof(s_rule_ctx.meta));
     s_rule_ctx.loaded = true;
     s_rule_ctx.config_enabled = enabled;
     s_rule_ctx.load_error = enabled ? NULL : "automation_paused";
@@ -640,22 +645,56 @@ static esp_err_t refuse(ts_rule_reject_t *why, ts_rule_reject_t reason) {
     if (why) *why = reason;
     return ESP_ERR_INVALID_STATE;
 }
-static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_rule_reject_t *why, const char *active_version) {
+/* Only unfinished automatic starts retain a retry state. Successful execution
+ * returns to ordinary condition/cooldown evaluation. */
+static void automatic_start_result(int i,esp_err_t error,const char *reason)
+{
+    __typeof__(s_rule_ctx.meta[i].start) *start=&s_rule_ctx.meta[i].start;
+    start->reason=reason;
+    if(error==ESP_OK || (reason&&!strcmp(reason,"service_already_running"))){memset(start,0,sizeof(*start));return;}
+    bool temporary=reason && (!strcmp(reason,"ssh_dns_failed")||!strcmp(reason,"ssh_port_refused")||
+        !strcmp(reason,"ssh_host_unreachable")||!strcmp(reason,"ssh_connect_timeout")||
+        !strcmp(reason,"ssh_connect_failed")||!strcmp(reason,"service_control_busy")||
+        !strcmp(reason,"service_process_unconfirmed")||!strcmp(reason,"service_outcome_unknown"));
+    int64_t now=esp_timer_get_time()/1000;
+    if(now-start->first_ms>=AUTO_START_WINDOW_MS){start->state="failed";start->reason="automatic_start_timeout";}
+    else if(temporary){start->state="waiting";start->next_ms=now+AUTO_START_RETRY_MS;}
+    else {start->state="failed";if(!reason)start->reason="action_failed";}
+}
+bool ts_rule_start_status(const char *id,ts_rule_start_status_t *out)
+{
+    memset(out,0,sizeof(*out));
+    if(!s_rule_ctx.initialized)return false;
+    xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);int i=find_rule_index(id);
+    if(i>=0){
+        __typeof__(s_rule_ctx.meta[i].start) *start=&s_rule_ctx.meta[i].start;
+        out->state=start->state;out->reason=start->reason;
+        if(start->state&&!strcmp(start->state,"waiting")){
+            int64_t remaining=start->next_ms-esp_timer_get_time()/1000;
+            out->retry_after_ms=remaining>0?(uint32_t)remaining:0;
+        }
+    }
+    xSemaphoreGive(s_rule_ctx.mutex);return i>=0&&out->state;
+}
+static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_rule_reject_t *why, const char *active_version, const char **reason) {
     if (why) *why = TS_RULE_REJECT_NONE;
+    if (reason) *reason = NULL;
     if (!ts_action_manager_accepting()) return refuse(why, TS_RULE_REJECT_NOT_ACCEPTING);
     *triggered = false;
     ts_auto_rule_t r;
     esp_err_t ret = ts_rule_acquire(id, &r);
     if (ret != ESP_OK)
         return ret;
-    if (manual && (r.reference_unresolved || r.presentation_fields != 3))
-        ts_rule_resolve_presentation(&r);
     if (!r.enabled || (!manual && r.manual_trigger) || (manual && !r.allow_manual_trigger)) {
         ts_rule_reject_t reason = !r.enabled ? TS_RULE_REJECT_DISABLED : TS_RULE_REJECT_MANUAL_NOT_ALLOWED;
         ts_rule_release(&r);
         return manual ? refuse(why, reason) : ESP_OK;
     }
     if (!manual && !ts_rule_eval_condition_group(&r.conditions)) {
+        xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+        int index=find_rule_index(id);
+        if(index>=0&&!s_rule_ctx.meta[index].executing)memset(&s_rule_ctx.meta[index].start,0,sizeof(s_rule_ctx.meta[index].start));
+        xSemaphoreGive(s_rule_ctx.mutex);
         ts_rule_release(&r);
         return ESP_OK;
     }
@@ -665,8 +704,16 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
                           : preliminary < 0 ? TS_RULE_REJECT_CHANGED
                           : !s_rule_ctx.loaded ? TS_RULE_REJECT_NOT_LOADED
                           : s_rule_ctx.meta[preliminary].executing ? TS_RULE_REJECT_RUNNING : TS_RULE_REJECT_NONE;
+    if(preliminary>=0 && !s_rule_ctx.meta[preliminary].executing){
+        __typeof__(s_rule_ctx.meta[preliminary].start) *start=&s_rule_ctx.meta[preliminary].start;
+        if(!manual && start->state){
+            int64_t time=esp_timer_get_time()/1000;
+            if(!strcmp(start->state,"waiting") && time-start->first_ms>=AUTO_START_WINDOW_MS){start->state="failed";start->reason="automatic_start_timeout";}
+            if(strcmp(start->state,"waiting") || time<start->next_ms)busy=TS_RULE_REJECT_RUNNING;
+        }
+    }
     bool unavailable = busy != TS_RULE_REJECT_NONE ||
-                       (!manual && r.cooldown_ms && r.last_trigger_ms &&
+                       (!manual && !s_rule_ctx.meta[preliminary].start.state && r.cooldown_ms && r.last_trigger_ms &&
                         esp_timer_get_time() / 1000 - r.last_trigger_ms < r.cooldown_ms);
     xSemaphoreGive(s_rule_ctx.mutex);
     if (unavailable) {
@@ -695,27 +742,19 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
         if (ret != ESP_OK)
             break;
     }
-    bool service_blocked = false;
-    if (ret == ESP_OK) {
-        for (unsigned n = 0; n < prepared; ++n) {
-            if (frozen[n].type == TS_AUTO_ACT_SSH_CMD_REF &&
-                !ts_ssh_service_start_admissible(frozen[n].ssh_ref.cmd_id)) {
-                service_blocked = true;
-                ret = ESP_ERR_INVALID_STATE;
-                break;
-            }
-        }
-    }
     if (ret != ESP_OK) {
         ts_ssh_binding_unlock();
         for (unsigned n = 0; n < prepared; n++)
             ts_action_snapshot_release(&frozen[n]);
         free(frozen);
         ts_rule_release(&r);
-        if (service_blocked)
-            return manual ? refuse(why, TS_RULE_REJECT_SERVICE_STATE) : ESP_OK;
         return ret;
     }
+    bool background=false;
+    for(unsigned n=0;n<r.action_count;++n)background|=ts_action_is_background(&frozen[n]);
+    bool automatic_start=!manual&&background;
+    unsigned resume=0;bool awaiting_launch=false;
+    ts_action_result_t start_result={0};
     int64_t now = esp_timer_get_time() / 1000;
     xSemaphoreTake(s_rule_ctx.mutex, portMAX_DELAY);
     int i = find_rule_index(id);
@@ -728,11 +767,22 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
                           : i < 0 ? TS_RULE_REJECT_CHANGED
                           : !s_rule_ctx.loaded ? TS_RULE_REJECT_NOT_LOADED
                           : s_rule_ctx.meta[i].executing ? TS_RULE_REJECT_RUNNING : TS_RULE_REJECT_CHANGED;
-    if (valid && !manual && r.cooldown_ms && s_rule_ctx.rules[i].last_trigger_ms &&
+    if (valid && !manual && !automatic_start && r.cooldown_ms && s_rule_ctx.rules[i].last_trigger_ms &&
         now - s_rule_ctx.rules[i].last_trigger_ms < r.cooldown_ms)
         valid = false;
-    if (valid)
+    if (valid) {
         s_rule_ctx.meta[i].executing = true;
+        if(manual){
+            memset(&s_rule_ctx.meta[i].start,0,sizeof(s_rule_ctx.meta[i].start));
+            if(!r.manual_trigger&&background)s_rule_ctx.meta[i].start.state="manual";
+        }
+        if(automatic_start){
+            __typeof__(s_rule_ctx.meta[i].start) *start=&s_rule_ctx.meta[i].start;
+            if(!start->state)start->first_ms=now;
+            start->state="starting";resume=start->action;awaiting_launch=start->awaiting_launch;
+            for(unsigned n=0;n<r.action_count;++n)frozen[n].runtime_deadline_ms=start->first_ms+AUTO_START_WINDOW_MS;
+        }
+    }
     xSemaphoreGive(s_rule_ctx.mutex);
     if (valid)
         for (unsigned n = 0; n < r.action_count; ++n) ts_action_snapshot_owner(&frozen[n], r.id, r.instance);
@@ -745,7 +795,31 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
         return manual ? refuse(why, late) : ESP_OK;
     }
     int success = 0, failed = 0;
-    ret = execute_actions_with_stats(frozen, r.action_count, &success, &failed);
+    for(unsigned n=resume;n<r.action_count;++n){
+        if(!check_action_condition(&frozen[n]))continue;
+        ts_action_result_t check={0};
+        ret=ts_action_manager_check_start(&frozen[n],&check,!manual);
+        if(ret==ESP_OK)continue;
+        /* If the previous launch lost its reply, a live process is its completion,
+         * not a reason to discard the remaining actions in this rule. */
+        if(automatic_start&&awaiting_launch&&n==resume&&check.reason&&!strcmp(check.reason,"service_already_running")){
+            ++resume;awaiting_launch=false;ret=ESP_OK;continue;
+        }
+        if(reason)*reason=check.reason;
+        xSemaphoreTake(s_rule_ctx.mutex,portMAX_DELAY);
+        i=find_rule_index(id);
+        if(i>=0&&s_rule_ctx.rules[i].instance==r.instance){
+            s_rule_ctx.meta[i].executing=false;
+            if(automatic_start)automatic_start_result(i,ret,check.reason);
+        }
+        xSemaphoreGive(s_rule_ctx.mutex);
+        for(unsigned k=0;k<r.action_count;++k)ts_action_snapshot_release(&frozen[k]);
+        free(frozen);ts_rule_release(&r);
+        return manual?refuse(why,TS_RULE_REJECT_SERVICE_STATE):ESP_OK;
+    }
+    ret = execute_actions_with_stats(frozen, r.action_count, &success, &failed,
+        automatic_start ? &resume : NULL, automatic_start ? &start_result : NULL);
+    bool launch_pending=automatic_start&&ret!=ESP_OK&&resume<r.action_count&&ts_action_is_background(&frozen[resume]);
     for (unsigned n = 0; n < r.action_count; n++)
         ts_action_snapshot_release(&frozen[n]);
     free(frozen);
@@ -753,9 +827,18 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
     i = find_rule_index(id);
     if (i >= 0 && s_rule_ctx.rules[i].instance == r.instance) {
         s_rule_ctx.meta[i].executing = false;
-        s_rule_ctx.rules[i].last_trigger_ms = now;
-        ++s_rule_ctx.rules[i].trigger_count;
-        ++s_rule_ctx.stats.total_triggers;
+        bool count_trigger=!automatic_start||!s_rule_ctx.meta[i].start.counted;
+        if(automatic_start){
+            s_rule_ctx.meta[i].start.action=resume;
+            s_rule_ctx.meta[i].start.awaiting_launch=launch_pending;
+            automatic_start_result(i,launch_pending?ret:ESP_OK,launch_pending?start_result.reason:NULL);
+        }
+        if(count_trigger){
+            s_rule_ctx.rules[i].last_trigger_ms = now;
+            ++s_rule_ctx.rules[i].trigger_count;
+            ++s_rule_ctx.stats.total_triggers;
+            if(automatic_start&&s_rule_ctx.meta[i].start.state)s_rule_ctx.meta[i].start.counted=true;
+        }
         record_execution(id, failed ? TS_RULE_EXEC_FAILED : TS_RULE_EXEC_SUCCESS,
                          manual ? TS_RULE_TRIGGER_MANUAL : TS_RULE_TRIGGER_CONDITION,
                          failed ? "action failed" : "actions accepted", r.action_count, failed);
@@ -768,7 +851,7 @@ static esp_err_t execute_rule(const char *id, bool manual, bool *triggered, ts_r
 esp_err_t ts_rule_evaluate(const char *id, bool *triggered) {
     if (!triggered)
         return ESP_ERR_INVALID_ARG;
-    return execute_rule(id, false, triggered, NULL, NULL);
+    return execute_rule(id, false, triggered, NULL, NULL, NULL);
 }
 
 int ts_rule_evaluate_all(void)
@@ -813,12 +896,12 @@ int ts_rule_evaluate_all(void)
 
 esp_err_t ts_rule_trigger_ex(const char *id, ts_rule_reject_t *why) {
     bool triggered;
-    return execute_rule(id, true, &triggered, why, NULL);
+    return execute_rule(id, true, &triggered, why, NULL, NULL);
 }
 
-esp_err_t ts_rule_trigger_versioned(const char *id,const char *active_version,ts_rule_reject_t *why) {
+esp_err_t ts_rule_trigger_versioned(const char *id,const char *active_version,ts_rule_reject_t *why,const char **reason) {
     bool triggered;
-    return execute_rule(id,true,&triggered,why,active_version);
+    return execute_rule(id,true,&triggered,why,active_version,reason);
 }
 
 esp_err_t ts_rule_trigger(const char *id) {
@@ -874,6 +957,7 @@ static bool check_action_condition(const ts_auto_action_t *action)
 /* Delays/repeat waits cooperate with stop without abandoning rule ownership. */
 static bool rule_wait(const ts_auto_action_t *action,uint32_t ms) {
     while (ms && ts_action_manager_accepting() && ts_action_snapshot_current(action)) {
+        if(action->runtime_deadline_ms && esp_timer_get_time()/1000>=action->runtime_deadline_ms)return false;
         uint32_t slice = ms > 100 ? 100 : ms;
         vTaskDelay(pdMS_TO_TICKS(slice));
         ms -= slice;
@@ -882,7 +966,7 @@ static bool rule_wait(const ts_auto_action_t *action,uint32_t ms) {
 }
 static esp_err_t execute_action_with_repeat(const ts_auto_action_t *action,
                                              ts_action_result_cb_t callback,
-                                             void *user_data)
+                                             void *user_data, ts_action_result_t *start_result)
 {
     esp_err_t ret = ESP_OK;
     if (!ts_action_manager_accepting() || !ts_action_snapshot_current(action)) return ESP_ERR_INVALID_STATE;
@@ -897,7 +981,8 @@ static esp_err_t execute_action_with_repeat(const ts_auto_action_t *action,
         case TS_AUTO_REPEAT_ONCE:
         default:
             // 单次执行
-            ret = ts_action_execute(action);
+            ret = start_result && ts_action_is_background(action)
+                ? ts_action_submit_background(action,start_result) : ts_action_execute(action);
             if (callback) {
                 callback(action, ret, user_data);
             }
@@ -918,11 +1003,13 @@ static esp_err_t execute_action_with_repeat(const ts_auto_action_t *action,
                     break;
                 }
 
-                ret = ts_action_execute(action);
+                ret = start_result && ts_action_is_background(action)
+                ? ts_action_submit_background(action,start_result) : ts_action_execute(action);
                 if (callback) {
                     callback(action, ret, user_data);
                 }
 
+                if(ret!=ESP_OK && start_result && ts_action_is_background(action))break;
                 // 最后一次不需要等待
                 if (i < count - 1 && interval > 0) {
                     if (!rule_wait(action,interval)) return ESP_ERR_INVALID_STATE;
@@ -940,11 +1027,13 @@ static esp_err_t execute_action_with_repeat(const ts_auto_action_t *action,
             ESP_LOGI(TAG, "Repeat while condition true, interval=%dms, max=%d", interval, max_iterations);
 
             while (ts_action_manager_accepting() && ts_action_snapshot_current(action) && check_action_condition(action) && iterations < max_iterations) {
-                ret = ts_action_execute(action);
+                ret = start_result && ts_action_is_background(action)
+                ? ts_action_submit_background(action,start_result) : ts_action_execute(action);
                 if (callback) {
                     callback(action, ret, user_data);
                 }
                 iterations++;
+                if(ret!=ESP_OK && start_result && ts_action_is_background(action))break;
 
                 if (!rule_wait(action,interval)) return ESP_ERR_INVALID_STATE;
             }
@@ -969,7 +1058,8 @@ static esp_err_t execute_action_with_repeat(const ts_auto_action_t *action,
  * @return 整体执行结果
  */
 static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int count,
-                                             int *success_count, int *fail_count)
+                                             int *success_count, int *fail_count,
+                                             unsigned *resume, ts_action_result_t *start_result)
 {
     if (!actions || count <= 0) {
         return ESP_ERR_INVALID_ARG;
@@ -980,7 +1070,7 @@ static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int
 
     ESP_LOGI(TAG, "Executing %d actions sequentially", count);
 
-    for (int i = 0; i < count; i++) {
+    for (int i = resume ? *resume : 0; i < count; i++) {
         if (!ts_action_manager_accepting() || !ts_action_snapshot_current(&actions[i])) { fail += count - i; ret = ESP_ERR_INVALID_STATE; break; }
         ESP_LOGI(TAG, "Action [%d/%d]: type=%d, template=%s, delay=%dms",
                  i + 1, count, actions[i].type,
@@ -993,13 +1083,18 @@ static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions, int
             if (!rule_wait(&actions[i],actions[i].delay_ms)) { fail += count - i; ret = ESP_ERR_INVALID_STATE; break; }
         }
 
-        esp_err_t action_ret = execute_action_with_repeat(&actions[i], NULL, NULL);
+        esp_err_t action_ret = execute_action_with_repeat(&actions[i], NULL, NULL, start_result);
+        if(resume && start_result->reason && !strcmp(start_result->reason,"service_already_running")){
+            action_ret=ESP_OK;start_result->reason=NULL;
+        }
         if (action_ret == ESP_OK) {
             success++;
         } else {
             fail++;
             ret = action_ret;  // 记录最后一个错误
+            if(resume&&ts_action_is_background(&actions[i])){*resume=i;break;}
         }
+        if(resume)*resume=i+1;
 
         // LED Matrix 动作后自动添加延迟，确保渲染完成
         // 这对于连续的 LED 操作（如 image + filter）很重要
@@ -1045,7 +1140,7 @@ esp_err_t ts_action_execute_array(const ts_auto_action_t *actions, int count,
                                    ts_action_result_cb_t callback, void *user_data)
 {
     // 兼容旧 API，忽略统计
-    return execute_actions_with_stats(actions, count, NULL, NULL);
+    return execute_actions_with_stats(actions, count, NULL, NULL, NULL, NULL);
 }
 
 /*===========================================================================*/

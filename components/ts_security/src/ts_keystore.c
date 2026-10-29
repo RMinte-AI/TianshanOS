@@ -615,26 +615,21 @@ esp_err_t ts_keystore_delete_key(const char *id)
     
     char nvs_key[TS_KEYSTORE_ID_MAX_LEN + 8];
     
-    /* 删除私钥 */
-    make_nvs_key(nvs_key, sizeof(nvs_key), id, "_priv");
-    nvs_erase_key(s_keystore.nvs_handle, nvs_key);
-    
-    /* 删除公钥 */
-    make_nvs_key(nvs_key, sizeof(nvs_key), id, "_pub");
-    nvs_erase_key(s_keystore.nvs_handle, nvs_key);
-    
-    /* 删除元数据 */
-    make_nvs_key(nvs_key, sizeof(nvs_key), id, "_meta");
-    nvs_erase_key(s_keystore.nvs_handle, nvs_key);
-    
-    /* 从索引中移除 */
-    remove_from_index(id);
-    
-    nvs_commit(s_keystore.nvs_handle);
-    
+    /* Report the actual outcome, including a partially completed deletion. */
+    const char *suffixes[] = {"_priv", "_pub", "_meta"};
+    esp_err_t ret = ESP_OK;
+    for (unsigned i = 0; ret == ESP_OK && i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+        make_nvs_key(nvs_key, sizeof(nvs_key), id, suffixes[i]);
+        ret = nvs_erase_key(s_keystore.nvs_handle, nvs_key);
+        if (ret == ESP_ERR_NVS_NOT_FOUND) ret = ESP_OK;
+    }
+    if (ret == ESP_OK) {
+        ret = remove_from_index(id);
+        if (ret == ESP_ERR_NVS_NOT_FOUND) ret = ESP_OK;
+    }
+    if (ret == ESP_OK) ret = nvs_commit(s_keystore.nvs_handle);
     xSemaphoreGive(s_keystore.write_lock);
-    ESP_LOGI(TAG, "Key '%s' deleted", id);
-    return ESP_OK;
+    return ret;
 }
 
 bool ts_keystore_key_exists(const char *id)

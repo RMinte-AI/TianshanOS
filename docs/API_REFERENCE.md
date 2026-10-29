@@ -1455,15 +1455,24 @@ POST /api/v1/ota/www/start_sdcard
 
 操作在当前配置集合内处理规则、模板、命令、主机、数据源和用户变量，不修改另一份手动副本。`restore_internal` 恢复当前工作位置；`use_sd` 只切换来源，因此可以成功但 `saved=false`。`save_to_sd` 写卡成功、保存来源选择失败时会分别报告结果，不能把它提示为完整切换成功。
 
-`automation.rules.delete`、`automation.actions.delete`、`ssh.commands.remove` 使用目标 `id` 和 `active_version`：
+`automation.rules.delete`、`automation.actions.delete`、`automation.sources.delete`、`ssh.hosts.remove`、`ssh.commands.remove` 使用目标 `id` 和 `active_version`。`automation.variables.delete` 使用目标 `name` 和 `active_version`，只删除保存的用户变量配置：
 
 - `preview=true`：返回影响清单，不删除。
 - 无引用时可普通删除；Rule 直接移除。
 - 有引用时可用 `replacement_id` 替换引用，或 `mode="cascade"` 解除引用并停用受影响规则。
-- `force=true`：最终强删，不等待远端核验。删除命令后，关联模板保留为停用草稿并清空命令引用。
+- `force=true`：最终强删，不等待远端核验。删除命令后，直接引用它的动作模板一并删除，受影响规则解除失效动作引用并停用。因输入变量消失而受影响的其他模板、命令和数据源保留配置并停用。
+- 关联清单覆盖规则条件、步骤条件、变量读写、命令和动作中的变量插入，以及变量数据源。返回清单中每项的 `effect` 为 `delete`、`disable` 或 `update`，网页据此报告实际处理结果。
 - 影响范围无法确认时，确认后增加 `pause_automation=true`，暂停自动化并删除；重启不会自动取消此次暂停。
 
 以上删除均保留真实写入错误。独立后台服务记录由 `automation.services.list` 列出；核验和停止使用 `automation.services.status`（`verify=true`）、`automation.services.stop` 及 `run_id`，不再用命令 ID 代替服务实例。
+
+### 新建、编辑与用户变量
+
+`automation.rules.add`、`automation.sources.add`、`ssh.commands.add`、`ssh.hosts.add` 仅新建；编号已存在时返回 `object_exists`，不会覆盖旧配置。编辑分别使用相应的 `.update` 接口，并携带列表返回的 `active_version`。数据源和主机更新只替换提交的字段，未提交的映射、认证设置等继续保留；命令编辑提交完整命令定义。
+
+`automation.variables.list` 的 `configured_only=true` 返回保存的用户变量、初始值和 `active_version`。省略该参数仍查询运行时变量，不改变已有监控用途。变量删除使用上述预览、普通删除、强制删除和暂停后强制删除流程。
+
+`key.delete` 增加 `preview=true`：返回当前配置的关联主机 `hosts`、使用原密钥的独立运行记录 `runs`、以及影响范围是否完整的 `complete`。预览不连接 SSH，不删除密钥。用户确认后调用不带 `preview` 的原删除接口；存储删除未完整完成时返回 `key_delete_incomplete`，不报告成功。
 
 详见 [自动化配置使用与存储](AUTOMATION_STORAGE.md)。
 

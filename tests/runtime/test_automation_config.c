@@ -70,7 +70,8 @@ static int xTaskNotifyGive(TaskHandle_t task) { assert(task);++stop_notification
 #include "source_transport.inc"
 void ts_source_config_activate(void) { /* Task creation and real networking are outside this fixture. */ }
 
-int64_t esp_timer_get_time(void) { static int64_t now=100000;return ++now; }
+static int64_t clock_us=100000;
+int64_t esp_timer_get_time(void) { return ++clock_us; }
 bool ts_action_manager_is_initialized(void) { return true; }
 static unsigned template_executions;
 static esp_err_t template_execution_ret=ESP_OK;
@@ -81,22 +82,29 @@ esp_err_t ts_action_queue(const ts_auto_action_t *action,ts_action_callback_t ca
 { (void)action;(void)callback;(void)context;(void)priority;return ESP_OK; }
 
 static atomic_bool refuse_actions, refuse_service;
+static const char *preflight_reason="ssh_connect_timeout";static unsigned preflight_checks;
 static pthread_mutex_t execution_gate=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t execution_changed=PTHREAD_COND_INITIALIZER;
 static bool block_action,action_reached,action_released;
 static unsigned rule_actions;
 bool ts_action_manager_accepting(void) { return !refuse_actions; }
-bool ts_ssh_service_start_admissible(const char *id) { (void)id;return !refuse_service; }
+esp_err_t ts_action_manager_check_start(const ts_auto_action_t *a,ts_action_result_t *result,bool automatic) {(void)automatic;if(a->type==TS_AUTO_ACT_SSH_CMD_REF){++preflight_checks;if(refuse_service){result->reason=preflight_reason;return ESP_ERR_INVALID_STATE;}}return ESP_OK;}
+esp_err_t ts_ssh_service_check_start(const char *id,const ts_ssh_host_config_t *host,const char *exclude,int64_t deadline,const char **reason)
+{(void)id;(void)host;(void)exclude;(void)deadline;if(reason)*reason=NULL;return refuse_service?ESP_ERR_INVALID_STATE:ESP_OK;}
+esp_err_t ts_action_submit_background(const ts_auto_action_t *action,ts_action_result_t *result)
+{return ts_action_manager_execute(action,result);}
 static bool fail_service_import;static unsigned service_imports;
 esp_err_t ts_ssh_service_import_legacy(const ts_ssh_command_config_t *command,const ts_ssh_host_config_t *host)
 {assert(command&&host&&command->nohup);++service_imports;return fail_service_import?ESP_FAIL:ESP_OK;}
 typedef void *QueueHandle_t;
 #include "action_identity.inc"
-static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions,int count,int *ok,int *failed)
+static esp_err_t execute_auto_sequence(const ts_auto_action_t *,int,int *,int *,unsigned *,ts_action_result_t *);
+static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions,int count,int *ok,int *failed,unsigned *resume,ts_action_result_t *result)
 {
-    (void)actions;pthread_mutex_lock(&execution_gate);
+    if(resume)return execute_auto_sequence(actions,count,ok,failed,resume,result);
+    (void)actions;(void)result;pthread_mutex_lock(&execution_gate);
     if(block_action){action_reached=true;pthread_cond_broadcast(&execution_changed);while(!action_released)pthread_cond_wait(&execution_changed,&execution_gate);}
-    pthread_mutex_unlock(&execution_gate);rule_actions+=count;*ok=count;*failed=0;return ESP_OK;
+    pthread_mutex_unlock(&execution_gate);rule_actions+=count;if(resume)*resume=count;*ok=count;*failed=0;return ESP_OK;
 }
 
 static bool fail_prepare;
@@ -118,7 +126,7 @@ void ts_ssh_binding_unlock(void) { xSemaphoreGiveRecursive(admission); }
 esp_err_t ts_rule_config_prepare(const ts_auto_rule_t *rules,int count,bool keep_runtime,ts_rule_config_view_t **out)
 { ++prepares;*out=NULL;return fail_prepare?ESP_ERR_NO_MEM:engine_prepare(rules,count,keep_runtime,out); }
 void ts_rule_config_discard(ts_rule_config_view_t *view) { engine_discard(view); }
-void ts_rule_config_publish(ts_rule_config_view_t *view,bool enabled) { ++publishes;engine_publish(view,enabled); }
+void ts_rule_config_publish(ts_rule_config_view_t *view,bool enabled,const ts_auto_document_t *before,const ts_auto_document_t *after) { ++publishes;engine_publish(view,enabled,before,after); }
 void ts_rule_config_pause(void) { ++pauses;engine_pause(); }
 
 
@@ -188,12 +196,14 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *action,ts_action_result
 esp_err_t ts_action_exec_gpio(const ts_auto_action_gpio_t *action,ts_action_result_t *result){(void)action;return executed(result);}
 esp_err_t ts_action_exec_log(const ts_auto_action_log_t *action,ts_action_result_t *result){(void)action;return executed(result);}
 esp_err_t ts_action_exec_device(const ts_auto_action_device_t *action,ts_action_result_t *result){(void)action;return executed(result);}
-static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;ts_action_result_t result;return executed(&result);}
+static bool fail_webhook;
+static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;if(fail_webhook){++execution_io;return ESP_FAIL;}ts_action_result_t result;return executed(&result);}
 static esp_err_t execute_service_control(const ts_action_queue_entry_t *entry,ts_action_result_t *result){(void)entry;return executed(result);}
 #include "action_execution.inc"
 esp_err_t ts_action_submit_prepared(const ts_auto_action_t *action)
 {ts_action_queue_entry_t entry={.action=*action};ts_action_result_t result={0};return execute_entry(&entry,&result);}
 #include "rule_repeat.inc"
+#include "rule_sequence.inc"
 static void *run_automation(void *arg){automation_task(arg);return NULL;}
 
 static ts_auto_config_status_t status(void)
@@ -232,12 +242,12 @@ static void rule_publication_cases(void)
     for(int i=0;i<64;++i){snprintf(rules[i].id,sizeof(rules[i].id),"r%d",i);strcpy(rules[i].name,"Original");}
     ts_rule_config_view_t *prepared=NULL;
     assert(engine_prepare(rules,65,true,&prepared)==ESP_ERR_INVALID_SIZE && !prepared);
-    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true);
+    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true,NULL,NULL);
     assert(ts_rule_count()==64);
     s_rule_ctx.rules[0].last_trigger_ms=77;s_rule_ctx.rules[0].trigger_count=2;
     ts_auto_rule_t held;assert(ts_rule_acquire("r0",&held)==ESP_OK);uint32_t identity=held.instance;
     strcpy(rules[1].name,"Changed");
-    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true);
+    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true,NULL,NULL);
     assert(s_rule_ctx.rules[0].instance==identity && s_rule_ctx.rules[0].last_trigger_ms==77 && s_rule_ctx.rules[0].trigger_count==2);
     assert(!strcmp(held.name,"Original") && s_rule_ctx.retired==1);ts_rule_release(&held);assert(!s_rule_ctx.retired);
     engine_pause();assert(!s_rule_ctx.config_enabled);free(rules);
@@ -390,6 +400,88 @@ static void source_cases(void)
 #include "test_action_lifecycle.inc"
 #include "test_config_api.inc"
 
+static void automatic_start_cases(void)
+{
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"retry_cmd\",\"host_id\":\"host\",\"name\":\"Retry\",\"command\":\"true\",\"nohup\":true}",NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"retry_rule\",\"name\":\"Retry\",\"enabled\":true,\"allow_manual_trigger\":true,\"cooldown_ms\":60000,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"log\",\"message\":\"prefix\"},{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"retry_cmd\"},{\"type\":\"log\",\"message\":\"suffix\"}]}",NULL,NULL)==ESP_OK);
+    bool fired=false;ts_rule_start_status_t start;unsigned checked=preflight_checks;
+    refuse_service=true;preflight_reason="ssh_connect_timeout";
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+1);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"waiting")&&start.retry_after_ms>29000);
+    ts_auto_config_status_t before_unrelated=status();
+    ts_auto_rule_t identity;assert(ts_rule_acquire("retry_rule",&identity)==ESP_OK);uint32_t original_instance=identity.instance;ts_rule_release(&identity);
+    int64_t original_start=s_rule_ctx.meta[find_rule_index("retry_rule")].start.first_ms;
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"retry_unrelated\",\"source_id\":\"user\",\"value_type\":2,\"value\":1}",NULL,NULL)==ESP_OK);
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+1);
+    assert(s_rule_ctx.meta[find_rule_index("retry_rule")].start.first_ms==original_start);
+    ts_rule_reject_t stale;const char *stale_reason=NULL;
+    assert(ts_rule_trigger_versioned("retry_rule",before_unrelated.active_version,&stale,&stale_reason)==ESP_ERR_INVALID_STATE&&stale==TS_RULE_REJECT_CONFIG_VERSION);
+    assert(s_rule_ctx.meta[find_rule_index("retry_rule")].start.first_ms==original_start);
+    assert(ts_rule_acquire("retry_rule",&identity)==ESP_OK&&identity.instance==original_instance);ts_rule_release(&identity);
+    for(int i=0;i<100;++i)assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired);
+    assert(preflight_checks==checked+1);clock_us+=30000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+2);
+    clock_us+=330000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+2);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"failed")&&!strcmp(start.reason,"automatic_start_timeout"));
+    /* A false condition rearms. Permanent authentication failures do not retry. */
+    assert(ts_variable_set_bool("test.ready",false)==ESP_OK);assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK);
+    assert(ts_variable_set_bool("test.ready",true)==ESP_OK);preflight_reason="ssh_auth_failed";
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"failed")&&!strcmp(start.reason,"ssh_auth_failed"));
+    checked=preflight_checks;clock_us+=30000000;assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&preflight_checks==checked);
+    /* A manual failure is one attempt and cancels the pending automatic episode. */
+    ts_rule_reject_t why;assert(ts_rule_trigger_ex("retry_rule",&why)==ESP_ERR_INVALID_STATE);
+    checked=preflight_checks;clock_us+=30000000;assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&preflight_checks==checked);
+    /* A failure after preflight resumes at the launch, without repeating the prefix. */
+    assert(ts_variable_set_bool("test.ready",false)==ESP_OK);assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK);
+    assert(ts_variable_set_bool("test.ready",true)==ESP_OK);refuse_service=false;
+    template_execution_ret=ESP_ERR_TIMEOUT;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_FAILED,.reason="ssh_connect_timeout"};
+    unsigned io=execution_io,launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_ERR_TIMEOUT&&fired&&execution_io==io+1&&template_executions==launches+1);
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"retry_unrelated\",\"source_id\":\"user\",\"value_type\":2,\"value\":3}",NULL,NULL)==ESP_OK);
+    template_execution_ret=ESP_OK;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_SUCCESS};clock_us+=30000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&execution_io==io+2&&template_executions==launches+2);
+    refuse_service=true;preflight_reason="service_already_running";
+    checked=preflight_checks;clock_us+=30000000;assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+1);
+    refuse_service=false;preflight_reason="ssh_connect_timeout";
+    /* An unconfirmed launch that later proves live completes once, then runs the suffix. */
+    assert(ts_variable_set_bool("test.ready",false)==ESP_OK);assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK);
+    assert(ts_variable_set_bool("test.ready",true)==ESP_OK);
+    template_execution_ret=ESP_ERR_TIMEOUT;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_FAILED,.reason="service_outcome_unknown"};
+    io=execution_io;launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_ERR_TIMEOUT&&execution_io==io+1);
+    ts_auto_rule_t prior;assert(ts_rule_acquire("retry_rule",&prior)==ESP_OK);unsigned triggers=prior.trigger_count;ts_rule_release(&prior);
+    clock_us+=30000000;refuse_service=true;preflight_reason="service_already_running";
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&execution_io==io+2&&template_executions==launches+1);
+    assert(ts_rule_acquire("retry_rule",&prior)==ESP_OK&&prior.trigger_count==triggers);ts_rule_release(&prior);
+    refuse_service=false;preflight_reason="ssh_connect_timeout";template_execution_ret=ESP_OK;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_SUCCESS};
+    /* A skipped SSH step cannot latch the whole rule. Later input can enable it. */
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"retry_rule\",\"name\":\"Conditional retry\",\"enabled\":true,\"allow_manual_trigger\":true,\"cooldown_ms\":0,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"log\",\"message\":\"prefix\"},{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"retry_cmd\",\"condition\":{\"variable\":\"retry_unrelated\",\"operator\":\"eq\",\"value\":2}}]}",NULL,NULL)==ESP_OK);
+    io=execution_io;launches=template_executions;checked=preflight_checks;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&execution_io==io+1&&template_executions==launches&&preflight_checks==checked);
+    assert(ts_variable_set_int("retry_unrelated",2)==ESP_OK);
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&template_executions==launches+1);
+    assert(!ts_rule_start_status("retry_rule",&start));
+    /* Ordinary failures before/after SSH retain sequence semantics and do not
+     * become permanent automatic-start failures. Only the SSH step is retried. */
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"retry_rule\",\"name\":\"Mixed failures\",\"enabled\":true,\"cooldown_ms\":0,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"webhook\",\"url\":\"http://192.0.2.250/notify\",\"method\":\"POST\"},{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"retry_cmd\"},{\"type\":\"webhook\",\"url\":\"http://192.0.2.250/notify\",\"method\":\"POST\"},{\"type\":\"log\",\"message\":\"suffix\"}]}",NULL,NULL)==ESP_OK);
+    fail_webhook=true;io=execution_io;launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_FAIL&&fired&&execution_io==io+3&&template_executions==launches+1);
+    assert(!ts_rule_start_status("retry_rule",&start));
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_FAIL&&fired&&execution_io==io+6&&template_executions==launches+2);
+    template_execution_ret=ESP_ERR_TIMEOUT;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_FAILED,.reason="ssh_connect_timeout"};
+    io=execution_io;launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_ERR_TIMEOUT&&execution_io==io+1&&template_executions==launches+1);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"waiting"));
+    template_execution_ret=ESP_OK;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_SUCCESS};clock_us+=30000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_FAIL&&fired&&execution_io==io+3&&template_executions==launches+2);
+    assert(!ts_rule_start_status("retry_rule",&start));fail_webhook=false;
+    assert(ts_rule_unregister("retry_rule")==ESP_OK);assert(ts_ssh_commands_config_remove("retry_cmd")==ESP_OK);
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_VARIABLE,"retry_unrelated",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,NULL)==ESP_OK);
+    puts("PASS automatic start: 30-second cadence, 360-second deadline, permanent errors, manual single attempt, resumed actions, unrelated saves and conditional-step reevaluation");
+}
+
 int main(void)
 {
     s_ctx->accepting=true;
@@ -412,6 +504,7 @@ int main(void)
                         first.active_version,&error)==ESP_OK);
     source_cases();
     rule_config_cases();
+    automatic_start_cases();
     stop_cases();
     assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"threshold\",\"source_id\":\"operator\",\"value_type\":2,\"value\":3}",NULL,&error)==ESP_OK);
     ts_auto_variable_t sample={0};strcpy(sample.name,"threshold");strcpy(sample.source_id,"operator");
@@ -425,6 +518,35 @@ int main(void)
     assert(ts_variable_get_int("threshold",&observed)==ESP_OK && observed==11);
     assert(ts_variable_get_int("system.temperature",&observed)==ESP_OK && observed==10);
     assert(ts_variable_exists("worker.status"));
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"worker.output\",\"source_id\":\"user\",\"value_type\":4,\"value\":\"command output\"}",NULL,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"watcher\",\"label\":\"Watcher\",\"type\":4,\"enabled\":true,\"var_prefix\":\"worker.\",\"var_watch_all\":true}",NULL,&error)==ESP_OK);
+    assert(ts_variable_set_string("worker.status","ready")==ESP_OK);
+    ts_auto_source_t watcher;ts_auto_value_t watched;
+    assert(ts_source_get_copy("watcher",&watcher)==ESP_OK&&read_variable_source(&watcher,&watched)==ESP_OK);
+    assert(ts_variable_get("watcher.status",&watched)==ESP_OK&&!strcmp(watched.str_val,"ready"));
+    assert(ts_variable_get("watcher.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"unrelated_to_watcher\",\"value_type\":2,\"value\":1}",NULL,&error)==ESP_OK);
+    assert(ts_variable_get("watcher.status",&watched)==ESP_OK&&!strcmp(watched.str_val,"ready"));
+    assert(ts_variable_get("watcher.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(ts_source_unregister("watcher")==ESP_OK&&!ts_variable_exists("watcher.status")&&ts_variable_exists("worker.status"));
+    assert(!ts_variable_exists("watcher.output")&&ts_variable_exists("worker.output"));
+    /* An explicitly declared output remains user-owned, including after the
+     * source is removed. Mirroring must not make an existing config invalid. */
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"watcher.output\",\"source_id\":\"user\",\"value_type\":4,\"value\":\"initial\"}",NULL,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"watcher\",\"type\":4,\"var_prefix\":\"worker.\"}",NULL,&error)==ESP_OK);
+    assert(ts_source_get_copy("watcher",&watcher)==ESP_OK&&read_variable_source(&watcher,&watched)==ESP_OK);
+    assert(ts_variable_get("watcher.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(ts_source_unregister("watcher")==ESP_OK&&ts_variable_exists("watcher.output"));
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_VARIABLE,"watcher.output",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"worker\",\"type\":4,\"var_prefix\":\"worker.\"}",NULL,&error)==ESP_OK);
+    assert(ts_variable_get("worker.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(ts_source_unregister("worker")==ESP_OK&&ts_variable_exists("worker.output"));
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_VARIABLE,"worker.output",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"standalone\",\"label\":\"Standalone\",\"type\":4,\"var_prefix\":\"standalone.\"}",NULL,&error)==ESP_OK);
+    assert(ts_variable_exists("standalone.status"));
+    assert(ts_source_unregister("standalone")==ESP_OK&&!ts_variable_exists("standalone.status"));
+
+
     assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"worker.status\",\"value_type\":4,\"value\":\"manual\"}",NULL,&error)==ESP_ERR_INVALID_ARG);
     assert(!strcmp(error.reason,"variable_name_reserved"));
     assert(write_object(TS_AUTO_CONFIG_ACTION,"{\"id\":\"template\",\"name\":\"Start\",\"enabled\":true,\"type\":\"ssh_cmd_ref\",\"ssh_ref\":{\"cmd_id\":\"command\"}}",NULL,&error)==ESP_OK);
@@ -494,6 +616,8 @@ int main(void)
     assert(ts_ssh_commands_config_get("command",&latest)==ESP_OK && latest.instance!=executed.instance && !latest.last_exec_time);
     assert(ts_ssh_commands_config_update_exec_time(&executed)==ESP_OK);
     assert(ts_ssh_commands_config_get("command",&latest)==ESP_OK && !latest.last_exec_time); /* An old completion cannot mark a recreated command. */
+    assert(ts_action_template_get("template",&template)==ESP_ERR_NOT_FOUND);
+    assert(write_object(TS_AUTO_CONFIG_ACTION,"{\"id\":\"template\",\"name\":\"Recreated\",\"type\":\"log\",\"log\":{\"message\":\"new\"}}",NULL,&error)==ESP_OK);
     ts_auto_config_template_used(held,0,123456);
     assert(ts_action_template_get("template",&template)==ESP_OK && !template.use_count);
     ts_auto_config_release(held);
@@ -508,6 +632,10 @@ int main(void)
     assert(!strcmp(status().active_version,before.active_version));
     fail_install=false;
     assert(ts_auto_config_enable(true,NULL,&error)==ESP_OK && status().enabled);
+    uint64_t live_binding=ts_auto_config_binding_epoch(), queued_epoch=ts_auto_config_execution_epoch();
+    assert(ts_auto_config_enable(false,NULL,&error)==ESP_OK);
+    assert(ts_auto_config_binding_epoch()==live_binding&&ts_auto_config_execution_epoch()!=queued_epoch);
+    assert(ts_auto_config_enable(true,NULL,&error)==ESP_OK&&ts_auto_config_binding_epoch()==live_binding);
     assert(ts_ssh_hosts_config_clear()!=ESP_OK && ts_ssh_hosts_config_count()==1);
     before=status();
     assert(ts_auto_config_open(TS_AUTO_CONFIG_INTERNAL,&error)==ESP_OK);
@@ -554,6 +682,8 @@ int main(void)
     ts_auto_config_release(held);
     action_lifecycle_cases();
     config_api_cases();
+    lifecycle_crud_api_cases();
+    reference_origin_api_cases();
     config_pack_api_cases();
     mode_cases();
     ts_ssh_commands_config_deinit();ts_ssh_hosts_config_deinit();

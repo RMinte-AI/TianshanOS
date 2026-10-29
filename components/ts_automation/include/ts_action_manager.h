@@ -108,6 +108,7 @@ typedef struct {
     ts_action_callback_t callback;       /**< Completion callback */
     void *user_data;                     /**< User data for callback */
     uint8_t priority;                    /**< Priority (0=highest) */
+    bool service_check;                  /**< Check retained SSH runs without executing the action. */
     int64_t enqueue_time;                /**< When queued */
     /* Sync execution support */
     void *completion; /**< Shared completion lifetime, independent of waiter stack. */
@@ -183,6 +184,10 @@ esp_err_t ts_action_get_ssh_host(const char *host_id, ts_action_ssh_host_t *host
  */
 esp_err_t ts_action_manager_execute(const ts_auto_action_t *action, 
                                      ts_action_result_t *result);
+/* Preflight a resolved background action on the executor, before rule side effects. */
+bool ts_action_is_background(const ts_auto_action_t *action);
+esp_err_t ts_action_submit_background(const ts_auto_action_t *action, ts_action_result_t *result);
+esp_err_t ts_action_manager_check_start(const ts_auto_action_t *action, ts_action_result_t *result, bool automatic);
 
 /**
  * @brief Queue action for async execution

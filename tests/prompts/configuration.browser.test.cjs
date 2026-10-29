@@ -427,11 +427,11 @@ for (const lang of ['zh-CN','en-US']) test(`${lang}: approved command disclosure
    await page.setViewportSize({width,height:1000});await page.evaluate(()=>loadCommandsPage());await page.locator('[data-host-id="layout-host"]').click();
    const card=page.locator('.command-card');await card.locator('.command-toggle').waitFor();
    const geometry=await card.evaluate(e=>{
-    const r=s=>e.querySelector(s).getBoundingClientRect(),b=r('.command-body'),a=r('.act'),c=e.getBoundingClientRect();
+    const r=s=>e.querySelector(s).getBoundingClientRect(),b=r('.command-body'),a=r('.act'),c=r('.command-top');
     const buttons=[...e.querySelectorAll('.act button')].map(x=>{const z=x.getBoundingClientRect();return {x:z.x,y:z.y,h:z.height}});
     return {center:Math.abs(b.y+b.height/2-a.y-a.height/2),top:Math.min(a.y,b.y)-c.y,bottom:c.bottom-Math.max(a.bottom,b.bottom),buttons};
    });
-   assert(geometry.center<.1&&Math.abs(geometry.top-geometry.bottom)<.1,'header contents centered in the complete gray row');
+   assert(geometry.center<.1&&Math.abs(geometry.top-geometry.bottom)<.1,'details and buttons centered below the separate title/status row');
    assert.equal(geometry.buttons.length,6);
    const headingLines=await page.locator('.page-commands>.sec-h:first-child>.sec-t').evaluate(e=>{const r=document.createRange();r.selectNodeContents(e);return r.getClientRects().length;});assert.equal(headingLines,1,'host heading remains on one line');assert.equal(new Set(geometry.buttons.map(x=>x.x)).size,3);assert.equal(new Set(geometry.buttons.map(x=>x.y)).size,2);assert.equal(new Set(geometry.buttons.map(x=>x.h)).size,1);
    assert.equal(await card.locator('.cmd-code').isVisible(),false);await page.screenshot({path:path.join(out,`commands-${lang}-${width}.png`)});

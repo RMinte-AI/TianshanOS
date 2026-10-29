@@ -6,7 +6,7 @@ root=Path(__file__).resolve().parents[2]
 idf=Path(os.environ.get('IDF_PATH','/Users/massif/esp/v5.5.2/esp-idf'))
 source=Path(os.environ.get('TS_KEYSTORE_TEST_SOURCE', root/'components/ts_security/src/ts_keystore.c')).read_text()
 api_source=(root/'components/ts_api/src/ts_api_key.c').read_text()
-a=api_source.index('static esp_err_t api_key_generate(');api_handler=api_source[a:api_source.index('\n/**',a)]
+a=api_source.index('static esp_err_t api_key_generate(');api_handler=api_source[a:api_source.index('\n}',a)+2]
 web_source=(root/'components/ts_webui/src/ts_webui_api.c').read_text()
 a=web_source.index('static esp_err_t send_key_generate_result(');web_handler=web_source[a:web_source.index('\nstatic esp_err_t',a+1)]
 a=web_source.index('static esp_err_t api_handler(');web_handler+=web_source[a:web_source.index('\nstatic esp_err_t login_handler',a)]
@@ -128,6 +128,13 @@ static int json_alloc_count,json_fail_at;
 static void *fail_one_json_alloc(size_t n){return ++json_alloc_count==json_fail_at?NULL:malloc(n);}
 int main(int argc,char **argv){
  assert(ts_keystore_init()==ESP_OK);reset();
+
+ if(!strcmp(argv[1],"deletion")){
+  const char *erasures[]={"keep_priv","keep_pub","keep_meta"};
+  for(unsigned i=0;i<3;++i){reset();assert(store("keep")==ESP_OK);fail_erase=erasures[i];assert(ts_keystore_delete_key("keep")!=ESP_OK);assert(find(erasures[i]));fail_erase=NULL;assert(ts_keystore_delete_key("keep")==ESP_OK);absent("keep");}
+  reset();assert(store("keep")==ESP_OK);fail_key="_index";fail_write_at=1;write_hits=0;assert(ts_keystore_delete_key("keep")!=ESP_OK);fail_key=NULL;assert(ts_keystore_delete_key("keep")==ESP_OK);absent("keep");
+  reset();assert(store("keep")==ESP_OK);fail_commit_at=commit_calls+1;assert(ts_keystore_delete_key("keep")!=ESP_OK);fail_commit_at=0;assert(ts_keystore_delete_key("keep")==ESP_OK);absent("keep");
+ }
  if(!strcmp(argv[1],"metadata")){fail_key="new_meta";fail_write_at=1;assert(store("new")!=ESP_OK);}
  if(!strcmp(argv[1],"index")){fail_key="_index";fail_write_at=1;assert(store("new")!=ESP_OK);}
  if(!strcmp(argv[1],"prefix")){assert(store("app")==ESP_OK);assert(store("p")==ESP_OK);assert(!strcmp((char*)find("_index")->data,"app,p"));assert(store("key10")==ESP_OK);assert(store("key1")==ESP_OK);}
@@ -212,7 +219,7 @@ with tempfile.TemporaryDirectory(prefix='ts-keystore-') as tmp:
  env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
  subprocess.run(['cc','-std=c11','-g','-Wno-deprecated-declarations','-fsanitize=address,undefined','-I'+tmp,'-I'+str(root/'components/ts_security/include'),'-I'+str(root/'components/ts_api/include'),'-I'+str(root/'components/ts_core/ts_config/include'),'-I'+str(root/'components/ts_storage/include'),'-I'+str(idf/'components/json/cJSON'),str(p/'test.c'),str(idf/'components/json/cJSON/cJSON.c'),'-lm','-lpthread','-o',str(p/'test')],check=True,env=env)
  failures=[]
- for case in ['metadata','index','prefix','matrix','admission','concurrency','compatibility','api','allocations','lifecycle']:
+ for case in ['deletion','metadata','index','prefix','matrix','admission','concurrency','compatibility','api','allocations','lifecycle']:
   result=subprocess.run([str(p/'test'),case],env=env,capture_output=True,text=True)
   print(case,result.stdout or result.stderr.strip());
   if result.returncode:failures.append(case)

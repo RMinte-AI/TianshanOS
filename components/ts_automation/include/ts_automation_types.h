@@ -453,6 +453,7 @@ typedef struct {
     ts_auto_action_condition_t condition; /**< Execute only if condition is met */
     
     /* Template reference (for rule actions) */
+    int64_t runtime_deadline_ms; /**< Automatic start deadline; never serialized. */
     bool runtime_snapshot; /**< Execution-only; never serialized. */
     void *runtime_binding; /**< Owned execution snapshot; never serialized. */
     uint64_t runtime_epoch, runtime_template_instance;

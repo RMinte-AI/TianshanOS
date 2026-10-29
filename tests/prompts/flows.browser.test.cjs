@@ -434,7 +434,7 @@ scenarioTests('ssh-commands', [
     {id: 'command.save.missing-name', setup: (p) => openNewCommand(p, {name: ''}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-name'}},
     {id: 'command.save.missing-command', setup: (p) => openNewCommand(p, {command: ''}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-command'}},
     {id: 'command.save.missing-id', setup: (p) => openNewCommand(p, {id: ''}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-edit-id'}},
-    {id: 'command.save.bad-id', setup: (p) => openNewCommand(p, {id: '-bad id-'}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-edit-id'}},
+    {id: 'command.save.bad-id', setup: (p) => openNewCommand(p, {id: 'bad/id'}), act: p => p.evaluate(() => saveCommand()), device: commandsDevice(), show: {field: 'cmd-edit-id'}},
     {id: 'command.run.busy', setup: onCommands, act: p => p.evaluate(() => executeCommand(0)), device: commandsDevice({'ssh/exec_stream': '{"code":4,"message":"ssh_exec_busy"}'})},
     {id: 'command.run.wrong-password', setup: onCommands, act: p => p.evaluate(() => executeCommand(0)), device: commandsDevice({'ssh/exec_stream': wireSsh('wire-ssh-auth-failed.json')})},
     {id: 'command.run.start-failed', setup: onCommands, act: p => p.evaluate(() => executeCommand(0)), device: commandsDevice({'ssh/exec_stream': '{"code":7,"message":"ssh_start_failed","data":{"detail":"ESP_ERR_NO_MEM"}}'})},

@@ -6,6 +6,75 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <ctype.h>
+#include <strings.h>
+
+esp_err_t ts_action_parse_color(const char *color_str, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    if (!color_str || !r || !g || !b) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Skip whitespace */
+    while (isspace((unsigned char)*color_str)) color_str++;
+
+    /* Hex format: #RRGGBB */
+    if (color_str[0] == '#') {
+        unsigned int rgb;
+        if (sscanf(color_str + 1, "%6x", &rgb) == 1) {
+            *r = (rgb >> 16) & 0xFF;
+            *g = (rgb >> 8) & 0xFF;
+            *b = rgb & 0xFF;
+            return ESP_OK;
+        }
+    }
+
+    /* RGB format: rgb(r,g,b) */
+    if (strncasecmp(color_str, "rgb(", 4) == 0) {
+        int rv, gv, bv;
+        if (sscanf(color_str + 4, "%d,%d,%d", &rv, &gv, &bv) == 3) {
+            *r = (uint8_t)rv;
+            *g = (uint8_t)gv;
+            *b = (uint8_t)bv;
+            return ESP_OK;
+        }
+    }
+
+    /* Named colors */
+    static const struct {
+        const char *name;
+        uint8_t r, g, b;
+    } colors[] = {
+        {"red", 255, 0, 0},
+        {"green", 0, 255, 0},
+        {"blue", 0, 0, 255},
+        {"white", 255, 255, 255},
+        {"black", 0, 0, 0},
+        {"yellow", 255, 255, 0},
+        {"cyan", 0, 255, 255},
+        {"magenta", 255, 0, 255},
+        {"orange", 255, 165, 0},
+        {"purple", 128, 0, 128},
+        {"pink", 255, 192, 203},
+        {NULL, 0, 0, 0}
+    };
+
+    for (int i = 0; colors[i].name; i++) {
+        if (strcasecmp(color_str, colors[i].name) == 0) {
+            *r = colors[i].r;
+            *g = colors[i].g;
+            *b = colors[i].b;
+            return ESP_OK;
+        }
+    }
+
+    /* Bare RRGGBB was also accepted by the configuration codec. */
+    if(strlen(color_str)==6 && strspn(color_str,"0123456789abcdefABCDEF")==6){
+        unsigned long value=strtoul(color_str,NULL,16);
+        *r=(value>>16)&255;*g=(value>>8)&255;*b=value&255;return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
 
 bool ts_source_config_same(const ts_auto_source_t *a, const ts_auto_source_t *b)
 {
@@ -83,6 +152,13 @@ char *ts_action_template_encode(const ts_action_template_t *tpl)
 
     /* Serialize type-specific data */
     switch (tpl->action.type) {
+        case TS_AUTO_ACT_GPIO: {
+            cJSON *gpio = cJSON_AddObjectToObject(root, "gpio");
+            if (!gpio || !cJSON_AddNumberToObject(gpio, "pin", tpl->action.gpio.pin) ||
+                !cJSON_AddBoolToObject(gpio, "level", tpl->action.gpio.level) ||
+                !cJSON_AddNumberToObject(gpio, "pulse_ms", tpl->action.gpio.pulse_ms)) goto failed;
+            break;
+        }
         case TS_AUTO_ACT_SSH_CMD: {
             cJSON *ssh = cJSON_AddObjectToObject(root, "ssh");
             if (!ssh || !cJSON_AddStringToObject(ssh, "host_ref", tpl->action.ssh.host_ref) ||
@@ -270,6 +346,17 @@ esp_err_t ts_action_template_decode(const char *json, ts_action_template_t *tpl)
 
     /* Parse type-specific data */
     switch (tpl->action.type) {
+        case TS_AUTO_ACT_GPIO: {
+            const cJSON *gpio = cJSON_GetObjectItemCaseSensitive(root, "gpio");
+            if (!cJSON_IsObject(gpio)) goto invalid;
+            if ((item = cJSON_GetObjectItemCaseSensitive(gpio, "pin")))
+                READ_NUMBER(tpl->action.gpio.pin, 0, UINT8_MAX);
+            if ((item = cJSON_GetObjectItemCaseSensitive(gpio, "level")))
+                READ_BOOL(tpl->action.gpio.level);
+            if ((item = cJSON_GetObjectItemCaseSensitive(gpio, "pulse_ms")))
+                READ_NUMBER(tpl->action.gpio.pulse_ms, 0, UINT32_MAX);
+            break;
+        }
         case TS_AUTO_ACT_SSH_CMD: {
             cJSON *ssh = cJSON_GetObjectItem(root, "ssh");
             if (ssh) {
@@ -346,13 +433,8 @@ esp_err_t ts_action_template_decode(const char *json, ts_action_template_t *tpl)
                 }
                 /* 解析颜色（支持 color 字符串或 r/g/b 数值） */
                 if ((item = cJSON_GetObjectItem(led, "color")) && cJSON_IsString(item)) {
-                    /* Parse hex color like "#FF0000" */
-                    const char *hex = item->valuestring;
-                    if (hex[0] == '#') hex++;
-                    uint32_t color_val = strtoul(hex, NULL, 16);
-                    tpl->action.led.r = (color_val >> 16) & 0xFF;
-                    tpl->action.led.g = (color_val >> 8) & 0xFF;
-                    tpl->action.led.b = color_val & 0xFF;
+                    if (ts_action_parse_color(item->valuestring, &tpl->action.led.r,
+                                              &tpl->action.led.g, &tpl->action.led.b) != ESP_OK) goto invalid;
                 } else {
                     if ((item = cJSON_GetObjectItem(led, "r"))) {
                         READ_NUMBER(tpl->action.led.r, 0, UINT8_MAX);

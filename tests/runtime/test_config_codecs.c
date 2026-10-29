@@ -21,6 +21,19 @@ int main(void)
     assert(!strcmp(decoded.id,template.id) && decoded.action.led.r==0x12 && !decoded.use_count);
     free(raw);
 
+    const char *colors[]={"red","rgb(255,0,0)","#FF0000","FF0000"};
+    for(unsigned i=0;i<4;++i){
+        char json[192];snprintf(json,sizeof(json),"{\"id\":\"red\",\"type\":\"led\",\"led\":{\"color\":\"%s\"}}",colors[i]);
+        assert(ts_action_template_decode(json,&decoded)==ESP_OK);
+        assert(decoded.action.led.r==255&&decoded.action.led.g==0&&decoded.action.led.b==0);
+    }
+
+    /* GPIO parameters must survive the API's decode/encode/save path. */
+    assert(ts_action_template_decode("{\"id\":\"gpio\",\"type\":\"gpio\",\"gpio\":{\"pin\":48,\"level\":true,\"pulse_ms\":250}}",&template)==ESP_OK);
+    raw=ts_action_template_encode(&template);assert(raw);
+    assert(ts_action_template_decode(raw,&decoded)==ESP_OK&&decoded.action.gpio.pin==48&&decoded.action.gpio.level&&decoded.action.gpio.pulse_ms==250);
+    free(raw);
+
     ts_auto_source_t source={0}, source_read={0};
     strcpy(source.id,"sensor");source.type=TS_AUTO_SRC_REST;source.enabled=true;
     strcpy(source.rest.url,"http://192.0.2.3/status");

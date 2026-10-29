@@ -216,3 +216,159 @@ for(const language of ['zh-CN','en-US'])test(`${language}: a missing command ico
   assert(!calls.some(call=>call.endpoint==='ssh/commands/add'||call.endpoint==='automation/config/backup'));
  });
 });
+
+for(const lang of ['zh-CN','en-US'])test(`${lang}: dashboard log shortcut uses the original run without triggering the rule`,async()=>{
+ const d=serviceFixture();d.state.runs.delete(NEW);d.state.runs.get(OLD).rule_id=''; // Legacy records have no rule link.
+ await kit.withPage(lang,call=>call.endpoint==='automation/rules/list'?{code:0,data:{active_version:'00000000000000000000000000000001',loaded:true,rules:[{id:'model-rule',name:'Model',enabled:true,manual_trigger:true,allow_manual_trigger:true,show_on_dashboard:true,runtime_active:true,ssh_commands:['model']}]}}:d.respond(call),async({page,calls})=>{
+  await page.evaluate(async()=>{await loadSystemPage();await refreshQuickActions();});
+  const button=page.locator('#quick-actions-grid [data-quick-action="log"]');
+  await button.click();await page.waitForFunction(()=>document.querySelector('[data-run-log]')?.textContent.includes('frozen-target'));
+  assert.equal(d.state.logs.at(-1).host,'192.0.2.1');assert.equal(d.state.controls.length,0);
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
+  assert.equal(calls.filter(c=>c.endpoint==='ssh/services/start').length,0);
+ });
+});
+
+function dashboardFixture(d) {
+ return call=>call.endpoint==='automation/rules/list'?{code:0,data:{active_version:'00000000000000000000000000000001',loaded:true,rules:[{id:'model-rule',name:'Qwen model with a long name',enabled:true,manual_trigger:true,allow_manual_trigger:true,show_on_dashboard:true,runtime_active:true,ssh_commands:['model']}]}}:d.respond(call);
+}
+for(const lang of ['zh-CN','en-US'])test(`${lang}: dashboard has explicit controls and start clicks submit exactly once`,async()=>{
+ const d=serviceFixture();const respond=dashboardFixture(d);
+ await kit.withPage(lang,respond,async({page,calls})=>{
+  await page.evaluate(async()=>{await loadSystemPage();await refreshQuickActions();});
+  const card=page.locator('#quick-action-model-rule');
+  assert.deepEqual(await card.locator('[data-quick-action]').allTextContents(),lang==='zh-CN'?['启动','停止','查看日志']:['Start','Stop','View Log']);
+  for(const width of [390,1440]){
+   await page.setViewportSize({width,height:1000});
+   assert.equal(await card.evaluate(el=>el.scrollWidth>el.clientWidth),false);
+   for(const button of await card.locator('[data-quick-action]').all())assert.equal(await button.isVisible(),true);
+   await card.screenshot({path:path.resolve('output/playwright',`dashboard-controls-${lang}-${width}.png`)});
+  }
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
+  await card.locator('[data-quick-action="start"]').click();
+  await page.waitForFunction(()=>!document.getElementById('quick-action-model-rule').classList.contains('triggering'));
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,1);
+  assert.equal(calls.find(c=>c.endpoint==='automation/rules/trigger').params.active_version,'00000000000000000000000000000001');
+  await card.locator('.quick-action-name').click();
+  await page.waitForFunction(()=>!document.getElementById('quick-action-model-rule').classList.contains('triggering'));
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,2);
+  assert.equal(d.state.controls.length,0);
+ });
+});
+for(const lang of ['zh-CN','en-US'])test(`${lang}: dashboard stop targets the original run and does not start the rule`,async()=>{
+ const d=serviceFixture();d.state.runs.get(OLD).rule_id='';d.state.runs.get(NEW).state='stopped';
+ await kit.withPage(lang,dashboardFixture(d),async({page,calls})=>{
+  await page.evaluate(async()=>{await loadSystemPage();await refreshQuickActions();});
+  const button=page.locator('#quick-action-model-rule [data-quick-action="stop"]');
+  await button.click();await kit.confirmSheet(page,false);
+  assert.equal(d.state.controls.length,0);
+  await button.click();await kit.confirmSheet(page);
+  await page.waitForFunction(id=>serviceRuns.get(id)?.state==='stopped',OLD);
+  assert.equal(d.state.controls.length,1);
+  assert.equal(d.state.controls[0].endpoint,'automation/services/stop');
+  assert.equal(d.state.controls[0].run_id,OLD);
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
+  assert.equal(calls.filter(c=>c.endpoint==='ssh/services/start').length,0);
+ });
+});
+test('dashboard stop asks which run to stop when there are multiple related records',async()=>{
+ const d=serviceFixture();d.state.runs.set('unrelated',{...d.state.runs.get(OLD),run_id:'unrelated',command_id:'other',rule_id:'other-rule'});
+ await kit.withPage('zh-CN',dashboardFixture(d),async({page,calls})=>{
+  await page.evaluate(async()=>{await loadSystemPage();await refreshQuickActions();});
+  await page.locator('#quick-action-model-rule [data-quick-action="stop"]').click();
+  await page.locator('#service-runs-body [data-run]').first().waitFor();
+  assert.equal(await page.locator('#service-runs-body [data-run]').count(),2);
+  assert.equal(d.state.controls.length,0);
+  await row(page,NEW).locator('[data-run-action="stop"]').click();await kit.confirmSheet(page);
+  await page.waitForFunction(id=>serviceRuns.get(id)?.state==='stopped',NEW);
+  assert.equal(d.state.controls.length,1);assert.equal(d.state.controls[0].run_id,NEW);
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
+ });
+});
+test('dashboard stop explains an empty list and refuses to use stale records after a read failure',async()=>{
+ const d=serviceFixture();const respond=dashboardFixture(d);let fail=false;
+ d.state.runs.clear();
+ await kit.withPage('zh-CN',call=>fail&&call.endpoint==='automation/services/list'?{code:4,error:'ssh_connection_failed'}:respond(call),async({page,calls})=>{
+  await page.evaluate(async()=>{await loadSystemPage();await refreshQuickActions();});
+  const button=page.locator('#quick-action-model-rule [data-quick-action="stop"]');
+  await button.click();await kit.toastIs(page,'info');assert.match(await kit.toastText(page),/没有需要停止的任务/);
+  await page.evaluate(()=>serviceRuns.set('stale',{run_id:'stale',command_id:'model',state:'unknown'}));fail=true;
+  await button.click();await kit.toastIs(page,'warning');assert.match(await kit.toastText(page),/暂时无法读取运行记录/);
+  assert.equal(await page.locator('.confirm-sheet').count(),0);
+  assert.equal(d.state.controls.length,0);
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
+ });
+});
+test('retained records are labelled as records, and an absent remote log has a clear explanation',async()=>{
+ const d=serviceFixture();
+ await kit.withPage('zh-CN',call=>call.endpoint==='ssh/exec'?{code:0,data:{exit_code:44,stdout:''}}:d.respond(call),async({page,calls})=>{
+  await page.evaluate(()=>showServiceRuns());
+  assert.match(await page.locator('#service-runs-modal').innerText(),/运行记录/);
+  assert.match(await page.locator('#service-runs-modal').innerText(),/不代表它们仍在运行/);
+  await row(page,OLD).locator('[data-run-action="log"]').click();
+  await page.waitForFunction(()=>document.querySelector('[data-run-log]')?.textContent.includes('已没有这次运行的日志'));
+  assert.equal(await page.locator('[data-run-log-error]').innerText(),'');
+  assert.equal(calls.filter(c=>c.endpoint==='ssh/services/start').length,0);
+ });
+});
+
+for(const lang of ['zh-CN','en-US'])test(`${lang}: automatic retry status stays on the card without resubmitting a start`,async()=>{
+ const d=serviceFixture();const respond=dashboardFixture(d);
+ await kit.withPage(lang,respond,async({page,calls})=>{
+  await page.evaluate(async()=>{await loadSystemPage();await refreshQuickActions();});
+  await page.waitForFunction(()=>!automaticStartPoll || document.querySelector('[data-rule-start-status]'));
+  const note=page.locator('#quick-action-model-rule [data-rule-start-status]');
+  await page.evaluate(()=>renderAutomaticStarts([{id:'model-rule',state:'waiting',reason:'service_outcome_unknown',retry_after_ms:30000}]));
+  assert.match(await note.innerText(),lang==='zh-CN'?/30 秒后再检查，确认前不会重复启动/:/30 seconds before starting another copy/);
+  await page.evaluate(()=>renderAutomaticStarts([{id:'model-rule',state:'failed',reason:'ssh_auth_failed'}]));
+  assert.match(await note.innerText(),lang==='zh-CN'?/自动启动已停止/:/Automatic start stopped/);
+  assert.doesNotMatch(await note.innerText(),/ssh_auth_failed|failure\.reasons/);
+  await page.evaluate(()=>renderAutomaticStarts([{id:'model-rule',state:'failed',reason:'automatic_start_timeout'}]));
+  assert.match(await note.innerText(),lang==='zh-CN'?/已等待 6 分钟/:/after 6 minutes/);
+  assert.equal(await page.locator('#toast.show').count(),0);
+  assert.equal(calls.filter(c=>['automation/rules/trigger','ssh/services/start'].includes(c.endpoint)).length,0);
+  await page.setViewportSize({width:390,height:1000});
+  assert.equal(await page.locator('#quick-action-model-rule').evaluate(el=>el.scrollWidth>el.clientWidth),false);
+  await page.locator('#quick-action-model-rule').screenshot({path:path.resolve('output/playwright',`automatic-start-timeout-${lang}.png`)});
+ });
+});
+
+for(const lang of ['zh-CN','en-US'])test(`${lang}: dashboard and command list share live readiness lamps without SSH polling`,async()=>{
+ const d=serviceFixture();d.state.runs.clear();
+ const current={run_id:NEW,command_id:'managed',name:'Ready-pattern background',rule_id:'model-rule',host_id:'host-one',host:'192.0.2.10',port:22,username:'original-user',keyid:'original-key',current:true,state:'ready',operation_phase:'succeeded',operation_kind:'start',operation_id:1};
+ d.state.runs.set(NEW,current);
+ d.state.runs.set(OLD,{...current,run_id:OLD,current:false,host:'192.0.2.2',state:'ready'});
+ d.state.runs.set('failed-request',{...current,run_id:'failed-request',current:false,state:'stopped',operation_phase:'failed'});
+ const respond=call=>call.endpoint==='automation/rules/list'?{code:0,data:{active_version:'00000000000000000000000000000001',loaded:true,rules:[{id:'model-rule',name:'Qwen3.8-27B-NVFP4 long model name — AGX service',enabled:true,manual_trigger:true,allow_manual_trigger:true,show_on_dashboard:true,runtime_active:true,ssh_commands:['managed']}]}}:d.respond(call);
+ await kit.withPage(lang,respond,async({page,calls})=>{
+  await page.evaluate(async()=>{await loadSystemPage();await refreshQuickActions();await refreshServiceStates();});
+  const lamp=page.locator('#quick-action-model-rule [data-service-commands]');
+  assert.equal(await lamp.getAttribute('data-state'),'ready');assert.equal(await lamp.innerText(),lang==='zh-CN'?'已就绪':'Ready');
+  assert.equal(await lamp.evaluate(el=>getComputedStyle(el,'::before').backgroundColor),'rgb(52, 199, 89)');
+  const statusPosition=async(element,heading,name)=>{
+   const bounds=await element.evaluate((e,args)=>{const row=e.closest(args.heading),n=row.querySelector(args.name),r=row.getBoundingClientRect(),s=e.getBoundingClientRect(),t=n.getBoundingClientRect();return {right:Math.abs(r.right-s.right),gap:s.left-t.right,center:Math.abs(s.y+s.height/2-t.y-t.height/2)};},{heading,name});
+   assert(bounds.right<1&&bounds.gap>=11&&bounds.center<1,'status has its own top-right position without overlapping the name');
+  };
+  await statusPosition(lamp,'.quick-action-head','.quick-action-name');
+  for(const state of ['checking','running','unknown','failed','timeout','stopped','ready']){
+   current.state=state;await page.evaluate(()=>refreshServiceStates());
+   assert.equal(await lamp.getAttribute('data-state'),state);
+   await statusPosition(lamp,'.quick-action-head','.quick-action-name');
+   assert.equal(await lamp.evaluate(el=>el.classList.contains('ok')),state==='ready');
+  }
+  await page.locator('#quick-action-model-rule').screenshot({path:path.resolve('output/playwright',`status-top-right-home-desktop-${lang}.png`)});
+  await page.setViewportSize({width:390,height:1000});
+  await statusPosition(lamp,'.quick-action-head','.quick-action-name');
+  assert.equal(await page.locator('#quick-action-model-rule').evaluate(el=>el.scrollWidth>el.clientWidth),false);
+  await page.locator('#quick-action-model-rule').screenshot({path:path.resolve('output/playwright',`service-ready-home-${lang}.png`)});
+  await page.evaluate(async()=>{await loadCommandsPage();selectHost('host-one');await refreshServiceStates();});
+  const commandLamp=page.locator('#commands-list [data-service-commands]');
+  assert.equal(await commandLamp.getAttribute('data-state'),'ready');
+  await statusPosition(commandLamp,'.command-titlebar','.cmd-name');
+  await commandLamp.locator('xpath=ancestor::*[contains(@class,"command-card")][1]').screenshot({path:path.resolve('output/playwright',`status-top-right-command-${lang}.png`)});
+  current.state='stopped';await page.evaluate(()=>refreshServiceStates());
+  assert.equal(await commandLamp.getAttribute('data-state'),'stopped');assert.equal(await commandLamp.evaluate(el=>el.classList.contains('ok')),false);
+  assert.equal(d.state.controls.length,0);assert.equal(d.state.starts.length,0);assert.equal(d.state.logs.length,0);
+  assert.equal(calls.filter(c=>c.endpoint==='automation/rules/trigger').length,0);
+ });
+});
