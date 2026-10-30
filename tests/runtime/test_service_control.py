@@ -17,25 +17,51 @@ code=code.replace('++connections;strcpy(last_target,session->host);', '++connect
 code+=r'''
 #include "ts_action_manager.h"
 #include "ts_api.h"
+#include "ts_automation_document.h"
 #define SERVICE_QUEUE_TIMEOUT_MS 30000
 #define TAG "native"
 #define TS_STRDUP_PSRAM strdup
 typedef void *QueueHandle_t;
-'''+typedef('action_manager_ctx_t')+'\n'+typedef('action_binding_t')+r'''
+'''+typedef('action_manager_ctx_t')+'\n'+typedef('action_binding_t')+'\n'+typedef('action_ssh_output_t')+r'''
 static action_manager_ctx_t context,*s_ctx=&context;
 static ts_action_queue_entry_t queued;static bool has_queue,fail_send;
 static int xQueueSend(void *queue,const void *entry,unsigned timeout){(void)queue;assert(!timeout);if(fail_send||has_queue)return 0;queued=*(const ts_action_queue_entry_t*)entry;has_queue=true;return 1;}
+static esp_err_t action_manager_execute(const ts_auto_action_t *,ts_action_result_t *,bool,bool);
 static void vTaskDelay(unsigned delay){(void)delay;assert(false);}
 void ts_auto_config_status(ts_auto_config_status_t *status){memset(status,0,sizeof(*status));strcpy(status->active_version,"current-version");}
 esp_err_t ts_auto_config_edit_begin(const char *version,ts_auto_config_error_t *error){
     if(!version||strcmp(version,"current-version")){error->reason=version?"configuration_changed":"configuration_version_required";return ESP_ERR_INVALID_STATE;}return ESP_OK;}
 void ts_auto_config_edit_end(void){}
+const ts_auto_config_view_t *ts_auto_config_acquire(void){return (void *)1;}
+void ts_auto_config_release(const ts_auto_config_view_t *view){assert(view==(void *)1);}
+static cJSON *key_preview_config;
+const cJSON *ts_auto_config_json(const ts_auto_config_view_t *view){assert(view==(void *)1);return key_preview_config;}
+const ts_auto_document_t *ts_auto_config_definitions(const ts_auto_config_view_t *view){
+    assert(view==(void *)1);static ts_auto_document_t document;
+    document.commands=&command;document.command_count=definition_present?1:0;
+    document.hosts=&current_host;document.host_count=1;return &document;
+}
+
 
 esp_err_t ts_ssh_disconnect(ts_ssh_session_t session){(void)session;return ESP_OK;}
 esp_err_t ts_ssh_commands_config_update_exec_time(const ts_ssh_command_config_t *executed){(void)executed;return ESP_OK;}
 esp_err_t ts_variable_get(const char *name,ts_auto_value_t *out){if(strcmp(name,"value"))return ESP_ERR_NOT_FOUND;out->type=TS_AUTO_VAL_STRING;strcpy(out->str_val,"expanded");return ESP_OK;}
 static esp_err_t exec_cli_bound(const ts_auto_action_cli_t *cli,ts_action_result_t *result,const ts_auto_action_t *origin){(void)cli;(void)result;(void)origin;return ESP_ERR_NOT_SUPPORTED;}
 static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;return ESP_ERR_NOT_SUPPORTED;}
+static esp_err_t control(const char *id,ts_service_operation_t kind){(void)id;(void)kind;assert(false);return ESP_FAIL;}
+static const char *stream_parts[4];static int stream_exit;static esp_err_t stream_result;
+static bool stream_aborted,replace_stream_variables;static unsigned stream_calls;
+void ts_ssh_abort(ts_ssh_session_t session){(void)session;stream_aborted=true;}
+esp_err_t ts_ssh_exec_stream(ts_ssh_session_t session,const char *text,ts_ssh_output_cb_t callback,void *arg,int *exit_code){
+    (void)session;strcpy(last_command,text);++stream_calls;stream_aborted=false;*exit_code=-1;
+    for(unsigned i=0;i<4 && stream_parts[i];++i){
+        callback(stream_parts[i],strlen(stream_parts[i]),false,arg);
+        if(replace_stream_variables){++variable_instance;replace_stream_variables=false;}
+        if(stream_aborted)return ESP_ERR_TIMEOUT;
+    }
+    if(stream_result!=ESP_OK)return stream_result;
+    *exit_code=stream_exit;return ESP_OK;
+}
 '''
 # Hardware leaves are not invoked by this test.
 for suffix,typ in [('led','led'),('gpio','gpio'),('log','log'),('set_var','set_var'),('device','device')]:
@@ -43,13 +69,18 @@ for suffix,typ in [('led','led'),('gpio','gpio'),('log','log'),('set_var','set_v
 code+=re.search(r'^static const char \*const cli_outputs[^;]+;',source,re.M).group(0)+'\n'
 for name in ['same_host','action_variable','ts_action_snapshot_current','action_result_begin','action_result_end',
              'ts_action_snapshot_release','snapshot_command','ts_action_get_ssh_host','action_finished','direct_service_admit',
-             'direct_service_finished','entry_finished','prepare_run','ts_action_service_control','ts_action_expand_variables',
-             'exec_ssh_bound','exec_ssh_ref_bound','execute_bound_ref','execute_action_internal','execute_service_control','execute_entry']:
+             'direct_service_finished','entry_finished','ts_action_manager_check_start','prepare_run','ts_action_service_control','ts_action_expand_variables',
+             'exec_ssh_bound','automatic_start_expired','action_ssh_output','exec_ssh_advanced','exec_ssh_ref_bound','execute_bound_ref','execute_action_internal','execute_service_control','execute_entry']:
  code+='\n'+fn(name)
 api=Path('components/ts_api/src/ts_api_ssh.c').read_text();core=Path('components/ts_api/src/ts_api.c').read_text();automation=Path('components/ts_api/src/ts_api_automation.c').read_text()
 for name,src in [('ts_api_result_ok',core),('ts_api_result_error',core),('ts_api_service_control',api),('api_ssh_service_start',api),
-                 ('service_status_json',automation),('api_service_list',automation),('service_request',automation)]:code+='\n'+fn(name,src)
+                 ('service_status_json',automation),('api_service_list',automation),('service_request',automation),
+                 ('key_delete_preview',Path('components/ts_api/src/ts_api_key.c').read_text())]:code+='\n'+fn(name,src)
 code+=r'''
+static unsigned queued_preflights;
+static esp_err_t action_manager_execute(const ts_auto_action_t *action,ts_action_result_t *result,bool delay_handled,bool check){
+    (void)delay_handled;assert(check);++queued_preflights;ts_action_queue_entry_t entry={.action=*action,.service_check=true};return execute_entry(&entry,result);
+}
 static void drain(void){assert(has_queue);has_queue=false;ts_action_result_t result={0};esp_err_t error=execute_entry(&queued,&result);ts_action_snapshot_release(&queued.action);entry_finished(&queued,error);assert(!s_ctx->direct_pending);}
 static void *drain_thread(void *unused){(void)unused;drain();return NULL;}
 static uint32_t submit(ts_service_operation_t kind,const char *id,char run_id[32])
@@ -111,7 +142,35 @@ int main(void)
     definition_present=true;++command.instance;
     operation=submit(TS_SERVICE_START,command.id,run_id);drain();
     assert(launches==1&&strstr(launched_command,"${value}")&&!strcmp(cached(run_id).operation_phase,"succeeded"));
-    rejected_control(TS_SERVICE_START,command.id,"service_run_exists");
+    submit(TS_SERVICE_START,command.id,reply_id);drain();assert(launches==1&&!strcmp(cached(reply_id).operation_reason,"service_already_running"));
+    assert(remote_running&&!strcmp(cached(run_id).state,"running")&&!strcmp(status_value,"running"));
+    ts_action_result_t checked_running={0};unsigned prior_connections=connections;
+    ts_auto_action_t automatic={.type=TS_AUTO_ACT_SSH_CMD_REF};strcpy(automatic.ssh_ref.cmd_id,command.id);
+    assert(snapshot_command(&automatic,true,NULL)==ESP_OK);
+    for(unsigned n=0;n<100;++n)assert(ts_action_manager_check_start(&automatic,&checked_running,true)==ESP_ERR_INVALID_STATE&&!strcmp(checked_running.reason,"service_already_running"));
+    assert(connections==prior_connections&&!queued_preflights);ts_action_snapshot_release(&automatic);
+    ts_api_result_t live_list={0};assert(api_service_list(NULL,&live_list)==ESP_OK);
+    cJSON *live_item;unsigned selected=0;
+    cJSON_ArrayForEach(live_item,cJSON_GetObjectItem(live_list.data,"items"))if(cJSON_IsTrue(cJSON_GetObjectItem(live_item,"current"))){
+        ++selected;assert(!strcmp(cJSON_GetObjectItem(live_item,"run_id")->valuestring,run_id));
+    }
+    assert(selected==1);cJSON_Delete(live_list.data);
+    /* Recreating an ID on the same host cannot inherit a ready lamp. The old
+     * physical process still blocks duplicate automatic launches without I/O. */
+    ts_ssh_service_observe(run_id,cached(run_id).generation,"ready");
+    ++command.instance;
+    live_list=(ts_api_result_t){0};assert(api_service_list(NULL,&live_list)==ESP_OK);selected=0;
+    cJSON_ArrayForEach(live_item,cJSON_GetObjectItem(live_list.data,"items"))
+        selected+=cJSON_IsTrue(cJSON_GetObjectItem(live_item,"current"));
+    assert(!selected);cJSON_Delete(live_list.data);
+    automatic=(ts_auto_action_t){.type=TS_AUTO_ACT_SSH_CMD_REF};strcpy(automatic.ssh_ref.cmd_id,command.id);
+    assert(snapshot_command(&automatic,true,NULL)==ESP_OK);prior_connections=connections;
+    assert(ts_action_manager_check_start(&automatic,&checked_running,true)==ESP_ERR_INVALID_STATE&&!strcmp(checked_running.reason,"service_already_running"));
+    assert(connections==prior_connections&&!queued_preflights);ts_action_snapshot_release(&automatic);
+    --command.instance;
+
+    /* Even explicit verification of a failed request cannot own the live task's variables. */
+    submit(TS_SERVICE_VERIFY,reply_id,reply_id);drain();assert(!strcmp(status_value,"ready"));
     submit(TS_SERVICE_STOP,run_id,reply_id);drain();assert(!remote_running);
     /* Once admitted, started I/O owns its cleanup and independent run. */
     hold_connect=true;connect_entered=false;submit(TS_SERVICE_START,command.id,run_id);
@@ -126,13 +185,33 @@ int main(void)
     response=(ts_api_result_t){0};assert(api_service_list(NULL,&response)==ESP_OK);
     cJSON *items=cJSON_GetObjectItem(response.data,"items");assert(cJSON_GetArraySize(items)>=1);
     cJSON *item=cJSON_GetArrayItem(items,0);assert(!strcmp(cJSON_GetObjectItem(item,"host")->valuestring,"192.0.2.8"));assert(!strcmp(cJSON_GetObjectItem(item,"keyid")->valuestring,"original-key"));assert(strstr(cJSON_GetObjectItem(item,"log_file")->valuestring,"/tmp/ts_nohup_r_"));cJSON_Delete(response.data);
+    key_preview_config=cJSON_Parse("{\"hosts\":[{\"id\":\"uses-key\",\"auth_type\":\"key\",\"keyid\":\"original-key\"},{\"id\":\"password-host\",\"auth_type\":\"password\",\"keyid\":\"original-key\"}]}");
+    unsigned preview_connections=connections;response=(ts_api_result_t){0};
+    assert(key_delete_preview("original-key",&response)==ESP_OK&&connections==preview_connections);
+    assert(cJSON_IsTrue(cJSON_GetObjectItem(response.data,"complete")));
+    assert(cJSON_GetArraySize(cJSON_GetObjectItem(response.data,"hosts"))==1&&cJSON_GetArraySize(cJSON_GetObjectItem(response.data,"runs"))>=1);
+    assert(!strcmp(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(response.data,"runs"),0),"host")->valuestring,"192.0.2.8"));
+    cJSON_Delete(response.data);free(response.message);cJSON_Delete(key_preview_config);key_preview_config=NULL;
+    response=(ts_api_result_t){0};assert(key_delete_preview("original-key",&response)==ESP_OK&&cJSON_IsFalse(cJSON_GetObjectItem(response.data,"complete"))&&connections==preview_connections);
+    cJSON_Delete(response.data);free(response.message);
     submit(TS_SERVICE_STOP,run_id,reply_id);drain();assert(!remote_running&&!strcmp(last_target,"192.0.2.8"));
     /* Expired and queue-rejected starts never reach SSH and release ownership. */
     definition_present=true;strcpy(current_host.host,"192.0.2.8");
     submit(TS_SERVICE_START,command.id,run_id);queued.enqueue_time-=SERVICE_QUEUE_TIMEOUT_MS;before=connections;drain();
     assert(connections==before&&!strcmp(cached(run_id).operation_phase,"expired"));
     const char *admission_reason=NULL;fail_send=true;assert(ts_action_service_control(command.id,TS_SERVICE_START,run_id,&operation,&admission_reason)==ESP_ERR_NO_MEM&&!s_ctx->direct_pending&&!strcmp(admission_reason,"service_queue_full"));fail_send=false;
-    assert(ts_ssh_service_start_admissible(command.id));
+    assert(ts_ssh_service_check_start(command.id,&current_host,NULL,0,NULL)==ESP_OK);
+    /* A rebooted host needs no manual verify before the next start. A live or
+     * unreachable host must never receive a duplicate launch. */
+    submit(TS_SERVICE_START,command.id,run_id);drain();unsigned launches_before=launches;
+    submit(TS_SERVICE_START,command.id,reply_id);drain();
+    assert(launches==launches_before&&remote_running&&!strcmp(cached(reply_id).operation_reason,"service_already_running"));
+    fail_transport=true;submit(TS_SERVICE_START,command.id,reply_id);drain();
+    assert(launches==launches_before&&remote_running);fail_transport=false;
+    remote_running=false;
+    submit(TS_SERVICE_START,command.id,reply_id);drain();
+    assert(launches==launches_before+1&&remote_running&&!strcmp(cached(reply_id).operation_phase,"succeeded"));
+    submit(TS_SERVICE_STOP,reply_id,run_id);drain();
     /* Network failure is unknown, and never prevents local definition deletion. */
     submit(TS_SERVICE_START,command.id,run_id);drain();fail_transport=true;
     submit(TS_SERVICE_VERIFY,run_id,reply_id);drain();assert(!strcmp(cached(run_id).state,"unknown"));
@@ -140,15 +219,76 @@ int main(void)
     /* Automation expands variables through the same managed background path. */
     definition_present=true;ts_auto_action_t action={.type=TS_AUTO_ACT_SSH_CMD_REF};strcpy(action.ssh_ref.cmd_id,command.id);
     assert(snapshot_command(&action,true,NULL)==ESP_OK);ts_action_result_t result={0};
+    unsigned timestamps_before=timestamp_writes,codes_before=exit_code_writes;
     assert(execute_bound_ref(&action,&result)==ESP_OK&&strstr(launched_command,"expanded")&&!strstr(launched_command,"${value}"));
+    assert(timestamp_writes==timestamps_before+1&&exit_code_writes==codes_before+1&&!strcmp(status_value,"running"));
+    ts_action_queue_entry_t check={.action=action,.service_check=true};ts_action_result_t checked={0};
+    unsigned preflight_launches=launches;
+    assert(execute_entry(&check,&checked)==ESP_ERR_INVALID_STATE&&!strcmp(checked.reason,"service_already_running")&&launches==preflight_launches);
     ts_action_snapshot_release(&action);
     ts_ssh_run_record_t record;ts_ssh_service_status_t state;assert(ts_ssh_service_get(0,&record,&state)==ESP_OK);
     submit(TS_SERVICE_STOP,record.run_id,reply_id);drain();assert(!remote_running);
-    puts("PASS service API/executor: persisted queue admission, stale start cancellation, responsive cached reads, admitted-I/O cleanup, deleted-definition controls, frozen target, expiry, queue rejection and unknown remote state");
+    /* Ordinary rule commands use the saved options, preserving output, exit
+     * status and identity while background and option-free paths stay intact. */
+    command.nohup=false;command.service_mode=false;
+    strcpy(command.expect_pattern,"READY");strcpy(command.fail_pattern,"ERROR");
+    strcpy(command.extract_pattern,"value=(.*)");
+    stream_parts[0]="REA";stream_parts[1]="DY value=42\n";stream_parts[2]=NULL;stream_exit=7;stream_result=ESP_OK;
+    action=(ts_auto_action_t){.type=TS_AUTO_ACT_SSH_CMD_REF};strcpy(action.ssh_ref.cmd_id,command.id);
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_SUCCESS&&result.exit_code==7);
+    assert(!strcmp(last_command,"printf '%s' 'expanded'")&&!strcmp(status_value,"match_success"));
+    assert(expect_value&&!fail_value&&!strcmp(extracted_value,"42")&&last_exit_code==7&&!strcmp(host_value,current_host.host));
+    ts_action_snapshot_release(&action);
+    stream_parts[0]="ERROR\n";stream_parts[1]=NULL;stream_exit=0;
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_FAILED&&!strcmp(status_value,"match_failed"));
+    assert(!expect_value&&fail_value&&!strcmp(extracted_value,""));ts_action_snapshot_release(&action);
+    stream_parts[0]="nothing\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_FAILED&&!strcmp(status_value,"match_failed"));
+    ts_action_snapshot_release(&action);
+    command.stop_on_match=true;stream_parts[0]="READY\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_aborted&&result.status==TS_ACTION_STATUS_SUCCESS&&result.exit_code==-1);
+    assert(last_exit_code==-1&&expect_value&&!strcmp(status_value,"match_success"));ts_action_snapshot_release(&action);
+    stream_parts[0]="ERROR\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_aborted&&result.status==TS_ACTION_STATUS_FAILED&&fail_value);
+    assert(result.exit_code==-1&&!strcmp(status_value,"match_failed"));ts_action_snapshot_release(&action);
+    command.expect_pattern[0]=command.fail_pattern[0]=0;stream_parts[0]="value=33\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_aborted&&result.status==TS_ACTION_STATUS_SUCCESS);
+    assert(result.exit_code==-1&&!strcmp(extracted_value,"33"));ts_action_snapshot_release(&action);
+    strcpy(command.expect_pattern,"READY");strcpy(command.fail_pattern,"ERROR");
+    command.stop_on_match=false;stream_result=ESP_ERR_TIMEOUT;stream_parts[0]="waiting";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_ERR_TIMEOUT&&result.status==TS_ACTION_STATUS_TIMEOUT&&result.exit_code==-1);
+    assert(!strcmp(status_value,"timeout"));ts_action_snapshot_release(&action);
+    /* A deadline preserves an observed match even without stop_on_match. */
+    stream_parts[0]="READY\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_SUCCESS&&result.exit_code==-1);
+    assert(!stream_aborted&&expect_value&&!fail_value&&!strcmp(status_value,"match_success"));ts_action_snapshot_release(&action);
+    stream_parts[0]="ERROR\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_FAILED&&result.exit_code==-1);
+    assert(!stream_aborted&&!expect_value&&fail_value&&!strcmp(status_value,"match_failed"));ts_action_snapshot_release(&action);
+    stream_result=ESP_OK;
+    stream_parts[0]="READY value=55\n";replace_stream_variables=true;before=variable_writes;
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_SUCCESS&&variable_writes==before);
+    ts_action_snapshot_release(&action);
+    command.expect_pattern[0]=command.fail_pattern[0]=command.extract_pattern[0]=0;
+    unsigned streams_before=stream_calls;assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_calls==streams_before&&result.status==TS_ACTION_STATUS_SUCCESS);
+    ts_action_snapshot_release(&action);
+    puts("PASS ordinary rule SSH: saved match/extract/stop options, real exit code, timeout, expansion, replaced variables and option-free path");
+    puts("PASS service API/executor: queued plan and persistence before launch, stale start cancellation, responsive cached reads, admitted-I/O cleanup, deleted-definition controls, frozen target, expiry, queue rejection and unknown remote state");
 }
 '''
-build=Path('/tmp/tianshan-service-runs-tests');build.mkdir(exist_ok=True);(build/'service_control.c').write_text(code)
+build=Path(os.environ.get('SERVICE_TEST_BUILD','/tmp/tianshan-service-runs-tests'));build.mkdir(exist_ok=True);(build/'service_control.c').write_text(code)
 args=['cc','-std=c11','-D_DEFAULT_SOURCE','-g','-fsanitize=address,undefined','-Wno-deprecated-declarations']
-for path in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/runtime/storage_stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include','components/ts_api/include',str(sdk)]:args+=['-I'+path]
-args += [str(build/'service_control.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_run_store.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c',str(sdk/'cJSON.c'),'-lpthread','-lm','-o',str(build/'service_control')]
+for path in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/runtime/storage_stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include','components/ts_automation/src','components/ts_api/include',str(sdk)]:args+=['-I'+path]
+args += [str(build/'service_control.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_run_store.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c','components/ts_security/src/ts_ssh_pattern.c',str(sdk/'cJSON.c'),'-lpthread','-lm','-o',str(build/'service_control')]
 subprocess.run(args,check=True);subprocess.run([str(build/'service_control')],check=True)

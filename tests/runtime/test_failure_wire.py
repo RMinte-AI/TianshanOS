@@ -51,8 +51,9 @@ static const char *error_name(esp_err_t e) {
 #define esp_err_to_name error_name
 static ts_rule_reject_t mock_why = TS_RULE_REJECT_NONE;
 static esp_err_t mock_ret = ESP_OK;
-esp_err_t ts_rule_trigger_versioned(const char *id,const char *version,ts_rule_reject_t *why)
-{assert(!strcmp(id,"night-off")&&!strcmp(version,"00000000000000000000000000000001"));if(why)*why=mock_why;return mock_ret;}
+static const char *mock_reason;
+esp_err_t ts_rule_trigger_versioned(const char *id,const char *version,ts_rule_reject_t *why,const char **reason)
+{assert(!strcmp(id,"night-off")&&!strcmp(version,"00000000000000000000000000000001"));if(why)*why=mock_why;if(reason)*reason=mock_reason;return mock_ret;}
 static esp_err_t mock_engine=ESP_OK;
 static ts_auto_config_status_t mock_config;
 static const char *mock_reload_reason;
@@ -225,6 +226,9 @@ int main(void) {
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_CONFIG_VERSION,"wire-trigger-config-changed.json",TS_API_ERR_BUSY,"configuration_changed");
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_RUNNING,"wire-trigger-execution-busy.json",TS_API_ERR_BUSY,"execution_busy");
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_SERVICE_STATE,"wire-trigger-service-not-admissible.json",TS_API_ERR_INTERNAL,"service_not_admissible");
+    mock_reason="service_already_running";
+    trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_SERVICE_STATE,"wire-trigger-service-running.json",TS_API_ERR_INTERNAL,"service_already_running");
+    mock_reason=NULL;
     trigger(ESP_ERR_NOT_FOUND,TS_RULE_REJECT_NONE,"wire-trigger-not-found.json",TS_API_ERR_NOT_FOUND,"Rule not found");     /* unchanged text */
     trigger(ESP_ERR_INVALID_STATE,TS_RULE_REJECT_NONE,"wire-trigger-generic.json",TS_API_ERR_INTERNAL,"Failed to trigger rule"); /* no reason known */
     /* every refusal the engine can report has a token, and none is reported for a call that was not refused */

@@ -8,10 +8,15 @@
 #include "ts_log.h"
 #include "ts_event.h"
 #include "ts_console.h"
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+#include "ts_security.h"
+#endif
 #include "ts_power_policy.h"
 #include "ts_ssh_client.h"
 #include "ts_ssh_shell.h"
 #include "ts_keystore.h"
+#include "ts_ssh_service.h"
+#include "ts_automation_config.h"
 #include "ts_ws_subscriptions.h"
 #include "ts_ws_transport.h"
 #include "ts_ws_operation.h"
@@ -73,6 +78,9 @@ static _Atomic(httpd_handle_t) s_server = NULL;
 static atomic_bool s_ws_stopping;
 static SemaphoreHandle_t s_terminal_mutex = NULL;
 static int s_terminal_client_fd = -1;  // 当前终端会话的 fd
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+static uint32_t s_terminal_session_id;
+#endif
 
 /* 终端输出缓冲区 */
 static char *s_terminal_output_buf = NULL;
@@ -489,9 +497,23 @@ static void handle_terminal_command(httpd_req_t *req, const char *command)
 }
 
 /* 启动终端会话 */
-static void start_terminal_session(httpd_req_t *req)
+static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
 {
     int fd = httpd_req_to_sockfd(req);
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    const cJSON *token = cJSON_GetObjectItemCaseSensitive(msg, "token");
+    char authorization[136];
+    uint32_t session_id = 0;
+    ts_perm_level_t level = TS_PERM_NONE;
+    int n = cJSON_IsString(token) ? snprintf(authorization, sizeof(authorization), "Bearer %s", token->valuestring) : -1;
+    if (n < 0 || n >= sizeof(authorization) ||
+        ts_auth_validate_request(authorization, &session_id, &level) != ESP_OK || level < TS_PERM_ROOT) {
+        ssh_request_error(req, "Unauthorized");
+        return;
+    }
+#else
+    (void)msg;
+#endif
     
     // 检查是否有其他终端会话
     if (s_terminal_client_fd >= 0 && s_terminal_client_fd != fd) {
@@ -556,6 +578,9 @@ static void start_terminal_session(httpd_req_t *req)
     
     // 设置输出回调
     s_terminal_client_fd = fd;
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    s_terminal_session_id = session_id;
+#endif
     ts_console_set_output_cb(terminal_output_cb, NULL);
     
     // 发送确认消息和欢迎信息
@@ -678,8 +703,6 @@ static esp_err_t ws_handler(httpd_req_t *req)
     }
     buf[ws_pkt.len] = '\0';
     
-    TS_LOGD(TAG, "WS recv: %s", (char *)buf);
-    
     // Parse message
     cJSON *msg = cJSON_Parse((char *)buf);
     free(buf);
@@ -767,19 +790,35 @@ static esp_err_t ws_handler(httpd_req_t *req)
             }
             else if (strcmp(type->valuestring, "terminal_start") == 0) {
                 // 启动终端会话
-                start_terminal_session(req);
+                start_terminal_session(req, msg);
             }
             else if (strcmp(type->valuestring, "terminal_input") == 0) {
                 // 终端命令输入
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+                if (s_terminal_client_fd != httpd_req_to_sockfd(req) ||
+                    !ts_security_check_permission(s_terminal_session_id, TS_PERM_ROOT)) {
+                    ssh_request_error(req, "Unauthorized");
+                } else
+#endif
+                {
                 cJSON *data = cJSON_GetObjectItem(msg, "data");
                 if (data && cJSON_IsString(data)) {
                     handle_terminal_command(req, data->valuestring);
                 }
+                }
             }
             else if (strcmp(type->valuestring, "terminal_interrupt") == 0) {
                 // 发送中断信号 (Ctrl+C)
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+                if (s_terminal_client_fd != httpd_req_to_sockfd(req) ||
+                    !ts_security_check_permission(s_terminal_session_id, TS_PERM_ROOT)) {
+                    ssh_request_error(req, "Unauthorized");
+                } else
+#endif
+                {
                 ts_console_request_interrupt();
                 TS_LOGD(TAG, "Terminal interrupt requested");
+                }
             }
             else if (strcmp(type->valuestring, "terminal_stop") == 0) {
                 // 停止终端会话
@@ -1226,6 +1265,10 @@ typedef struct {
     uint32_t session_id;
     char keyid[64];           /* 存储 keyid 以便获取私钥 */
     char var_name[64];        /* 变量名（用于存储结果） */
+    char command_id[TS_SSH_CMD_ID_MAX];
+    uint64_t command_instance;
+    uint64_t variable_instances[7];
+    bool variables_bound;
     /* 可选参数 */
     char *expect_pattern;     /* 期望匹配的模式 */
     char *fail_pattern;       /* 失败模式 */
@@ -1245,82 +1288,37 @@ typedef struct {
     char *extracted_value;    /* 提取的值 */
 } ssh_exec_task_params_t;
 
-/* 简单的正则表达式匹配（支持基本模式）*/
-static bool simple_pattern_match(const char *text, const char *pattern, char **extracted)
+static const char *const exec_variable_suffixes[] = {
+    "status", "exit_code", "extracted", "expect_matched", "fail_matched", "host", "timestamp"
+};
+
+/* Configuration publication uses the same registration/binding gates. */
+static bool exec_variables_begin(const ssh_exec_task_params_t *params)
 {
-    if (!text || !pattern) return false;
-    
-    /* 简化实现：支持 * 通配符和 () 捕获组 */
-    /* 对于复杂正则，推荐在前端处理 */
-    
-    /* 检查是否包含捕获组 */
-    const char *cap_start = strchr(pattern, '(');
-    const char *cap_end = cap_start ? strchr(cap_start, ')') : NULL;
-    
-    if (cap_start && cap_end && extracted) {
-        /* 有捕获组，提取模式 */
-        /* 格式：prefix(capture)suffix */
-        size_t prefix_len = cap_start - pattern;
-        char *prefix = NULL;
-        if (prefix_len > 0) {
-            prefix = strndup(pattern, prefix_len);
-        }
-        
-        size_t capture_len = cap_end - cap_start - 1;
-        char *capture_pattern = strndup(cap_start + 1, capture_len);
-        
-        const char *suffix = cap_end + 1;
-        
-        /* 查找前缀位置 - 找最后一个匹配 */
-        const char *match_pos = NULL;
-        const char *search_pos = text;
-        if (prefix && prefix[0]) {
-            while ((search_pos = strstr(search_pos, prefix)) != NULL) {
-                match_pos = search_pos + prefix_len;
-                search_pos++;  /* 继续搜索下一个 */
-            }
-        } else {
-            /* 没有前缀，从最后一行开始 */
-            const char *last_newline = strrchr(text, '\n');
-            match_pos = last_newline ? last_newline + 1 : text;
-        }
-        
-        if (match_pos) {
-            /* 查找后缀位置 */
-            const char *end_pos = NULL;
-            if (suffix && suffix[0]) {
-                end_pos = strstr(match_pos, suffix);
-            } else {
-                /* 没有后缀，取到行尾或字符串尾 */
-                end_pos = strchr(match_pos, '\n');
-                if (!end_pos) end_pos = match_pos + strlen(match_pos);
-            }
-            
-            if (end_pos && end_pos > match_pos) {
-                /* 提取捕获的内容 */
-                size_t ext_len = end_pos - match_pos;
-                *extracted = strndup(match_pos, ext_len);
-                /* 去除首尾空白 */
-                if (*extracted) {
-                    char *p = *extracted;
-                    while (*p && isspace((unsigned char)*p)) p++;
-                    if (p != *extracted) memmove(*extracted, p, strlen(p) + 1);
-                    size_t len = strlen(*extracted);
-                    while (len > 0 && isspace((unsigned char)(*extracted)[len - 1])) {
-                        (*extracted)[--len] = '\0';
-                    }
-                }
-            }
-        }
-        
-        free(prefix);
-        free(capture_pattern);
-        return (match_pos != NULL);
-    } else {
-        /* 简单包含匹配 */
-        return strstr(text, pattern) != NULL;
+    if (!params->variables_bound || !ts_variable_is_initialized()) return false;
+    ts_variable_registration_begin();
+    ts_ssh_binding_lock();
+    bool current = !params->command_id[0] ||
+        ts_auto_config_command_current(params->command_id, params->command_instance);
+    for (unsigned i = 0; current && i < sizeof(exec_variable_suffixes) / sizeof(exec_variable_suffixes[0]); ++i) {
+        char name[96];
+        snprintf(name, sizeof(name), "%s.%s", params->var_name, exec_variable_suffixes[i]);
+        current = ts_variable_instance(name) == params->variable_instances[i];
     }
+    if (!current) {
+        ts_ssh_binding_unlock();
+        ts_variable_registration_end();
+    }
+    return current;
 }
+
+static void exec_variables_end(void)
+{
+    ts_ssh_binding_unlock();
+    ts_variable_registration_end();
+}
+
+/* 简单的正则表达式匹配（支持基本模式）*/
 
 static void exec_abort(ssh_exec_task_params_t *params)
 {
@@ -1375,7 +1373,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         
         /* 检查失败模式（仅在尚未匹配时） */
         if (!params->match_found && params->fail_pattern && params->fail_pattern[0]) {
-            if (simple_pattern_match(output, params->fail_pattern, NULL)) {
+            if (ts_ssh_pattern_match(output, params->fail_pattern, NULL)) {
                 params->fail_matched = true;
                 params->match_found = true;
                 should_send_match = true;
@@ -1387,7 +1385,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         /* 检查期望模式（仅在尚未匹配时，且失败模式没有匹配） */
         if (!params->match_found && !params->fail_matched &&
             params->expect_pattern && params->expect_pattern[0]) {
-            if (simple_pattern_match(output, params->expect_pattern, NULL)) {
+            if (ts_ssh_pattern_match(output, params->expect_pattern, NULL)) {
                 params->expect_matched = true;
                 params->match_found = true;
                 should_send_match = true;
@@ -1399,7 +1397,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         /* 提取值 */
         if (params->extract_pattern && params->extract_pattern[0]) {
             char *extracted = NULL;
-            if (simple_pattern_match(output, params->extract_pattern, &extracted)) {
+            if (ts_ssh_pattern_match(output, params->extract_pattern, &extracted)) {
                 /* 检查是否为首次提取 */
                 if (!params->extracted_value) {
                     is_first_extract = true;
@@ -1482,7 +1480,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
                     params->fail_pattern,
                     params->stop_on_match);
             
-            if (is_continuous_mode && params->var_name[0]) {
+            if (is_continuous_mode && params->var_name[0] && exec_variables_begin(params)) {
                 /* 持续监控模式：实时更新变量 */
                 char full_var_name[96];
                 ts_auto_variable_t var = {0};
@@ -1521,6 +1519,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
                 ts_variable_upsert(&var);
                 
                 TS_LOGD(TAG, "Continuous mode: realtime update %s", params->var_name);
+                exec_variables_end();
             }
             /* 结果导向模式：变量在命令完成时更新（见下方 ssh_exec_task 完成处理） */
             
@@ -1796,17 +1795,17 @@ execution_finished:
         if (!params->match_found) {
             /* 检查失败模式 */
             if (params->fail_pattern && params->fail_pattern[0]) {
-                fail_matched = simple_pattern_match(output, params->fail_pattern, NULL);
+                fail_matched = ts_ssh_pattern_match(output, params->fail_pattern, NULL);
             }
             
             /* 检查期望模式 */
             if (!fail_matched && params->expect_pattern && params->expect_pattern[0]) {
-                expect_matched = simple_pattern_match(output, params->expect_pattern, NULL);
+                expect_matched = ts_ssh_pattern_match(output, params->expect_pattern, NULL);
             }
             
             /* 提取值 */
             if (!extracted_value && params->extract_pattern && params->extract_pattern[0]) {
-                simple_pattern_match(output, params->extract_pattern, &extracted_value);
+                ts_ssh_pattern_match(output, params->extract_pattern, &extracted_value);
             }
         }
         
@@ -1831,7 +1830,7 @@ execution_finished:
             exit_code);
     
     /* 存储结果到变量系统 - 包括取消状态也要更新 */
-    if (params->var_name[0]) {
+    if (params->var_name[0] && exec_variables_begin(params)) {
         const char *status_str = "unknown";
         switch (status) {
             case TS_WEBUI_SSH_STATUS_SUCCESS:       status_str = "success"; break;
@@ -1906,6 +1905,7 @@ execution_finished:
         ts_variable_upsert(&var);
         
         TS_LOGI(TAG, "Synced SSH result to automation variables: %s (7 vars)", params->var_name);
+        exec_variables_end();
     }
     
     /* 发送完成消息 */
@@ -2044,6 +2044,12 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
 
     /* 配置可选参数 */
     if (options) {
+        if (options->command_id) {
+            if (strlen(options->command_id) >= sizeof(params->command_id) || !options->command_instance)
+                return ESP_ERR_INVALID_ARG;
+            strcpy(params->command_id, options->command_id);
+            params->command_instance = options->command_instance;
+        }
         if (options->expect_pattern && options->expect_pattern[0]) {
             params->expect_pattern = strdup(options->expect_pattern);
         }
@@ -2097,6 +2103,17 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
     
 
     
+    /* Bind the saved command and result variables atomically with publication. */
+    if ((params->command_id[0] || params->var_name[0]) && !ts_variable_is_initialized()) {
+        if (params->command_id[0]) return ESP_ERR_NOT_FOUND;
+    } else if (params->command_id[0] || params->var_name[0]) {
+    ts_variable_registration_begin();
+    ts_ssh_binding_lock();
+    if (params->command_id[0] && !ts_auto_config_command_current(params->command_id, params->command_instance)) {
+        ts_ssh_binding_unlock();
+        ts_variable_registration_end();
+        return ESP_ERR_NOT_FOUND;
+    }
     /* 命令开始时初始化所有变量（重置旧值） */
     TS_LOGI(TAG, "Checking var_name for init: '%s' (len=%d)", 
             params->var_name, (int)strlen(params->var_name));
@@ -2160,6 +2177,14 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
         ts_variable_upsert(&var);
         
         TS_LOGI(TAG, "Initialized variables for %s (status=running)", params->var_name);
+        for (unsigned i = 0; i < sizeof(exec_variable_suffixes) / sizeof(exec_variable_suffixes[0]); ++i) {
+            snprintf(full_var_name, sizeof(full_var_name), "%s.%s", params->var_name, exec_variable_suffixes[i]);
+            params->variable_instances[i] = ts_variable_instance(full_var_name);
+        }
+        params->variables_bound = true;
+    }
+    ts_ssh_binding_unlock();
+    ts_variable_registration_end();
     }
     
     /* 创建任务 - MUST use DRAM stack because keystore access requires NVS.

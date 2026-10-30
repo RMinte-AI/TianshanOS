@@ -178,3 +178,17 @@ test('rejected save preserves the editor, typed value and operator',async()=>{
   assert.equal(f.writes.length,0);
  }finally{await f.context.close();}
 });
+
+test('a legal quoted Unicode rule ID survives the edit save button',async()=>{
+ const original=rule();original.id='组 "A"\'&<';
+ const f=await fixture(original,'en-US');const endpoints=[];
+ f.page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/v1/automation/rules/'))endpoints.push(url.pathname);});
+ try{
+  await f.page.locator('#rule-name').fill('Renamed');
+  await f.page.locator('#add-rule-modal .sf .primary').click();
+  await f.page.waitForFunction(()=>document.getElementById('add-rule-modal')?.dataset.configurationClosed==='true');
+  assert.equal(f.writes.length,1);assert.equal(f.writes[0].id,original.id);
+  assert(endpoints.includes('/api/v1/automation/rules/update'));
+  assert(!endpoints.includes('/api/v1/automation/rules/add'));
+ }finally{await f.context.close();}
+});

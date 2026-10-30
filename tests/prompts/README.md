@@ -7,7 +7,7 @@ npm ci --prefix tests/prompts
 npm test --prefix tests/prompts
 npm run test:browser --prefix tests/prompts
 node tests/certificate/test_ui.cjs
-node --test tests/prompts/configuration.browser.test.cjs tests/prompts/service-runs.browser.test.cjs
+npm --prefix tests/prompts run test:configuration
 ```
 
 The browser suite requires locally installed Chrome (`channel: 'chrome'`). It serves the actual WebUI on an ephemeral localhost port, intercepts all `/api/` calls, replaces WebSocket with a stub and rejects external requests. Only the terminal retry test supplies local fixture responses for CDN URLs. It does not use device addresses, credentials, firmware, or real commands. The xterm fixture verifies resource recovery and production initialization, not xterm rendering itself.
@@ -32,3 +32,5 @@ npm --prefix tests/prompts run test:configuration
 旧的“服务未确认停止则不得删除”与“等待重启删除”测试及静态响应夹具已经移除，其相反的旧行为不再作为验收标准；真实对象删除和运行记录持久化分别由 `tests/runtime/run_config_storage.sh`、`test_service_control.py`、`run_service_runs.sh` 连接生产实现验证。这里的浏览器夹具没有连接 ESP32、真实 SD 卡或 SSH 主机。其余历史 flow／wire 用例仍在接管，本入口通过不等于全部脚本已经通过。
 
 `npm run test:packaged --prefix tests/prompts` reads the actual build output selected by the absolute `TS_PACKAGED_WEB` environment variable. It checks that script, stylesheet and dynamic language URLs share the generated content version, then operates configuration and independent-run controls in Chrome. It requires a completed ESP-IDF web build and does not silently replace it with source files.
+
+`configuration-lifecycle.browser.test.cjs` 检查用户变量删除、重复编号拒绝、无主机命令重新关联、主机／数据源编辑、密钥删除影响和真实错误提示；复用现有本地页面夹具，并纳入 `test:browser` 与 `test:configuration`。中英文新弹窗检查手机和桌面宽度，不连接实机。

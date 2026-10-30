@@ -9,7 +9,7 @@
  * Provides REST API endpoints for automation engine:
  * - automation.status - Get engine status
  * - automation.start/stop/pause/resume - Control engine
- * - automation.variables.list/get/set - Variable management
+ * - automation.variables.list/get/set/delete - Variable management
  * - automation.rules.list/enable/disable/trigger - Rule management
  * - automation.sources.list - Data source listing
  * - automation.sources.export/import - Source config pack export/import
@@ -108,6 +108,23 @@ static esp_err_t api_automation_status(const cJSON *params, ts_api_result_t *res
     cJSON_AddNumberToObject(result->data, "rule_triggers", status.rule_triggers);
     cJSON_AddStringToObject(result->data, "config_path", status.config_path ? status.config_path : "");
     cJSON_AddStringToObject(result->data, "version", ts_automation_get_version());
+    cJSON *starts=cJSON_AddArrayToObject(result->data,"automatic_starts");
+    for(int i=0;starts&&i<ts_rule_count();++i){
+        ts_auto_rule_t rule;
+        if(ts_rule_get_by_index(i,&rule)!=ESP_OK)continue;
+        ts_rule_start_status_t start;
+        if(rule.enabled&&ts_rule_start_status(rule.id,&start)){
+            cJSON *item=cJSON_CreateObject();
+            if(item){
+                cJSON_AddStringToObject(item,"id",rule.id);
+                cJSON_AddStringToObject(item,"state",start.state);
+                if(start.reason)cJSON_AddStringToObject(item,"reason",start.reason);
+                cJSON_AddNumberToObject(item,"retry_after_ms",start.retry_after_ms);
+                cJSON_AddItemToArray(starts,item);
+            }
+        }
+        ts_rule_release(&rule);
+    }
 
     result->code = TS_API_OK;
     return ESP_OK;
@@ -302,6 +319,8 @@ static esp_err_t api_automation_reload(const cJSON *params,ts_api_result_t *resu
  */
 static esp_err_t api_automation_variables_list(const cJSON *params, ts_api_result_t *result)
 {
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "configured_only")))
+        return ts_api_auto_list(TS_AUTO_CONFIG_VARIABLE, params, "variables", result);
     result->data = cJSON_CreateObject();
     cJSON *vars_array = cJSON_AddArrayToObject(result->data, "variables");
     int64_t now_ms = esp_timer_get_time() / 1000;
@@ -431,6 +450,9 @@ static esp_err_t api_automation_variables_get(const cJSON *params, ts_api_result
 static esp_err_t api_automation_variables_set(const cJSON *params,ts_api_result_t *result)
 { return ts_api_auto_write(TS_AUTO_CONFIG_VARIABLE,params,TS_API_AUTO_UPSERT,result); }
 
+static esp_err_t api_automation_variables_delete(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_delete(TS_AUTO_CONFIG_VARIABLE,params,result); }
+
 /*===========================================================================*/
 /*                           Rules API                                        */
 /*===========================================================================*/
@@ -459,6 +481,15 @@ static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t 
                saved_revision->valuedouble==active.revision){
                 cJSON_AddNumberToObject(item,"trigger_count",active.trigger_count);
                 cJSON_AddNumberToObject(item,"last_trigger_ms",active.last_trigger_ms);
+                ts_rule_start_status_t start;
+                if(ts_rule_start_status(active.id,&start)){
+                    cJSON *runtime=cJSON_AddObjectToObject(item,"automatic_start");
+                    if(runtime){
+                        cJSON_AddStringToObject(runtime,"state",start.state);
+                        if(start.reason)cJSON_AddStringToObject(runtime,"reason",start.reason);
+                        cJSON_AddNumberToObject(runtime,"retry_after_ms",start.retry_after_ms);
+                    }
+                }
             }
             ts_rule_release(&active);
         }
@@ -466,6 +497,26 @@ static esp_err_t api_automation_rules_list(const cJSON *params, ts_api_result_t 
         if(cJSON_IsObject(conditions))conditions=cJSON_GetObjectItemCaseSensitive(conditions,"items");
         cJSON_AddNumberToObject(item,"conditions_count",cJSON_GetArraySize(conditions));
         cJSON_AddNumberToObject(item,"actions_count",cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(row,"actions")));
+        const ts_auto_document_t *document=ts_auto_config_definitions(view);
+        cJSON *commands=cJSON_AddArrayToObject(item,"ssh_commands");
+        if(!commands){cJSON_Delete(item);goto failed;}
+        for(int n=0;document&&n<document->rule_count;++n){
+            const ts_auto_rule_t *rule=&document->rules[n];
+            if(strcmp(rule->id,id->valuestring))continue;
+            for(unsigned a=0;a<rule->action_count;++a){
+                const ts_auto_action_t *action=&rule->actions[a];
+                if(action->template_id[0])
+                    for(int t=0;t<document->action_count;++t)
+                        if(!strcmp(document->actions[t].id,action->template_id)){action=&document->actions[t].action;break;}
+                if(action->type!=TS_AUTO_ACT_SSH_CMD_REF)continue;
+                for(int c=0;c<document->command_count;++c)
+                    if(document->commands[c].nohup&&!strcmp(document->commands[c].id,action->ssh_ref.cmd_id)){
+                        cJSON *command=cJSON_CreateString(action->ssh_ref.cmd_id);
+                        if(!command||!cJSON_AddItemToArray(commands,command)){cJSON_Delete(command);cJSON_Delete(item);goto failed;}
+                    }
+            }
+            break;
+        }
         ts_auto_config_rule_status(view,&status,id->valuestring,item);
         if(!cJSON_AddItemToArray(items,item)){cJSON_Delete(item);goto failed;}
     }
@@ -517,11 +568,13 @@ static esp_err_t api_service_list(const cJSON *params,ts_api_result_t *result)
     (void)params;cJSON *data=cJSON_CreateObject(),*items=cJSON_CreateArray();
     if(!data||!items){cJSON_Delete(data);cJSON_Delete(items);return ESP_ERR_NO_MEM;}
     cJSON_AddItemToObject(data,"items",items);
-    for(unsigned i=0;i<TS_SSH_RUNS_MAX;++i){
+    const ts_auto_config_view_t *view=ts_auto_config_acquire();
+    const ts_auto_document_t *document=ts_auto_config_definitions(view);
+    for(unsigned i=0;i<TS_SSH_RUN_SLOTS;++i){
         ts_ssh_run_record_t record;ts_ssh_service_status_t state;
         if(ts_ssh_service_get(i,&record,&state)!=ESP_OK)continue;
         cJSON *item=service_status_json(&state);
-        if(!item){cJSON_Delete(data);return ESP_ERR_NO_MEM;}
+        if(!item){ts_auto_config_release(view);cJSON_Delete(data);return ESP_ERR_NO_MEM;}
         cJSON_AddStringToObject(item,"run_id",record.run_id);cJSON_AddStringToObject(item,"command_id",record.command_id);
         cJSON_AddStringToObject(item,"name",record.name);cJSON_AddStringToObject(item,"rule_id",record.rule);
         cJSON_AddStringToObject(item,"config_version",record.config_version);cJSON_AddStringToObject(item,"host_id",record.host.id);
@@ -531,8 +584,23 @@ static esp_err_t api_service_list(const cJSON *params,ts_api_result_t *result)
         char log_file[96];snprintf(log_file,sizeof(log_file),"/tmp/ts_nohup_%s.log",record.locator);
         cJSON_AddStringToObject(item,"log_file",log_file);
         cJSON_AddBoolToObject(item,"legacy",record.kind!=TS_SSH_RUN_GROUP);
+        bool current=false;
+        for(int c=0;document&&c<document->command_count;++c){
+            const ts_ssh_command_config_t *command=&document->commands[c];
+            if(strcmp(command->id,record.command_id))continue;
+            for(int h=0;h<document->host_count;++h){
+                const ts_ssh_host_config_t *host=&document->hosts[h];
+                if(strcmp(host->id,command->host_id))continue;
+                char selected[TS_SSH_RUN_ID_MAX];ts_ssh_service_status_t cached;
+                current=ts_ssh_service_current(command->id,host,command->instance,command->object_id,selected,&cached)&&!strcmp(selected,record.run_id);
+                break;
+            }
+            break;
+        }
+        cJSON_AddBoolToObject(item,"current",current);
         cJSON_AddItemToArray(items,item);
     }
+    ts_auto_config_release(view);
     ts_api_result_ok(result,data);return ESP_OK;
 }
 static esp_err_t service_request(const cJSON *params, ts_api_result_t *result, bool stop) {
@@ -600,7 +668,8 @@ static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result
     if(!version||!version[0]){ts_api_result_error(result,TS_API_ERR_INVALID_ARG,"configuration_version_required");return ESP_OK;}
     ESP_LOGI("api_auto", "Calling ts_rule_trigger('%s')", id_param->valuestring);
     ts_rule_reject_t why = TS_RULE_REJECT_NONE;
-    esp_err_t ret = ts_rule_trigger_versioned(id_param->valuestring,version,&why);
+    const char *reason=NULL;
+    esp_err_t ret = ts_rule_trigger_versioned(id_param->valuestring,version,&why,&reason);
     ESP_LOGI("api_auto", "ts_rule_trigger returned: %s (refusal %d)", esp_err_to_name(ret), (int)why);
 
     if (ret == ESP_OK) {
@@ -609,6 +678,8 @@ static esp_err_t api_automation_rules_trigger(const cJSON *params, ts_api_result
     } else if (ret == ESP_ERR_NOT_FOUND) {
         result->code = TS_API_ERR_NOT_FOUND;
         result->message = strdup("Rule not found");
+    } else if (reason) {
+        ts_api_result_error(result,trigger_reject_code(why),reason);
     } else if (trigger_reject_token(why)) {
         result->code = trigger_reject_code(why);
         result->message = strdup(trigger_reject_token(why));
@@ -657,7 +728,10 @@ static esp_err_t api_automation_rules_get(const cJSON *params,ts_api_result_t *r
  * @brief automation.rules.add - Add a new rule
  */
 static esp_err_t api_automation_rules_add(const cJSON *params,ts_api_result_t *result)
-{ return ts_api_auto_write(TS_AUTO_CONFIG_RULE,params,TS_API_AUTO_UPSERT,result); }
+{ return ts_api_auto_write(TS_AUTO_CONFIG_RULE,params,TS_API_AUTO_CREATE,result); }
+
+static esp_err_t api_automation_rules_update(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_RULE,params,TS_API_AUTO_UPDATE,result); }
 
 /**
  * @brief automation.rules.delete - Delete a rule
@@ -680,7 +754,10 @@ static esp_err_t api_automation_sources_list(const cJSON *params,ts_api_result_t
  * @brief automation.sources.add - Add a new data source
  */
 static esp_err_t api_automation_sources_add(const cJSON *params,ts_api_result_t *result)
-{ return ts_api_auto_write(TS_AUTO_CONFIG_SOURCE,params,TS_API_AUTO_UPSERT,result); }
+{ return ts_api_auto_write(TS_AUTO_CONFIG_SOURCE,params,TS_API_AUTO_CREATE,result); }
+
+static esp_err_t api_automation_sources_update(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_SOURCE,params,TS_API_AUTO_UPDATE,result); }
 
 /**
  * @brief automation.sources.delete - Delete a data source
@@ -1437,6 +1514,7 @@ static cJSON *extract_json_value(cJSON *json, const char *path)
 // WebSocket 测试状态
 typedef struct {
     char *message;                  // 接收到的消息
+    size_t message_len;
     char *error;                    // 错误信息
     bool connected;                 // 已连接标志
     bool received;                  // 已收到数据标志
@@ -1456,6 +1534,7 @@ static void ws_test_handler(void *handler_args, esp_event_base_t base, int32_t e
             if (ctx->connect_sem) xSemaphoreGive(ctx->connect_sem);
             break;
 
+        case WEBSOCKET_EVENT_CLOSED:
         case WEBSOCKET_EVENT_DISCONNECTED:
             TS_LOGI(TAG, "WS test: disconnected");
             ctx->connected = false;
@@ -1466,11 +1545,29 @@ static void ws_test_handler(void *handler_args, esp_event_base_t base, int32_t e
             break;
 
         case WEBSOCKET_EVENT_DATA:
-            if (data->data_len > 0 && !ctx->received) {
-                TS_LOGI(TAG, "WS test: received %d bytes", data->data_len);
-                ctx->message = strndup(data->data_ptr, data->data_len);
-                ctx->received = true;
-                if (ctx->data_sem) xSemaphoreGive(ctx->data_sem);
+            if (data->op_code < 8 && !ctx->received) {
+                if (data->data_len > 0 && data->data_ptr) {
+                    TS_LOGI(TAG, "WS test: received %d bytes", data->data_len);
+                    if (!ctx->message) {
+                        ctx->message = heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                        if (!ctx->message) ctx->message = malloc(8192);
+                    }
+                    if (!ctx->message) {
+                        ctx->error = strdup("no_memory");
+                        if (ctx->data_sem) xSemaphoreGive(ctx->data_sem);
+                        break;
+                    }
+                    size_t space = 8191 - ctx->message_len;
+                    size_t copied = (size_t)data->data_len < space ? (size_t)data->data_len : space;
+                    memcpy(ctx->message + ctx->message_len, data->data_ptr, copied);
+                    ctx->message_len += copied;
+                    ctx->message[ctx->message_len] = '\0';
+                }
+                if (ctx->message_len > 0 && data->fin && (data->payload_len == 0 ||
+                    data->payload_offset + data->data_len >= data->payload_len)) {
+                    ctx->received = true;
+                    if (ctx->data_sem) xSemaphoreGive(ctx->data_sem);
+                }
             }
             break;
 
@@ -1546,6 +1643,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         .buffer_size = 4096,
         .network_timeout_ms = timeout_ms,
         .reconnect_timeout_ms = timeout_ms,  // 禁用自动重连（使用大超时）
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_websocket_client_handle_t client = esp_websocket_client_init(&ws_cfg);
@@ -1591,6 +1689,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         esp_websocket_client_destroy(client);
         vSemaphoreDelete(ctx.connect_sem);
         vSemaphoreDelete(ctx.data_sem);
+        free(ctx.message);
         return ESP_OK;
     }
 
@@ -1601,7 +1700,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
     }
 
     // 等待数据消息
-    bool data_ok = (xSemaphoreTake(ctx.data_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) && ctx.message;
+    bool data_ok = (xSemaphoreTake(ctx.data_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) && ctx.received && ctx.message;
 
     if (data_ok && ctx.message) {
         TS_LOGI(TAG, "WS test: message received, len=%d", (int)strlen(ctx.message));
@@ -1633,12 +1732,11 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         result->code = TS_API_OK;
         result->message = strdup("WebSocket test successful");
 
-        free(ctx.message);
     } else {
         // 未收到数据
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("ws_no_data");
-        cJSON_AddStringToObject(data, "error", "No data received within timeout");
+        result->message = strdup(ctx.error ? ctx.error : "ws_no_data");
+        cJSON_AddStringToObject(data, "error", ctx.error ? ctx.error : "No data received within timeout");
     }
 
     result->data = data;
@@ -1646,6 +1744,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
     // 清理
     esp_websocket_client_stop(client);
     esp_websocket_client_destroy(client);
+    free(ctx.message);
     vSemaphoreDelete(ctx.connect_sem);
     vSemaphoreDelete(ctx.data_sem);
     if (ctx.error) free(ctx.error);
@@ -1968,6 +2067,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
         .method = HTTP_METHOD_GET,
         .timeout_ms = 10000,
         .buffer_size = 2048,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t http_client = esp_http_client_init(&http_config);
@@ -2031,18 +2131,8 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
     }
 
     // ========== Step 2: WebSocket 连接 ==========
-    // 解析 host 和 port
     char ws_url[384];
-    const char *host_start = strstr(base_url, "://");
-    if (host_start) {
-        host_start += 3;
-    } else {
-        host_start = base_url;
-    }
-
-    // 构造 WebSocket URL
-    snprintf(ws_url, sizeof(ws_url), "ws://%s/socket.io/?EIO=4&transport=websocket&sid=%s",
-             host_start, ctx.sid);
+    ts_source_sio_websocket_url(base_url, ctx.sid, ws_url, sizeof(ws_url));
 
     TS_LOGI(TAG, "Socket.IO WS URL: %s", ws_url);
 
@@ -2051,6 +2141,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
         .buffer_size = 4096,
         .network_timeout_ms = timeout_ms,
         .reconnect_timeout_ms = timeout_ms * 2,  // 禁用自动重连
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_websocket_client_handle_t ws_client = esp_websocket_client_init(&ws_cfg);
@@ -2831,6 +2922,11 @@ esp_err_t ts_api_automation_register(void)
         .requires_auth = true,
     };
     ts_api_register(&ep_vars_set);
+    ts_api_endpoint_t ep_vars_delete = ep_vars_set;
+    ep_vars_delete.name = "automation.variables.delete";
+    ep_vars_delete.description = "Delete a saved user variable";
+    ep_vars_delete.handler = api_automation_variables_delete;
+    ts_api_register(&ep_vars_delete);
 
     // Rules APIs
     ts_api_endpoint_t ep_rules_list = {
@@ -2903,6 +2999,7 @@ esp_err_t ts_api_automation_register(void)
     ts_api_endpoint_t ep_rules_update = ep_rules_add;
     ep_rules_update.name = "automation.rules.update";
     ep_rules_update.description = "Update rule with expected revision";
+    ep_rules_update.handler = api_automation_rules_update;
     ts_api_register(&ep_rules_update);
 
     ts_api_endpoint_t ep_rules_delete = {
@@ -2932,6 +3029,11 @@ esp_err_t ts_api_automation_register(void)
         .requires_auth = true,
     };
     ts_api_register(&ep_sources_add);
+    ts_api_endpoint_t ep_sources_update = ep_sources_add;
+    ep_sources_update.name = "automation.sources.update";
+    ep_sources_update.description = "Update an existing data source";
+    ep_sources_update.handler = api_automation_sources_update;
+    ts_api_register(&ep_sources_update);
 
     ts_api_endpoint_t ep_sources_delete = {
         .name = "automation.sources.delete",

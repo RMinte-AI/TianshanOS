@@ -53,12 +53,12 @@ test('stylesheet retains migrated bounds, overlay, wrapping and responsive span 
         '.dw-ring>svg,.dw-ring-value{grid-area:1/1}',
         '.dw-card .bigrow{flex-wrap:wrap;max-width:100%}',
         '.dw-card[data-type=dual] .bigrow{flex-direction:column;align-items:center}',
-        '.dw-grid>.dw-layout-large{grid-column:span 2}',
-        '.dw-grid>.dw-layout-medium,.dw-grid>.dw-layout-large,.dw-grid>.dw-card[data-type=log][data-layout=auto]{grid-column:span 1}',
+        '.dw-layout-large{grid-column:span var(--widget-large-span)}',
+        '.dw-card[data-type=log][data-layout=auto],.dw-layout-medium{grid-column:span var(--widget-medium-span)}',
         '.dw-log-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
         '.dw-log-tools>.btn,.dw-log-tools>.state{flex-shrink:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}',
-        'max(270px,calc((100% - 24px)/3))'
+        'grid-template-columns:repeat(var(--device-columns),minmax(0,1fr))'
     ]) assert(css.includes(rule), rule);
-    assert(css.includes('.dw-grid{grid-template-columns:minmax(0,1fr)}'));
+    assert(css.includes('.device-panel{container:device-panel / inline-size}'));
     assert(css.includes('.dw-ring-value{z-index:1;width:100%;'));
 });

@@ -321,7 +321,7 @@ class WebTerminal {
             if (!current()) return;
             console.log('Terminal WebSocket connected');
             // 发送终端启动请求
-            ws.send(JSON.stringify({ type: 'terminal_start' }));
+            ws.send(JSON.stringify({ type: 'terminal_start', token: api.token }));
             
             // 启动心跳机制
             this.pingInterval = setInterval(() => {
@@ -430,7 +430,7 @@ class WebTerminal {
                 if (errMsg.indexOf('Not a terminal session') >= 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
                     if (!this.restoring) {
                         this.restoring = true; this.connected = false;
-                        this.ws.send(JSON.stringify({type: 'terminal_start'}));
+                        this.ws.send(JSON.stringify({type: 'terminal_start', token: api.token}));
                         showToast(t('promptRepair.terminalRestoring'), 'info');
                         const restoringSocket = this.ws;
                         this.restoreTimer = setTimeout(() => { if (!this.destroyed && this.ws === restoringSocket && this.restoring) this.finishRestore(false, true); }, 10000);

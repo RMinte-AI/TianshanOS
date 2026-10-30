@@ -320,8 +320,10 @@ esp_err_t ts_scp_recv(ts_ssh_session_t ssh_session, const char *remote_path,
             scp_wait_socket(ssh_session, 100);
             continue;
         } else if (rc == 0) {
-            /* EOF */
-            break;
+            ESP_LOGE(TAG, "SCP recv ended early: %llu of %llu bytes",
+                     (unsigned long long)transferred, (unsigned long long)file_size);
+            ret = ESP_FAIL;
+            goto cleanup;
         } else {
             ESP_LOGE(TAG, "SCP read error: %zd", rc);
             ret = ESP_FAIL;

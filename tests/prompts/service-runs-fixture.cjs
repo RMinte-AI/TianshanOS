@@ -7,10 +7,12 @@ function serviceFixture() {
  state.runs.set(NEW,{...run(NEW,'192.0.2.2','Recreated model'),username:'new-user',keyid:'new-key'});
  const commands=[{id:'plain',name:'Ordinary background',host_id:'host-one',command:'printf ordinary',nohup:true,serviceMode:false},
   {id:'managed',name:'Ready-pattern background',host_id:'host-one',command:'printf ready',nohup:true,serviceMode:true,varName:'model',readyPattern:'ready'},
-  {id:'foreground',name:'Foreground',host_id:'host-one',command:'printf direct',nohup:false,serviceMode:false}];
+  {id:'foreground',name:'Foreground',host_id:'host-one',command:'printf direct',nohup:false,serviceMode:false,runtime_instance:'0000000000000011'}];
  const ok=data=>({code:0,data});
  const respond=call=>{
   const {endpoint:e,params:p}=call;
+  if(e==='ui/widgets/get')return ok({widgets:[],refresh_interval:5000,source:'default'});
+  if(e==='ui/widgets/set')return ok({nvs_saved:true});
   if(e==='automation/services/list') return ok({items:[...state.runs.values()].map(x=>({...x}))});
   if(e==='ssh/hosts/list') return ok({...base.status(),hosts:[{id:'host-one',host:'192.0.2.10',port:22,username:'original-user',keyid:'original-key'},{id:'host-two',host:'192.0.2.99',port:22,username:'new-user',keyid:'new-key'}]});
   if(e==='ssh/commands/list')return ok({...base.status(),commands:commands.filter(c=>!p.host_id||c.host_id===p.host_id)});

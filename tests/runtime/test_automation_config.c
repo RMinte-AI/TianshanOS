@@ -16,6 +16,11 @@
 #include <math.h>
 #include "ts_action_codec.h"
 #include "esp_timer.h"
+#include "ts_jsonpath.h"
+#include "ts_api.h"
+#ifndef ESP_ERR_INVALID_RESPONSE
+#define ESP_ERR_INVALID_RESPONSE 0x108
+#endif
 static uint8_t durable_control[4],pending_control[4];
 static bool has_control,fail_control,control_dirty,auto_v_dirty;
 static bool has_auto_v=true,sd_present=true,sd_mounted=true,internal_mounted=true;
@@ -62,15 +67,60 @@ esp_err_t nvs_set_u8(nvs_handle_t handle,const char *name,uint8_t value)
 { assert(handle==1&&!strcmp(name,"auto_v"));pending_auto_v=value;auto_v_dirty=true;return ESP_OK; }
 esp_err_t nvs_erase_all(nvs_handle_t handle){(void)handle;assert(false);return ESP_FAIL;}
 typedef void *esp_websocket_client_handle_t;
+typedef void *esp_http_client_handle_t;
+enum {HTTP_METHOD_GET,HTTP_METHOD_POST};
+typedef struct {const char *url;int method,timeout_ms,buffer_size;bool skip_cert_common_name_check;esp_err_t (*crt_bundle_attach)(void *);} esp_http_client_config_t;
+static int http_method,http_calls,local_api_calls,http_offset;
+static bool http_bundle,http_skip_name;
+static char http_url[256];
+static const char *http_payload="{\"temperature\":21}";
+static char http_authorization[128];
+static esp_err_t esp_crt_bundle_attach(void *p){(void)p;return ESP_OK;}
+static esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *cfg)
+{http_method=cfg->method;++http_calls;http_offset=0;http_authorization[0]=0;
+ http_bundle=cfg->crt_bundle_attach==esp_crt_bundle_attach;http_skip_name=cfg->skip_cert_common_name_check;
+ snprintf(http_url,sizeof(http_url),"%s",cfg->url);return (void*)1;}
+static esp_err_t esp_http_client_set_header(esp_http_client_handle_t c,const char *name,const char *value)
+{(void)c;assert(!strcmp(name,"Authorization"));snprintf(http_authorization,sizeof(http_authorization),"%s",value);return ESP_OK;}
+static esp_err_t esp_http_client_open(esp_http_client_handle_t c,int n){(void)c;(void)n;return ESP_OK;}
+static int esp_http_client_fetch_headers(esp_http_client_handle_t c){(void)c;return 0;}
+static int esp_http_client_get_status_code(esp_http_client_handle_t c){(void)c;return 200;}
+static int esp_http_client_read(esp_http_client_handle_t c,char *out,int size)
+{(void)c;const char *data=http_payload;int length=(int)strlen(data);if(http_offset)return 0;assert(size>=length);memcpy(out,data,length);http_offset=length;return length;}
+static esp_err_t esp_http_client_close(esp_http_client_handle_t c){(void)c;return ESP_OK;}
+static esp_err_t esp_http_client_cleanup(esp_http_client_handle_t c){(void)c;return ESP_OK;}
+esp_err_t ts_api_call(const char *name,const cJSON *params,ts_api_result_t *result)
+{(void)params;assert(!strcmp(name,"example.status"));++local_api_calls;result->code=0;result->data=cJSON_Parse("{\"temperature\":21}");return ESP_OK;}
+typedef const char *esp_event_base_t;
+typedef struct {char *data_ptr;int data_len,payload_len,payload_offset;bool fin;uint8_t op_code;} esp_websocket_event_data_t;
+typedef struct {const char *uri;int buffer_size,reconnect_timeout_ms,network_timeout_ms,ping_interval_sec;bool enable_close_reconnect;esp_err_t (*crt_bundle_attach)(void *);} esp_websocket_client_config_t;
+enum {WEBSOCKET_EVENT_CONNECTED=1,WEBSOCKET_EVENT_DISCONNECTED,WEBSOCKET_EVENT_DATA,WEBSOCKET_EVENT_ERROR,WEBSOCKET_EVENT_CLOSED};
+#define SIO_MSG_BUF_SIZE 8192
+#define SIO_PROBE_MSG "2probe"
+#define SIO_UPGRADE_MSG "5"
+#define SIO_PING_MSG "2"
+#define SIO_PONG_MSG "3"
+static int esp_websocket_client_send_text(esp_websocket_client_handle_t c,const char *data,int len,int wait)
+{(void)c;(void)data;(void)len;(void)wait;return len;}
 #define SIO_SID_MAX_LEN 64
-#define SIO_MAX_CONNECTIONS TS_SOURCE_MAX_SIO_CONNECTIONS
+#ifndef CONFIG_TS_AUTOMATION_MAX_SOURCES
+#define CONFIG_TS_AUTOMATION_MAX_SOURCES 16
+#endif
+#define SIO_MAX_CONNECTIONS CONFIG_TS_AUTOMATION_MAX_SOURCES
 #define SIO_EVENT_PREFIX "42"
 static unsigned stop_notifications;
 static int xTaskNotifyGive(TaskHandle_t task) { assert(task);++stop_notifications;return 1; }
+typedef int BaseType_t;
+#define pdPASS 1
+static unsigned stream_tasks_created;
+static void sio_connection_task(void *arg) {(void)arg;assert(false);}
+static BaseType_t xTaskCreateWithCaps(void (*task)(void *),const char *name,unsigned stack,void *arg,unsigned priority,TaskHandle_t *out,unsigned caps)
+{assert(task==sio_connection_task&&name&&stack==6144&&arg&&priority==5&&caps);*out=(void *)1;++stream_tasks_created;return pdPASS;}
 #include "source_transport.inc"
 void ts_source_config_activate(void) { /* Task creation and real networking are outside this fixture. */ }
 
-int64_t esp_timer_get_time(void) { static int64_t now=100000;return ++now; }
+static int64_t clock_us=100000;
+int64_t esp_timer_get_time(void) { return ++clock_us; }
 bool ts_action_manager_is_initialized(void) { return true; }
 static unsigned template_executions;
 static esp_err_t template_execution_ret=ESP_OK;
@@ -81,29 +131,40 @@ esp_err_t ts_action_queue(const ts_auto_action_t *action,ts_action_callback_t ca
 { (void)action;(void)callback;(void)context;(void)priority;return ESP_OK; }
 
 static atomic_bool refuse_actions, refuse_service;
+static const char *preflight_reason="ssh_connect_timeout";static unsigned preflight_checks;
 static pthread_mutex_t execution_gate=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t execution_changed=PTHREAD_COND_INITIALIZER;
 static bool block_action,action_reached,action_released;
 static unsigned rule_actions;
 bool ts_action_manager_accepting(void) { return !refuse_actions; }
-bool ts_ssh_service_start_admissible(const char *id) { (void)id;return !refuse_service; }
+esp_err_t ts_action_manager_check_start(const ts_auto_action_t *a,ts_action_result_t *result,bool automatic) {(void)automatic;if(a->type==TS_AUTO_ACT_SSH_CMD_REF){++preflight_checks;if(refuse_service){result->reason=preflight_reason;return ESP_ERR_INVALID_STATE;}}return ESP_OK;}
+esp_err_t ts_ssh_service_check_start(const char *id,const ts_ssh_host_config_t *host,const char *exclude,int64_t deadline,const char **reason)
+{(void)id;(void)host;(void)exclude;(void)deadline;if(reason)*reason=NULL;return refuse_service?ESP_ERR_INVALID_STATE:ESP_OK;}
+esp_err_t ts_action_submit_background(const ts_auto_action_t *action,ts_action_result_t *result)
+{return ts_action_manager_execute(action,result);}
 static bool fail_service_import;static unsigned service_imports;
 esp_err_t ts_ssh_service_import_legacy(const ts_ssh_command_config_t *command,const ts_ssh_host_config_t *host)
 {assert(command&&host&&command->nohup);++service_imports;return fail_service_import?ESP_FAIL:ESP_OK;}
 typedef void *QueueHandle_t;
 #include "action_identity.inc"
-static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions,int count,int *ok,int *failed)
+static esp_err_t execute_auto_sequence(const ts_auto_action_t *,int,int *,int *,unsigned *,ts_action_result_t *);
+static esp_err_t execute_actions_with_stats(const ts_auto_action_t *actions,int count,int *ok,int *failed,unsigned *resume,ts_action_result_t *result)
 {
-    (void)actions;pthread_mutex_lock(&execution_gate);
+    if(resume)return execute_auto_sequence(actions,count,ok,failed,resume,result);
+    (void)actions;(void)result;pthread_mutex_lock(&execution_gate);
     if(block_action){action_reached=true;pthread_cond_broadcast(&execution_changed);while(!action_released)pthread_cond_wait(&execution_changed,&execution_gate);}
-    pthread_mutex_unlock(&execution_gate);rule_actions+=count;*ok=count;*failed=0;return ESP_OK;
+    pthread_mutex_unlock(&execution_gate);rule_actions+=count;if(resume)*resume=count;*ok=count;*failed=0;return ESP_OK;
 }
 
 static bool fail_prepare;
 static unsigned prepares, publishes, pauses;
 static StaticSemaphore_t admission_storage;
 static SemaphoreHandle_t admission;
-void esp_fill_random(void *buffer,size_t size) { memset(buffer,0x42,size); }
+void esp_fill_random(void *buffer,size_t size) {
+    static unsigned sequence;
+    unsigned char *bytes=buffer; ++sequence;
+    for(size_t i=0;i<size;++i)bytes[i]=(unsigned char)(sequence*37+i);
+}
 void ts_ssh_binding_lock(void) { if(!admission)admission=xSemaphoreCreateRecursiveMutexStatic(&admission_storage);xSemaphoreTakeRecursive(admission,portMAX_DELAY); }
 void ts_ssh_binding_unlock(void) { xSemaphoreGiveRecursive(admission); }
 #define ts_rule_config_prepare engine_prepare
@@ -118,7 +179,7 @@ void ts_ssh_binding_unlock(void) { xSemaphoreGiveRecursive(admission); }
 esp_err_t ts_rule_config_prepare(const ts_auto_rule_t *rules,int count,bool keep_runtime,ts_rule_config_view_t **out)
 { ++prepares;*out=NULL;return fail_prepare?ESP_ERR_NO_MEM:engine_prepare(rules,count,keep_runtime,out); }
 void ts_rule_config_discard(ts_rule_config_view_t *view) { engine_discard(view); }
-void ts_rule_config_publish(ts_rule_config_view_t *view,bool enabled) { ++publishes;engine_publish(view,enabled); }
+void ts_rule_config_publish(ts_rule_config_view_t *view,bool enabled,const ts_auto_document_t *before,const ts_auto_document_t *after) { ++publishes;engine_publish(view,enabled,before,after); }
 void ts_rule_config_pause(void) { ++pauses;engine_pause(); }
 
 
@@ -188,12 +249,14 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *action,ts_action_result
 esp_err_t ts_action_exec_gpio(const ts_auto_action_gpio_t *action,ts_action_result_t *result){(void)action;return executed(result);}
 esp_err_t ts_action_exec_log(const ts_auto_action_log_t *action,ts_action_result_t *result){(void)action;return executed(result);}
 esp_err_t ts_action_exec_device(const ts_auto_action_device_t *action,ts_action_result_t *result){(void)action;return executed(result);}
-static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;ts_action_result_t result;return executed(&result);}
+static bool fail_webhook;
+static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;if(fail_webhook){++execution_io;return ESP_FAIL;}ts_action_result_t result;return executed(&result);}
 static esp_err_t execute_service_control(const ts_action_queue_entry_t *entry,ts_action_result_t *result){(void)entry;return executed(result);}
 #include "action_execution.inc"
 esp_err_t ts_action_submit_prepared(const ts_auto_action_t *action)
 {ts_action_queue_entry_t entry={.action=*action};ts_action_result_t result={0};return execute_entry(&entry,&result);}
 #include "rule_repeat.inc"
+#include "rule_sequence.inc"
 static void *run_automation(void *arg){automation_task(arg);return NULL;}
 
 static ts_auto_config_status_t status(void)
@@ -232,12 +295,12 @@ static void rule_publication_cases(void)
     for(int i=0;i<64;++i){snprintf(rules[i].id,sizeof(rules[i].id),"r%d",i);strcpy(rules[i].name,"Original");}
     ts_rule_config_view_t *prepared=NULL;
     assert(engine_prepare(rules,65,true,&prepared)==ESP_ERR_INVALID_SIZE && !prepared);
-    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true);
+    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true,NULL,NULL);
     assert(ts_rule_count()==64);
     s_rule_ctx.rules[0].last_trigger_ms=77;s_rule_ctx.rules[0].trigger_count=2;
     ts_auto_rule_t held;assert(ts_rule_acquire("r0",&held)==ESP_OK);uint32_t identity=held.instance;
     strcpy(rules[1].name,"Changed");
-    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true);
+    assert(engine_prepare(rules,64,true,&prepared)==ESP_OK);engine_publish(prepared,true,NULL,NULL);
     assert(s_rule_ctx.rules[0].instance==identity && s_rule_ctx.rules[0].last_trigger_ms==77 && s_rule_ctx.rules[0].trigger_count==2);
     assert(!strcmp(held.name,"Original") && s_rule_ctx.retired==1);ts_rule_release(&held);assert(!s_rule_ctx.retired);
     engine_pause();assert(!s_rule_ctx.config_enabled);free(rules);
@@ -327,6 +390,15 @@ static void rule_config_cases(void)
 
 static void source_cases(void)
 {
+    char transport_url[256];
+    ts_source_sio_websocket_url("https://example.invalid:443", "sid", transport_url, sizeof(transport_url));
+    assert(!strcmp(transport_url,"wss://example.invalid:443/socket.io/?EIO=4&transport=websocket&sid=sid"));
+    ts_source_sio_websocket_url("http://example.invalid:80", "sid", transport_url, sizeof(transport_url));
+    assert(!strcmp(transport_url,"ws://example.invalid:80/socket.io/?EIO=4&transport=websocket&sid=sid"));
+    char sid[64]={0};http_payload="0{\"sid\":\"fixture\"}";
+    assert(sio_http_handshake("https://example.invalid:443",sid,sizeof(sid))==ESP_OK&&!strcmp(sid,"fixture"));
+    assert(!strncmp(http_url,"https://",8)&&http_bundle&&!http_skip_name);
+    http_payload="{\"temperature\":21}";
     ts_auto_source_t source={.enabled=true,.type=TS_AUTO_SRC_SOCKETIO};
     strcpy(source.id,"stream");strcpy(source.label,"Stream");
     strcpy(source.socketio.url,"http://192.0.2.10:9000");strcpy(source.socketio.event,"telemetry");
@@ -369,6 +441,109 @@ static void source_cases(void)
     assert(ts_source_unregister("other")==ESP_OK);
     vSemaphoreDelete(old->pending_mutex);old->pending_mutex=NULL;sio_release_connection(old,false);
     vSemaphoreDelete(stable->pending_mutex);stable->pending_mutex=NULL;sio_release_connection(stable,false);
+
+    ts_auto_source_t ws={.enabled=true,.type=TS_AUTO_SRC_WEBSOCKET,.mapping_count=1};
+    strcpy(ws.id,"plain_ws");strcpy(ws.websocket.uri,"ws://fixture.invalid/socket");strcpy(ws.websocket.path,"data.temperature");
+    strcpy(ws.mappings[0].json_path,"data.temperature");strcpy(ws.mappings[0].var_name,"plain_ws.temperature");
+    assert(ts_source_register(&ws)==ESP_OK&&ts_source_get_copy(ws.id,&ws)==ESP_OK);
+    unsigned before_stream=stream_tasks_created;
+    assert(stream_connect(ws.id,TS_AUTO_SRC_WEBSOCKET)==ESP_OK&&stream_tasks_created==before_stream+1);
+    sio_connection_t *stream=sio_find_connection(ws.id);
+    assert(stream&&stream->source_instance==ws.instance&&stream->type==TS_AUTO_SRC_WEBSOCKET&&stream->pending_mutex);
+    assert(stream_connect(ws.id,TS_AUTO_SRC_WEBSOCKET)==ESP_OK&&stream_tasks_created==before_stream+1);
+    esp_websocket_client_config_t stream_config=test_stream_client_config(stream,3210,ws.websocket.uri);
+    assert(stream_config.enable_close_reconnect&&stream_config.reconnect_timeout_ms==3210&&stream_config.crt_bundle_attach==esp_crt_bundle_attach);
+    stream->type=TS_AUTO_SRC_SOCKETIO;stream_config=test_stream_client_config(stream,3210,ws.websocket.uri);
+    assert(!stream_config.enable_close_reconnect&&stream_config.reconnect_timeout_ms==10000);stream->type=TS_AUTO_SRC_WEBSOCKET;
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_CONNECTED,NULL);
+    assert(ts_source_get_copy(ws.id,&ws)==ESP_OK&&ws.connected);
+    char message[]="{\"data\":{\"temperature\":23}}";int length=(int)strlen(message);
+    esp_websocket_event_data_t part={.data_ptr=message,.data_len=8,.payload_len=length,.payload_offset=0,.fin=true,.op_code=1};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);
+    part.data_ptr=message+8;part.data_len=length-8;part.payload_offset=8;
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);
+    assert(stream->pending_json&&!strcmp(stream->pending_json,message));test_process_pending(stream);
+    ts_auto_value_t mapped;assert(ts_variable_get("plain_ws.temperature",&mapped)==ESP_OK&&mapped.int_val==23);
+    assert(ts_source_get_copy(ws.id,&ws)==ESP_OK&&ws.last_value.int_val==23);
+    part=(esp_websocket_event_data_t){.data_ptr=message,.data_len=8,.payload_len=length,.payload_offset=0,.fin=true,.op_code=1};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);assert(stream->msg_buf_len==8);
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DISCONNECTED,NULL);
+    assert(ts_source_get_copy(ws.id,&ws)==ESP_OK&&!ws.connected&&!stream->msg_buf_len);
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_CONNECTED,NULL);
+    assert(ts_source_get_copy(ws.id,&ws)==ESP_OK&&ws.connected);
+    char after_reconnect[]="{\"data\":{\"temperature\":24}}";
+    part=(esp_websocket_event_data_t){.data_ptr=after_reconnect,.data_len=(int)strlen(after_reconnect),.payload_len=(int)strlen(after_reconnect),.fin=true,.op_code=1};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);test_process_pending(stream);
+    assert(ts_variable_get("plain_ws.temperature",&mapped)==ESP_OK&&mapped.int_val==24);
+    char framed[]="{\"data\":{\"temperature\":25}}";int framed_length=(int)strlen(framed);
+    ws_test_ctx_t test={0};
+    part=(esp_websocket_event_data_t){.data_ptr=framed,.data_len=8,.payload_len=8,.fin=false,.op_code=1};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);ws_test_handler(&test,NULL,WEBSOCKET_EVENT_DATA,&part);
+    assert(!stream->pending_json&&!test.received);
+    char ping[]="ping";esp_websocket_event_data_t control={.data_ptr=ping,.data_len=4,.payload_len=4,.fin=true,.op_code=9};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&control);ws_test_handler(&test,NULL,WEBSOCKET_EVENT_DATA,&control);
+    part=(esp_websocket_event_data_t){.data_ptr=framed+8,.data_len=framed_length-8,.payload_len=framed_length-8,.fin=true,.op_code=0};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);ws_test_handler(&test,NULL,WEBSOCKET_EVENT_DATA,&part);
+    assert(test.received&&!strcmp(test.message,framed));free(test.message);test_process_pending(stream);
+    assert(ts_variable_get("plain_ws.temperature",&mapped)==ESP_OK&&mapped.int_val==25);
+    /* A separate empty FIN completes the buffered message in both paths. */
+    char empty_fin_message[]="{\"data\":{\"temperature\":26}}";
+    int empty_fin_length=(int)strlen(empty_fin_message);
+    test=(ws_test_ctx_t){0};
+    part=(esp_websocket_event_data_t){.data_ptr=empty_fin_message,.data_len=empty_fin_length,.payload_len=empty_fin_length,.fin=false,.op_code=1};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);ws_test_handler(&test,NULL,WEBSOCKET_EVENT_DATA,&part);
+    assert(!stream->pending_json&&!test.received);
+    control=(esp_websocket_event_data_t){.fin=true,.op_code=9};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&control);ws_test_handler(&test,NULL,WEBSOCKET_EVENT_DATA,&control);
+    assert(!stream->pending_json&&!test.received);
+    part=(esp_websocket_event_data_t){.fin=true,.op_code=0};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);
+    assert(stream->pending_json&&!strcmp(stream->pending_json,empty_fin_message));
+    ws_test_handler(&test,NULL,WEBSOCKET_EVENT_DATA,&part);
+    assert(test.received&&!strcmp(test.message,empty_fin_message));free(test.message);test_process_pending(stream);
+    assert(ts_variable_get("plain_ws.temperature",&mapped)==ESP_OK&&mapped.int_val==26);
+    char next_message[]="{\"data\":{\"temperature\":27}}";
+    part=(esp_websocket_event_data_t){.data_ptr=next_message,.data_len=(int)strlen(next_message),.payload_len=(int)strlen(next_message),.fin=true,.op_code=1};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);test_process_pending(stream);
+    assert(ts_variable_get("plain_ws.temperature",&mapped)==ESP_OK&&mapped.int_val==27);
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_CLOSED,NULL);
+    assert(ts_source_get_copy(ws.id,&ws)==ESP_OK&&!ws.connected);
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_CONNECTED,NULL);
+    assert(ts_source_get_copy(ws.id,&ws)==ESP_OK&&ws.connected);
+    char stale[]="{\"data\":{\"temperature\":88}}";
+    part=(esp_websocket_event_data_t){.data_ptr=stale,.data_len=(int)strlen(stale),.payload_len=(int)strlen(stale),.fin=true,.op_code=1};
+    sio_websocket_event_handler(stream,NULL,WEBSOCKET_EVENT_DATA,&part);assert(stream->pending_json);
+    strcpy(ws.websocket.uri,"ws://fixture.invalid/replacement");assert(ts_source_register(&ws)==ESP_OK&&stream->should_stop);
+    ts_auto_variable_t fresh={0};strcpy(fresh.name,"plain_ws.temperature");strcpy(fresh.source_id,"plain_ws");
+    fresh.value.type=TS_AUTO_VAL_INT;fresh.value.int_val=99;assert(ts_variable_upsert(&fresh)==ESP_OK);
+    test_process_pending(stream);assert(ts_variable_get("plain_ws.temperature",&mapped)==ESP_OK&&mapped.int_val==99);
+    assert(ts_source_unregister("plain_ws")==ESP_OK);
+    free(stream->msg_buf);stream->msg_buf=NULL;vSemaphoreDelete(stream->pending_mutex);stream->pending_mutex=NULL;sio_release_connection(stream,false);
+    for(unsigned i=0;i<5;++i){
+        ts_auto_source_t concurrent={.enabled=true,.type=TS_AUTO_SRC_WEBSOCKET};
+        snprintf(concurrent.id,sizeof(concurrent.id),"plain_%u",i);strcpy(concurrent.websocket.uri,"ws://fixture.invalid/socket");
+        assert(ts_source_register(&concurrent)==ESP_OK&&stream_connect(concurrent.id,TS_AUTO_SRC_WEBSOCKET)==ESP_OK);
+    }
+    for(unsigned i=0;i<5;++i){
+        char id[32];snprintf(id,sizeof(id),"plain_%u",i);sio_connection_t *conn=sio_find_connection(id);
+        assert(conn&&conn->allocated&&ts_source_unregister(id)==ESP_OK&&conn->should_stop);
+        vSemaphoreDelete(conn->pending_mutex);conn->pending_mutex=NULL;sio_release_connection(conn,false);
+    }
+
+    ts_auto_source_t rest={.enabled=true,.type=TS_AUTO_SRC_REST,.mapping_count=1};
+    strcpy(rest.id,"rest_method");strcpy(rest.rest.url,"http://example.invalid/measure");strcpy(rest.rest.auth_header,"Bearer synthetic");
+    strcpy(rest.mappings[0].json_path,"temperature");strcpy(rest.mappings[0].var_name,"rest_method.temperature");
+    assert(ts_source_register(&rest)==ESP_OK&&ts_source_get_copy(rest.id,&rest)==ESP_OK);
+    assert(read_rest_source(&rest,NULL)==ESP_OK&&http_method==HTTP_METHOD_GET&&!strcmp(http_authorization,"Bearer synthetic"));
+    assert(ts_variable_get("rest_method.temperature",&mapped)==ESP_OK&&mapped.int_val==21);
+    strcpy(rest.rest.method,"POST");assert(ts_source_register(&rest)==ESP_OK&&ts_source_get_copy(rest.id,&rest)==ESP_OK);
+    assert(read_rest_source(&rest,NULL)==ESP_OK&&http_method==HTTP_METHOD_POST&&!strcmp(http_authorization,"Bearer synthetic"));
+    assert(ts_variable_get("rest_method.temperature",&mapped)==ESP_OK&&mapped.int_val==21);
+    int prior_http_calls=http_calls;strcpy(rest.rest.url,"http://127.0.0.1/api/v1/example/status");
+    assert(ts_source_register(&rest)==ESP_OK&&ts_source_get_copy(rest.id,&rest)==ESP_OK);
+    assert(read_rest_source(&rest,NULL)==ESP_OK&&http_calls==prior_http_calls&&local_api_calls==1);
+    assert(ts_source_unregister("rest_method")==ESP_OK);
+
     cJSON *many=cJSON_CreateArray();assert(many);
     for(int i=0;i<TS_SOURCE_MAX_SIO_CONNECTIONS+1;++i) {
         snprintf(source.id,sizeof(source.id),"stream_%d",i);
@@ -389,6 +564,105 @@ static void source_cases(void)
 #include "test_automation_modes.inc"
 #include "test_action_lifecycle.inc"
 #include "test_config_api.inc"
+
+static void automatic_start_cases(void)
+{
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"retry_cmd\",\"host_id\":\"host\",\"name\":\"Retry\",\"command\":\"true\",\"nohup\":true}",NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"retry_rule\",\"name\":\"Retry\",\"enabled\":true,\"allow_manual_trigger\":true,\"cooldown_ms\":60000,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"log\",\"message\":\"prefix\"},{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"retry_cmd\"},{\"type\":\"log\",\"message\":\"suffix\"}]}",NULL,NULL)==ESP_OK);
+    bool fired=false;ts_rule_start_status_t start;unsigned checked=preflight_checks;
+    refuse_service=true;preflight_reason="ssh_connect_timeout";
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+1);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"waiting")&&start.retry_after_ms>29000);
+    ts_auto_config_status_t before_unrelated=status();
+    ts_auto_rule_t identity;assert(ts_rule_acquire("retry_rule",&identity)==ESP_OK);uint32_t original_instance=identity.instance;ts_rule_release(&identity);
+    int64_t original_start=s_rule_ctx.meta[find_rule_index("retry_rule")].start.first_ms;
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"retry_unrelated\",\"source_id\":\"user\",\"value_type\":2,\"value\":1}",NULL,NULL)==ESP_OK);
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+1);
+    assert(s_rule_ctx.meta[find_rule_index("retry_rule")].start.first_ms==original_start);
+    ts_rule_reject_t stale;const char *stale_reason=NULL;
+    assert(ts_rule_trigger_versioned("retry_rule",before_unrelated.active_version,&stale,&stale_reason)==ESP_ERR_INVALID_STATE&&stale==TS_RULE_REJECT_CONFIG_VERSION);
+    assert(s_rule_ctx.meta[find_rule_index("retry_rule")].start.first_ms==original_start);
+    assert(ts_rule_acquire("retry_rule",&identity)==ESP_OK&&identity.instance==original_instance);ts_rule_release(&identity);
+    for(int i=0;i<100;++i)assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired);
+    assert(preflight_checks==checked+1);clock_us+=30000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+2);
+    clock_us+=330000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+2);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"failed")&&!strcmp(start.reason,"automatic_start_timeout"));
+    /* A false condition rearms. Permanent authentication failures do not retry. */
+    assert(ts_variable_set_bool("test.ready",false)==ESP_OK);assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK);
+    assert(ts_variable_set_bool("test.ready",true)==ESP_OK);preflight_reason="ssh_auth_failed";
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"failed")&&!strcmp(start.reason,"ssh_auth_failed"));
+    checked=preflight_checks;clock_us+=30000000;assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&preflight_checks==checked);
+    /* A manual failure is one attempt and cancels the pending automatic episode. */
+    ts_rule_reject_t why;assert(ts_rule_trigger_ex("retry_rule",&why)==ESP_ERR_INVALID_STATE);
+    checked=preflight_checks;clock_us+=30000000;assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&preflight_checks==checked);
+    /* A failure after preflight resumes at the launch, without repeating the prefix. */
+    assert(ts_variable_set_bool("test.ready",false)==ESP_OK);assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK);
+    assert(ts_variable_set_bool("test.ready",true)==ESP_OK);refuse_service=false;
+    template_execution_ret=ESP_ERR_TIMEOUT;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_FAILED,.reason="ssh_connect_timeout"};
+    unsigned io=execution_io,launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_ERR_TIMEOUT&&fired&&execution_io==io+1&&template_executions==launches+1);
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"retry_unrelated\",\"source_id\":\"user\",\"value_type\":2,\"value\":3}",NULL,NULL)==ESP_OK);
+    template_execution_ret=ESP_OK;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_SUCCESS};clock_us+=30000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&execution_io==io+2&&template_executions==launches+2);
+    /* A changed command discards a failed episode's cooldown, but not a
+     * successful episode's normal cooldown. */
+    clock_us+=60000000;
+    template_execution_ret=ESP_ERR_TIMEOUT;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_FAILED,.reason="ssh_connect_timeout"};
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_ERR_TIMEOUT&&fired);
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"retry_cmd\",\"host_id\":\"host\",\"name\":\"Retry\",\"command\":\"false\",\"nohup\":true}",NULL,NULL)==ESP_OK);
+    template_execution_ret=ESP_OK;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_SUCCESS};
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired);
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"retry_cmd\",\"host_id\":\"host\",\"name\":\"Retry\",\"command\":\"true\",\"nohup\":true}",NULL,NULL)==ESP_OK);
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired);
+    /* A successful manual takeover also retains its cooldown after an edit. */
+    assert(ts_rule_trigger_ex("retry_rule",&why)==ESP_OK);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"manual"));
+    unsigned manual_launches=template_executions;
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"retry_cmd\",\"host_id\":\"host\",\"name\":\"Renamed retry\",\"command\":\"true\",\"nohup\":true}",NULL,NULL)==ESP_OK);
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&template_executions==manual_launches);
+    clock_us+=30000000;
+    refuse_service=true;preflight_reason="service_already_running";
+    checked=preflight_checks;clock_us+=30000000;assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&!fired&&preflight_checks==checked+1);
+    refuse_service=false;preflight_reason="ssh_connect_timeout";
+    /* An unconfirmed launch that later proves live completes once, then runs the suffix. */
+    assert(ts_variable_set_bool("test.ready",false)==ESP_OK);assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK);
+    assert(ts_variable_set_bool("test.ready",true)==ESP_OK);
+    template_execution_ret=ESP_ERR_TIMEOUT;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_FAILED,.reason="service_outcome_unknown"};
+    io=execution_io;launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_ERR_TIMEOUT&&execution_io==io+1);
+    ts_auto_rule_t prior;assert(ts_rule_acquire("retry_rule",&prior)==ESP_OK);unsigned triggers=prior.trigger_count;ts_rule_release(&prior);
+    clock_us+=30000000;refuse_service=true;preflight_reason="service_already_running";
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&execution_io==io+2&&template_executions==launches+1);
+    assert(ts_rule_acquire("retry_rule",&prior)==ESP_OK&&prior.trigger_count==triggers);ts_rule_release(&prior);
+    refuse_service=false;preflight_reason="ssh_connect_timeout";template_execution_ret=ESP_OK;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_SUCCESS};
+    /* A skipped SSH step cannot latch the whole rule. Later input can enable it. */
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"retry_rule\",\"name\":\"Conditional retry\",\"enabled\":true,\"allow_manual_trigger\":true,\"cooldown_ms\":0,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"log\",\"message\":\"prefix\"},{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"retry_cmd\",\"condition\":{\"variable\":\"retry_unrelated\",\"operator\":\"eq\",\"value\":2}}]}",NULL,NULL)==ESP_OK);
+    io=execution_io;launches=template_executions;checked=preflight_checks;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&execution_io==io+1&&template_executions==launches&&preflight_checks==checked);
+    assert(ts_variable_set_int("retry_unrelated",2)==ESP_OK);
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_OK&&fired&&template_executions==launches+1);
+    assert(!ts_rule_start_status("retry_rule",&start));
+    /* Ordinary failures before/after SSH retain sequence semantics and do not
+     * become permanent automatic-start failures. Only the SSH step is retried. */
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"retry_rule\",\"name\":\"Mixed failures\",\"enabled\":true,\"cooldown_ms\":0,\"conditions\":[{\"variable\":\"test.ready\",\"value\":true}],\"actions\":[{\"type\":\"webhook\",\"url\":\"http://192.0.2.250/notify\",\"method\":\"POST\"},{\"type\":\"ssh_cmd_ref\",\"cmd_id\":\"retry_cmd\"},{\"type\":\"webhook\",\"url\":\"http://192.0.2.250/notify\",\"method\":\"POST\"},{\"type\":\"log\",\"message\":\"suffix\"}]}",NULL,NULL)==ESP_OK);
+    fail_webhook=true;io=execution_io;launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_FAIL&&fired&&execution_io==io+3&&template_executions==launches+1);
+    assert(!ts_rule_start_status("retry_rule",&start));
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_FAIL&&fired&&execution_io==io+6&&template_executions==launches+2);
+    template_execution_ret=ESP_ERR_TIMEOUT;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_FAILED,.reason="ssh_connect_timeout"};
+    io=execution_io;launches=template_executions;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_ERR_TIMEOUT&&execution_io==io+1&&template_executions==launches+1);
+    assert(ts_rule_start_status("retry_rule",&start)&&!strcmp(start.state,"waiting"));
+    template_execution_ret=ESP_OK;template_outcome=(ts_action_result_t){.status=TS_ACTION_STATUS_SUCCESS};clock_us+=30000000;
+    assert(ts_rule_evaluate("retry_rule",&fired)==ESP_FAIL&&fired&&execution_io==io+3&&template_executions==launches+2);
+    assert(!ts_rule_start_status("retry_rule",&start));fail_webhook=false;
+    assert(ts_rule_unregister("retry_rule")==ESP_OK);assert(ts_ssh_commands_config_remove("retry_cmd")==ESP_OK);
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_VARIABLE,"retry_unrelated",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,NULL)==ESP_OK);
+    puts("PASS automatic start: 30-second cadence, 360-second deadline, permanent errors, manual single attempt, resumed actions, unrelated saves and conditional-step reevaluation");
+}
 
 int main(void)
 {
@@ -412,6 +686,7 @@ int main(void)
                         first.active_version,&error)==ESP_OK);
     source_cases();
     rule_config_cases();
+    automatic_start_cases();
     stop_cases();
     assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"threshold\",\"source_id\":\"operator\",\"value_type\":2,\"value\":3}",NULL,&error)==ESP_OK);
     ts_auto_variable_t sample={0};strcpy(sample.name,"threshold");strcpy(sample.source_id,"operator");
@@ -420,11 +695,55 @@ int main(void)
     ts_variable_info_t info;assert(ts_variable_get_info("threshold",&info)==ESP_OK && info.value.int_val==77 && !info.flags);
     strcpy(sample.source_id,"other_source");assert(ts_variable_upsert(&sample)==ESP_ERR_INVALID_STATE);
     assert(ts_variable_set_int("threshold",11)==ESP_OK);
+    const char *identity_json="{\"id\":\"identity_case\",\"host_id\":\"host\",\"name\":\"Identity\",\"command\":\"true\",\"var_name\":\"identity_output\"}";
+    ts_ssh_command_config_t old_identity,new_identity;
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,identity_json,NULL,&error)==ESP_OK);
+    assert(ts_ssh_commands_config_get("identity_case",&old_identity)==ESP_OK&&strlen(old_identity.object_id)==24);
+    uint64_t output_instance=ts_variable_instance("identity_output.status");
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"identity_unrelated\",\"value_type\":2,\"value\":1}",NULL,&error)==ESP_OK);
+    assert(ts_ssh_commands_config_get("identity_case",&new_identity)==ESP_OK&&!strcmp(old_identity.object_id,new_identity.object_id));
+    assert(old_identity.instance==new_identity.instance&&output_instance==ts_variable_instance("identity_output.status"));
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,identity_json,NULL,&error)==ESP_OK);
+    assert(ts_ssh_commands_config_get("identity_case",&new_identity)==ESP_OK&&!strcmp(old_identity.object_id,new_identity.object_id));
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_COMMAND,"identity_case",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,identity_json,NULL,&error)==ESP_OK);
+    assert(ts_ssh_commands_config_get("identity_case",&new_identity)==ESP_OK&&strcmp(old_identity.object_id,new_identity.object_id));
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_COMMAND,"identity_case",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,&error)==ESP_OK);
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_VARIABLE,"identity_unrelated",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,&error)==ESP_OK);
     assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"command\",\"host_id\":\"host\",\"name\":\"Original\",\"command\":\"run\",\"var_name\":\"worker\"}",NULL,&error)==ESP_OK);
     int32_t observed;
     assert(ts_variable_get_int("threshold",&observed)==ESP_OK && observed==11);
     assert(ts_variable_get_int("system.temperature",&observed)==ESP_OK && observed==10);
     assert(ts_variable_exists("worker.status"));
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"worker.output\",\"source_id\":\"user\",\"value_type\":4,\"value\":\"command output\"}",NULL,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"watcher\",\"label\":\"Watcher\",\"type\":4,\"enabled\":true,\"var_prefix\":\"worker.\",\"var_watch_all\":true}",NULL,&error)==ESP_OK);
+    assert(ts_variable_set_string("worker.status","ready")==ESP_OK);
+    ts_auto_source_t watcher;ts_auto_value_t watched;
+    assert(ts_source_get_copy("watcher",&watcher)==ESP_OK&&read_variable_source(&watcher,&watched)==ESP_OK);
+    assert(ts_variable_get("watcher.status",&watched)==ESP_OK&&!strcmp(watched.str_val,"ready"));
+    assert(ts_variable_get("watcher.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"unrelated_to_watcher\",\"value_type\":2,\"value\":1}",NULL,&error)==ESP_OK);
+    assert(ts_variable_get("watcher.status",&watched)==ESP_OK&&!strcmp(watched.str_val,"ready"));
+    assert(ts_variable_get("watcher.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(ts_source_unregister("watcher")==ESP_OK&&!ts_variable_exists("watcher.status")&&ts_variable_exists("worker.status"));
+    assert(!ts_variable_exists("watcher.output")&&ts_variable_exists("worker.output"));
+    /* An explicitly declared output remains user-owned, including after the
+     * source is removed. Mirroring must not make an existing config invalid. */
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"watcher.output\",\"source_id\":\"user\",\"value_type\":4,\"value\":\"initial\"}",NULL,&error)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"watcher\",\"type\":4,\"var_prefix\":\"worker.\"}",NULL,&error)==ESP_OK);
+    assert(ts_source_get_copy("watcher",&watcher)==ESP_OK&&read_variable_source(&watcher,&watched)==ESP_OK);
+    assert(ts_variable_get("watcher.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(ts_source_unregister("watcher")==ESP_OK&&ts_variable_exists("watcher.output"));
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_VARIABLE,"watcher.output",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"worker\",\"type\":4,\"var_prefix\":\"worker.\"}",NULL,&error)==ESP_OK);
+    assert(ts_variable_get("worker.output",&watched)==ESP_OK&&!strcmp(watched.str_val,"command output"));
+    assert(ts_source_unregister("worker")==ESP_OK&&ts_variable_exists("worker.output"));
+    assert(ts_auto_config_delete(TS_AUTO_CONFIG_VARIABLE,"worker.output",TS_AUTO_DELETE_NORMAL,NULL,false,NULL,NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"standalone\",\"label\":\"Standalone\",\"type\":4,\"var_prefix\":\"standalone.\"}",NULL,&error)==ESP_OK);
+    assert(ts_variable_exists("standalone.status"));
+    assert(ts_source_unregister("standalone")==ESP_OK&&!ts_variable_exists("standalone.status"));
+
+
     assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"worker.status\",\"value_type\":4,\"value\":\"manual\"}",NULL,&error)==ESP_ERR_INVALID_ARG);
     assert(!strcmp(error.reason,"variable_name_reserved"));
     assert(write_object(TS_AUTO_CONFIG_ACTION,"{\"id\":\"template\",\"name\":\"Start\",\"enabled\":true,\"type\":\"ssh_cmd_ref\",\"ssh_ref\":{\"cmd_id\":\"command\"}}",NULL,&error)==ESP_OK);
@@ -494,6 +813,8 @@ int main(void)
     assert(ts_ssh_commands_config_get("command",&latest)==ESP_OK && latest.instance!=executed.instance && !latest.last_exec_time);
     assert(ts_ssh_commands_config_update_exec_time(&executed)==ESP_OK);
     assert(ts_ssh_commands_config_get("command",&latest)==ESP_OK && !latest.last_exec_time); /* An old completion cannot mark a recreated command. */
+    assert(ts_action_template_get("template",&template)==ESP_ERR_NOT_FOUND);
+    assert(write_object(TS_AUTO_CONFIG_ACTION,"{\"id\":\"template\",\"name\":\"Recreated\",\"type\":\"log\",\"log\":{\"message\":\"new\"}}",NULL,&error)==ESP_OK);
     ts_auto_config_template_used(held,0,123456);
     assert(ts_action_template_get("template",&template)==ESP_OK && !template.use_count);
     ts_auto_config_release(held);
@@ -508,6 +829,10 @@ int main(void)
     assert(!strcmp(status().active_version,before.active_version));
     fail_install=false;
     assert(ts_auto_config_enable(true,NULL,&error)==ESP_OK && status().enabled);
+    uint64_t live_binding=ts_auto_config_binding_epoch(), queued_epoch=ts_auto_config_execution_epoch();
+    assert(ts_auto_config_enable(false,NULL,&error)==ESP_OK);
+    assert(ts_auto_config_binding_epoch()==live_binding&&ts_auto_config_execution_epoch()!=queued_epoch);
+    assert(ts_auto_config_enable(true,NULL,&error)==ESP_OK&&ts_auto_config_binding_epoch()==live_binding);
     assert(ts_ssh_hosts_config_clear()!=ESP_OK && ts_ssh_hosts_config_count()==1);
     before=status();
     assert(ts_auto_config_open(TS_AUTO_CONFIG_INTERNAL,&error)==ESP_OK);
@@ -554,6 +879,8 @@ int main(void)
     ts_auto_config_release(held);
     action_lifecycle_cases();
     config_api_cases();
+    lifecycle_crud_api_cases();
+    reference_origin_api_cases();
     config_pack_api_cases();
     mode_cases();
     ts_ssh_commands_config_deinit();ts_ssh_hosts_config_deinit();

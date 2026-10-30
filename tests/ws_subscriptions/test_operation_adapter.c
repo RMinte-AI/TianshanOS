@@ -63,6 +63,7 @@ static int adapter_create_caps(void(*fn)(void*),const char *n,unsigned stack,voi
 #define xTaskCreate adapter_create
 #define xTaskCreateWithCaps adapter_create_caps
 #define vTaskDeleteWithCaps adapter_delete_caps
+#include "../../components/ts_security/src/ts_ssh_pattern.c"
 #include "ts_webui_ws.c"
 _Static_assert(SSH_POLL_STACK_SIZE == 8192, "SSH poll stack budget is bytes");
 #undef malloc
@@ -86,6 +87,8 @@ static void stage(const char *name){if(stage_hook)stage_hook(name);}
 struct ts_ssh_shell_s {bool active;};
 #endif
 static unsigned aborts,variable_writes,session_destroys;
+static uint64_t variable_instance = 1;
+static bool variable_initialized = true, command_current = true;
 static int remote_failure;
 static void (*remote_hook)(void);
 static bool remote_timeout;
@@ -129,6 +132,13 @@ esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s,const char *command,ts_ssh_outpu
 #endif
 esp_err_t ts_keystore_load_private_key(const char *id,char **out,size_t *n){(void)id;stage("key");*out=host_strdup("fake-key");*n=9;return ESP_OK;}
 esp_err_t ts_variable_upsert(const ts_auto_variable_t *v){(void)v;variable_writes++;return 0;}
+bool ts_variable_is_initialized(void){return variable_initialized;}
+uint64_t ts_variable_instance(const char *name){(void)name;return variable_instance;}
+void ts_variable_registration_begin(void){}
+void ts_variable_registration_end(void){}
+void ts_ssh_binding_lock(void){}
+void ts_ssh_binding_unlock(void){}
+bool ts_auto_config_command_current(const char *id,uint64_t instance){(void)id;(void)instance;return command_current;}
 esp_err_t ts_console_exec(const char *cmd,ts_cmd_result_t *result){(void)cmd;memset(result,0,sizeof(*result));return 0;}
 esp_err_t ts_console_clear_output_cb(void){return 0;}
 esp_err_t ts_console_set_output_cb(ts_console_output_cb_t cb,void *arg){(void)cb;(void)arg;return 0;}
@@ -155,7 +165,7 @@ static void adapter_delete_caps(TaskHandle_t task){
  caps_deletes++;
 }
 static void drive_all(void){for(unsigned i=0;i<12;i++){ts_ws_op_poll();pump();timer_pump();}assert(!timer_queued);}
-static void setup(void){start();memset(s_clients,0,sizeof(s_clients));s_server=(void*)11;s_ws_stopping=false;ts_ws_op_enable();transport_server.closed=peer_closed;for(int fd=1;fd<=2;fd++){reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};current=(void*)3;assert(add_client(&reqs[fd],WS_CLIENT_TYPE_EVENT)==ESP_OK);}current=(void*)1;}
+static void setup(void){variable_instance=1;variable_initialized=true;command_current=true;start();memset(s_clients,0,sizeof(s_clients));s_server=(void*)11;s_ws_stopping=false;ts_ws_op_enable();transport_server.closed=peer_closed;for(int fd=1;fd<=2;fd++){reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};current=(void*)3;assert(add_client(&reqs[fd],WS_CLIENT_TYPE_EVENT)==ESP_OK);}current=(void*)1;}
 static void finish_all(void){drive_all();assert(!ts_ws_op_busy());stop();assert(!live_allocations);}
 static void connect_shell(void){cJSON *j=cJSON_Parse("{\"host\":\"fake\",\"user\":\"fake\"}");current=(void*)3;handle_ssh_connect(&reqs[1],j);current=(void*)1;cJSON_Delete(j);}
 static unsigned terminal_frames,output_frames,connected_frames,disconnecting_frames;static bool output_after_terminal;
@@ -299,6 +309,32 @@ static void operation_cross_tests(void){
     (void)ledger;
 }
 #ifndef OP_ADAPTER_NO_MAIN
+static void replace_command_during_exec(void){command_current=false;}
+static void replace_variable_during_exec(void){++variable_instance;}
+static void foreground_identity_tests(void)
+{
+ ts_webui_ssh_options_t options={.collect_output=true,.extract_pattern="value=(.*)",.var_name="shared",.command_id="command-a",.command_instance=17};
+ uint32_t id;
+ for(unsigned scenario=0;scenario<4;++scenario){
+  setup();remote_hook=scenario==1?replace_command_during_exec:scenario==2?replace_variable_during_exec:NULL;
+  if(scenario==3)options.command_id=NULL; /* ad-hoc commands retain normal variable behavior */
+  unsigned before=variable_writes,observed=output_frames;
+  assert(ts_webui_ssh_exec_start_ex("fake",22,"user",NULL,"password","cmd",&options,&id)==ESP_OK);
+  assert(variable_writes==before+7);
+  exec_task.fn(exec_task.arg);drive_all();
+  if(scenario==1||scenario==2)assert(variable_writes==before+7);
+  else assert(variable_writes>before+7);
+  assert(output_frames>observed); /* Rejecting stale variable writes never hides the command output. */
+  remote_hook=NULL;finish_all();
+ }
+ setup();options.command_id="command-a";command_current=false;
+ unsigned before=variable_writes;assert(ts_webui_ssh_exec_start_ex("fake",22,"user",NULL,"password","cmd",&options,&id)==ESP_ERR_NOT_FOUND);
+ assert(variable_writes==before);finish_all();
+ setup();options.command_id=NULL;variable_initialized=false;
+ assert(ts_webui_ssh_exec_start_ex("fake",22,"user",NULL,"password","cmd",&options,&id)==ESP_OK);
+ before=variable_writes;exec_task.fn(exec_task.arg);finish_all();assert(variable_writes==before);
+ puts("PASS foreground results keep command and variable identity without interrupting output or ad-hoc execution");
+}
 static void full_command_tests(void){
  const size_t lengths[]={511,512,757,1500};
  for(unsigned i=0;i<sizeof(lengths)/sizeof(lengths[0]);i++){
@@ -339,6 +375,7 @@ int main(void){
  }
  operation_cross_tests();
  full_command_tests();
+ foreground_identity_tests();
  printf("PASS complete production WS unit: Shell output failure/close/startup failure, Exec task/callback/match/variables/timer cleanup and task-before-create-return; destroyed=%u\n",session_destroys);
  return 0;
 }

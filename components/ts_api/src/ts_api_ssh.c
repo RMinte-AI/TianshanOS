@@ -484,10 +484,28 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
     const cJSON *collect_output = cJSON_GetObjectItem(params, "collect_output");
     const cJSON *max_output_size = cJSON_GetObjectItem(params, "max_output_size");
     const cJSON *stop_on_match = cJSON_GetObjectItem(params, "stop_on_match");
+    const cJSON *command_id = cJSON_GetObjectItem(params, "command_id");
+    const cJSON *command_instance = cJSON_GetObjectItem(params, "command_instance");
+    uint64_t instance = 0;
+    if (command_id || command_instance) {
+        if (!cJSON_IsString(command_id) || !command_id->valuestring[0] ||
+            !cJSON_IsString(command_instance) || strlen(command_instance->valuestring) != 16) {
+            ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "invalid_command_instance");
+            return ESP_ERR_INVALID_ARG;
+        }
+        for (const char *p = command_instance->valuestring; *p; ++p) {
+            unsigned value;
+            if (*p >= '0' && *p <= '9') value = *p - '0';
+            else if (*p >= 'a' && *p <= 'f') value = *p - 'a' + 10;
+            else { ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "invalid_command_instance"); return ESP_ERR_INVALID_ARG; }
+            instance = (instance << 4) | value;
+        }
+        if (!instance) { ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "invalid_command_instance"); return ESP_ERR_INVALID_ARG; }
+    }
     
     /* 检查是否有任何可选参数 */
     bool has_options = (expect_pattern || fail_pattern || extract_pattern || var_name ||
-                        timeout || collect_output || max_output_size || stop_on_match);
+                        timeout || collect_output || max_output_size || stop_on_match || command_id);
     
     esp_err_t ret;
     uint32_t session_id = 0;
@@ -503,6 +521,8 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
                                    extract_pattern->valuestring : NULL;
         options.var_name = (var_name && cJSON_IsString(var_name)) ?
                             var_name->valuestring : NULL;
+        options.command_id = command_id ? command_id->valuestring : NULL;
+        options.command_instance = instance;
         options.timeout_ms = (timeout && cJSON_IsNumber(timeout)) ? 
                               (uint32_t)timeout->valueint : 0;
         options.collect_output = (collect_output && cJSON_IsBool(collect_output)) ? 
@@ -531,7 +551,9 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
     }
     
     if (ret != ESP_OK) {
-        if (ret == ESP_ERR_INVALID_STATE) {
+        if (ret == ESP_ERR_NOT_FOUND && command_id) {
+            ts_api_result_error(result, TS_API_ERR_BUSY, "configuration_changed");
+        } else if (ret == ESP_ERR_INVALID_STATE) {
             ts_api_result_error(result, TS_API_ERR_BUSY, "ssh_exec_busy");
         } else {
             ts_api_result_reason(result, TS_API_ERR_INTERNAL, "ssh_start_failed", esp_err_to_name(ret));
@@ -1282,7 +1304,10 @@ static esp_err_t api_ssh_hosts_list(const cJSON *params,ts_api_result_t *result)
  * }
  */
 static esp_err_t api_ssh_hosts_add(const cJSON *params,ts_api_result_t *result)
-{ return ts_api_auto_write(TS_AUTO_CONFIG_HOST,params,TS_API_AUTO_UPSERT,result); }
+{ return ts_api_auto_write(TS_AUTO_CONFIG_HOST,params,TS_API_AUTO_CREATE,result); }
+
+static esp_err_t api_ssh_hosts_update(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_HOST,params,TS_API_AUTO_UPDATE,result); }
 
 /**
  * @brief ssh.hosts.remove - 删除 SSH 主机配置
@@ -1486,7 +1511,10 @@ static esp_err_t api_ssh_commands_list(const cJSON *params,ts_api_result_t *resu
  * @brief ssh.commands.add - 添加 SSH 指令配置
  */
 static esp_err_t api_ssh_commands_add(const cJSON *params,ts_api_result_t *result)
-{ return ts_api_auto_write(TS_AUTO_CONFIG_COMMAND,params,TS_API_AUTO_UPSERT,result); }
+{ return ts_api_auto_write(TS_AUTO_CONFIG_COMMAND,params,TS_API_AUTO_CREATE,result); }
+
+static esp_err_t api_ssh_commands_update(const cJSON *params,ts_api_result_t *result)
+{ return ts_api_auto_write(TS_AUTO_CONFIG_COMMAND,params,TS_API_AUTO_UPDATE,result); }
 
 /**
  * @brief ssh.commands.remove - 删除 SSH 指令配置
@@ -1791,6 +1819,13 @@ static const ts_api_endpoint_t ssh_endpoints[] = {
         .requires_auth = true,
     },
     {
+        .name = "ssh.hosts.update",
+        .description = "Update an existing SSH hosts configuration",
+        .category = TS_API_CAT_SECURITY,
+        .handler = api_ssh_hosts_update,
+        .requires_auth = true,
+    },
+    {
         .name = "ssh.hosts.remove",
         .description = "Remove SSH host configuration",
         .category = TS_API_CAT_SECURITY,
@@ -1831,6 +1866,13 @@ static const ts_api_endpoint_t ssh_endpoints[] = {
         .description = "Add or update SSH command configuration",
         .category = TS_API_CAT_SECURITY,
         .handler = api_ssh_commands_add,
+        .requires_auth = true,
+    },
+    {
+        .name = "ssh.commands.update",
+        .description = "Update an existing SSH commands configuration",
+        .category = TS_API_CAT_SECURITY,
+        .handler = api_ssh_commands_update,
         .requires_auth = true,
     },
     {

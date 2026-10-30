@@ -101,17 +101,22 @@ static void worker(void *context) {
     }
     while (!cancelled(slot)) {
         int match = 0;
+        uint64_t revision;
+        if (!ts_ssh_service_observation_begin(slot->config->run_id, slot->config->run_generation, &revision))
+            goto done;
         esp_err_t ret = check_log(slot, command, &match);
         if (cancelled(slot))
             break;
         if (ret == ESP_OK && match) {
-            publish(slot, match > 0 ? "ready" : "failed");
-            goto done;
+            if (!atomic_load(&slot->cancel) && ts_ssh_service_observe_at(slot->config->run_id, slot->config->run_generation,
+                                          revision, match > 0 ? "ready" : "failed"))
+                goto done;
         }
         if (ret != ESP_OK) {
-            publish(slot, "unknown");
-            if (ret == TS_SSH_ERR_HOST_UNKNOWN || ret == TS_SSH_ERR_HOST_CHANGED ||
-                ret == ESP_ERR_INVALID_STATE)
+            bool accepted = !atomic_load(&slot->cancel) && ts_ssh_service_observe_at(slot->config->run_id, slot->config->run_generation,
+                                                       revision, "unknown");
+            if (accepted && (ret == TS_SSH_ERR_HOST_UNKNOWN || ret == TS_SSH_ERR_HOST_CHANGED ||
+                             ret == ESP_ERR_INVALID_STATE))
                 goto done;
         }
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(slot->config->check_interval_ms));

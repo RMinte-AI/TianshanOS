@@ -8,6 +8,8 @@
 
 #include "ts_api.h"
 #include "ts_keystore.h"
+#include "ts_automation_config.h"
+#include "ts_ssh_service.h"
 #include "ts_log.h"
 #include "esp_heap_caps.h"
 #include "nvs.h"
@@ -291,6 +293,42 @@ static esp_err_t api_key_generate(const cJSON *params, ts_api_result_t *result)
     return ESP_OK;
 }
 
+/* A preview reports references only. It never connects to or stops a host. */
+static esp_err_t key_delete_preview(const char *id, ts_api_result_t *result)
+{
+    cJSON *data=cJSON_CreateObject(), *hosts=data?cJSON_AddArrayToObject(data,"hosts"):NULL,
+          *runs=data?cJSON_AddArrayToObject(data,"runs"):NULL;
+    if(!data||!hosts||!runs){cJSON_Delete(data);return ESP_ERR_NO_MEM;}
+    const ts_auto_config_view_t *view=ts_auto_config_acquire();
+    const cJSON *definitions=cJSON_GetObjectItemCaseSensitive(ts_auto_config_json(view),"hosts"),*host;
+    bool complete=cJSON_IsArray(definitions);
+    cJSON_ArrayForEach(host,(cJSON_IsArray(definitions)?definitions:NULL)) {
+        const char *key=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(host,"keyid"));
+        const char *auth=cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(host,"auth_type"));
+        if(!key||strcmp(key,id)||(auth&&strcmp(auth,"key")))continue;
+        const cJSON *name=cJSON_GetObjectItemCaseSensitive(host,"id");
+        if(!cJSON_IsString(name)){complete=false;continue;}
+        cJSON *copy=cJSON_Duplicate(name,true);
+        if(!copy||!cJSON_AddItemToArray(hosts,copy)){cJSON_Delete(copy);ts_auto_config_release(view);cJSON_Delete(data);return ESP_ERR_NO_MEM;}
+    }
+    ts_auto_config_release(view);
+    for(unsigned i=0;i<TS_SSH_RUN_SLOTS;++i) {
+        ts_ssh_run_record_t record;ts_ssh_service_status_t state;
+        esp_err_t ret=ts_ssh_service_get(i,&record,&state);
+        if(ret==ESP_ERR_NOT_FOUND)continue;
+        if(ret!=ESP_OK){complete=false;break;}
+        if(record.host.auth_type!=TS_SSH_HOST_AUTH_KEY||strcmp(record.host.keyid,id))continue;
+        cJSON *item=cJSON_CreateObject();
+        if(!item||!cJSON_AddStringToObject(item,"id",record.run_id)||
+           !cJSON_AddStringToObject(item,"name",record.name)||
+           !cJSON_AddStringToObject(item,"host",record.host.host)||!cJSON_AddItemToArray(runs,item)) {
+            cJSON_Delete(item);cJSON_Delete(data);return ESP_ERR_NO_MEM;
+        }
+    }
+    if(!cJSON_AddBoolToObject(data,"complete",complete)){cJSON_Delete(data);return ESP_ERR_NO_MEM;}
+    ts_api_result_ok(result,data);return ESP_OK;
+}
+
 /**
  * @brief key.delete - Delete a key
  * 
@@ -309,18 +347,24 @@ static esp_err_t api_key_delete(const cJSON *params, ts_api_result_t *result)
         return ESP_ERR_INVALID_ARG;
     }
     
+    if(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params,"preview")))
+        return key_delete_preview(id->valuestring,result);
+    /* Allocate the reply before a destructive write. */
+    cJSON *data=cJSON_CreateObject();
+    if(!data||!cJSON_AddBoolToObject(data,"deleted",true)||!cJSON_AddStringToObject(data,"id",id->valuestring)) {
+        cJSON_Delete(data);return ESP_ERR_NO_MEM;
+    }
     esp_err_t ret = ts_keystore_delete_key(id->valuestring);
     if (ret == ESP_ERR_NOT_FOUND) {
+        cJSON_Delete(data);
         ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "Key not found");
         return ESP_ERR_NOT_FOUND;
     } else if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to delete key");
+        cJSON_Delete(data);
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "key_delete_incomplete");
         return ret;
     }
     
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddBoolToObject(data, "deleted", true);
-    cJSON_AddStringToObject(data, "id", id->valuestring);
     
     ts_api_result_ok(result, data);
     return ESP_OK;

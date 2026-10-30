@@ -102,6 +102,24 @@ static esp_err_t source_defaults(cJSON *input)
        !put(input,"uri",cJSON_CreateString(text(input,"url"))))return ESP_ERR_NO_MEM;
     if(type&&!strcmp(type,"socketio")&&!cJSON_HasObjectItem(input,"url")&&text(input,"uri")&&
        !put(input,"url",cJSON_CreateString(text(input,"uri"))))return ESP_ERR_NO_MEM;
+    /* Updates merge into canonical saved rows; explicit public aliases must
+     * override those saved fields before decoding the merged row. */
+    const cJSON *stored_type=cJSON_GetObjectItemCaseSensitive(input,"type");
+    int source_type=cJSON_IsNumber(stored_type)?stored_type->valueint:
+        type&&!strcmp(type,"rest")?TS_AUTO_SRC_REST:type&&!strcmp(type,"websocket")?TS_AUTO_SRC_WEBSOCKET:
+        type&&!strcmp(type,"socketio")?TS_AUTO_SRC_SOCKETIO:-1;
+    if(source_type>=0) {
+        const char *aliases[][2]={{"url","rest_url"},{"method","rest_method"},{"auth_header","rest_auth"},{"json_path","rest_path"},
+            {"uri","ws_uri"},{"url","ws_uri"},{"json_path","ws_path"},{"url","sio_url"},{"uri","sio_url"},{"event","sio_event"}};
+        unsigned begin=0,end=0;
+        if(source_type==TS_AUTO_SRC_REST){begin=0;end=4;}
+        else if(source_type==TS_AUTO_SRC_WEBSOCKET){begin=4;end=7;}
+        else if(source_type==TS_AUTO_SRC_SOCKETIO){begin=7;end=10;}
+        for(unsigned i=begin;i<end;++i) {
+            const cJSON *value=cJSON_GetObjectItemCaseSensitive(input,aliases[i][0]);
+            if(value&&!put(input,aliases[i][1],cJSON_Duplicate(value,true)))return ESP_ERR_NO_MEM;
+        }
+    }
     bool stream=type&&(!strcmp(type,"websocket")||!strcmp(type,"socketio"));
     const cJSON *numeric=cJSON_GetObjectItemCaseSensitive(input,"type");
     stream|=cJSON_IsNumber(numeric)&&(numeric->valueint==TS_AUTO_SRC_WEBSOCKET||numeric->valueint==TS_AUTO_SRC_SOCKETIO);
@@ -118,7 +136,7 @@ static esp_err_t source_defaults(cJSON *input)
         cJSON *mappings=cJSON_GetObjectItemCaseSensitive(input,"mappings");
         if(!mappings){mappings=cJSON_AddArrayToObject(input,"mappings");if(!mappings)return ESP_ERR_NO_MEM;}
         if(!cJSON_IsArray(mappings))return ESP_ERR_INVALID_ARG;
-        const cJSON *row;cJSON_ArrayForEach(row,mappings)if(text(row,"json_path")&&!strcmp(text(row,"json_path"),path))return ESP_OK;
+        const cJSON *row;cJSON_ArrayForEach(row,mappings)if((text(row,"path")||text(row,"json_path"))&&!strcmp(text(row,"path")?text(row,"path"):text(row,"json_path"),path))return ESP_OK;
         char name[TS_AUTO_NAME_MAX_LEN];int length=snprintf(name,sizeof(name),"%s.%s",id,path);
         if(length<0||(size_t)length>=sizeof(name))return ESP_ERR_INVALID_ARG;
         for(char *p=name;*p;++p)if(*p=='['||*p==']')*p='_';
@@ -183,7 +201,17 @@ esp_err_t ts_api_auto_write(ts_auto_config_kind_t kind,const cJSON *params,ts_ap
             ts_auto_config_release(view);ts_api_auto_reply_finish(result,ret,&error);ts_auto_config_edit_end();return ESP_OK;
         }
     }
-    cJSON *value=ret==ESP_OK?canonical(kind,params,&ret):NULL;
+    cJSON *input = ret == ESP_OK && mode == TS_API_AUTO_UPDATE &&
+        (kind == TS_AUTO_CONFIG_SOURCE || kind == TS_AUTO_CONFIG_HOST) ? cJSON_Duplicate(old, true) : NULL;
+    if (ret == ESP_OK && mode == TS_API_AUTO_UPDATE &&
+        (kind == TS_AUTO_CONFIG_SOURCE || kind == TS_AUTO_CONFIG_HOST)) {
+        if (!input) ret = ESP_ERR_NO_MEM;
+        const cJSON *field;
+        cJSON_ArrayForEach(field, params)
+            if (ret == ESP_OK && !put(input, field->string, cJSON_Duplicate(field, true))) ret = ESP_ERR_NO_MEM;
+    }
+    cJSON *value=ret==ESP_OK?canonical(kind,input?input:params,&ret):NULL;
+    cJSON_Delete(input);
     if(ret==ESP_OK&&kind==TS_AUTO_CONFIG_RULE&&old){
         cJSON *merged=cJSON_Duplicate(old,true);
         if(!merged)ret=ESP_ERR_NO_MEM;
@@ -248,6 +276,11 @@ static cJSON *public_row(const ts_auto_config_view_t *view,ts_auto_config_kind_t
     const ts_auto_document_t *definitions=ts_auto_config_definitions(view);
     if(!definitions)cJSON_AddBoolToObject(item,"invalid",true);
     if(kind==TS_AUTO_CONFIG_COMMAND){
+        if (definitions && index < definitions->command_count) {
+            char instance[17];
+            snprintf(instance, sizeof(instance), "%016llx", (unsigned long long)definitions->commands[index].instance);
+            cJSON_AddStringToObject(item, "runtime_instance", instance);
+        }
         const char *const fields[][2]={{"expect_pattern","expectPattern"},{"fail_pattern","failPattern"},
             {"extract_pattern","extractPattern"},{"var_name","varName"},{"timeout_sec","timeout"},
             {"stop_on_match","stopOnMatch"},{"service_mode","serviceMode"},{"ready_pattern","readyPattern"},
@@ -335,7 +368,8 @@ esp_err_t ts_api_auto_mapping(const cJSON *params,bool remove,ts_api_result_t *r
 {
     ts_auto_config_error_t error={0};if(!edit_begin(params,result,&error))return ESP_OK;
     const ts_auto_config_view_t *view=ts_auto_config_acquire();const cJSON *row=find_row(ts_auto_config_json(view),TS_AUTO_CONFIG_SOURCE,text(params,"id"));
-    cJSON *copy=row?cJSON_Duplicate(row,true):NULL;esp_err_t ret=!row?ESP_ERR_NOT_FOUND:copy?ESP_OK:ESP_ERR_NO_MEM;
+    esp_err_t ret=row?ESP_OK:ESP_ERR_NOT_FOUND;
+    cJSON *copy=row?canonical(TS_AUTO_CONFIG_SOURCE,row,&ret):NULL;
     ts_auto_config_release(view);
     cJSON *mappings=cJSON_GetObjectItemCaseSensitive(copy,"mappings");
     if(ret==ESP_OK&&!mappings)mappings=cJSON_AddArrayToObject(copy,"mappings");
@@ -343,8 +377,8 @@ esp_err_t ts_api_auto_mapping(const cJSON *params,bool remove,ts_api_result_t *r
     const char *path=text(params,"json_path"),*variable=text(params,"var_name");
     const cJSON *number=cJSON_GetObjectItemCaseSensitive(params,"index");int found=-1,index=0;const cJSON *mapping;
     cJSON_ArrayForEach(mapping,mappings){
-        if((path&&text(mapping,"json_path")&&!strcmp(path,text(mapping,"json_path")))||
-           (variable&&text(mapping,"var_name")&&!strcmp(variable,text(mapping,"var_name")))||
+        if((path&&text(mapping,"path")&&!strcmp(path,text(mapping,"path")))||
+           (variable&&text(mapping,"var")&&!strcmp(variable,text(mapping,"var")))||
            (remove&&cJSON_IsNumber(number)&&number->valuedouble==index))found=index;
         ++index;
     }
@@ -354,7 +388,7 @@ esp_err_t ts_api_auto_mapping(const cJSON *params,bool remove,ts_api_result_t *r
         else if(found>=0)ret=ESP_ERR_INVALID_STATE;
         else {
             cJSON *value=cJSON_CreateObject();
-            if(!value||!cJSON_AddStringToObject(value,"json_path",path)||!cJSON_AddStringToObject(value,"var_name",variable)||
+            if(!value||!cJSON_AddStringToObject(value,"path",path)||!cJSON_AddStringToObject(value,"var",variable)||
                (text(params,"transform")&&!cJSON_AddStringToObject(value,"transform",text(params,"transform")))||
                !cJSON_AddItemToArray(mappings,value)){cJSON_Delete(value);ret=ESP_ERR_NO_MEM;}
         }
@@ -397,6 +431,11 @@ static esp_err_t pack_item(cJSON *candidate,cJSON *changes,ts_auto_config_kind_t
     const char *created=kind==TS_AUTO_CONFIG_ACTION?"created_at":kind==TS_AUTO_CONFIG_COMMAND||kind==TS_AUTO_CONFIG_HOST?"created_time":NULL;
     const cJSON *stamp=created?cJSON_GetObjectItemCaseSensitive(old,created):NULL;
     if(ret==ESP_OK&&stamp&&!put(value,created,cJSON_Duplicate(stamp,true)))ret=ESP_ERR_NO_MEM;
+    if (kind == TS_AUTO_CONFIG_COMMAND) {
+        const cJSON *identity = cJSON_GetObjectItemCaseSensitive(old, "_object_id");
+        cJSON_DeleteItemFromObjectCaseSensitive(value, "_object_id");
+        if (ret == ESP_OK && identity && !put(value, "_object_id", cJSON_Duplicate(identity, true))) ret=ESP_ERR_NO_MEM;
+    }
     bool differs=index<0||!cJSON_Compare(old,value,true);
     if(ret==ESP_OK){
         cJSON *item=cJSON_CreateObject();

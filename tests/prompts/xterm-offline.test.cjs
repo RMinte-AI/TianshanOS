@@ -21,8 +21,9 @@ for(const language of ['en-US','zh-CN'])test(`${language}: cold offline real xte
   await page.goto(origin);await page.waitForFunction(()=>i18n.isReady());await page.waitForLoadState('networkidle');
   assert.deepEqual(resourceFailures,[],'Unexpected resource failures');
   assert.equal(await page.evaluate(()=>typeof Terminal),'undefined');
-  await page.evaluate(()=>{closeLoginModal();return loadTerminalPage();});
+  await page.evaluate(()=>{api.token='fixture-token';closeLoginModal();return loadTerminalPage();});
   await page.waitForFunction(()=>webTerminal?.ws?.readyState===1);
+  assert(await page.evaluate(()=>sent.some(m=>m.type==='terminal_start'&&m.token==='fixture-token')));
   assert(await page.evaluate(()=>typeof Terminal==='function'&&typeof FitAddon.FitAddon==='function'&&webTerminal.terminal instanceof Terminal&&!!webTerminal.fitAddon));
   assert.equal(await page.locator('.xterm').count(),1);
   assert(!(await page.locator('#terminal-container').innerText()).includes('could not be loaded'));

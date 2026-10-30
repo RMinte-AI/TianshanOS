@@ -53,7 +53,7 @@ static const char *TAG = "ts_source_mgr";
 #define SIO_PONG_MSG            "3"
 #define SIO_EVENT_PREFIX        "42"
 #define SIO_SID_MAX_LEN         64
-#define SIO_MAX_CONNECTIONS     TS_SOURCE_MAX_SIO_CONNECTIONS
+#define SIO_MAX_CONNECTIONS     CONFIG_TS_AUTOMATION_MAX_SOURCES
 
 /*===========================================================================*/
 /*                              配置常量                                      */
@@ -85,6 +85,7 @@ typedef struct {
     TaskHandle_t task_handle;                // 连接任务句柄
     atomic_bool should_stop;                 // 停止标志
     atomic_bool allocated;
+    ts_auto_source_type_t type;
     uint64_t source_instance;
     // 消息分片缓冲
     char *msg_buf;                           // 消息缓冲区（动态分配）
@@ -616,7 +617,7 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
 
         esp_http_client_config_t config = {
             .url = url,
-            .method = HTTP_METHOD_GET,
+            .method = !strcmp(src->rest.method, "POST") ? HTTP_METHOD_POST : HTTP_METHOD_GET,
             .timeout_ms = 10000,
             .buffer_size = 2048,
             .skip_cert_common_name_check = true,
@@ -1000,17 +1001,16 @@ int ts_source_poll_all(void)
 /*                              WebSocket 源                                  */
 /*===========================================================================*/
 
+static esp_err_t stream_connect(const char *id, ts_auto_source_type_t type);
+
 esp_err_t ts_source_ws_connect(const char *id)
 {
-    // TODO: 实现 WebSocket 连接
-    ESP_LOGW(TAG, "WebSocket connect not implemented: %s", id);
-    return ESP_ERR_NOT_SUPPORTED;
+    return stream_connect(id, TS_AUTO_SRC_WEBSOCKET);
 }
 
 esp_err_t ts_source_ws_disconnect(const char *id)
 {
-    // TODO: 实现 WebSocket 断开
-    return ESP_ERR_NOT_SUPPORTED;
+    return ts_source_sio_disconnect(id);
 }
 
 bool ts_source_ws_is_connected(const char *id)
@@ -1038,6 +1038,14 @@ bool ts_source_ws_is_connected(const char *id)
 /**
  * 查找 Socket.IO 连接
  */
+void ts_source_sio_websocket_url(const char *base_url, const char *sid, char *out, size_t size)
+{
+    const char *host = strstr(base_url, "://");
+    host = host ? host + 3 : base_url;
+    snprintf(out, size, "%s://%s/socket.io/?EIO=4&transport=websocket&sid=%s",
+             !strncmp(base_url, "https://", 8) ? "wss" : "ws", host, sid);
+}
+
 /* Caller owns the connection mutex; slots never move while a task uses them. */
 static sio_connection_t *sio_find_connection(const char *id)
 {
@@ -1077,14 +1085,18 @@ void ts_source_config_activate(void)
 {
     if (!ts_source_runtime.initialized) return;
     char ids[CONFIG_TS_AUTOMATION_MAX_SOURCES][TS_AUTO_NAME_MAX_LEN];
+    ts_auto_source_type_t types[CONFIG_TS_AUTOMATION_MAX_SOURCES];
     int count = 0;
     xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
     for (int i = 0; ts_source_runtime.running && i < ts_source_runtime.count; ++i)
-        if (ts_source_runtime.sources[i].enabled && ts_source_runtime.sources[i].type == TS_AUTO_SRC_SOCKETIO)
+        if (ts_source_runtime.sources[i].enabled &&
+            (ts_source_runtime.sources[i].type == TS_AUTO_SRC_SOCKETIO || ts_source_runtime.sources[i].type == TS_AUTO_SRC_WEBSOCKET)) {
+            types[count] = ts_source_runtime.sources[i].type;
             strcpy(ids[count++], ts_source_runtime.sources[i].id);
+        }
     xSemaphoreGive(ts_source_runtime.mutex);
     for (int i = 0; i < count; ++i) {
-        esp_err_t ret = ts_source_sio_connect(ids[i]);
+        esp_err_t ret = stream_connect(ids[i], types[i]);
         if (ret == ESP_ERR_NOT_FINISHED) s_sio_ctx.activation_pending = true;
         if (ret != ESP_OK && ret != ESP_ERR_NOT_FINISHED)
             ESP_LOGW(TAG, "Source %s is saved; connection start failed: %s", ids[i], esp_err_to_name(ret));
@@ -1179,6 +1191,30 @@ static void sio_handle_event_message(sio_connection_t *conn, const char *msg)
 /**
  * Socket.IO WebSocket 事件处理器
  */
+static void ws_handle_message(sio_connection_t *conn, const char *message)
+{
+    if (!conn->connected) return;
+    xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+    int index = current_connection_index(conn);
+    if (index >= 0) {
+        ts_auto_source_t *src = &ts_source_runtime.sources[index];
+        if (!src->websocket.path[0]) {
+            src->last_value.type = TS_AUTO_VAL_STRING;
+            snprintf(src->last_value.str_val, sizeof(src->last_value.str_val), "%s", message);
+        }
+        if (src->mapping_count || src->auto_discover || src->websocket.path[0]) {
+            if (xSemaphoreTake(conn->pending_mutex, 0) == pdTRUE) {
+                char *copy = strdup(message);
+                if (copy) { free(conn->pending_json); conn->pending_json = copy; }
+                xSemaphoreGive(conn->pending_mutex);
+            }
+        }
+        src->last_update_ms = esp_timer_get_time() / 1000;
+        src->connected = true;
+    }
+    xSemaphoreGive(ts_source_runtime.mutex);
+}
+
 static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                                         int32_t event_id, void *event_data)
 {
@@ -1191,13 +1227,26 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGD(TAG, "SIO [%s] WebSocket connected, sending probe", conn->source_id);
             conn->connected = true;
             conn->last_message_ms = esp_timer_get_time() / 1000;
-            esp_websocket_client_send_text(conn->client, SIO_PROBE_MSG, strlen(SIO_PROBE_MSG), portMAX_DELAY);
+            if (conn->type == TS_AUTO_SRC_WEBSOCKET) {
+                conn->upgraded = true;
+                xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
+                int index = current_connection_index(conn);
+                if (index >= 0) ts_source_runtime.sources[index].connected = true;
+                xSemaphoreGive(ts_source_runtime.mutex);
+            } else {
+                esp_websocket_client_send_text(conn->client, SIO_PROBE_MSG, strlen(SIO_PROBE_MSG), portMAX_DELAY);
+            }
             break;
 
+        case WEBSOCKET_EVENT_CLOSED:
+            if (conn->type != TS_AUTO_SRC_WEBSOCKET) break;
+            /* A clean server close has a distinct event in esp-websocket. */
+            /* fall through */
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "SIO [%s] WebSocket disconnected", conn->source_id);
             conn->connected = false;
             conn->upgraded = false;
+            if (conn->type == TS_AUTO_SRC_WEBSOCKET) conn->msg_buf_len = 0;
             // 更新源状态
             xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
             int idx = current_connection_index(conn);
@@ -1208,12 +1257,16 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
             break;
 
         case WEBSOCKET_EVENT_DATA:
-            if (data->data_len > 0 && data->data_ptr) {
+            if ((data->data_len > 0 && data->data_ptr) ||
+                (conn->type == TS_AUTO_SRC_WEBSOCKET && data->data_len == 0 &&
+                 data->fin && conn->msg_buf_len > 0)) {
+                if (conn->type == TS_AUTO_SRC_WEBSOCKET && data->op_code >= 8) break;
                 conn->last_message_ms = esp_timer_get_time() / 1000;
 
                 // 检查是否是分片消息
                 bool is_complete = (data->payload_len == 0) ||
                                    (data->payload_offset + data->data_len >= data->payload_len);
+                if (conn->type == TS_AUTO_SRC_WEBSOCKET) is_complete = is_complete && data->fin;
 
                 // 如果是分片消息，需要缓冲
                 if (!is_complete || conn->msg_buf_len > 0) {
@@ -1234,7 +1287,7 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                         copy_len = SIO_MSG_BUF_SIZE - conn->msg_buf_len - 1;
                         ESP_LOGW(TAG, "SIO [%s] msg buffer overflow, truncating", conn->source_id);
                     }
-                    memcpy(conn->msg_buf + conn->msg_buf_len, data->data_ptr, copy_len);
+                    if (copy_len > 0) memcpy(conn->msg_buf + conn->msg_buf_len, data->data_ptr, copy_len);
                     conn->msg_buf_len += copy_len;
                     conn->msg_buf[conn->msg_buf_len] = '\0';
 
@@ -1250,7 +1303,9 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                     ESP_LOGD(TAG, "SIO [%s] complete msg: %zu bytes", conn->source_id, conn->msg_buf_len);
 
                     // 处理事件消息
-                    if (strncmp(conn->msg_buf, SIO_EVENT_PREFIX, 2) == 0) {
+                    if (conn->type == TS_AUTO_SRC_WEBSOCKET) {
+                        ws_handle_message(conn, conn->msg_buf);
+                    } else if (strncmp(conn->msg_buf, SIO_EVENT_PREFIX, 2) == 0) {
                         sio_handle_event_message(conn, conn->msg_buf);
                     }
 
@@ -1264,7 +1319,10 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                                  strlen(msg) > 100 ? "..." : "");
 
                         // 处理 Socket.IO 协议消息
-                        if (strcmp(msg, "3probe") == 0) {
+                        if (conn->type == TS_AUTO_SRC_WEBSOCKET) {
+                            ws_handle_message(conn, msg);
+                        }
+                        else if (strcmp(msg, "3probe") == 0) {
                             ESP_LOGD(TAG, "SIO [%s] probe response, sending upgrade", conn->source_id);
                             esp_websocket_client_send_text(conn->client, SIO_UPGRADE_MSG,
                                                            strlen(SIO_UPGRADE_MSG), portMAX_DELAY);
@@ -1323,6 +1381,7 @@ static esp_err_t sio_http_handshake(const char *base_url, char *sid_out, size_t 
         .url = handshake_url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = 10000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -1396,10 +1455,12 @@ connection_retry:
             goto task_exit;
         }
         char base_url[TS_AUTO_PATH_MAX_LEN];
-        strncpy(base_url, ts_source_runtime.sources[idx].socketio.url, sizeof(base_url) - 1);
+        const ts_auto_source_t *source = &ts_source_runtime.sources[idx];
+        strncpy(base_url, conn->type == TS_AUTO_SRC_WEBSOCKET ? source->websocket.uri : source->socketio.url, sizeof(base_url) - 1);
+        base_url[sizeof(base_url) - 1] = '\0';
 
         // 获取配置的重连间隔（如果有）
-        uint32_t configured_reconnect_ms = ts_source_runtime.sources[idx].socketio.reconnect_ms;
+        uint32_t configured_reconnect_ms = conn->type == TS_AUTO_SRC_WEBSOCKET ? source->websocket.reconnect_ms : source->socketio.reconnect_ms;
         if (configured_reconnect_ms > 0) {
             // 使用配置值作为初始延迟
             if (retry_count == 0) {
@@ -1421,6 +1482,8 @@ connection_retry:
         }
 
         ESP_LOGD(TAG, "SIO [%s] attempting connection to %s", conn->source_id, base_url);
+
+        if (conn->type == TS_AUTO_SRC_WEBSOCKET) break;
 
         // 1. HTTP 握手获取 session ID
         if (sio_http_handshake(base_url, conn->session_id, sizeof(conn->session_id)) != ESP_OK) {
@@ -1449,22 +1512,18 @@ connection_retry:
         xSemaphoreGive(ts_source_runtime.mutex);
         goto task_exit;
     }
-    strncpy(ws_base_url, ts_source_runtime.sources[idx].socketio.url, sizeof(ws_base_url) - 1);
+    const ts_auto_source_t *source = &ts_source_runtime.sources[idx];
+    strncpy(ws_base_url, conn->type == TS_AUTO_SRC_WEBSOCKET ? source->websocket.uri : source->socketio.url, sizeof(ws_base_url) - 1);
+    ws_base_url[sizeof(ws_base_url) - 1] = '\0';
+    uint32_t ws_reconnect_ms = conn->type == TS_AUTO_SRC_WEBSOCKET ? source->websocket.reconnect_ms : 0;
     xSemaphoreGive(ts_source_runtime.mutex);
 
     // 2. 构建 WebSocket URL
     char ws_url[256];
-    // 将 http:// 替换为 ws://
-    const char *url_path = strstr(ws_base_url, "://");
-    if (url_path) {
-        url_path += 3;  // 跳过 "://"
-        snprintf(ws_url, sizeof(ws_url),
-                 "ws://%s/socket.io/?EIO=4&transport=websocket&sid=%s",
-                 url_path, conn->session_id);
+    if (conn->type == TS_AUTO_SRC_WEBSOCKET) {
+        snprintf(ws_url, sizeof(ws_url), "%s", ws_base_url);
     } else {
-        snprintf(ws_url, sizeof(ws_url),
-                 "ws://%s/socket.io/?EIO=4&transport=websocket&sid=%s",
-                 ws_base_url, conn->session_id);
+        ts_source_sio_websocket_url(ws_base_url, conn->session_id, ws_url, sizeof(ws_url));
     }
 
     ESP_LOGD(TAG, "SIO [%s] WebSocket URL: %s", conn->source_id, ws_url);
@@ -1473,9 +1532,11 @@ connection_retry:
     esp_websocket_client_config_t ws_cfg = {
         .uri = ws_url,
         .buffer_size = 2048,
-        .reconnect_timeout_ms = 10000,   /* 重连超时 10s */
+        .reconnect_timeout_ms = conn->type == TS_AUTO_SRC_WEBSOCKET && ws_reconnect_ms ? ws_reconnect_ms : 10000,
+        .enable_close_reconnect = conn->type == TS_AUTO_SRC_WEBSOCKET,
         .network_timeout_ms = 10000,     /* 网络超时 10s */
         .ping_interval_sec = 0,          /* 禁用 WebSocket ping，使用 Socket.IO ping */
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     conn->client = esp_websocket_client_init(&ws_cfg);
@@ -1514,6 +1575,11 @@ connection_retry:
                     int idx = current_connection_index(conn);
                     if (idx >= 0) {
                         ts_auto_source_t *src = &ts_source_runtime.sources[idx];
+                        if (conn->type == TS_AUTO_SRC_WEBSOCKET && src->websocket.path[0]) {
+                            ts_auto_value_t value = {0};
+                            if (extract_json_value(parsed, src->websocket.path, &value) == ESP_OK)
+                                src->last_value = value;
+                        }
 
                         // 先处理手动配置的映射（在主任务中执行，有足够栈空间）
                         if (src->mapping_count > 0) {
@@ -1550,7 +1616,7 @@ connection_retry:
 
         // 检查心跳超时（30秒无消息则重连）
         uint32_t now_ms = esp_timer_get_time() / 1000;
-        if (conn->upgraded && (uint32_t)(now_ms - conn->last_message_ms) > 30000) {
+        if (conn->type == TS_AUTO_SRC_SOCKETIO && conn->upgraded && (uint32_t)(now_ms - conn->last_message_ms) > 30000) {
             ESP_LOGW(TAG, "SIO [%s] heartbeat timeout, reconnecting...", conn->source_id);
             break;
         }
@@ -1608,14 +1674,14 @@ task_exit:
 /**
  * @brief 连接 Socket.IO 数据源
  */
-esp_err_t ts_source_sio_connect(const char *id)
+static esp_err_t stream_connect(const char *id, ts_auto_source_type_t type)
 {
     if (!id || !ts_source_runtime.initialized) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_sio_ctx.mutex, portMAX_DELAY);
     xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
     int index = find_source_index(id);
     bool ready = index >= 0 && ts_source_runtime.running && ts_source_runtime.sources[index].enabled &&
-        ts_source_runtime.sources[index].type == TS_AUTO_SRC_SOCKETIO;
+        ts_source_runtime.sources[index].type == type;
     uint64_t instance = ready ? ts_source_runtime.sources[index].instance : 0;
     xSemaphoreGive(ts_source_runtime.mutex);
     if (!ready) { xSemaphoreGive(s_sio_ctx.mutex);return ESP_ERR_INVALID_STATE; }
@@ -1633,7 +1699,7 @@ esp_err_t ts_source_sio_connect(const char *id)
         xSemaphoreGive(s_sio_ctx.mutex);return closing ? ESP_ERR_NOT_FINISHED : ESP_ERR_NO_MEM;
     }
     memset(conn, 0, sizeof(*conn));
-    strcpy(conn->source_id, id);conn->source_instance = instance;
+    strcpy(conn->source_id, id);conn->source_instance = instance;conn->type = type;
     conn->pending_mutex = xSemaphoreCreateMutex();
     if (!conn->pending_mutex) { xSemaphoreGive(s_sio_ctx.mutex);return ESP_ERR_NO_MEM; }
     conn->allocated = true;
@@ -1645,6 +1711,11 @@ esp_err_t ts_source_sio_connect(const char *id)
     }
     xSemaphoreGive(s_sio_ctx.mutex);
     return created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+esp_err_t ts_source_sio_connect(const char *id)
+{
+    return stream_connect(id, TS_AUTO_SRC_SOCKETIO);
 }
 
 esp_err_t ts_source_sio_disconnect(const char *id)

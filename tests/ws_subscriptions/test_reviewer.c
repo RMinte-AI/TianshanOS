@@ -17,7 +17,7 @@ int main(void){
  set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
  httpd_ws_frame_t log={.payload=(uint8_t*)"old-log",.len=7};
  a=frames[1];assert(ts_ws_transport_log(&log,3)==0);
- current=(void*)3;start_terminal_session(&reqs[1]);current=(void*)1;
+ current=(void*)3;start_terminal_session(&reqs[1],NULL);current=(void*)1;
  assert(s_clients[0].type==WS_CLIENT_TYPE_TERMINAL);pump();assert(frames[1]==a+1); /* welcome only */
  set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
  assert(ts_ws_transport_log(&log,3)==0);set_client_role(peer,WS_CLIENT_TYPE_EVENT,0);set_client_role(peer,WS_CLIENT_TYPE_LOG,5);

@@ -94,6 +94,12 @@ static void filter_api_roundtrip(void)
 static void config_api_cases(void)
 {
     lifecycle_seed();ts_api_result_t result={0};
+    assert(write_object(TS_AUTO_CONFIG_COMMAND,"{\"id\":\"cmd\",\"host_id\":\"host\",\"name\":\"Background\",\"command\":\"true\",\"nohup\":true}",NULL,NULL)==ESP_OK);
+    assert(api_automation_rules_list(NULL,&result)==ESP_OK&&result.code==TS_API_OK);
+    const cJSON *listed_rule,*listed_rules=cJSON_GetObjectItem(result.data,"rules");bool linked=false;
+    cJSON_ArrayForEach(listed_rule,listed_rules)if(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(listed_rule,"id")),"auto"))
+        linked=!strcmp(cJSON_GetStringValue(cJSON_GetArrayItem(cJSON_GetObjectItem(listed_rule,"ssh_commands"),0)),"cmd");
+    assert(linked);free_api(&result);
     /* A long admitted action does not retain the configuration writer. */
     cJSON *trigger=api_params("{\"id\":\"manual\"}");pthread_t running;
     block_action=true;action_reached=action_released=false;
@@ -131,7 +137,7 @@ static void config_api_cases(void)
     filter_api_roundtrip();
     cJSON *params=api_params("{\"id\":\"cmd\",\"host_id\":\"host\",\"name\":\"Edited\",\"command\":\"run\",\"serviceMode\":true,\"nohup\":true,\"readyPattern\":\"ready\",\"readyInterval\":7000,\"varName\":\"reply\"}");
     char stale[33];strcpy(stale,status().active_version);
-    assert(api_ssh_commands_add(params,&result)==ESP_OK&&result.code==TS_API_OK&&cJSON_IsTrue(cJSON_GetObjectItem(result.data,"saved")));
+    assert(api_ssh_commands_update(params,&result)==ESP_OK&&result.code==TS_API_OK&&cJSON_IsTrue(cJSON_GetObjectItem(result.data,"saved")));
     free_api(&result);
     assert(api_ssh_commands_add(params,&result)==ESP_OK&&result.code!=TS_API_OK&&!strcmp(result.message,"configuration_changed"));
     assert(cJSON_IsFalse(cJSON_GetObjectItem(result.data,"saved")));free_api(&result);cJSON_Delete(params);
@@ -222,4 +228,99 @@ static void config_api_cases(void)
     free_api(&result);
     lifecycle_seed();
     puts("PASS configuration APIs: saved-view lists, aliases/defaults, versioned writes, persisted initial values, source mappings, preview/replace/hard delete, independent force and paused malformed collection");
+}
+static void lifecycle_crud_api_cases(void)
+{
+    lifecycle_seed();ts_api_result_t result={0};
+    cJSON *params=api_params("{\"id\":\"cmd\",\"host_id\":\"host\",\"name\":\"Accidental duplicate\",\"command\":\"wrong\"}");
+    assert(api_ssh_commands_add(params,&result)==ESP_OK&&result.code!=TS_API_OK&&!strcmp(result.message,"object_exists"));
+    free_api(&result);cJSON_Delete(params);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"source\",\"type\":3,\"rest_url\":\"http://example.invalid/old\",\"auto_discover\":false,\"mappings\":[{\"path\":\"temperature\",\"var\":\"reading\"}]}",NULL,NULL)==ESP_OK);
+    params=api_params("{\"id\":\"source\",\"type\":\"rest\",\"url\":\"http://example.invalid/new\"}");
+    assert(api_automation_sources_add(params,&result)==ESP_OK&&result.code!=TS_API_OK&&!strcmp(result.message,"object_exists"));free_api(&result);cJSON_Delete(params);
+    params=api_params("{\"id\":\"source\",\"rest_url\":\"http://example.invalid/new\",\"poll_interval_ms\":7000}");
+    assert(api_automation_sources_update(params,&result)==ESP_OK&&result.code==TS_API_OK);free_api(&result);cJSON_Delete(params);
+    ts_auto_source_t source;assert(ts_source_get_copy("source",&source)==ESP_OK);
+    assert(!strcmp(source.rest.url,"http://example.invalid/new")&&source.poll_interval_ms==7000&&!source.auto_discover);
+    assert(source.mapping_count==1&&!strcmp(source.mappings[0].var_name,"reading"));
+    params=api_params("{\"id\":\"source\",\"type\":\"rest\",\"url\":\"http://example.invalid/alias\",\"method\":\"POST\"}");
+    assert(api_automation_sources_update(params,&result)==ESP_OK&&result.code==TS_API_OK);free_api(&result);cJSON_Delete(params);
+    assert(ts_source_get_copy("source",&source)==ESP_OK&&!strcmp(source.rest.url,"http://example.invalid/alias")&&!strcmp(source.rest.method,"POST"));
+    params=api_params("{\"id\":\"source\",\"label\":\"Changed label\"}");
+    assert(api_automation_sources_update(params,&result)==ESP_OK&&result.code==TS_API_OK);free_api(&result);cJSON_Delete(params);
+    assert(ts_source_get_copy("source",&source)==ESP_OK&&!strcmp(source.rest.method,"POST")&&source.mapping_count==1);
+    params=api_params("{\"id\":\"source\",\"var_name\":\"reading\"}");
+    assert(api_automation_sources_remove_mapping(params,&result)==ESP_OK&&result.code==TS_API_OK);free_api(&result);cJSON_Delete(params);
+    assert(ts_source_get_copy("source",&source)==ESP_OK&&!source.mapping_count);
+    params=api_params("{\"id\":\"host\",\"host\":\"192.0.2.123\"}");
+    ts_ssh_host_config_t before,after;assert(ts_ssh_hosts_config_get("host",&before)==ESP_OK);
+    assert(api_ssh_hosts_update(params,&result)==ESP_OK&&result.code==TS_API_OK);free_api(&result);cJSON_Delete(params);
+    assert(ts_ssh_hosts_config_get("host",&after)==ESP_OK&&!strcmp(after.host,"192.0.2.123"));
+    assert(!strcmp(before.username,after.username)&&!strcmp(before.keyid,after.keyid)&&before.port==after.port);
+    params=api_params("{\"name\":\"saved_value\",\"value\":3}");
+    assert(api_automation_variables_set(params,&result)==ESP_OK&&result.code==TS_API_OK);free_api(&result);cJSON_Delete(params);
+    assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"value_reader\",\"name\":\"Reader\",\"enabled\":true,\"conditions\":[{\"variable\":\"saved_value\",\"value\":3}],\"actions\":[{\"type\":\"log\",\"message\":\"read\"}]}",NULL,NULL)==ESP_OK);
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"value_writer\",\"type\":3,\"enabled\":true,\"rest_url\":\"http://example.invalid\",\"mappings\":[{\"path\":\"value\",\"var\":\"saved_value\"}]}",NULL,NULL)==ESP_OK);
+    params=api_params("{\"name\":\"saved_value\"}");
+    assert(api_automation_variables_delete(params,&result)==ESP_OK&&result.code!=TS_API_OK&&!strcmp(result.message,"references_exist"));free_api(&result);cJSON_Delete(params);
+    params=api_params("{\"name\":\"saved_value\",\"force\":true}");
+    fail_install=true;assert(api_automation_variables_delete(params,&result)==ESP_OK&&result.code!=TS_API_OK);assert(ts_variable_exists("saved_value"));free_api(&result);fail_install=false;
+    assert(api_automation_variables_delete(params,&result)==ESP_OK&&result.code==TS_API_OK);free_api(&result);cJSON_Delete(params);
+    assert(!ts_variable_exists("saved_value"));
+    assert(ts_auto_config_reload(NULL)==ESP_OK&&!ts_variable_exists("saved_value"));
+    assert(ts_source_get_copy("value_writer",&source)==ESP_OK&&!source.enabled);
+    ts_auto_rule_t reader;assert(ts_rule_acquire("value_reader",&reader)==ESP_OK&&!reader.enabled);ts_rule_release(&reader);
+    params=api_params("{\"name\":\"system.temperature\",\"force\":true}");
+    assert(api_automation_variables_delete(params,&result)==ESP_OK&&result.code!=TS_API_OK&&!strcmp(result.message,"not_found"));free_api(&result);cJSON_Delete(params);
+    assert(ts_variable_exists("system.temperature"));
+    lifecycle_seed();puts("PASS lifecycle APIs: explicit create/update, preserved source mappings and host credentials, variable force deletion, write failure and reload");
+}
+
+/* Reproduce the three review findings through the real API, owner, runtime
+ * publication and temporary configuration files, not a hand-built response. */
+static void reference_origin_api_cases(void)
+{
+    for(int scenario=0;scenario<4;++scenario) {
+        lifecycle_seed();ts_auto_config_error_t error={0};
+        bool replace=scenario==2,cycle=scenario==1||scenario==3,shared=scenario==3;
+        if(cycle) {
+            assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"input\",\"type\":3,\"enabled\":true,\"rest_url\":\"http://example.invalid\",\"auto_discover\":false,\"mappings\":[{\"path\":\"status\",\"var\":\"model.status\"}]}",NULL,&error)==ESP_OK);
+            if(shared)assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"other_input\",\"type\":3,\"enabled\":true,\"rest_url\":\"http://example.invalid/other\",\"auto_discover\":false,\"mappings\":[{\"path\":\"status\",\"var\":\"model.status\"}]}",NULL,&error)==ESP_OK);
+        } else {
+            assert(write_object(TS_AUTO_CONFIG_VARIABLE,replace?"{\"name\":\"model.status\",\"value_type\":4,\"value\":\"ready\"}":"{\"name\":\"model.output\",\"value_type\":4,\"value\":\"text\"}",NULL,&error)==ESP_OK);
+            if(replace)assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"x\",\"value_type\":4,\"value\":\"ready\"}",NULL,&error)==ESP_OK);
+        }
+        assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"mirror\",\"type\":4,\"enabled\":true,\"var_prefix\":\"model.\"}",NULL,&error)==ESP_OK);
+        if(cycle)assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"model\",\"type\":4,\"enabled\":true,\"var_prefix\":\"mirror.\"}",NULL,&error)==ESP_OK);
+        if(replace)assert(write_object(TS_AUTO_CONFIG_SOURCE,"{\"id\":\"single\",\"type\":4,\"enabled\":true,\"var_name\":\"model.status\"}",NULL,&error)==ESP_OK);
+        const char *variable=scenario==0?"mirror.output":"mirror.status";
+        char raw[512];snprintf(raw,sizeof(raw),"{\"id\":\"reader\",\"name\":\"Reader\",\"enabled\":true,\"conditions\":[{\"variable\":\"%s\",\"value\":\"ready\"}],\"actions\":[{\"type\":\"log\",\"message\":\"read\"}]}",variable);
+        assert(write_object(TS_AUTO_CONFIG_RULE,raw,NULL,&error)==ESP_OK);
+        if(replace)assert(write_object(TS_AUTO_CONFIG_RULE,"{\"id\":\"direct\",\"name\":\"Direct reader\",\"enabled\":true,\"conditions\":[{\"variable\":\"model.status\",\"value\":\"ready\"}],\"actions\":[{\"type\":\"log\",\"message\":\"${model.status}\"}]}",NULL,&error)==ESP_OK);
+        ts_auto_source_t source;ts_auto_value_t value;
+        if(cycle)assert(ts_variable_set_string("model.status","ready")==ESP_OK);
+        assert(ts_source_get_copy("mirror",&source)==ESP_OK&&read_variable_source(&source,&value)==ESP_OK);
+        ts_api_result_t result={0};cJSON *params=api_params(cycle?"{\"id\":\"input\",\"preview\":true}":replace?"{\"name\":\"model.status\",\"preview\":true}":"{\"name\":\"model.output\",\"preview\":true}");
+        assert(ts_api_auto_delete(cycle?TS_AUTO_CONFIG_SOURCE:TS_AUTO_CONFIG_VARIABLE,params,&result)==ESP_OK&&result.code==TS_API_OK);
+        cJSON *impact=cJSON_GetObjectItem(result.data,"impact");
+        assert(cJSON_GetArraySize(cJSON_GetObjectItem(impact,"sources"))==(shared?0:cycle||replace?2:1));
+        assert(cJSON_GetArraySize(cJSON_GetObjectItem(impact,"rules"))==(shared?0:replace?2:1));
+        free_api(&result);cJSON_Delete(params);
+        params=api_params(cycle?"{\"id\":\"input\",\"force\":true}":replace?"{\"name\":\"model.status\",\"replacement_id\":\"x\"}":"{\"name\":\"model.output\",\"force\":true}");
+        assert(ts_api_auto_delete(cycle?TS_AUTO_CONFIG_SOURCE:TS_AUTO_CONFIG_VARIABLE,params,&result)==ESP_OK&&result.code==TS_API_OK);
+        free_api(&result);cJSON_Delete(params);
+        assert(ts_source_get_copy("mirror",&source)==ESP_OK&&source.enabled==shared&&!strcmp(source.variable.var_prefix,"model."));
+        ts_auto_rule_t reader;assert(ts_rule_acquire("reader",&reader)==ESP_OK&&reader.enabled==shared);ts_rule_release(&reader);
+        if(!shared){assert(ts_variable_get(variable,&value)==ESP_OK&&!value.str_val[0]);}
+        if(replace) {
+            assert(!ts_variable_exists("model.status")&&ts_variable_exists("x"));
+            assert(ts_source_get_copy("single",&source)==ESP_OK&&source.enabled&&!strcmp(source.variable.var_name,"x"));
+            assert(ts_rule_acquire("direct",&reader)==ESP_OK&&reader.enabled&&!strcmp(reader.conditions.conditions[0].variable,"x")&&!strcmp(reader.actions[0].log.message,"${x}"));ts_rule_release(&reader);
+        }
+        assert(ts_auto_config_reload(NULL)==ESP_OK);
+        assert(ts_source_get_copy("mirror",&source)==ESP_OK&&source.enabled==shared);
+        assert(ts_rule_acquire("reader",&reader)==ESP_OK&&reader.enabled==shared);ts_rule_release(&reader);
+    }
+    lifecycle_seed();
+    puts("PASS review scenarios: short variable replacement, output reader closure, rooted cycles, independent surviving roots and persisted results");
 }

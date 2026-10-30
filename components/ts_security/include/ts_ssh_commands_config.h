@@ -79,6 +79,7 @@ typedef struct {
     
     uint32_t created_time;                   /**< 创建时间戳 */
     uint32_t last_exec_time;                 /**< 上次执行时间 */
+    char object_id[25];                      /**< Persistent definition identity */
     uint64_t instance;                       /**< Runtime identity; never persisted */
 } ts_ssh_command_config_t;
 

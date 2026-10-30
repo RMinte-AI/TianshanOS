@@ -88,20 +88,38 @@ source=Path('components/ts_automation/src/ts_source_manager.c').read_text()
 begin=source.index('typedef struct {\n    char source_id[')
 end=source.index('} s_sio_ctx = {0};',begin)+len('} s_sio_ctx = {0};')
 parts=[source[begin:end]]
-for name in ['find_source_index','current_source_index','current_connection_index','sio_find_connection',
-             'sio_release_connection','ts_source_transport_changed','sio_handle_event_message']:
-    match=re.search(r'^(?:static )?(?:int|void|sio_connection_t \*)\s*'+name+r'\([^;]+?\)\s*\{',source,re.M)
+for name in ['extract_json_value','cjson_to_value','auto_discover_json_fields','process_source_mappings',
+             'find_source_index','current_source_index','current_connection_index','sio_find_connection',
+             'sio_release_connection','ts_source_transport_changed','sio_handle_event_message',
+             'ws_handle_message','sio_websocket_event_handler','read_variable_source','ts_source_sio_websocket_url','read_rest_source','sio_http_handshake','stream_connect']:
+    match=re.search(r'^(?:static )?(?:int|void|esp_err_t|sio_connection_t \*)\s*'+name+r'\([^;]+?\)\s*\{',source,re.M)
     assert match,name
     parts.append(source[match.start():source.index('\n}',match.start())+2])
+api_source=Path('components/ts_api/src/ts_api_automation.c').read_text()
+end=api_source.index('} ws_test_ctx_t;')+len('} ws_test_ctx_t;')
+parts.append(api_source[api_source.rfind('typedef struct {',0,end):end])
+match=re.search(r'^static void ws_test_handler\([^;]+?\)\s*\{',api_source,re.M)
+assert match
+parts.append(api_source[match.start():api_source.index('\n}',match.start())+2])
+config_start=source.index('    esp_websocket_client_config_t ws_cfg = {',source.index('static void sio_connection_task'))
+config_end=source.index('\n    };',config_start)+len('\n    };')
+parts.append('static esp_websocket_client_config_t test_stream_client_config(sio_connection_t *conn, uint32_t ws_reconnect_ms, char *ws_url) {\n'+source[config_start:config_end]+'\nreturn ws_cfg;\n}')
+start=source.index('        // 处理待处理的自动发现数据',source.index('static void sio_connection_task'))
+end=source.index('        // 检查心跳超时',start)
+parts.append('static void test_process_pending(sio_connection_t *conn) {\n'+source[start:end]+'\n}')
 Path(sys.argv[1],'source_transport.inc').write_text('\n'.join(parts))
 engine=Path('components/ts_automation/src/ts_rule_engine.c').read_text()
 begin=engine.index('typedef struct {\n    ts_auto_rule_t *rules;')
 end=engine.index('static void record_execution',begin)
 parts=[engine[begin:end]]
+match=re.search(r'^static const void \*binding_definition\([^;]+?\)\s*\{',engine,re.M)
+assert match
+parts.append(engine[match.start():engine.index('\n}',match.start())+2])
+parts.append('static bool check_action_condition(const ts_auto_action_t *);')
 for name in ['find_rule_index','record_execution','same_config','ts_rule_engine_init','ts_rule_engine_deinit','ts_rule_acquire',
-             'ts_rule_release','ts_rule_config_discard','ts_rule_config_prepare','ts_rule_config_publish',
+             'ts_rule_release','rule_dependencies_same','ts_rule_config_discard','ts_rule_config_prepare','ts_rule_config_publish',
              'ts_rule_config_pause','ts_rule_config_clear','ts_rule_instance_current','ts_rule_get_by_index','ts_rule_count','compare_values','ts_rule_eval_condition',
-             'ts_rule_eval_condition_group','refuse','execute_rule','ts_rule_evaluate','ts_rule_evaluate_all','ts_rule_trigger_ex','ts_rule_trigger_versioned','ts_rule_trigger']:
+             'ts_rule_eval_condition_group','refuse','automatic_start_result','ts_rule_start_status','execute_rule','ts_rule_evaluate','ts_rule_evaluate_all','ts_rule_trigger_ex','ts_rule_trigger_versioned','ts_rule_trigger']:
     match=re.search(r'^(?:static )?(?:int|bool|void|esp_err_t) '+name+r'\([^;]+?\)\s*\{',engine,re.M)
     assert match,name
     parts.append(engine[match.start():engine.index('\n}',match.start())+2])
@@ -118,7 +136,7 @@ context=re.search(r'typedef struct \{[^}]*\} action_manager_ctx_t;',action).grou
 binding=re.search(r'typedef struct \{[^}]*\} action_binding_t;',action).group(0)
 parts=[context,'static action_manager_ctx_t native_action_ctx; static action_manager_ctx_t *s_ctx=&native_action_ctx;',binding, re.search(r'^static const char \*const cli_outputs[^;]+;',action,re.M).group(0)]
 for name in ['same_host','action_variable','action_result_begin','action_result_end','ts_action_snapshot_owner','ts_action_snapshot_current','ts_action_snapshot_retain',
-             'ts_action_snapshot_release','snapshot_command','ts_action_snapshot','ts_action_get_ssh_host']:
+             'ts_action_snapshot_release','ts_action_is_background','snapshot_command','ts_action_snapshot','ts_action_get_ssh_host']:
     match=re.search(r'^(?:static )?[^\n;]+\b'+name+r'\([^;]+?\)\s*\{',action,re.M)
     assert match,name
     parts.append(action[match.start():action.index('\n}',match.start())+2])
@@ -136,6 +154,9 @@ for name in ['ts_action_execute','check_action_condition','rule_wait','execute_a
     assert match,name
     parts.append(engine[match.start():engine.index('\n}',match.start())+2])
 Path(sys.argv[1],'rule_repeat.inc').write_text('\n'.join(parts))
+match=re.search(r'^static esp_err_t execute_actions_with_stats\([^;]+?\)\s*\{',engine,re.M)
+assert match
+Path(sys.argv[1],'rule_sequence.inc').write_text(engine[match.start():engine.index('\n}',match.start())+2].replace('execute_actions_with_stats','execute_auto_sequence',1))
 api_result=Path('components/ts_api/src/ts_api.c').read_text()
 results=[]
 for name in ['ts_api_result_free','ts_api_result_ok','ts_api_result_error','ts_api_result_reason']:
@@ -146,16 +167,16 @@ api=Path('components/ts_api/src/ts_api_automation.c').read_text()
 parts=[]
 for name in ['api_config_status','api_config_refresh','api_config_backup','config_operation',
              'api_config_preview','api_config_apply','api_config_enable','api_automation_reload',
-             'trigger_reject_token','trigger_reject_code','api_automation_rules_trigger','action_execute_failure','api_automation_actions_execute']:
+             'trigger_reject_token','trigger_reject_code','api_automation_rules_list','api_automation_rules_trigger','action_execute_failure','api_automation_actions_execute']:
     match=re.search(r'^(?:static )?[^\n;]+\b'+name+r'\([^;]+?\)\s*\{',api,re.M)
     assert match,name
     parts.append(api[match.start():api.index('\n}',match.start())+2])
 ssh=Path('components/ts_api/src/ts_api_ssh.c').read_text()
-for owner,names in [(api,['api_automation_variables_set','api_automation_sources_list','api_automation_sources_add',
+for owner,names in [(api,['api_automation_variables_delete','api_automation_rules_add','api_automation_rules_update','api_automation_sources_update','api_automation_variables_set','api_automation_sources_list','api_automation_sources_add',
                          'api_automation_sources_add_mapping','api_automation_sources_remove_mapping','api_automation_sources_enable',
                          'api_automation_actions_list','api_automation_actions_add','api_automation_actions_update',
                          'api_automation_actions_get','api_automation_actions_delete','api_automation_rules_delete','api_automation_actions_import','api_automation_sources_import']),
-                    (ssh,['api_ssh_commands_list','api_ssh_commands_get','api_ssh_commands_add','api_ssh_commands_remove','api_ssh_hosts_list','api_ssh_hosts_add','api_ssh_hosts_import','api_ssh_commands_import'])]:
+                    (ssh,['api_ssh_commands_update','api_ssh_hosts_update','api_ssh_commands_list','api_ssh_commands_get','api_ssh_commands_add','api_ssh_commands_remove','api_ssh_hosts_list','api_ssh_hosts_add','api_ssh_hosts_import','api_ssh_commands_import'])]:
     for name in names:
         match=re.search(r'^static esp_err_t '+name+r'\([^;]+?\)\s*\{',owner,re.M);assert match,name
         # These adapters intentionally contain one shared-owner call.
@@ -167,6 +188,7 @@ cc "${common[@]}" -DCONFIG_TS_AUTOMATION_MAX_RULES=64 -Itests/runtime/storage_st
   -Itests/runtime/rule_pack/stubs -Icomponents/ts_automation/src -Icomponents/ts_security/include \
   -Icomponents/ts_core/ts_config/include -Icomponents/ts_cert/include -Icomponents/ts_config_pack/include \
   -Icomponents/ts_storage/include \
+  -Icomponents/ts_jsonpath/include \
   -Icomponents/ts_api/include \
   -I"$IDF_PATH/components/json/cJSON" -I"$CONFIG_TEST_BUILD" \
   tests/runtime/test_automation_config.c components/ts_api/src/ts_api_auto_config.c \
@@ -178,6 +200,7 @@ cc "${common[@]}" -DCONFIG_TS_AUTOMATION_MAX_RULES=64 -Itests/runtime/storage_st
   components/ts_automation/src/ts_rule_pack.c tests/runtime/storage_stubs/crypto.c \
   components/ts_automation/src/ts_automation_references.c components/ts_automation/src/ts_rule_codec.c \
   components/ts_automation/src/ts_action_codec.c components/ts_automation/src/ts_action_filter.c \
+  components/ts_jsonpath/src/ts_jsonpath.c \
   components/ts_security/src/ts_ssh_config_codec.c components/ts_security/src/ts_ssh_commands_config.c \
   components/ts_security/src/ts_ssh_hosts_config.c "$IDF_PATH/components/json/cJSON/cJSON.c" \
   "${crypto_link[@]}" -lpthread -lm -o "$CONFIG_TEST_BUILD/owner"

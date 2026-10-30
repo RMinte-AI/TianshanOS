@@ -6,7 +6,7 @@ root=Path(__file__).resolve().parents[2]
 idf=Path(os.environ.get('IDF_PATH','/Users/massif/esp/v5.5.2/esp-idf'))
 source=Path(os.environ.get('TS_KEYSTORE_TEST_SOURCE', root/'components/ts_security/src/ts_keystore.c')).read_text()
 api_source=(root/'components/ts_api/src/ts_api_key.c').read_text()
-a=api_source.index('static esp_err_t api_key_generate(');api_handler=api_source[a:api_source.index('\n/**',a)]
+a=api_source.index('static esp_err_t api_key_generate(');api_handler=api_source[a:api_source.index('\n}',a)+2]
 web_source=(root/'components/ts_webui/src/ts_webui_api.c').read_text()
 a=web_source.index('static esp_err_t send_key_generate_result(');web_handler=web_source[a:web_source.index('\nstatic esp_err_t',a+1)]
 a=web_source.index('static esp_err_t api_handler(');web_handler+=web_source[a:web_source.index('\nstatic esp_err_t login_handler',a)]
@@ -36,6 +36,13 @@ prefix=r'''
 #define TS_API_MALLOC malloc
 typedef struct {size_t content_len,query_len;} test_http_req_t;
 typedef struct {const char *uri;const char *body;size_t body_len;int method;test_http_req_t *req;} ts_http_request_t;
+/* This suite uses an authenticated caller; role boundaries have their own suite. */
+enum { TS_PERM_READ=1, TS_PERM_ROOT=4 };
+static esp_err_t check_auth(ts_http_request_t *req,uint32_t *session,int required) {(void)req;(void)required;*session=1;return ESP_OK;}
+cJSON *ts_api_get_info(const char *name) {
+ (void)name;cJSON *info=cJSON_CreateObject();cJSON_AddBoolToObject(info,"requires_auth",true);return info;
+}
+esp_err_t ts_storage_check_write_path(const char *path,bool internal) {(void)path;(void)internal;assert(!"unexpected storage read in keystore test");return ESP_FAIL;}
 static size_t httpd_req_get_url_query_len(void *p){return p?((test_http_req_t *)p)->query_len:0;}
 static esp_err_t httpd_req_get_url_query_str(void *p,char *b,size_t n){return ESP_FAIL;}
 esp_err_t ts_http_send_json(ts_http_request_t *,int,const char *);
@@ -128,6 +135,13 @@ static int json_alloc_count,json_fail_at;
 static void *fail_one_json_alloc(size_t n){return ++json_alloc_count==json_fail_at?NULL:malloc(n);}
 int main(int argc,char **argv){
  assert(ts_keystore_init()==ESP_OK);reset();
+
+ if(!strcmp(argv[1],"deletion")){
+  const char *erasures[]={"keep_priv","keep_pub","keep_meta"};
+  for(unsigned i=0;i<3;++i){reset();assert(store("keep")==ESP_OK);fail_erase=erasures[i];assert(ts_keystore_delete_key("keep")!=ESP_OK);assert(find(erasures[i]));fail_erase=NULL;assert(ts_keystore_delete_key("keep")==ESP_OK);absent("keep");}
+  reset();assert(store("keep")==ESP_OK);fail_key="_index";fail_write_at=1;write_hits=0;assert(ts_keystore_delete_key("keep")!=ESP_OK);fail_key=NULL;assert(ts_keystore_delete_key("keep")==ESP_OK);absent("keep");
+  reset();assert(store("keep")==ESP_OK);fail_commit_at=commit_calls+1;assert(ts_keystore_delete_key("keep")!=ESP_OK);fail_commit_at=0;assert(ts_keystore_delete_key("keep")==ESP_OK);absent("keep");
+ }
  if(!strcmp(argv[1],"metadata")){fail_key="new_meta";fail_write_at=1;assert(store("new")!=ESP_OK);}
  if(!strcmp(argv[1],"index")){fail_key="_index";fail_write_at=1;assert(store("new")!=ESP_OK);}
  if(!strcmp(argv[1],"prefix")){assert(store("app")==ESP_OK);assert(store("p")==ESP_OK);assert(!strcmp((char*)find("_index")->data,"app,p"));assert(store("key10")==ESP_OK);assert(store("key1")==ESP_OK);}
@@ -193,7 +207,8 @@ int main(int argc,char **argv){
   fail_key="new_meta";fail_write_at=1;assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(cJSON_GetObjectItem(response,"data")&&cJSON_GetObjectItem(response,"code")->valueint!=0);cJSON_Delete(response);absent("new");
   reset();assert(api_handler(&req,NULL)==ESP_OK);assert(find("new_priv"));response=cJSON_Parse(sent_json);assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"generated")));cJSON_Delete(response);
   req.uri="/api/v1/other/endpoint";assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(send_status==200&&cJSON_GetObjectItem(response,"code")->valueint==TS_API_ERR_INTERNAL);assert(!strcmp(cJSON_GetObjectItem(response,"error")->valuestring,"fixture")&&!cJSON_GetObjectItem(response,"message"));/* generic failures carry the handler's details (e.g. the host-key fingerprint of ssh.exec) */assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"failure_details")));cJSON_Delete(response);
-  req.uri="/api/v1/key/generate";cJSON_Hooks fail_request={always_fail,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
+  /* Policy metadata uses three allocations before the request object. */
+  req.uri="/api/v1/key/generate";json_alloc_count=0;json_fail_at=4;cJSON_Hooks fail_request={fail_one_json_alloc,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   r=(ts_api_result_t){.code=0,.data=cJSON_CreateObject()};cJSON_AddBoolToObject(r.data,"generated",true);cJSON_Hooks hooks={always_fail,free};cJSON_InitHooks(&hooks);send_key_generate_result(NULL,&r,"test",0);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   const char *invalid[]={"{\"tscfg\":\"{}\\u0000tail\"}","{\"preview\":true,\"preview\":false}","{} {}","[]"};
   test_http_req_t native={0};req=(ts_http_request_t){.uri="/api/v1/automation/rules/import",.req=&native};
@@ -212,7 +227,7 @@ with tempfile.TemporaryDirectory(prefix='ts-keystore-') as tmp:
  env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
  subprocess.run(['cc','-std=c11','-g','-Wno-deprecated-declarations','-fsanitize=address,undefined','-I'+tmp,'-I'+str(root/'components/ts_security/include'),'-I'+str(root/'components/ts_api/include'),'-I'+str(root/'components/ts_core/ts_config/include'),'-I'+str(root/'components/ts_storage/include'),'-I'+str(idf/'components/json/cJSON'),str(p/'test.c'),str(idf/'components/json/cJSON/cJSON.c'),'-lm','-lpthread','-o',str(p/'test')],check=True,env=env)
  failures=[]
- for case in ['metadata','index','prefix','matrix','admission','concurrency','compatibility','api','allocations','lifecycle']:
+ for case in ['deletion','metadata','index','prefix','matrix','admission','concurrency','compatibility','api','allocations','lifecycle']:
   result=subprocess.run([str(p/'test'),case],env=env,capture_output=True,text=True)
   print(case,result.stdout or result.stderr.strip());
   if result.returncode:failures.append(case)

@@ -90,9 +90,7 @@ static bool is_browser_ota_busy(void)
 
 /**
  * @brief Check authentication for API requests
- * @note Reserved for WebUI authentication feature
  */
-__attribute__((unused))
 static esp_err_t check_auth(ts_http_request_t *req, uint32_t *session_id, ts_perm_level_t required)
 {
 #ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
@@ -101,8 +99,7 @@ static esp_err_t check_auth(ts_http_request_t *req, uint32_t *session_id, ts_per
         return ESP_ERR_NOT_FOUND;
     }
     
-    ts_perm_level_t level;
-    extern esp_err_t ts_auth_validate_request(const char *, uint32_t *, ts_perm_level_t *);
+    ts_perm_level_t level = TS_PERM_NONE;
     esp_err_t ret = ts_auth_validate_request(auth, session_id, &level);
     if (ret != ESP_OK) return ret;
     
@@ -177,17 +174,29 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
                 req->method, uri, api_name);
     }
     
-    // TODO: 测试阶段暂时禁用认证检查
-    // 功能测试完成后需要恢复以下代码：
-    // Check authentication for write operations only
-    // GET requests (read-only) are allowed without authentication
-    // uint32_t session_id = 0;
-    // if (req->method == TS_HTTP_POST || req->method == TS_HTTP_PUT || 
-    //     req->method == TS_HTTP_DELETE) {
-    //     if (check_auth(req, &session_id, TS_PERM_WRITE) != ESP_OK) {
-    //         return ts_http_send_error(req, 401, "Unauthorized");
-    //     }
-    // }
+    /* Respect the endpoint's registered policy, irrespective of HTTP method:
+     * the browser also uses POST for several public reads. */
+    cJSON *info = ts_api_get_info(api_name);
+    if (!info) return ts_http_send_error(req, 404, "API not found");
+    const cJSON *auth_required = cJSON_GetObjectItemCaseSensitive(info, "requires_auth");
+    if (!cJSON_IsBool(auth_required)) {
+        cJSON_Delete(info);
+        return ts_http_send_error(req, 500, "API policy unavailable");
+    }
+    bool needs_auth = cJSON_IsTrue(auth_required);
+    cJSON_Delete(info);
+    uint32_t session_id = 0;
+    /* Configuration is root-only; signed-in users retain homepage execution
+     * and independent service controls. */
+    bool root_only = needs_auth && !strncmp(api_name, "automation.", 11) &&
+        strcmp(api_name, "automation.actions.execute") &&
+        strcmp(api_name, "automation.rules.trigger") &&
+        strcmp(api_name, "automation.services.list") &&
+        strcmp(api_name, "automation.services.status") &&
+        strcmp(api_name, "automation.services.stop");
+    if (needs_auth && check_auth(req, &session_id, root_only ? TS_PERM_ROOT : TS_PERM_READ) != ESP_OK)
+        return ts_http_send_error(req, 401, "Unauthorized");
+    bool source_secrets = check_auth(req, &session_id, TS_PERM_ROOT) == ESP_OK;
     
     bool key_generation = strcmp(api_name, "key.generate") == 0;
     bool rule_import = strcmp(api_name,"automation.rules.import")==0;
@@ -296,9 +305,25 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
         }
         TS_LOGI(TAG, "key.generate request=%s arrived", key_request_id);
     }
+    /* The managed automation document contains source credentials. Its file
+     * can also be read through the general storage API. */
+    if (!strcmp(api_name, "storage.read")) {
+        const cJSON *path = cJSON_GetObjectItem(request, "path");
+        if (cJSON_IsString(path) && ts_storage_check_write_path(path->valuestring, false) != ESP_OK && !source_secrets) {
+            cJSON_Delete(request);
+            return ts_http_send_error(req, 401, "Unauthorized");
+        }
+    }
     // Call API
     ts_api_result_t result = {0};
     esp_err_t ret = ts_api_call(api_name, request, &result);
+    if (!strcmp(api_name, "automation.sources.list") && !source_secrets && result.data) {
+        cJSON *source;
+        cJSON_ArrayForEach(source, cJSON_GetObjectItemCaseSensitive(result.data, "sources")) {
+            cJSON_DeleteItemFromObjectCaseSensitive(source, "rest_auth");
+            cJSON_DeleteItemFromObjectCaseSensitive(source, "auth_header");
+        }
+    }
     
     // API 结果日志使用 DEBUG 级别
     if (strncmp(api_name, "log.", 4) != 0) {
@@ -551,6 +576,11 @@ static esp_err_t file_download_handler(ts_http_request_t *req, void *user_data)
     // 安全检查：只允许访问 /sdcard 和 /spiffs
     if (strncmp(path, "/sdcard", 7) != 0 && strncmp(path, "/spiffs", 7) != 0) {
         return ts_http_send_error(req, 403, "Access denied: invalid path");
+    }
+    uint32_t session_id = 0;
+    if (ts_storage_check_write_path(path, false) != ESP_OK &&
+        check_auth(req, &session_id, TS_PERM_ROOT) != ESP_OK) {
+        return ts_http_send_error(req, 401, "Unauthorized");
     }
     
     // 检查文件是否存在

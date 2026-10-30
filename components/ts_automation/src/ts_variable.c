@@ -12,6 +12,7 @@
  */
 
 #include "ts_variable.h"
+#include "ts_action_codec.h"
 #include "ts_automation_runtime.h"
 
 #include "esp_log.h"
@@ -863,6 +864,7 @@ static bool command_group_same(const ts_auto_document_t *next,const ts_auto_docu
         for(int j=0;j<previous->command_count;++j){
             const ts_ssh_command_config_t *old=&previous->commands[j];
             if(memcmp(command,old,offsetof(ts_ssh_command_config_t,last_exec_time)))continue;
+            if(old->object_id[0]&&strcmp(command->object_id,old->object_id))continue;
             const ts_ssh_host_config_t *a=definition_host(next,command->host_id),*b=definition_host(previous,old->host_id);
             matched=a&&b&&!memcmp(a,b,sizeof(*a));break;
         }
@@ -912,6 +914,38 @@ esp_err_t ts_variable_config_prepare(const ts_auto_document_t *document, const t
             for (int n = 0; n < document->variable_count; ++n)
                 user_defined |= !strcmp(document->variables[n].name, value.name);
             ret = user_defined ? ESP_ERR_INVALID_ARG : stage_variable(view, &value, true, keep_values);
+        }
+    }
+    for (int i = 0; ret == ESP_OK && i < document->source_count; ++i) {
+        const ts_auto_source_t *source = &document->sources[i];
+        if (source->type != TS_AUTO_SRC_VARIABLE || !source->variable.var_prefix[0]) continue;
+        char prefix[TS_AUTO_NAME_MAX_LEN];
+        snprintf(prefix, sizeof(prefix), "%s", source->variable.var_prefix);
+        size_t length = strlen(prefix);
+        if (length && prefix[length - 1] == '.') prefix[length - 1] = 0;
+        bool shared = !strcmp(source->id, prefix);
+        bool keep_values = false;
+        for (int n = 0; previous && n < previous->source_count; ++n)
+            if (ts_source_config_same(source, &previous->sources[n]))
+                keep_values = command_group_same(document, previous, prefix);
+        ts_auto_variable_t value = {0};
+        strcpy(value.source_id, source->id);
+        for (unsigned j = 0; ret == ESP_OK && j < sizeof(fields) / sizeof(fields[0]); ++j) {
+            int count = snprintf(value.name, sizeof(value.name), "%s.%s", source->id, fields[j].suffix);
+            if (count < 0 || (size_t)count >= sizeof(value.name)) { ret = ESP_ERR_INVALID_ARG; break; }
+            value.default_value.type = fields[j].type;
+            ret = stage_variable(view, &value, shared, keep_values);
+        }
+        /* Create only undeclared mirrored output; explicit variables retain
+         * their owner. Same-namespace sources read the producer directly. */
+        if(ret==ESP_OK&&!shared){
+            int count=snprintf(value.name,sizeof(value.name),"%s.output",source->id);
+            if(count<0||(size_t)count>=sizeof(value.name)){ret=ESP_ERR_INVALID_ARG;break;}
+            value.default_value.type=TS_AUTO_VAL_STRING;
+            bool declared=false;
+            for(int n=0;n<document->variable_count;++n)
+                declared|=!strcmp(document->variables[n].name,value.name);
+            if(!declared)ret=stage_variable(view,&value,false,keep_values);
         }
     }
     xSemaphoreGive(s_var_ctx.mutex);

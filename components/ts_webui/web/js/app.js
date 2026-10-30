@@ -33,7 +33,7 @@ let automationUiGeneration = 0;
 let automationConfigStatus = null;
 const configText = (key, params) => t('automationConfig.' + key, params);
 const configEndpoints = {rules: 'automation.rules.delete', actions: 'automation.actions.delete',
-    commands: 'ssh.commands.remove', hosts: 'ssh.hosts.remove', sources: 'automation.sources.delete'};
+    commands: 'ssh.commands.remove', hosts: 'ssh.hosts.remove', sources: 'automation.sources.delete', variables: 'automation.variables.delete'};
 function configurationRead(kind) {
     const pageCurrent = capturePageValidity(), generation = automationUiGeneration;
     const token = Symbol(kind); automationReads.set(kind, token);
@@ -162,6 +162,7 @@ async function refreshConfigurationViews() {
     if (document.getElementById('rules-list')) calls.push(refreshRules(), refreshActions(), refreshSources(), refreshAutomationStatus());
     if (document.getElementById('commands-list')) calls.push((async () => {await loadSshCommands(); await loadHostSelector(); refreshCommandsList();})());
     if (document.getElementById('ssh-hosts-table-body')) calls.push(refreshSshHostsList());
+    if (document.getElementById('user-variables-body')) calls.push(refreshUserVariables());
     if (document.getElementById('quick-actions-grid')) calls.push(refreshQuickActions());
     await Promise.allSettled(calls);
 }
@@ -278,6 +279,7 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
     const version = view?.version;
     if (!version) {reportFailure({token: 'configuration_version_required', write: false});return;}
     configurationDeletesInFlight.add(key);
+    if (kind === 'variables') document.getElementById('user-variables-modal')?.classList.add('hidden');
     const modal = document.createElement('div'); modal.className = 'modal show'; modal.id = 'configuration-delete-modal';
     modal.innerHTML = sheet(560, configText('deleteTitle', {name: escapeHtml(name)}),
         `<h3 class="gt delete-method-label">${configText('deletionMethod')}</h3><div class="seg delete-method"><button type="button" class="on" aria-pressed="true" data-delete-mode="normal">${configText('normalDelete')}</button><button type="button" aria-pressed="false" data-delete-mode="force">${configText('forceDelete')}</button></div>` +
@@ -287,10 +289,10 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
         `<button type="button" class="btn lg" data-delete-cancel>${t('common.cancel')}</button><button type="button" class="btn lg primary bad" data-delete-submit disabled>${t('common.delete')}</button>`);
     document.body.appendChild(modal);
     const pageCurrent = capturePageValidity();
-    const op = {rules: 'rule.delete', actions: 'action.delete', commands: 'command.delete', sources: 'source.delete', hosts: 'host.remove'}[kind];
+    const op = {rules: 'rule.delete', actions: 'action.delete', commands: 'command.delete', sources: 'source.delete', hosts: 'host.remove', variables: 'variable.delete'}[kind];
     let force = false, impact = null, ready = false, busy = false, stale = false, pauseRequired = false, pauseConfirmed = false, replacementChoice = '';
     const current = () => pageCurrent() && modal.isConnected;
-    const cleanup = () => {modal.remove(); configurationDeletesInFlight.delete(key);};
+    const cleanup = () => {modal.remove(); configurationDeletesInFlight.delete(key);if (kind === 'variables' && pageCurrent()) document.getElementById('user-variables-modal')?.classList.remove('hidden');};
     modal.querySelector('[data-delete-cancel]').onclick = () => {if (!busy) cleanup();};
     modal.onkeydown = event => {
         if (event.key === 'Escape') {event.stopPropagation();if (!busy) cleanup();}
@@ -315,7 +317,8 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
             options.innerHTML = referenced ? grp(row(configText('referencesAction'), `<select class="field" id="configuration-delete-replacement"><option value="">${configText('unlink')}</option>${replacements.map(row => `<option value="${escapeHtml(row.id)}">${configText('replaceWith', {name: escapeHtml(row.name || row.id)})}</option>`).join('')}</select>`)) : '';
         }
         const replacement = modal.querySelector('#configuration-delete-replacement'), pauseChoice = modal.querySelector('#configuration-delete-pause');
-        if (replacement) replacement.value = replacementChoice;
+        if (replacement) {replacement.value = replacementChoice;replacement.onchange = () => {replacementChoice = replacement.value;render();};}
+        if (replacementChoice && !force) options.insertAdjacentHTML('beforeend', `<p class="t-note">${configText('replaceExplanation')}</p>`);
         if (pauseChoice) pauseChoice.checked = pauseConfirmed;
         modal.querySelector('[data-delete-cancel]').disabled = busy;
         modal.querySelectorAll('[data-delete-mode]').forEach(button => button.disabled = busy);
@@ -357,7 +360,7 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
         const pause = modal.querySelector('#configuration-delete-pause');
         if (force && (pauseRequired || impact?.requires_pause) && !pause?.checked) {fieldError('configuration-delete-pause', configText('confirmPause'));return;}
         const replacement = modal.querySelector('#configuration-delete-replacement')?.value;
-        const params = {id, active_version: version, ...(force ? {force: true, pause_automation: !!pause?.checked} :
+        const params = {[kind === 'variables' ? 'name' : 'id']: id, active_version: version, ...(force ? {force: true, pause_automation: !!pause?.checked} :
             replacement ? {replacement_id: replacement} : {mode: 'cascade'})};
         busy = true;render();
         try {
@@ -366,8 +369,7 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
             await configurationResult(result);
             if (result.code === 0) {
                 const details = result.data?.impact;
-                const message = result.data?.paused && params.pause_automation ? configText('deletedPaused', {name}) : configText('deleted',
-                    {name, rules: details?.rules?.length || 0, actions: details?.actions?.length || 0});
+                const message = result.data?.paused && params.pause_automation ? configText('deletedPaused', {name}) : configurationDeleteSummary(name, details);
                 cleanup();showToast(message, 'success');
             } else {
                 if (apiErrorReason(result) === 'pause_required') {force = true;pauseRequired = true;impact = result.data?.impact || impact;}
@@ -379,7 +381,7 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
         finally {busy = false;if (current()) render();}
     };
     try {
-        const result = await api.call(configEndpoints[kind], {id, active_version: version, preview: true});
+        const result = await api.call(configEndpoints[kind], {[kind === 'variables' ? 'name' : 'id']: id, active_version: version, preview: true});
         if (!current()) return;
         if (result.code === 0) {
             impact = result.data?.impact; modal.querySelector('#configuration-delete-impact').innerHTML = configurationImpact(impact);
@@ -391,6 +393,48 @@ async function deleteConfiguration(kind, id, name = id, view = configurationList
         }
         render();
     } catch (error) {if (current()) {modal.querySelector('#configuration-delete-impact').innerHTML = failureNote({error, write: false});render();}}
+}
+
+
+function configurationDeleteSummary(name, impact) {
+    const parts = [configText('deletedTarget', {name})];
+    for (const kind of ['rules', 'actions', 'commands', 'sources']) {
+        for (const effect of ['delete', 'disable', 'update']) {
+            const count = (impact?.[kind] || []).filter(row => row.effect === effect).length;
+            if (count) parts.push(configText('effect_' + effect, {kind: configText('kind_' + kind), count}));
+        }
+    }
+    return parts.join(' ');
+}
+function fillCommandHost(hostId) {
+    const select = document.getElementById('cmd-host-id');
+    select.innerHTML = `<option value="">${t('ui.alertSelectSshHost')}</option>` + (window._cmdHostsList || []).map(host =>
+        `<option value="${escapeHtml(host.id)}">${escapeHtml(host.id)} · ${escapeHtml(host.host)}</option>`).join('');
+    select.value = hostId === '__orphan__' ? '' : hostId || '';
+}
+async function showUserVariables() {
+    document.getElementById('user-variables-modal')?.remove();
+    const modal = document.createElement('div');modal.id = 'user-variables-modal';modal.className = 'modal show';
+    modal.innerHTML = sheet(660, configText('userVariables'), `<p class="t-note">${configText('userVariablesHint')}</p><div class="grp" id="user-variables-body" style="margin-top:20px">${t('common.loading')}</div>`,
+        `<button type="button" class="btn lg" onclick="document.getElementById('user-variables-modal').remove()">${t('common.close')}</button>`);
+    document.body.appendChild(modal);router.navigation?.onDispose(() => modal.remove());
+    await refreshUserVariables();
+}
+async function refreshUserVariables() {
+    const body = document.getElementById('user-variables-body'), current = configurationRead('variables');
+    if (!body) return;
+    try {
+        const result = requireApiSuccess(await api.call('automation.variables.list', {configured_only: true}), 'automation.variables.list');
+        if (!current() || !body.isConnected) return;
+        const variables = (result.data.variables || []).map(variable => ({...variable, id: variable.name}));
+        recordConfigurationList('variables', result.data, variables);
+        body.innerHTML = variables.length ? variables.map(variable => row(escapeHtml(variable.name),
+            `<span class="mono" style="overflow-wrap:anywhere">${escapeHtml(JSON.stringify(variable.value))}</span>` +
+            icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteUserVariable', variable.name), 'dg'))).join('') : `<p class="t-note" style="padding:16px">${configText('noUserVariables')}</p>`;
+    } catch (error) {if (current() && body.isConnected) body.innerHTML = failureNote({error, write: false});}
+}
+function deleteUserVariable(name) {
+    return deleteConfiguration('variables', name, name);
 }
 
 const configurationImports = {
@@ -1174,7 +1218,7 @@ async function loadSystemPage() {
 
             <div class="sys-mid">
                 <!-- 设备面板 -->
-                <div class="card">
+                <div class="card device-panel">
                     <div class="card-h">
                         <span class="t-section">${t('system.devicePanel')}</span>
                         <div class="acts">
@@ -3209,8 +3253,12 @@ let dataWidgets = [];
 let dataWidgetsRefreshInterval = 5000;
 let dataWidgetsIntervalId = null;
 
-// 标记是否正在保存（防止重复保存）
-let dataWidgetsSaving = false;
+// Serialize actual saves so a later edit is never dropped while one is pending.
+let dataWidgetsSaveTail = Promise.resolve();
+let dataWidgetsLoaded = false;
+let dataWidgetsLoadError = null;
+let dataWidgetsRevision = 0;
+let dataWidgetsSavedRevision = 0;
 
 // 标记是否正在刷新（防止重叠刷新）
 let dataWidgetsRefreshing = false;
@@ -3221,19 +3269,32 @@ let dataWidgetsRefreshing = false;
  */
 async function loadDataWidgets() {
     const pageCurrent = capturePageValidity();
+    // A read must not overtake a queued save or discard an unsaved edit.
+    let pending;
+    do {
+        pending = dataWidgetsSaveTail;
+        await pending;
+    } while (pending !== dataWidgetsSaveTail);
+    if (!pageCurrent()) return;
+    if (dataWidgetsLoaded && dataWidgetsRevision !== dataWidgetsSavedRevision) return true;
+    const revision = dataWidgetsRevision;
     try {
         // 1. 尝试从后端加载
-        const response = await api.call('ui.widgets.get');
+        const response = requireApiSuccess(await api.call('ui.widgets.get'), 'ui.widgets.get');
         if (!pageCurrent()) return;
+        if (revision !== dataWidgetsRevision) return dataWidgetsLoaded;
         // API 响应格式: {code: 0, data: {widgets: [...], refresh_interval: 5000, source: "sdcard"}}
-        if (response && response.code === 0 && response.data && response.data.widgets) {
+        if (response.data && Array.isArray(response.data.widgets)) {
             const result = response.data;
             dataWidgets = result.widgets;
-            dataWidgetsRefreshInterval = result.refresh_interval || 5000;
+            dataWidgetsRefreshInterval = result.refresh_interval ?? 5000;
+            dataWidgetsLoaded = true;
+            dataWidgetsLoadError = null;
             console.log(`已从后端加载数据组件配置 (来源: ${result.source}, ${dataWidgets.length} 个组件)`);
             
             // 如果后端是默认空配置，检查 localStorage 是否有旧数据需要迁移
             if (result.source === 'default' && dataWidgets.length === 0) {
+                loadDataWidgetsRefreshInterval();
                 const localData = loadDataWidgetsFromLocalStorage();
                 if (localData && localData.length > 0) {
                     dataWidgets = localData;
@@ -3245,24 +3306,18 @@ async function loadDataWidgets() {
             }
             // 修复已损坏的图标数据
             _repairCorruptedWidgetIcons();
-            return;
+            return true;
         }
+        throw new ApiOperationError({}, 'ui.widgets.get', {kind: 'format'});
     } catch (e) {
         if (!pageCurrent()) return;
+        if (revision !== dataWidgetsRevision) return dataWidgetsLoaded;
         console.warn('从后端加载数据组件配置失败:', e);
+        dataWidgetsLoaded = false;
+        dataWidgetsLoadError = e;
+        reportFailure({op: 'widgets.load', error: e, endpoint: 'ui.widgets.get', write: false});
+        return false;
     }
-    
-    // 2. 后端失败，回退到 localStorage
-    const localData = loadDataWidgetsFromLocalStorage();
-    if (localData) {
-        dataWidgets = localData;
-        console.log('从 localStorage 加载数据组件配置');
-    } else {
-        dataWidgets = [];
-    }
-    
-    // 3. 修复已损坏的图标数据（旧版编辑面板未转义 HTML 属性导致 icon 被截断）
-    _repairCorruptedWidgetIcons();
 }
 
 /**
@@ -3323,32 +3378,36 @@ function loadDataWidgetsFromLocalStorage() {
  * 保存数据组件配置
  * 后端保存到系统 NVS；浏览器保留现有本地显示设置。
  */
-async function saveDataWidgets() {
-    // 防止重复保存
-    if (dataWidgetsSaving) return;
-    dataWidgetsSaving = true;
-    
-    try {
-        // 1. 保存到 localStorage（本地备份）
-        localStorage.setItem('data_widgets_v2', JSON.stringify(dataWidgets));
-        localStorage.setItem('data_widgets_refresh_interval', dataWidgetsRefreshInterval.toString());
-        
-        // 2. 保存到后端系统配置区
-        const response = await api.call('ui.widgets.set', {
-            widgets: dataWidgets,
-            refresh_interval: dataWidgetsRefreshInterval
-        }, 'POST');
-        
-        // API 响应格式: {code: 0, data: {nvs_saved: true}}
-        if (response && response.code === 0 && response.data) {
-            console.log(`数据组件配置已保存 (nvs=${response.data.nvs_saved})`);
+function saveDataWidgets() {
+    const revision = ++dataWidgetsRevision;
+    const save = dataWidgetsSaveTail.then(async () => {
+        if (!dataWidgetsLoaded) throw new ApiOperationError({}, 'ui.widgets.get', {kind: 'format'});
+        let sent = false;
+        try {
+            const widgets = JSON.parse(JSON.stringify(dataWidgets));
+            const interval = dataWidgetsRefreshInterval;
+            localStorage.setItem('data_widgets_v2', JSON.stringify(widgets));
+            localStorage.setItem('data_widgets_refresh_interval', interval.toString());
+            sent = true;
+            const response = requireApiSuccess(await api.call('ui.widgets.set', {
+                widgets, refresh_interval: interval
+            }, 'POST'), 'ui.widgets.set');
+            if (response.data?.nvs_saved === false)
+                throw new ApiOperationError({code: 1, error: 'widgets_save_failed'}, 'ui.widgets.set');
+            if (response.data?.nvs_saved !== true)
+                throw new ApiOperationError({}, 'ui.widgets.set', {kind: 'format', uncertain: true});
+            dataWidgetsSavedRevision = revision;
+            return true;
+        } catch (error) {
+            reportFailure({op: 'widgets.save', error, endpoint: 'ui.widgets.set', write: sent});
+            return false;
         }
-    } catch (e) {
-        console.warn('保存数据组件配置到后端失败:', e);
-        // localStorage 已保存，不影响使用
-    } finally {
-        dataWidgetsSaving = false;
-    }
+    }).catch(error => {
+        reportFailure({op: 'widgets.load', error, endpoint: 'ui.widgets.get', write: false});
+        return false;
+    });
+    dataWidgetsSaveTail = save.then(() => undefined);
+    return save;
 }
 
 /**
@@ -3359,8 +3418,9 @@ function loadDataWidgetsRefreshInterval() {
     // 此函数保留用于兼容性
     try {
         const saved = localStorage.getItem('data_widgets_refresh_interval');
-        if (saved) {
-            dataWidgetsRefreshInterval = parseInt(saved) || 5000;
+        if (saved !== null) {
+            const interval = Number(saved);
+            if (Number.isFinite(interval) && interval >= 0) dataWidgetsRefreshInterval = interval;
         }
     } catch (e) {
         dataWidgetsRefreshInterval = 5000;
@@ -3372,7 +3432,7 @@ function loadDataWidgetsRefreshInterval() {
  */
 function saveDataWidgetsRefreshInterval() {
     // 触发完整保存
-    saveDataWidgets();
+    return saveDataWidgets();
 }
 
 /**
@@ -3631,9 +3691,15 @@ function updateWidgetValue(widget, value) {
  */
 async function initDataWidgets() {
     const pageCurrent = capturePageValidity();
-    await loadDataWidgets();
+    const loaded = await loadDataWidgets();
     if (!pageCurrent()) return;  // 异步加载（优先后端 API）
-    loadDataWidgetsRefreshInterval();  // 兼容性保留
+    if (!loaded) {
+        const grid = document.getElementById('data-widgets-grid');
+        const empty = document.getElementById('data-widgets-empty');
+        if (empty) empty.style.display = 'none';
+        if (grid) grid.innerHTML = failureNote({op: 'widgets.load', error: dataWidgetsLoadError, endpoint: 'ui.widgets.get', write: false});
+        return;
+    }
     renderDataWidgets();
     await refreshDataWidgets();
     if (!pageCurrent()) return;
@@ -3919,6 +3985,10 @@ const WIDGET_TYPE_KEYS = { ring: 'Ring', gauge: 'Gauge', temp: 'Temp', number: '
 const widgetTypeName = type => t('dataWidget.type' + (WIDGET_TYPE_KEYS[type] || type));
 
 function showWidgetManager(editWidgetId = null) {
+    if (!dataWidgetsLoaded) {
+        reportFailure({op: 'widgets.load', error: dataWidgetsLoadError, endpoint: 'ui.widgets.get', write: false});
+        return;
+    }
     const modal = document.createElement('div');
     modal.className = 'modal';
     modal.id = 'widget-manager-modal';
@@ -3946,15 +4016,15 @@ function showWidgetManager(editWidgetId = null) {
 /**
  * 更新刷新间隔
  */
-function updateRefreshInterval() {
+async function updateRefreshInterval() {
     const select = document.getElementById('dw-refresh-interval');
     if (select) {
         dataWidgetsRefreshInterval = parseInt(select.value) || 0;
-        saveDataWidgetsRefreshInterval();
+        const saved = saveDataWidgetsRefreshInterval();
         startDataWidgetsAutoRefresh();
         const _sec = typeof t === 'function' ? t('dataWidget.second') : '秒';
         const intervalText = dataWidgetsRefreshInterval > 0 ? (dataWidgetsRefreshInterval / 1000) + ' ' + _sec : (typeof t === 'function' ? t('dataWidget.disabled') : '禁用');
-        showToast(typeof t === 'function' ? t('toast.refreshIntervalSet', { interval: intervalText }) : `刷新间隔已设置为 ${intervalText}`, 'success');
+        if (await saved) showToast(typeof t === 'function' ? t('toast.refreshIntervalSet', { interval: intervalText }) : `刷新间隔已设置为 ${intervalText}`, 'success');
     }
 }
 
@@ -4039,13 +4109,13 @@ function addWidgetFromPreset(presetId) {
     };
     
     dataWidgets.push(widget);
-    saveDataWidgets();
+    const saved = saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
     showWidgetEditPanel(widget.id);
     const _presetLabelKeys = { cpu: 'presetCpu', mem: 'presetMem', disk: 'presetDisk', temp: 'presetTemp', gpu: 'presetGpu', power: 'presetPower', voltage: 'presetVoltage', current: 'presetCurrent', network: 'presetNetwork', status: 'presetStatus', uptime: 'presetUptime', log: 'presetLog' };
     const addedName = typeof t === 'function' ? t('dataWidget.' + (_presetLabelKeys[preset.id] || preset.id)) : preset.label;
-    showToast(typeof t === 'function' ? t('toast.widgetAdded', { name: addedName }) : `已添加 ${preset.label}`, 'success');
+    saved.then(ok => { if (ok) showToast(typeof t === 'function' ? t('toast.widgetAdded', { name: addedName }) : `已添加 ${preset.label}`, 'success'); });
 }
 
 /**
@@ -4165,8 +4235,10 @@ async function selectVariableForWidget() {
 /**
  * 保存组件编辑
  */
-function saveWidgetEdit(widgetId) {
+async function saveWidgetEdit(widgetId) {
     clearFieldErrors();
+    const modal = document.getElementById('widget-edit-modal');
+    const manager = document.getElementById('widget-manager-modal');
     const widget = dataWidgets.find(w => w.id === widgetId);
     if (!widget) return;
     
@@ -4197,20 +4269,27 @@ function saveWidgetEdit(widgetId) {
     next.expression = document.getElementById('edit-expression')?.value?.trim() || null;
     if (widget.type === 'dual') next.expression2 = document.getElementById('edit-expression2')?.value?.trim() || null;
     Object.assign(widget, next);
+    const editorValues = modal && JSON.stringify([...modal.querySelectorAll('input,select,textarea')].map(input => [input.value, input.checked]));
     if (widget.type === 'log' && widget._isReading) {
         stopLogReading(widgetId);
         startLogReading(widgetId);
     }
 
-    saveDataWidgets();
+    const saved = saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
     refreshDataWidgets();
+    if (!await saved) return;
     showToast(typeof t === 'function' ? t('toast.widgetSaved') : '组件已保存', 'success');
-    
-    // 关闭编辑与管理器弹窗
-    closeModal('widget-edit-modal');
-    closeModal('widget-manager-modal');
+
+    // An earlier save must not close a later or newly edited panel.
+    if (modal && document.getElementById('widget-edit-modal') === modal &&
+        modal.dataset.configurationClosed !== 'true' &&
+        editorValues === JSON.stringify([...modal.querySelectorAll('input,select,textarea')].map(input => [input.value, input.checked]))) {
+        closeModal('widget-edit-modal');
+        if (manager && document.getElementById('widget-manager-modal') === manager && manager.dataset.configurationClosed !== 'true')
+            closeModal('widget-manager-modal');
+    }
 }
 
 /**
@@ -4223,13 +4302,18 @@ async function deleteDataWidget(widgetId) {
     const widget = dataWidgets[idx];
     
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteWidget', { label: widget.label }) : `确定要删除"${widget.label}"组件吗？`, { primary: t('dataWidget.delete'), tone: 'danger' })) return;
-    
+    const modal = document.getElementById('widget-edit-modal');
     dataWidgets.splice(idx, 1);
-    saveDataWidgets();
+    const saved = saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
-    
-    closeModal('widget-edit-modal');
+    if (!await saved) {
+        if (!dataWidgets.some(item => item.id === widget.id)) dataWidgets.splice(Math.min(idx, dataWidgets.length), 0, widget);
+        renderDataWidgets();
+        renderWidgetManagerList();
+        return;
+    }
+    if (modal && document.getElementById('widget-edit-modal') === modal) closeModal('widget-edit-modal');
     
     showToast(typeof t === 'function' ? t('toast.widgetDeleted', { name: widget.label }) : `已删除 ${widget.label}`, 'info');
 }
@@ -4241,6 +4325,43 @@ let _sshExecCircuitBreaker = { failUntil: 0, failCount: 0 };
 /**
  * 刷新快捷操作面板
  */
+function automaticStartMessage(start) {
+    if(!start || start.state==='manual')return '';
+    if(start.state==='starting')return t('automaticStart.starting');
+    if(start.state==='waiting'){
+        const key=['service_process_unconfirmed','service_outcome_unknown'].includes(start.reason)?'checking':'waiting';
+        return t('automaticStart.'+key,{seconds:Math.ceil((start.retry_after_ms||0)/1000)});
+    }
+    if(start.reason==='automatic_start_timeout')return t('automaticStart.timeout');
+    const why=t('failure.reasons.'+start.reason+'.why');
+    return t('automaticStart.failed',{reason:why&&!why.startsWith('failure.reasons.')?why:t('automaticStart.unknownReason')});
+}
+function renderAutomaticStarts(items) {
+    const states=new Map(items.map(item=>[item.id,item]));
+    document.querySelectorAll('[data-rule-start-status]').forEach(note=>{
+        note.textContent=automaticStartMessage(states.get(note.dataset.ruleStartStatus));
+        note.hidden=!note.textContent;
+    });
+}
+let automaticStartPoll=null;
+function startAutomaticStartRefresh() {
+    if(automaticStartPoll)return;
+    const current=capturePageValidity();let reading=false;
+    const refresh=async()=>{
+        if(!current()){clearInterval(automaticStartPoll);automaticStartPoll=null;return;}
+        if(document.hidden||reading)return;
+        reading=true;
+        try {
+            const response=await api.call('automation.status');
+            if(current()&&response.code===0)renderAutomaticStarts(response.data?.automatic_starts||[]);
+        } catch (_) { /* Existing page connection state reports transport failures. */ }
+        finally {reading=false;}
+    };
+    automaticStartPoll=setInterval(refresh,10000);
+    router.navigation?.onDispose(()=>{clearInterval(automaticStartPoll);automaticStartPoll=null;});
+    void refresh();
+}
+
 async function refreshQuickActions() {
     const pageCurrent = capturePageValidity();
     const container = document.getElementById('quick-actions-grid');
@@ -4295,12 +4416,20 @@ async function refreshQuickActions() {
                              aria-disabled="${rule.runtime_active === false}"
                              onclick="${cardOnClick}" 
                              title="${escapeHtml(cleanName)}">
-                            <div class="quick-action-head"><div class="quick-action-name">${escapeHtml(cleanName)}</div></div>
+                            <div class="quick-action-head"><div class="quick-action-name">${escapeHtml(cleanName)}</div>${rule.ssh_commands?.length ? `<span class="state service-lamp" data-service-commands="${escapeHtml(JSON.stringify(rule.ssh_commands))}" aria-live="polite">${t('serviceStatus.unknown')}</span>` : ''}</div>
                             <div class="quick-action-foot"><small>${runtimeText(!rule.enabled ? 'disabled' : rule.manual_trigger ? 'manual' : 'automatic')}${rule.reference_unresolved ? ' · ' + runtimeText('referenceUnresolved') : ''}</small></div>
+                            <p class="t-note" data-rule-start-status="${escapeHtml(rule.id)}" aria-live="polite" style="margin:12px 0;line-height:1.5" ${rule.automatic_start ? '' : 'hidden'}>${escapeHtml(automaticStartMessage(rule.automatic_start))}</p>
+                            <div class="acts quick-action-controls" onclick="event.stopPropagation()">
+                                <button type="button" class="btn sm" data-quick-action="start" onclick="${cardOnClick}"><svg class="i" aria-hidden="true"><use href="#ri-play-line"/></svg>${t('common.start')}</button>
+                                ${rule.ssh_commands?.length ? `<button type="button" class="btn sm" data-quick-action="stop" onclick="${configurationHandler('stopQuickAction',rule.id,rule.ssh_commands)}"><svg class="i" aria-hidden="true"><use href="#ri-stop-line"/></svg>${t('common.stop')}</button>
+                                <button type="button" class="btn sm" data-quick-action="log" onclick="${configurationHandler('showQuickActionLogs',rule.id,rule.ssh_commands)}"><svg class="i" aria-hidden="true"><use href="#ri-file-list-line"/></svg>${t('sshPage.viewLog')}</button>` : ''}
+                            </div>
                         </div>
                     `);
                 }
                 container.innerHTML = cardsHtml.join('');
+                void refreshServiceStates();startServiceStatusRefresh();
+                startAutomaticStartRefresh();
                 
 
             } else {
@@ -4329,6 +4458,27 @@ function advanceServiceState(runId) {
     const version = (serviceStateVersions.get(runId) || 0) + 1;
     serviceStateVersions.set(runId, version); return version;
 }
+function serviceLampState(run) {
+    if(!run)return {key:'idle',tone:''};
+    if(['queued','executing'].includes(run.operation_phase))return {key:run.operation_kind==='stop'?'stopping':run.operation_kind==='verify'?'verifying':'starting',tone:'warn'};
+    if(run.state==='stopped'&&run.operation_kind==='start'&&['failed','expired'].includes(run.operation_phase))return {key:'startFailed',tone:'bad'};
+    const tone=run.state==='ready'?'ok':['failed','timeout'].includes(run.state)?'bad':
+        ['starting','checking','stopping'].includes(run.state)?'warn':run.state==='running'?'active':'';
+    return {key:run.state||'unknown',tone};
+}
+function renderServiceLamps() {
+    document.querySelectorAll('[data-service-commands]').forEach(element=>{
+        const ids=[...new Set(JSON.parse(element.dataset.serviceCommands))];
+        const runs=ids.map(id=>[...serviceRuns.values()].find(run=>run.current===true&&run.command_id===id));
+        const states=runs.map(serviceLampState);
+        const mixed=new Set(states.map(state=>state.key)).size>1;
+        const state=mixed?{key:'partial',tone:states.some(state=>state.tone==='bad')?'bad':'warn'}:states[0];
+        element.className='state service-lamp'+(state.tone?' '+state.tone:'');
+        element.textContent=t('serviceStatus.'+state.key);
+        element.dataset.state=state.key;
+        element.title=runs.map((run,i)=>(run?.name||ids[i])+': '+t('serviceStatus.'+states[i].key)).join('；');
+    });
+}
 function serviceStateLabel(data) {
     if (['queued','executing'].includes(data.operation_phase)) return runtimeText(data.operation_phase === 'queued' ? 'controlQueued' :
         data.operation_kind === 'stop' ? 'stopping' : data.operation_kind === 'verify' ? 'checking' : 'starting');
@@ -4355,9 +4505,10 @@ function renderServiceRuns() {
         body.innerHTML=`<p class="t-note">${serviceRunText('explanation')}</p><p class="t-note" data-runs-empty>${serviceRunText('empty')}</p><div data-runs-rows></div>`;
         body._rows=new Map();
     }
-    body.querySelector('[data-runs-empty]').hidden=serviceRuns.size>0;
-    for (const [id,row] of body._rows) if (!serviceRuns.has(id)) {row.remove();body._rows.delete(id);}
-    for (const run of serviceRuns.values()) {
+    const runs=[...serviceRuns.values()].filter(run=>!body._filter||body._filter(run));
+    body.querySelector('[data-runs-empty]').hidden=runs.length>0;
+    for (const [id,row] of body._rows) if (!runs.some(run=>run.run_id===id)) {row.remove();body._rows.delete(id);}
+    for (const run of runs) {
         let row=body._rows.get(run.run_id);
         if (!row) {
             row=document.createElement('div');row.className='grp';row.style.cssText='margin-top:12px;padding:12px';
@@ -4382,12 +4533,35 @@ function renderServiceRuns() {
         row.querySelectorAll('[data-run-action]').forEach(button=>button.disabled=busy&&button.dataset.runAction!=='log');
     }
 }
-async function showServiceRuns() {
+async function showQuickActionLogs(ruleId, commandIds) {
+    const current=capturePageValidity();
+    const loaded=await refreshServiceStates();
+    if(!current())return;
+    if(!loaded){showToast(serviceRunText('recordsUnavailable'),'warning');return;}
+    const matches=run=>run.rule_id===ruleId||commandIds.includes(run.command_id);
+    const runs=[...serviceRuns.values()].filter(matches);
+    if(runs.length===1)return showServiceRunLog(runs[0].run_id);
+    return showServiceRuns(matches);
+}
+async function stopQuickAction(ruleId, commandIds) {
+    const current=capturePageValidity();
+    const loaded=await refreshServiceStates();
+    if(!current())return;
+    if(!loaded){showToast(serviceRunText('recordsUnavailable'),'warning');return;}
+    const matches=run=>(run.rule_id===ruleId||commandIds.includes(run.command_id))&&run.state!=='stopped';
+    const runs=[...serviceRuns.values()].filter(matches);
+    if(!runs.length){showToast(serviceRunText('nothingToStop'),'info');return;}
+    if(runs.length===1)return quickActionStopProcess(runs[0].run_id,!!runs[0].rule_id);
+    await showServiceRuns(matches);
+    if(current())showToast(serviceRunText('chooseRunToStop'),'info');
+}
+async function showServiceRuns(filter = null) {
     document.getElementById('service-runs-modal')?.remove();
     const modal = document.createElement('div');modal.id = 'service-runs-modal';modal.className = 'modal show';
     modal.innerHTML = sheet(640, serviceRunText('title'), `<div id="service-runs-body" aria-live="polite">${t('common.loading')}</div>`,
         `<button type="button" class="btn lg" data-service-close>${t('common.close')}</button><button type="button" class="btn lg" data-service-refresh>${t('common.refresh')}</button>`);
     document.body.appendChild(modal);
+    modal.querySelector('#service-runs-body')._filter=filter;
     modal.querySelector('[data-service-close]').onclick = () => modal.remove();
     modal.querySelector('[data-service-close]').focus();
     modal.querySelector('[data-service-refresh]').onclick = () => refreshServiceStates();
@@ -4398,7 +4572,7 @@ async function showServiceRuns() {
 function startServiceStatusRefresh() {
     if (serviceStatusRefreshInterval) return;
     serviceStatusRefreshInterval = setInterval(() => {
-        if (!document.getElementById('service-runs-modal') && !document.getElementById('exec-result')?.dataset.serviceRun) {stopServiceStatusRefresh();return;}
+        if (!document.getElementById('service-runs-modal') && !document.getElementById('exec-result')?.dataset.serviceRun && !document.querySelector('[data-service-commands]')) {stopServiceStatusRefresh();return;}
         refreshServiceStates();
     },3000);
 }
@@ -4418,7 +4592,7 @@ function refreshServiceStates() {
                     const existing = serviceRuns.get(run.run_id); if (existing) records.set(run.run_id,existing);
                 } else {records.set(run.run_id,run);renderServiceOperation(run.run_id,run);}
             }
-            serviceRuns = records;renderServiceRuns();
+            serviceRuns = records;renderServiceRuns();renderServiceLamps();return true;
         } catch (error) {
             if (!read.current() || serviceStatusRead !== read) return;
             const body = document.getElementById('service-runs-body');
@@ -4498,9 +4672,14 @@ async function showServiceRunLog(runId, follow = false) {
         if (!current() || fetching || document.hidden) return;
         fetching=true;
         try {
+            const file="'"+run.log_file.replace(/'/g,"'\\''")+"'";
             const result = requireApiSuccess(await api.call('ssh.exec',{host:run.host,port:run.port,user:run.username,keyid:run.keyid,
-                command:"tail -100 -- '"+run.log_file.replace(/'/g,"'\\''")+"'",timeout_ms:5000}),'ssh.exec');
+                command:`if [ ! -e ${file} ]; then exit 44; fi; tail -100 -- ${file}`,timeout_ms:5000}),'ssh.exec');
             if (!current()) return;
+            if(result.data?.exit_code===44){
+                stop();modal.querySelector('[data-run-log]').textContent=serviceRunText('logMissing');
+                modal.querySelector('[data-run-log-error]').textContent='';return;
+            }
             if (result.data?.exit_code !== 0) throw pageFailure('service_log_unavailable');
             modal.querySelector('[data-run-log]').textContent=result.data.stdout || serviceRunText('logEmpty');
             modal.querySelector('[data-run-log-error]').textContent='';
@@ -7683,6 +7862,7 @@ async function loadSshCommands() {
                 if (cmd.orphan) {
                     orphanCommands.push({
                         id: cmd.id,
+                        runtimeInstance: cmd.runtime_instance || '',
                         name: cmd.name,
                         command: cmd.command,
                         desc: cmd.desc || '',
@@ -7699,6 +7879,7 @@ async function loadSshCommands() {
                         serviceFailPattern: cmd.serviceFailPattern || '',
                         readyTimeout: cmd.readyTimeout || 120,
                         readyInterval: cmd.readyInterval || 5000,
+                        enabled: cmd.enabled !== false,
                         orphan: true,
                         originalHostId: cmd.host_id  // 保留原始 host_id 用于显示
                     });
@@ -7711,6 +7892,7 @@ async function loadSshCommands() {
                 // 字段名与后端 API 返回一致 (camelCase)
                 sshCommands[cmd.host_id].push({
                     id: cmd.id,
+                    runtimeInstance: cmd.runtime_instance || '',
                     name: cmd.name,
                     command: cmd.command,
                     desc: cmd.desc || '',
@@ -7728,6 +7910,7 @@ async function loadSshCommands() {
                     serviceFailPattern: cmd.serviceFailPattern || '',
                     readyTimeout: cmd.readyTimeout || 120,
                     readyInterval: cmd.readyInterval || 5000,
+                    enabled: cmd.enabled !== false,
                     orphan: false
                 });
             }
@@ -7760,6 +7943,7 @@ async function saveSshCommandToBackend(hostId, cmdData, cmdId) {
         command: cmdData.command,
         ...(cmdData.desc && { desc: cmdData.desc }),
         ...(cmdData.icon && { icon: cmdData.icon }),
+        enabled: cmdData.enabled,
         nohup: !!cmdData.nohup,  // 始终发送，确保能取消勾选
         ...(cmdData.expectPattern && { expectPattern: cmdData.expectPattern }),
         ...(cmdData.failPattern && { failPattern: cmdData.failPattern }),
@@ -7775,12 +7959,13 @@ async function saveSshCommandToBackend(hostId, cmdData, cmdId) {
         ...(cmdData.readyInterval && { readyInterval: cmdData.readyInterval })
     };
     
-    const result = await configurationEditorSave('command-modal', 'ssh.commands.add', params);
+    const endpoint = document.getElementById('command-modal')._configuration.editing ? 'ssh.commands.update' : 'ssh.commands.add';
+    const result = await configurationEditorSave('command-modal', endpoint, params);
     if (!result) return null;
     if (result && result.code === 0 && result.data && result.data.id) {
         return result.data.id;
     }
-    throw new ApiOperationError(result, 'ssh.commands.add');
+    throw new ApiOperationError(result, endpoint);
 }
 
 function renderQuickActionNotice(container, state, reason) {
@@ -7878,7 +8063,9 @@ async function loadCommandsPage() {
             <div class="sh"><span class="st" id="command-modal-title">${t('ssh.newCommand')}</span></div>
             <div class="sb">
                 <div class="grp">
-                    <div class="row" id="cmd-id-group"><label class="rl" for="cmd-edit-id">${t('sshPage.cmdId')} *</label><div class="rc"><input type="text" class="field" id="cmd-edit-id" placeholder="${t('ssh.cmdIdPlaceholderShort')}" title="${escapeHtml(t('sshPage.cmdIdHint'))}" pattern="^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$" oninput="validateCommandId(this)" required></div></div>
+                    ${row(t('ssh.selectHost'), '<select class="field" id="cmd-host-id" style="width:220px"></select>')}
+                    ${row(t('common.enable'), swc('cmd-enabled', true))}
+                    <div class="row" id="cmd-id-group"><label class="rl" for="cmd-edit-id">${t('sshPage.cmdId')} *</label><div class="rc"><input type="text" class="field" id="cmd-edit-id" placeholder="${t('ssh.cmdIdPlaceholderShort')}" title="${escapeHtml(t('sshPage.cmdIdHint'))}" oninput="validateCommandId(this)" required></div></div>
                     <div class="row"><label class="rl" for="cmd-name">${t('common.name')} *</label><div class="rc"><input type="text" class="field" id="cmd-name" placeholder="${t('sshPage.cmdNamePlaceholder')}" required></div></div>
                     <div class="row"><label class="rl" for="cmd-desc">${t('common.description')}</label><div class="rc"><input type="text" class="field" id="cmd-desc" placeholder="${t('sshPage.cmdDescPlaceholder')}" title="${escapeHtml(t('common.optional'))}"></div></div>
                 </div>
@@ -7957,7 +8144,10 @@ async function loadHostSelector() {
         const hosts = result.data?.hosts || [];
         recordConfigurationList('hosts', result.data, hosts);
         
-        if (hosts.length === 0) {
+        window._cmdHostsList = hosts;
+        const orphanCount = sshCommands['__orphan__']?.length || 0;
+        if (!hosts.some(host => host.id === selectedHostId) && !(selectedHostId === '__orphan__' && orphanCount)) selectedHostId = orphanCount ? '__orphan__' : null;
+        if (hosts.length === 0 && !orphanCount) {
             container.innerHTML = `
                 <div class="empty">
                     <p class="t-body">${t('sshPage.noDeployedHostsMsg')}</p>
@@ -7967,11 +8157,6 @@ async function loadHostSelector() {
             return;
         }
         
-        // 存储主机数据
-        window._cmdHostsList = hosts;
-        
-        // 检查是否有孤儿命令
-        const orphanCount = sshCommands['__orphan__']?.length || 0;
         
         let html = hosts.map(h => `
             <div class="tile host-card ${selectedHostId === h.id ? 'on' : ''}" style="width:280px" onclick="${configurationHandler('selectHost', h.id)}" data-host-id="${escapeHtml(h.id)}">
@@ -8048,12 +8233,12 @@ function refreshCommandsList() {
         
         // 模式匹配 / nohup 标签
         const tag = (icon, title, cls = '') => `<span class="tag ${cls}" title="${title}"><svg class="i"><use href="#${icon}"/></svg></span>`;
-        let tagsHtml = '';
+        let tagsHtml = cmd.enabled === false ? `<span class="tag">${t('common.disabled')}</span>` : '';
         if (cmd.expectPattern) tagsHtml += tag('ri-check-line', t('promptRepair.expectedLabel') + ' ' + escapeHtml(cmd.expectPattern));
         if (cmd.failPattern) tagsHtml += tag('ri-close-line', t('promptRepair.failureLabel') + ' ' + escapeHtml(cmd.failPattern));
         if (cmd.extractPattern) tagsHtml += tag('ri-file-list-line', t('promptRepair.extractLabel') + ' ' + escapeHtml(cmd.extractPattern));
         if (cmd.nohup && !cmd.serviceMode) tagsHtml += tag('ri-rocket-line', t('ssh.nohupTitle'));
-        if (cmd.nohup && cmd.serviceMode) tagsHtml += tag('ri-server-line', t('ssh.serviceMode'));
+        const statusHtml = cmd.nohup && cmd.serviceMode ? `<span class="state service-lamp" data-service-commands="${escapeHtml(JSON.stringify([cmd.id]))}" aria-live="polite">${t('serviceStatus.unknown')}</span>` : '';
         
         // 图标：RemixIcon 类名、图片路径或旧版 Emoji
         const iconValue = cmd.icon || 'ri-rocket-line';
@@ -8069,20 +8254,24 @@ function refreshCommandsList() {
         // Background run management remains separate from command execution.
         const serviceActions = cmd.nohup ? icoBtn('ri-server-line',serviceRunText('title'),'showServiceRuns()') : '';
         const varBtn = cmd.varName ? `<button class="btn icon sm cmd-variables" data-variable="${escapeHtml(cmd.varName)}" title="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}" aria-label="${escapeHtml(t('promptRepair.viewVariables', {name: cmd.varName}))}"><svg class="i"><use href="#ri-bar-chart-line"/></svg></button>` : '';
-        const runTitle = isOrphan ? t('ssh.hostNotExistCannotExec') : t('common.run');
-        const runBtn = `<button class="btn icon sm btn-exec" onclick="executeCommand(${idx})" title="${runTitle}" aria-label="${runTitle}" ${isOrphan ? 'disabled' : ''}><svg class="i"><use href="#ri-play-line"/></svg></button>`;
+        const runTitle = isOrphan ? t('ssh.hostNotExistCannotExec') : cmd.enabled === false ? t('common.disabled') : t('common.run');
+        const runBtn = `<button class="btn icon sm btn-exec" onclick="executeCommand(${idx})" title="${runTitle}" aria-label="${runTitle}" ${isOrphan || cmd.enabled === false ? 'disabled' : ''}><svg class="i"><use href="#ri-play-line"/></svg></button>`;
         
         return `
         <div class="command-card ${isOrphan ? 'orphan-command' : ''}" data-cmd-idx="${idx}" data-has-service="${cmd.serviceMode || false}">
+            <div class="command-titlebar">
+                <div class="command-heading"><span class="command-icon">${iconHtml}</span><div class="t-body cmd-name" title="${escapeHtml(cmd.name)}" style="font-weight:500">${escapeHtml(cmd.name)}</div></div>
+                ${statusHtml}
+            </div>
             <div class="command-top">
                 <div class="command-body">
-                    <div class="command-heading"><span class="command-icon">${iconHtml}</span><div class="command-meta">
-                        <div class="t-body cmd-name" style="font-weight:500">${escapeHtml(cmd.name)}${tagsHtml ? ' ' + tagsHtml : ''}</div>
+                    <div class="command-meta">
+                        ${tagsHtml ? `<div class="command-tags">${tagsHtml}</div>` : ''}
                         <div class="t-note" style="color:var(--warn)" data-command-image-note hidden>${escapeHtml(configText('imageUnavailable'))}</div>
                         <div class="t-note mono">${escapeHtml(cmd.id || '')}</div>
-                        ${isOrphan ? `<div class="t-note" style="color:var(--warn)">${escapeHtml(t('promptRepair.orphanHost', {id: cmd.originalHostId || '?'}))}</div>` : ''}
+                        ${isOrphan ? `<div class="t-note" style="color:var(--warn)">${escapeHtml(cmd.originalHostId ? t('promptRepair.orphanHost', {id: cmd.originalHostId}) : configText('chooseHostToRun'))}</div>` : ''}
                         ${cmd.desc ? `<div class="t-note">${escapeHtml(cmd.desc)}</div>` : ''}
-                    </div></div>
+                    </div>
                     <button type="button" class="command-toggle" aria-expanded="false" aria-controls="command-code-${idx}"><svg class="i" aria-hidden="true"><use href="#ri-arrow-down-line"/></svg><span>${t('ssh.showCommand')}</span></button>
                 </div>
                 <div class="act">${runBtn}${serviceActions}${varBtn}${icoBtn('ri-edit-line', t('common.edit'), `editCommand(${idx})`)}${icoBtn('ri-upload-line', t('ssh.exportConfig'), configurationHandler('exportSshCommand', cmd.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), `deleteCommand(${idx})`, 'dg')}</div>
@@ -8101,6 +8290,8 @@ function refreshCommandsList() {
     container.querySelectorAll('.cmd-variables').forEach(button => {
         button.addEventListener('click', () => showCommandVariables(button.dataset.variable));
     });
+    if(container.querySelector('[data-service-commands]')){void refreshServiceStates();startServiceStatusRefresh();}
+
 }
 
 function showAddCommandModal() {
@@ -8161,7 +8352,9 @@ function showAddCommandModal() {
     document.querySelector('.icon-btn')?.classList.add('selected');
     
     document.getElementById('command-modal').classList.remove('hidden');
-    bindConfigurationEditor(document.getElementById('command-modal'), 'commands').hostId = selectedHostId;
+    bindConfigurationEditor(document.getElementById('command-modal'), 'commands').editing = false;
+    fillCommandHost(selectedHostId);
+    document.getElementById('cmd-enabled').checked = true;
     
     // 更新超时输入框状态
     updateTimeoutState();
@@ -8394,7 +8587,7 @@ function selectCmdIcon(icon) {
 
 /**
  * 验证指令 ID 格式
- * 规则：只允许字母、数字、下划线、连字符，不能以 _ 或 - 开头/结尾
+ * 与后端 ts_rule_id_valid 和 SSH ID 的 UTF-8 存储长度一致。
  */
 function validateCommandId(input) {
     const value = input.value;
@@ -8406,20 +8599,10 @@ function validateCommandId(input) {
         return false;
     }
     
-    // 验证规则
-    const validPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$/;
-    const hasInvalidChars = /[^a-zA-Z0-9_-]/.test(value);
-    const startsWithInvalid = /^[_-]/.test(value);
-    const endsWithInvalid = /[_-]$/.test(value);
-    
     let errorMsg = '';
-    if (hasInvalidChars) {
+    if (/[\u0000-\u001f/\\]/.test(value) || value === '.' || value === '..') {
         errorMsg = t('sshPage.idValidCharsOnly');
-    } else if (startsWithInvalid) {
-        errorMsg = t('sshPage.idNoStartUnderscore');
-    } else if (endsWithInvalid) {
-        errorMsg = t('sshPage.idNoEndUnderscore');
-    } else if (value.length > 31) {
+    } else if (new TextEncoder().encode(value).length > 31) {
         errorMsg = t('sshPage.idTooLong');
     }
     
@@ -8436,8 +8619,10 @@ function validateCommandId(input) {
 }
 
 async function saveCommand() {
-    const hostId = document.getElementById('command-modal')?._configuration?.hostId;
-    const cmdId = document.getElementById('cmd-edit-id').value.trim();
+    const hostId = document.getElementById('cmd-host-id').value;
+    const enabled = document.getElementById('cmd-enabled').checked;
+    if (enabled && !hostId) {fieldError('cmd-host-id', t('ui.alertSelectSshHost'));return;}
+    const cmdId = document.getElementById('cmd-edit-id').value;
     const name = document.getElementById('cmd-name').value.trim();
     let command = document.getElementById('cmd-command').value.trim();
     const desc = document.getElementById('cmd-desc').value.trim();
@@ -8449,7 +8634,6 @@ async function saveCommand() {
     const varName = document.getElementById('cmd-var-name').value.trim();
     const timeout = parseInt(document.getElementById('cmd-timeout').value) || 30;
     const stopOnMatch = document.getElementById('cmd-stop-on-match').checked;
-    const isEditMode = document.getElementById('cmd-id-group').classList.contains('edit-mode');
     
     // 服务模式字段
     const serviceMode = document.getElementById('cmd-service-mode')?.checked || false;
@@ -8507,7 +8691,7 @@ async function saveCommand() {
     }
     
     const cmdData = { 
-        name, command, desc, icon,
+        name, command, desc, icon, enabled,
         // nohup 后台执行（优先于模式匹配）
         ...(nohup && { nohup: true }),
         // 高级选项（仅在有值时保存，nohup 时忽略）
@@ -8527,10 +8711,7 @@ async function saveCommand() {
     
     const params = { name };
     try {
-        /* 
-         * ID 由用户在前端输入，直接传给后端
-         * 后端会验证 ID 格式，如果 ID 已存在则执行更新
-         */
+        // The editor explicitly chooses create or update; a duplicate ID never overwrites a new command.
         if (!await saveSshCommandToBackend(hostId, cmdData, cmdId)) return;
         showToast(t('failure.ops.command.save.done', params), 'success');
         closeCommandModal();
@@ -8538,7 +8719,7 @@ async function saveCommand() {
         
     } catch (e) {
         console.error('Failed to save command:', e);
-        reportFailure({ op: 'command.save', params, error: e, endpoint: 'ssh.commands.add', write: true });
+        reportFailure({ op: 'command.save', params, error: e, endpoint: document.getElementById('command-modal')._configuration.editing ? 'ssh.commands.update' : 'ssh.commands.add', write: true });
     }
 }
 
@@ -8616,7 +8797,9 @@ function editCommand(idx) {
     });
     
     document.getElementById('command-modal').classList.remove('hidden');
-    bindConfigurationEditor(document.getElementById('command-modal'), 'commands').hostId = selectedHostId;
+    bindConfigurationEditor(document.getElementById('command-modal'), 'commands').editing = true;
+    fillCommandHost(cmd.orphan ? '' : selectedHostId);
+    document.getElementById('cmd-enabled').checked = cmd.enabled !== false;
     
     // 更新超时输入框状态
     updateTimeoutState();
@@ -8867,6 +9050,7 @@ async function executeCommand(idx) {
     }
     output.textContent=text+'\n';section.scrollIntoView({behavior:'smooth'});
     const params={host:host.host,port:host.port,user:host.username,keyid:host.keyid,command:cmd.command};
+    if (cmd.runtimeInstance) {params.command_id=cmd.id;params.command_instance=cmd.runtimeInstance;}
     if (cmd.expectPattern) params.expect_pattern=cmd.expectPattern;
     if (cmd.failPattern) params.fail_pattern=cmd.failPattern;
     if (cmd.extractPattern) params.extract_pattern=cmd.extractPattern;
@@ -9773,6 +9957,7 @@ async function refreshSshHostsList() {
                 <div>${escapeHtml(h.username)}</div>
                 <div><span class="tag">${escapeHtml(h.keyid || 'default')}</span></div>
                 <div class="act">
+                    <button class="btn sm" onclick="${configurationHandler('editSshHost', h.id)}">${t('common.edit')}</button>
                     <button class="btn sm" onclick="testSshHostByIndex(${idx})" title="${t('securityPage.testConnection')}">${t('common.test')}</button>
                     <button class="btn sm" onclick="${configurationHandler('exportSshHost', h.id)}" title="${t('securityPage.exportAsTscfg')}">${t('common.export')}</button>
                     <button class="btn sm dg" onclick="revokeKeyFromHost(${idx})" title="${t('securityPage.revokePubkey')}">${t('securityPage.revoke')}</button>
@@ -10151,17 +10336,90 @@ async function doRevokeFromHost() {
     } finally {context.busy = false;if (context.current()) button.disabled = false;}
 }
 
-async function deleteKey(id) {
-    if (await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteKey', { id }) : `确定要删除密钥 "${id}" 吗？此操作不可撤销！`, { primary: t('common.delete'), tone: 'danger' })) {
-        const params = { name: id };
-        try {
-            requireApiSuccess(await api.keyDelete(id), 'key.delete');
-            showToast(t('failure.ops.key.delete.done', params), 'success');
-            await refreshSecurityPage();
-        } catch (e) {
-            reportFailure({ op: 'key.delete', params, error: e, endpoint: 'key.delete', write: true });
-        }
+function editSshHost(id) {
+    const view = configurationList('hosts'), host = view?.items.find(item => item.id === id);
+    if (!host) {reportFailure({token: 'configuration_version_required', write: false});return;}
+    document.getElementById('host-edit-modal')?.remove();
+    const modal = document.createElement('div');modal.id = 'host-edit-modal';modal.className = 'modal show';
+    const input = (key, value, type = 'text') => `<input class="field" id="host-edit-${key}" type="${type}" value="${escapeHtml(String(value ?? ''))}" style="width:220px">`;
+    modal.innerHTML = sheet(560, configText('editHost'), grp(
+        row(t('securityPage.hostId'), `<span class="mono">${escapeHtml(id)}</span>`) +
+        row(configText('hostAddress'), input('host', host.host)) + row(configText('hostPort'), input('port', host.port, 'number')) +
+        row(configText('hostUser'), input('username', host.username)) +
+        (host.auth_type === 'key' ? row(configText('hostKey'), input('keyid', host.keyid)) : '')) +
+        `<p class="t-note" style="margin-top:20px">${configText('hostEditHint')}</p>`,
+        `<button type="button" class="btn lg" onclick="closeModal('host-edit-modal')">${t('common.cancel')}</button><button type="button" class="btn lg primary" onclick="saveSshHostEdit()">${t('common.save')}</button>`);
+    document.body.appendChild(modal);modal._host = host;bindConfigurationEditor(modal, 'hosts', view.version);
+}
+async function saveSshHostEdit() {
+    const modal = document.getElementById('host-edit-modal'), host = modal?._host;
+    if (!host) return;
+    const params = {id: host.id, host: modal.querySelector('#host-edit-host').value.trim(),
+        username: modal.querySelector('#host-edit-username').value.trim(), port: Number(modal.querySelector('#host-edit-port').value)};
+    for (const key of ['host', 'username']) if (!params[key]) {fieldError('host-edit-' + key, configText('requiredField'));return;}
+    if (!Number.isInteger(params.port) || params.port < 1 || params.port > 65535) {fieldError('host-edit-port', configText('portRange'));return;}
+    if (host.auth_type === 'key') {
+        params.keyid = modal.querySelector('#host-edit-keyid').value.trim();
+        if (!params.keyid) {fieldError('host-edit-keyid', configText('requiredField'));return;}
     }
+    try {
+        const result = await configurationEditorSave(modal.id, 'ssh.hosts.update', params);
+        if (!result) return;
+        requireApiSuccess(result, 'ssh.hosts.update');closeModal(modal.id);showToast(configText('changesSaved'), 'success');
+    } catch (error) {if (modal._configuration.current()) reportFailure({error, endpoint: 'ssh.hosts.update', write: true});}
+}
+function editSource(id) {
+    const view = configurationList('sources'), source = view?.items.find(item => item.id === id);
+    if (!source) {reportFailure({token: 'configuration_version_required', write: false});return;}
+    document.getElementById('source-edit-modal')?.remove();
+    const modal = document.createElement('div');modal.id = 'source-edit-modal';modal.className = 'modal show';
+    const fields = [{key:'label', label:t('automation.sourceLabel')}, {key:'poll_interval_ms', label:configText('collectionInterval'), type:'number', scale:1000}];
+    if (source.type === 'rest') fields.push({key:'rest_url',label:t('automation.requestUrlReq')},{key:'rest_auth',label:configText('sourceAuth')});
+    if (source.type === 'websocket') fields.push({key:'ws_uri',label:t('automation.wsAddressReq')},{key:'reconnect_ms',label:configText('reconnectInterval'),type:'number',scale:1000});
+    if (source.type === 'socketio') fields.push({key:'sio_url',label:t('automation.sioServerReq')},{key:'sio_event',label:t('automation.eventNameLabel')},{key:'reconnect_ms',label:configText('reconnectInterval'),type:'number',scale:1000});
+    if (source.type === 'variable') fields.push({key:'var_prefix',label:configText('watchPrefix')},{key:'var_name',label:configText('watchVariable')},{key:'ssh_host_id',label:configText('sourceHost')});
+    const input = field => `<input class="field ${field.type === 'number' ? 'num' : ''}" id="source-edit-${field.key}" type="${field.type || 'text'}" value="${escapeHtml(String(field.scale ? (source[field.key] ?? 0) / field.scale : source[field.key] ?? ''))}" style="width:240px" ${field.type === 'number' ? 'min="0" step="0.001"' : ''}>`;
+    modal.innerHTML = sheet(660, configText('editSource'), grp(
+        row(t('automation.sourceId'), `<span class="mono">${escapeHtml(id)}</span>`) + fields.map(field => row(field.label, input(field))).join('') +
+        row(t('common.enable'), swc('source-edit-enabled', source.enabled !== false)) +
+        (source.type === 'variable' ? '' : row(configText('discoverFields'), swc('source-edit-auto', !!source.auto_discover)))) +
+        `<p class="t-note" style="margin-top:20px">${configText(source.type === 'variable' ? 'watchEditHint' : 'sourceEditHint')}</p>`,
+        `<button type="button" class="btn lg" onclick="closeModal('source-edit-modal')">${t('common.cancel')}</button><button type="button" class="btn lg primary" onclick="saveSourceEdit()">${t('common.save')}</button>`);
+    document.body.appendChild(modal);modal._source = source;modal._fields = fields;bindConfigurationEditor(modal, 'sources', view.version);
+}
+async function saveSourceEdit() {
+    const modal = document.getElementById('source-edit-modal'), source = modal?._source;
+    if (!source) return;
+    const params = {id: source.id, enabled: modal.querySelector('#source-edit-enabled').checked};
+    for (const field of modal._fields) {
+        const input = modal.querySelector('#source-edit-' + field.key);
+        const value = field.type === 'number' ? Math.round(Number(input.value) * (field.scale || 1)) : input.value.trim();
+        if (field.type === 'number' && (!input.value || !input.validity.valid || !Number.isInteger(value) || value < 0)) {fieldError(input.id, configText('intervalInvalid'));return;}
+        if (['rest_url','ws_uri','sio_url','sio_event'].includes(field.key) && !value) {fieldError(input.id, configText('requiredField'));return;}
+        params[field.key] = value;
+    }
+    if (source.type !== 'variable') params.auto_discover = modal.querySelector('#source-edit-auto').checked;
+    try {
+        const result = await configurationEditorSave(modal.id, 'automation.sources.update', params);
+        if (!result) return;
+        requireApiSuccess(result, 'automation.sources.update');closeModal(modal.id);showToast(configText('changesSaved'), 'success');
+    } catch (error) {if (modal._configuration.current()) reportFailure({error, endpoint: 'automation.sources.update', write: true});}
+}
+
+async function deleteKey(id) {
+    const current = capturePageValidity();
+    let details = null;
+    try {details = requireApiSuccess(await api.call('key.delete', {id, preview: true}), 'key.delete').data;} catch (_) { /* The final user decision remains available when the impact cannot be read. */ }
+    if (!current()) return;
+    const lines = [t('ui.confirmDeleteKey', {id}), configText('keyDeleteImpact')];
+    if (!details?.complete) lines.push(configText('keyImpactUnknown'));
+    if (details?.hosts?.length) lines.push(configText('kind_hosts') + ': ' + details.hosts.join('、'));
+    if (details?.runs?.length) lines.push(serviceRunText('title') + ': ' + details.runs.map(run => (run.name || run.id) + ' · ' + run.host).join('、'));
+    if (!await confirmAction(lines.join('\n\n'), {primary: t('common.delete'), tone: 'danger'}) || !current()) return;
+    try {
+        requireApiSuccess(await api.keyDelete(id), 'key.delete');
+        showToast(t('failure.ops.key.delete.done', {name:id}), 'success');await refreshSecurityPage();
+    } catch (error) {if (current()) reportFailure({op: 'key.delete', params:{name:id}, error, endpoint:'key.delete', write:true});}
 }
 
 async function exportKey(id) {
@@ -13954,6 +14212,7 @@ async function loadAutomationPage() {
                 <button class="btn sm pw" onclick="automationControl('stop')"><svg class="i"><use href="#ri-stop-line"/></svg>${t('common.stop')}</button>
                 <button class="btn sm" onclick="automationControl('pause')"><svg class="i"><use href="#ri-pause-line"/></svg>${t('common.pause')}</button>
                 <button class="btn sm" onclick="automationControl('reload')"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.reload')}</button>
+                <button type="button" class="btn sm" onclick="showUserVariables()"><svg class="i"><use href="#ri-bar-chart-line"/></svg>${configText('userVariables')}</button>
             </div>
             
             <div class="between wrap"><button type="button" class="btn sm" onclick="showServiceRuns()"><svg class="i"><use href="#ri-server-line"/></svg>${serviceRunText('title')}</button><span id="automation-config-summary" class="t-note"></span><button type="button" class="btn sm" onclick="showAutomationConfig()"><svg class="i"><use href="#ri-save-line"/></svg>${configText('title')}</button></div>
@@ -13971,7 +14230,7 @@ async function loadAutomationPage() {
                         <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshSources()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card" style="padding:0" id="sources-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
+                <div class="card automation-table automation-table-six" style="padding:0" id="sources-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
             
             <div>
@@ -13983,7 +14242,7 @@ async function loadAutomationPage() {
                         <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshRules()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card" style="padding:0" id="rules-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
+                <div class="card automation-table" style="padding:0" id="rules-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
             
             <div>
@@ -13995,7 +14254,7 @@ async function loadAutomationPage() {
                         <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshActions()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card" style="padding:0" id="actions-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
+                <div class="card automation-table automation-table-six" style="padding:0" id="actions-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
         </div>
     `;
@@ -14090,7 +14349,7 @@ async function refreshRules() {
                 return;
             }
             
-            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.4fr) minmax(max-content,1fr) minmax(max-content,.6fr) minmax(max-content,.6fr) minmax(max-content,.7fr) minmax(max-content,196px)';
+            const cols = 'var(--automation-columns)';
             container.innerHTML = gridTable(cols, `
                 <div class="tr th">
                     <div>ID</div><div>${t('automationPage.ruleNameHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.conditionHeader')}</div><div>${t('automationPage.actionHeader')}</div><div>${t('automationPage.triggerHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
@@ -14101,9 +14360,9 @@ async function refreshRules() {
                     const handler = (name, ...args) => escapeHtml(name + '(' + args.map(x => JSON.stringify(x)).join(',') + ')');
                     return `
                     <div class="tr">
-                        <div><span class="mono">${escapeHtml(r.id)}</span></div>
-                        <div>${escapeHtml(r.name || r.id)}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}</div>
-                        <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"></button></div>
+                        <div><span class="table-clip mono" title="${escapeHtml(r.id)}">${escapeHtml(r.id)}</span></div>
+                        <div><div class="automation-name"><span class="table-clip" title="${escapeHtml(r.name || r.id)}">${escapeHtml(r.name || r.id)}</span>${r.manual_trigger ? `<span class="tag">${t('common.manual')}</span>` : ''}</div><p class="t-note" data-rule-start-status="${escapeHtml(r.id)}" aria-live="polite" style="margin:12px 0 0;line-height:1.5" ${r.automatic_start ? '' : 'hidden'}>${escapeHtml(automaticStartMessage(r.automatic_start))}</p></div>
+                        <div class="automation-switch-cell"><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"></button></div>
                         <div>${r.conditions_count || 0}</div>
                         <div>${r.actions_count || 0}</div>
                         <div>${r.trigger_count || 0}</div>
@@ -14111,6 +14370,7 @@ async function refreshRules() {
                     </div>`;
                 }).join('')}
             `);
+            startAutomaticStartRefresh();
         } else {
             container.innerHTML = '<div class="empty"><p class="t-note" style="color:var(--bad)">' + failureNote({ op: 'rule.list', result, endpoint: 'automation.rules.list' }) + '</p></div>';
         }
@@ -14186,7 +14446,7 @@ async function refreshSources() {
                 return;
             }
             
-            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.2fr) minmax(max-content,.8fr) minmax(max-content,1fr) minmax(max-content,.8fr) minmax(max-content,156px)';
+            const cols = 'var(--automation-columns)';
             container.innerHTML = gridTable(cols, `
                 <div class="tr th">
                     <div>ID</div><div>${t('automationPage.labelHeader')}</div><div>${t('automationPage.typeHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.updateIntervalHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
@@ -14195,12 +14455,12 @@ async function refreshSources() {
                     const label = s.enabled ? t('common.disabled') : t('common.enabled');
                     return `
                     <div class="tr">
-                        <div><span class="mono">${escapeHtml(s.id)}</span></div>
-                        <div>${escapeHtml(s.label || s.id)}</div>
+                        <div><span class="table-clip mono" title="${escapeHtml(s.id)}">${escapeHtml(s.id)}</span></div>
+                        <div><span class="table-clip" title="${escapeHtml(s.label || s.id)}">${escapeHtml(s.label || s.id)}</span></div>
                         <div>${escapeHtml(s.type || 'unknown')}</div>
-                        <div><button class="switch ${s.enabled ? 'on' : ''}" role="switch" aria-checked="${!!s.enabled}" aria-label="${label}" title="${label}" onclick="${configurationHandler('toggleSource', s.id, !s.enabled)}"></button></div>
+                        <div class="automation-switch-cell"><button class="switch ${s.enabled ? 'on' : ''}" role="switch" aria-checked="${!!s.enabled}" aria-label="${label}" title="${label}" onclick="${configurationHandler('toggleSource', s.id, !s.enabled)}"></button></div>
                         <div>${s.poll_interval_ms ? (s.poll_interval_ms / 1000) + ' ' + t('time.seconds') : '-'}</div>
-                        <div class="act">${icoBtn('ri-eye-line', t('automation.viewVariables'), configurationHandler('showSourceVariables', s.id))}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), configurationHandler('showExportSourceModal', s.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteSource', s.id), 'dg')}</div>
+                        <div class="act">${icoBtn('ri-eye-line', t('automation.viewVariables'), configurationHandler('showSourceVariables', s.id))}${icoBtn('ri-edit-line', t('common.edit'), configurationHandler('editSource', s.id))}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), configurationHandler('showExportSourceModal', s.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteSource', s.id), 'dg')}</div>
                     </div>`;
                 }).join('')}
             `);
@@ -14300,18 +14560,18 @@ async function refreshActions() {
         if (actions.length === 0) {
             container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noActions') + '</p></div>';
         } else {
-            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.2fr) minmax(max-content,.8fr) minmax(max-content,.9fr) minmax(max-content,1.4fr) minmax(max-content,196px)';
+            const cols = 'var(--automation-columns)';
             container.innerHTML = gridTable(cols, `
                 <div class="tr th">
                     <div>ID</div><div>${t('automationPage.actionNameHeader')}</div><div>${t('automationPage.actionTypeHeader')}</div><div>${t('automationPage.actionModeHeader')}</div><div>${t('automationPage.descriptionHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
                 </div>
                 ${actions.map(a => `
                     <div class="tr">
-                        <div><span class="mono">${escapeHtml(a.id)}</span></div>
-                        <div>${escapeHtml(a.name || a.id)}</div>
+                        <div><span class="table-clip mono" title="${escapeHtml(a.id)}">${escapeHtml(a.id)}</span></div>
+                        <div><span class="table-clip" title="${escapeHtml(a.name || a.id)}">${escapeHtml(a.name || a.id)}</span></div>
                         <div>${getActionTypeLabel(a.type)}</div>
                         <div>${a.async ? t('automation.asyncAction') : t('automationPage.syncMode')}</div>
-                        <div>${escapeHtml(a.description || '-')}</div>
+                        <div><span class="table-clip" title="${escapeHtml(a.description || '')}">${escapeHtml(a.description || '-')}</span></div>
                         <div class="act">${icoBtn('ri-play-line', t('common.test'), configurationHandler('testAction', a.id))}${icoBtn('ri-edit-line', t('common.edit'), configurationHandler('editAction', a.id))}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), configurationHandler('showExportActionModal', a.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteAction', a.id), 'dg')}</div>
                     </div>
                 `).join('')}
@@ -14355,6 +14615,7 @@ function showAddActionModal(activeVersion) {
         <div id="action-type-fields" class="gw"></div>
         ${gt(t('automation.basicInfo'))}
         ${grp(
+            row(t('common.enable'), swc('action-enabled', true)) +
             row(t('automation.actionId'), inp('action-id', 180, t('automationPage.actionIdPh'), 'mono'), t('automationPage.actionIdHintShort')) +
             row(t('automation.sourceLabel'), inp('action-name', 180, t('automation.displayNamePlaceholder')), t('automation.leaveEmptyUseId')) +
             row(t('common.description'), inp('action-description', 180, t('common.optional'))) +
@@ -14478,7 +14739,7 @@ async function submitAction(originalId = null) {
         return;
     }
     const data = { id, name: name || id, type, description, delay_ms: delay, async,
-        enabled: originalId ? document.getElementById('action-modal').dataset.enabled !== 'false' : true };
+        enabled: document.getElementById('action-enabled').checked };
     
     // 根据类型收集特定字段
     try { switch (type) {
@@ -15174,10 +15435,10 @@ function selectVariable(varName) {
             const widget = dataWidgets.find(w => w.id === widgetId);
             if (widget) {
                 widget.variable = varName;
-                saveDataWidgets();
+                const saved = saveDataWidgets();
                 renderDataWidgets();
                 refreshDataWidgets();
-                showToast(typeof t === 'function' ? t('toast.widgetBound', { widget: widget.label, var: varName }) : `已绑定 ${widget.label} → ${varName}`, 'success');
+                saved.then(ok => { if (ok) showToast(typeof t === 'function' ? t('toast.widgetBound', { widget: widget.label, var: varName }) : `已绑定 ${widget.label} → ${varName}`, 'success'); });
             }
         }
         closeModal('variable-select-modal');
@@ -15333,6 +15594,7 @@ async function editAction(id) {
 
         
         // 填充基本信息
+        document.getElementById('action-enabled').checked = tpl.enabled !== false;
         document.getElementById('action-id').value = tpl.id;
         document.getElementById('action-id').disabled = true; // ID 不可编辑
         document.getElementById('action-name').value = tpl.name || '';
@@ -15870,25 +16132,32 @@ function showAddSourceModal() {
     setTimeout(() => modal.classList.add('show'), 10);
 }
 
-// 存储测试结果数据
-let lastTestData = null;
 let wsTestSocket = null;
+
+function sourceTestRequest(modal, type) {
+    const requests = modal._sourceTestRequests ||= {};
+    const sequence = requests[type] = (requests[type] || 0) + 1;
+    return () => modal.isConnected && modal.dataset.configurationClosed !== 'true' &&
+        document.getElementById('add-source-modal') === modal && requests[type] === sequence;
+}
 
 /**
  * 测试 REST API 连接
  */
 async function testRestConnection() {
-    const url = document.getElementById('source-rest-url').value.trim();
-    const method = document.getElementById('source-rest-method').value;
-    const auth = document.getElementById('source-rest-auth').value.trim();
+    const modal = document.getElementById('add-source-modal');
+    const url = modal.querySelector('#source-rest-url').value.trim();
+    const method = modal.querySelector('#source-rest-method').value;
+    const auth = modal.querySelector('#source-rest-auth').value.trim();
     
     if (!url) {
         fieldError('source-rest-url', t('ui.alertEnterApiAddress'));
         return;
     }
     
-    const btn = document.getElementById('btn-test-rest');
-    const resultPanel = document.getElementById('rest-test-result');
+    const current = sourceTestRequest(modal, 'rest');
+    const btn = modal.querySelector('#btn-test-rest');
+    const resultPanel = modal.querySelector('#rest-test-result');
     const statusSpan = resultPanel.querySelector('.test-status');
     
     btn.disabled = true;
@@ -15903,49 +16172,52 @@ async function testRestConnection() {
             method,
             headers: auth ? { 'Authorization': auth } : {}
         });
+        if (!current()) return;
         
         if (result.code === 0 && result.data) {
-            lastTestData = result.data.body;
+            const lastTestData = result.data.body;
             statusSpan.innerHTML = `<span class="state ok">${t('ssh.connectionSuccess')} (${result.data.status || 200})</span>`;
             
             // 解析并显示可选变量
             try {
                 const jsonData = typeof lastTestData === 'string' ? JSON.parse(lastTestData) : lastTestData;
-                renderVarSelector('rest-var-selector', jsonData, 'source-rest-path');
-                document.getElementById('rest-json-preview').textContent = JSON.stringify(jsonData, null, 2);
+                renderVarSelector('rest-var-selector', jsonData, 'source-rest-path', '', modal);
+                modal.querySelector('#rest-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
                 // 非 JSON 响应
-                document.querySelector('#rest-var-selector .var-list').innerHTML = 
+                modal.querySelector('#rest-var-selector .var-list').innerHTML =
                     ("<span class=\"t-note\">" + t('dataSource.responseNotJson') + "</span>");
-                document.getElementById('rest-json-preview').textContent = lastTestData;
+                modal.querySelector('#rest-json-preview').textContent = lastTestData;
             }
         } else {
             // a test changes nothing: write:false, so a lost connection is "cannot reach", not "result unconfirmed"
             statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testRest', params: { url: shortUrl(url) }, result, endpoint: 'automation.proxy.fetch', write: false })}</span>`;
-            document.querySelector('#rest-var-selector .var-list').innerHTML = '';
+            modal.querySelector('#rest-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
+        if (!current()) return;
         statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testRest', params: { url: shortUrl(url) }, error, endpoint: 'automation.proxy.fetch', write: false })}</span>`;
-        document.querySelector('#rest-var-selector .var-list').innerHTML = '';
+        modal.querySelector('#rest-var-selector .var-list').innerHTML = '';
+    } finally {
+        if (current()) { btn.disabled = false; btn.textContent = t('common.test'); }
     }
-    
-    btn.disabled = false;
-    btn.textContent = t('common.test');
 }
 
 /**
  * 测试 WebSocket 连接
  */
 async function testWsConnection() {
-    const uri = document.getElementById('source-ws-uri').value.trim();
+    const modal = document.getElementById('add-source-modal');
+    const uri = modal.querySelector('#source-ws-uri').value.trim();
     
     if (!uri) {
         fieldError('source-ws-uri', t('ui.alertEnterWsAddress'));
         return;
     }
     
-    const btn = document.getElementById('btn-test-ws');
-    const resultPanel = document.getElementById('ws-test-result');
+    const current = sourceTestRequest(modal, 'ws');
+    const btn = modal.querySelector('#btn-test-ws');
+    const resultPanel = modal.querySelector('#ws-test-result');
     const statusSpan = resultPanel.querySelector('.test-status');
     
     // 关闭之前的测试连接
@@ -15962,50 +16234,53 @@ async function testWsConnection() {
     try {
         // 通过 ESP32 测试 WebSocket（获取第一条消息）
         const result = await api.call('automation.proxy.websocket_test', { uri, timeout_ms: 5000 });
+        if (!current()) return;
         
         if (result.code === 0 && result.data) {
-            lastTestData = result.data.message;
+            const lastTestData = result.data.message;
             statusSpan.innerHTML = `<span class="state ok">${t('automationPage.testConnected')}</span>`;
             
             try {
                 const jsonData = typeof lastTestData === 'string' ? JSON.parse(lastTestData) : lastTestData;
-                renderVarSelector('ws-var-selector', jsonData, 'source-ws-path');
-                document.getElementById('ws-json-preview').textContent = JSON.stringify(jsonData, null, 2);
+                renderVarSelector('ws-var-selector', jsonData, 'source-ws-path', '', modal);
+                modal.querySelector('#ws-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
-                document.querySelector('#ws-var-selector .var-list').innerHTML = 
+                modal.querySelector('#ws-var-selector .var-list').innerHTML =
                     ("<span class=\"t-note\">" + t('dataSource.messageNotJson') + "</span>");
-                document.getElementById('ws-json-preview').textContent = lastTestData;
+                modal.querySelector('#ws-json-preview').textContent = lastTestData;
             }
         } else {
             statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testWs', params: { url: shortUrl(uri) }, result, endpoint: 'automation.proxy.websocket_test', write: false })}</span>`;
-            document.querySelector('#ws-var-selector .var-list').innerHTML = '';
+            modal.querySelector('#ws-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
+        if (!current()) return;
         statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testWs', params: { url: shortUrl(uri) }, error, endpoint: 'automation.proxy.websocket_test', write: false })}</span>`;
-        document.querySelector('#ws-var-selector .var-list').innerHTML = '';
+        modal.querySelector('#ws-var-selector .var-list').innerHTML = '';
+    } finally {
+        if (current()) { btn.disabled = false; btn.textContent = t('common.test'); }
     }
-    
-    btn.disabled = false;
-    btn.textContent = t('common.test');
 }
 
 /**
  * 测试 Socket.IO 连接
  */
 async function testSioConnection() {
-    const url = document.getElementById('source-sio-url').value.trim();
-    const event = document.getElementById('source-sio-event').value.trim();
-    const timeout = parseInt(document.getElementById('source-sio-timeout').value) || 15000;
+    const modal = document.getElementById('add-source-modal');
+    const url = modal.querySelector('#source-sio-url').value.trim();
+    const event = modal.querySelector('#source-sio-event').value.trim();
+    const timeout = parseInt(modal.querySelector('#source-sio-timeout').value) || 15000;
     
     if (!url) {
         fieldError('source-sio-url', t('ui.alertEnterSioAddress'));
         return;
     }
     
-    const btn = document.getElementById('btn-test-sio');
-    const resultPanel = document.getElementById('sio-test-result');
+    const current = sourceTestRequest(modal, 'sio');
+    const btn = modal.querySelector('#btn-test-sio');
+    const resultPanel = modal.querySelector('#sio-test-result');
     const statusSpan = resultPanel.querySelector('.test-status');
-    const eventInput = document.getElementById('source-sio-event');
+    const eventInput = modal.querySelector('#source-sio-event');
     
     btn.disabled = true;
     btn.textContent = t('network.connecting');
@@ -16022,11 +16297,12 @@ async function testSioConnection() {
         if (event) params.event = event;
         
         const result = await api.call('automation.proxy.socketio_test', params);
+        if (!current()) return;
         
         if (result.code === 0 && result.data) {
             const data = result.data;
             const eventName = data.event || t('sshPage.unknownEvent');
-            lastTestData = data.data;
+            const lastTestData = data.data;
             
             // 显示成功状态和发现的事件
             let statusHtml = `<span class="state ok">${t('ssh.connectionSuccess')}</span>`;
@@ -16046,32 +16322,32 @@ async function testSioConnection() {
             
             try {
                 const jsonData = typeof lastTestData === 'string' ? JSON.parse(lastTestData) : lastTestData;
-                renderVarSelector('sio-var-selector', jsonData, 'source-sio-path');
-                document.getElementById('sio-json-preview').textContent = JSON.stringify(jsonData, null, 2);
+                renderVarSelector('sio-var-selector', jsonData, 'source-sio-path', '', modal);
+                modal.querySelector('#sio-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
-                document.querySelector('#sio-var-selector .var-list').innerHTML = 
+                modal.querySelector('#sio-var-selector .var-list').innerHTML =
                     ("<span class=\"t-note\">" + t('automationPage.eventDataNotJson') + "</span>");
-                document.getElementById('sio-json-preview').textContent = String(lastTestData);
+                modal.querySelector('#sio-json-preview').textContent = String(lastTestData);
             }
         } else {
             // the reason comes from the device; the folded details carry the rest
             statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testSio', params: { url: shortUrl(url) }, result, endpoint: 'automation.proxy.socketio_test', write: false })}</span>`;
-            document.querySelector('#sio-var-selector .var-list').innerHTML = 
+            modal.querySelector('#sio-var-selector .var-list').innerHTML =
                 ("<span class=\"t-note\">" + t('automationPage.hintAutoDiscoverEvent') + "</span>");
             
             // 显示详细错误
             if (result.data && result.data.error) {
-                document.getElementById('sio-json-preview').textContent = result.data.error;
-                document.getElementById('sio-json-preview').style.display = 'block';
+                modal.querySelector('#sio-json-preview').textContent = result.data.error;
+                modal.querySelector('#sio-json-preview').style.display = 'block';
             }
         }
     } catch (error) {
+        if (!current()) return;
         statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testSio', params: { url: shortUrl(url) }, error, endpoint: 'automation.proxy.socketio_test', write: false })}</span>`;
-        document.querySelector('#sio-var-selector .var-list').innerHTML = '';
+        modal.querySelector('#sio-var-selector .var-list').innerHTML = '';
+    } finally {
+        if (current()) { btn.disabled = false; btn.textContent = t('common.test'); }
     }
-    
-    btn.disabled = false;
-    btn.textContent = t('common.test');
 }
 
 /**
@@ -16085,8 +16361,8 @@ function toggleSioJsonPreview() {
 /**
  * 渲染变量选择器
  */
-function renderVarSelector(containerId, data, targetInputId, prefix = '') {
-    const container = document.querySelector(`#${containerId} .var-list`);
+function renderVarSelector(containerId, data, targetInputId, prefix = '', root = document) {
+    const container = root.querySelector(`#${containerId} .var-list`);
     if (!container) return;
     
     const items = [];
@@ -16567,7 +16843,7 @@ function showAddRuleModal(ruleData = null) {
         </div>
         <div class="grp" id="actions-container"><div class="row empty-hint"><span class="t-note">${t('automation.selectFromTemplatesHint')}</span></div></div>
         <div class="t-note" style="margin:6px 4px 0">${t('automation.createActionFirstHint')}</div>`,
-        `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAddRule(${isEdit ? "'" + ruleData.id + "'" : ''})">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
+        `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="${isEdit ? configurationHandler('submitAddRule', ruleData.id) : 'submitAddRule()'}">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
     
     document.body.appendChild(modal);
     bindConfigurationEditor(modal, 'rules', ruleData?.active_version);
