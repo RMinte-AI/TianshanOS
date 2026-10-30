@@ -3253,8 +3253,12 @@ let dataWidgets = [];
 let dataWidgetsRefreshInterval = 5000;
 let dataWidgetsIntervalId = null;
 
-// 标记是否正在保存（防止重复保存）
-let dataWidgetsSaving = false;
+// Serialize actual saves so a later edit is never dropped while one is pending.
+let dataWidgetsSaveTail = Promise.resolve();
+let dataWidgetsLoaded = false;
+let dataWidgetsLoadError = null;
+let dataWidgetsRevision = 0;
+let dataWidgetsSavedRevision = 0;
 
 // 标记是否正在刷新（防止重叠刷新）
 let dataWidgetsRefreshing = false;
@@ -3265,19 +3269,32 @@ let dataWidgetsRefreshing = false;
  */
 async function loadDataWidgets() {
     const pageCurrent = capturePageValidity();
+    // A read must not overtake a queued save or discard an unsaved edit.
+    let pending;
+    do {
+        pending = dataWidgetsSaveTail;
+        await pending;
+    } while (pending !== dataWidgetsSaveTail);
+    if (!pageCurrent()) return;
+    if (dataWidgetsLoaded && dataWidgetsRevision !== dataWidgetsSavedRevision) return true;
+    const revision = dataWidgetsRevision;
     try {
         // 1. 尝试从后端加载
-        const response = await api.call('ui.widgets.get');
+        const response = requireApiSuccess(await api.call('ui.widgets.get'), 'ui.widgets.get');
         if (!pageCurrent()) return;
+        if (revision !== dataWidgetsRevision) return dataWidgetsLoaded;
         // API 响应格式: {code: 0, data: {widgets: [...], refresh_interval: 5000, source: "sdcard"}}
-        if (response && response.code === 0 && response.data && response.data.widgets) {
+        if (response.data && Array.isArray(response.data.widgets)) {
             const result = response.data;
             dataWidgets = result.widgets;
-            dataWidgetsRefreshInterval = result.refresh_interval || 5000;
+            dataWidgetsRefreshInterval = result.refresh_interval ?? 5000;
+            dataWidgetsLoaded = true;
+            dataWidgetsLoadError = null;
             console.log(`已从后端加载数据组件配置 (来源: ${result.source}, ${dataWidgets.length} 个组件)`);
             
             // 如果后端是默认空配置，检查 localStorage 是否有旧数据需要迁移
             if (result.source === 'default' && dataWidgets.length === 0) {
+                loadDataWidgetsRefreshInterval();
                 const localData = loadDataWidgetsFromLocalStorage();
                 if (localData && localData.length > 0) {
                     dataWidgets = localData;
@@ -3289,24 +3306,18 @@ async function loadDataWidgets() {
             }
             // 修复已损坏的图标数据
             _repairCorruptedWidgetIcons();
-            return;
+            return true;
         }
+        throw new ApiOperationError({}, 'ui.widgets.get', {kind: 'format'});
     } catch (e) {
         if (!pageCurrent()) return;
+        if (revision !== dataWidgetsRevision) return dataWidgetsLoaded;
         console.warn('从后端加载数据组件配置失败:', e);
+        dataWidgetsLoaded = false;
+        dataWidgetsLoadError = e;
+        reportFailure({op: 'widgets.load', error: e, endpoint: 'ui.widgets.get', write: false});
+        return false;
     }
-    
-    // 2. 后端失败，回退到 localStorage
-    const localData = loadDataWidgetsFromLocalStorage();
-    if (localData) {
-        dataWidgets = localData;
-        console.log('从 localStorage 加载数据组件配置');
-    } else {
-        dataWidgets = [];
-    }
-    
-    // 3. 修复已损坏的图标数据（旧版编辑面板未转义 HTML 属性导致 icon 被截断）
-    _repairCorruptedWidgetIcons();
 }
 
 /**
@@ -3367,32 +3378,36 @@ function loadDataWidgetsFromLocalStorage() {
  * 保存数据组件配置
  * 后端保存到系统 NVS；浏览器保留现有本地显示设置。
  */
-async function saveDataWidgets() {
-    // 防止重复保存
-    if (dataWidgetsSaving) return;
-    dataWidgetsSaving = true;
-    
-    try {
-        // 1. 保存到 localStorage（本地备份）
-        localStorage.setItem('data_widgets_v2', JSON.stringify(dataWidgets));
-        localStorage.setItem('data_widgets_refresh_interval', dataWidgetsRefreshInterval.toString());
-        
-        // 2. 保存到后端系统配置区
-        const response = await api.call('ui.widgets.set', {
-            widgets: dataWidgets,
-            refresh_interval: dataWidgetsRefreshInterval
-        }, 'POST');
-        
-        // API 响应格式: {code: 0, data: {nvs_saved: true}}
-        if (response && response.code === 0 && response.data) {
-            console.log(`数据组件配置已保存 (nvs=${response.data.nvs_saved})`);
+function saveDataWidgets() {
+    const revision = ++dataWidgetsRevision;
+    const save = dataWidgetsSaveTail.then(async () => {
+        if (!dataWidgetsLoaded) throw new ApiOperationError({}, 'ui.widgets.get', {kind: 'format'});
+        let sent = false;
+        try {
+            const widgets = JSON.parse(JSON.stringify(dataWidgets));
+            const interval = dataWidgetsRefreshInterval;
+            localStorage.setItem('data_widgets_v2', JSON.stringify(widgets));
+            localStorage.setItem('data_widgets_refresh_interval', interval.toString());
+            sent = true;
+            const response = requireApiSuccess(await api.call('ui.widgets.set', {
+                widgets, refresh_interval: interval
+            }, 'POST'), 'ui.widgets.set');
+            if (response.data?.nvs_saved === false)
+                throw new ApiOperationError({code: 1, error: 'widgets_save_failed'}, 'ui.widgets.set');
+            if (response.data?.nvs_saved !== true)
+                throw new ApiOperationError({}, 'ui.widgets.set', {kind: 'format', uncertain: true});
+            dataWidgetsSavedRevision = revision;
+            return true;
+        } catch (error) {
+            reportFailure({op: 'widgets.save', error, endpoint: 'ui.widgets.set', write: sent});
+            return false;
         }
-    } catch (e) {
-        console.warn('保存数据组件配置到后端失败:', e);
-        // localStorage 已保存，不影响使用
-    } finally {
-        dataWidgetsSaving = false;
-    }
+    }).catch(error => {
+        reportFailure({op: 'widgets.load', error, endpoint: 'ui.widgets.get', write: false});
+        return false;
+    });
+    dataWidgetsSaveTail = save.then(() => undefined);
+    return save;
 }
 
 /**
@@ -3403,8 +3418,9 @@ function loadDataWidgetsRefreshInterval() {
     // 此函数保留用于兼容性
     try {
         const saved = localStorage.getItem('data_widgets_refresh_interval');
-        if (saved) {
-            dataWidgetsRefreshInterval = parseInt(saved) || 5000;
+        if (saved !== null) {
+            const interval = Number(saved);
+            if (Number.isFinite(interval) && interval >= 0) dataWidgetsRefreshInterval = interval;
         }
     } catch (e) {
         dataWidgetsRefreshInterval = 5000;
@@ -3416,7 +3432,7 @@ function loadDataWidgetsRefreshInterval() {
  */
 function saveDataWidgetsRefreshInterval() {
     // 触发完整保存
-    saveDataWidgets();
+    return saveDataWidgets();
 }
 
 /**
@@ -3675,9 +3691,15 @@ function updateWidgetValue(widget, value) {
  */
 async function initDataWidgets() {
     const pageCurrent = capturePageValidity();
-    await loadDataWidgets();
+    const loaded = await loadDataWidgets();
     if (!pageCurrent()) return;  // 异步加载（优先后端 API）
-    loadDataWidgetsRefreshInterval();  // 兼容性保留
+    if (!loaded) {
+        const grid = document.getElementById('data-widgets-grid');
+        const empty = document.getElementById('data-widgets-empty');
+        if (empty) empty.style.display = 'none';
+        if (grid) grid.innerHTML = failureNote({op: 'widgets.load', error: dataWidgetsLoadError, endpoint: 'ui.widgets.get', write: false});
+        return;
+    }
     renderDataWidgets();
     await refreshDataWidgets();
     if (!pageCurrent()) return;
@@ -3963,6 +3985,10 @@ const WIDGET_TYPE_KEYS = { ring: 'Ring', gauge: 'Gauge', temp: 'Temp', number: '
 const widgetTypeName = type => t('dataWidget.type' + (WIDGET_TYPE_KEYS[type] || type));
 
 function showWidgetManager(editWidgetId = null) {
+    if (!dataWidgetsLoaded) {
+        reportFailure({op: 'widgets.load', error: dataWidgetsLoadError, endpoint: 'ui.widgets.get', write: false});
+        return;
+    }
     const modal = document.createElement('div');
     modal.className = 'modal';
     modal.id = 'widget-manager-modal';
@@ -3990,15 +4016,15 @@ function showWidgetManager(editWidgetId = null) {
 /**
  * 更新刷新间隔
  */
-function updateRefreshInterval() {
+async function updateRefreshInterval() {
     const select = document.getElementById('dw-refresh-interval');
     if (select) {
         dataWidgetsRefreshInterval = parseInt(select.value) || 0;
-        saveDataWidgetsRefreshInterval();
+        const saved = saveDataWidgetsRefreshInterval();
         startDataWidgetsAutoRefresh();
         const _sec = typeof t === 'function' ? t('dataWidget.second') : '秒';
         const intervalText = dataWidgetsRefreshInterval > 0 ? (dataWidgetsRefreshInterval / 1000) + ' ' + _sec : (typeof t === 'function' ? t('dataWidget.disabled') : '禁用');
-        showToast(typeof t === 'function' ? t('toast.refreshIntervalSet', { interval: intervalText }) : `刷新间隔已设置为 ${intervalText}`, 'success');
+        if (await saved) showToast(typeof t === 'function' ? t('toast.refreshIntervalSet', { interval: intervalText }) : `刷新间隔已设置为 ${intervalText}`, 'success');
     }
 }
 
@@ -4083,13 +4109,13 @@ function addWidgetFromPreset(presetId) {
     };
     
     dataWidgets.push(widget);
-    saveDataWidgets();
+    const saved = saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
     showWidgetEditPanel(widget.id);
     const _presetLabelKeys = { cpu: 'presetCpu', mem: 'presetMem', disk: 'presetDisk', temp: 'presetTemp', gpu: 'presetGpu', power: 'presetPower', voltage: 'presetVoltage', current: 'presetCurrent', network: 'presetNetwork', status: 'presetStatus', uptime: 'presetUptime', log: 'presetLog' };
     const addedName = typeof t === 'function' ? t('dataWidget.' + (_presetLabelKeys[preset.id] || preset.id)) : preset.label;
-    showToast(typeof t === 'function' ? t('toast.widgetAdded', { name: addedName }) : `已添加 ${preset.label}`, 'success');
+    saved.then(ok => { if (ok) showToast(typeof t === 'function' ? t('toast.widgetAdded', { name: addedName }) : `已添加 ${preset.label}`, 'success'); });
 }
 
 /**
@@ -4209,8 +4235,10 @@ async function selectVariableForWidget() {
 /**
  * 保存组件编辑
  */
-function saveWidgetEdit(widgetId) {
+async function saveWidgetEdit(widgetId) {
     clearFieldErrors();
+    const modal = document.getElementById('widget-edit-modal');
+    const manager = document.getElementById('widget-manager-modal');
     const widget = dataWidgets.find(w => w.id === widgetId);
     if (!widget) return;
     
@@ -4241,20 +4269,27 @@ function saveWidgetEdit(widgetId) {
     next.expression = document.getElementById('edit-expression')?.value?.trim() || null;
     if (widget.type === 'dual') next.expression2 = document.getElementById('edit-expression2')?.value?.trim() || null;
     Object.assign(widget, next);
+    const editorValues = modal && JSON.stringify([...modal.querySelectorAll('input,select,textarea')].map(input => [input.value, input.checked]));
     if (widget.type === 'log' && widget._isReading) {
         stopLogReading(widgetId);
         startLogReading(widgetId);
     }
 
-    saveDataWidgets();
+    const saved = saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
     refreshDataWidgets();
+    if (!await saved) return;
     showToast(typeof t === 'function' ? t('toast.widgetSaved') : '组件已保存', 'success');
-    
-    // 关闭编辑与管理器弹窗
-    closeModal('widget-edit-modal');
-    closeModal('widget-manager-modal');
+
+    // An earlier save must not close a later or newly edited panel.
+    if (modal && document.getElementById('widget-edit-modal') === modal &&
+        modal.dataset.configurationClosed !== 'true' &&
+        editorValues === JSON.stringify([...modal.querySelectorAll('input,select,textarea')].map(input => [input.value, input.checked]))) {
+        closeModal('widget-edit-modal');
+        if (manager && document.getElementById('widget-manager-modal') === manager && manager.dataset.configurationClosed !== 'true')
+            closeModal('widget-manager-modal');
+    }
 }
 
 /**
@@ -4267,13 +4302,18 @@ async function deleteDataWidget(widgetId) {
     const widget = dataWidgets[idx];
     
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteWidget', { label: widget.label }) : `确定要删除"${widget.label}"组件吗？`, { primary: t('dataWidget.delete'), tone: 'danger' })) return;
-    
+    const modal = document.getElementById('widget-edit-modal');
     dataWidgets.splice(idx, 1);
-    saveDataWidgets();
+    const saved = saveDataWidgets();
     renderDataWidgets();
     renderWidgetManagerList();
-    
-    closeModal('widget-edit-modal');
+    if (!await saved) {
+        if (!dataWidgets.some(item => item.id === widget.id)) dataWidgets.splice(Math.min(idx, dataWidgets.length), 0, widget);
+        renderDataWidgets();
+        renderWidgetManagerList();
+        return;
+    }
+    if (modal && document.getElementById('widget-edit-modal') === modal) closeModal('widget-edit-modal');
     
     showToast(typeof t === 'function' ? t('toast.widgetDeleted', { name: widget.label }) : `已删除 ${widget.label}`, 'info');
 }
@@ -7822,6 +7862,7 @@ async function loadSshCommands() {
                 if (cmd.orphan) {
                     orphanCommands.push({
                         id: cmd.id,
+                        runtimeInstance: cmd.runtime_instance || '',
                         name: cmd.name,
                         command: cmd.command,
                         desc: cmd.desc || '',
@@ -7851,6 +7892,7 @@ async function loadSshCommands() {
                 // 字段名与后端 API 返回一致 (camelCase)
                 sshCommands[cmd.host_id].push({
                     id: cmd.id,
+                    runtimeInstance: cmd.runtime_instance || '',
                     name: cmd.name,
                     command: cmd.command,
                     desc: cmd.desc || '',
@@ -9008,6 +9050,7 @@ async function executeCommand(idx) {
     }
     output.textContent=text+'\n';section.scrollIntoView({behavior:'smooth'});
     const params={host:host.host,port:host.port,user:host.username,keyid:host.keyid,command:cmd.command};
+    if (cmd.runtimeInstance) {params.command_id=cmd.id;params.command_instance=cmd.runtimeInstance;}
     if (cmd.expectPattern) params.expect_pattern=cmd.expectPattern;
     if (cmd.failPattern) params.fail_pattern=cmd.failPattern;
     if (cmd.extractPattern) params.extract_pattern=cmd.extractPattern;
@@ -14187,7 +14230,7 @@ async function loadAutomationPage() {
                         <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshSources()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card" style="padding:0" id="sources-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
+                <div class="card automation-table automation-table-six" style="padding:0" id="sources-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
             
             <div>
@@ -14199,7 +14242,7 @@ async function loadAutomationPage() {
                         <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshRules()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card" style="padding:0" id="rules-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
+                <div class="card automation-table" style="padding:0" id="rules-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
             
             <div>
@@ -14211,7 +14254,7 @@ async function loadAutomationPage() {
                         <button type="button" class="btn icon sm automation-refresh-btn" onclick="refreshActions()" title="${t('common.refresh')}" aria-label="${t('common.refresh')}"><svg class="i"><use href="#ri-refresh-line"/></svg></button>
                     </div>
                 </div>
-                <div class="card" style="padding:0" id="actions-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
+                <div class="card automation-table automation-table-six" style="padding:0" id="actions-list"><div class="empty"><p class="t-note">${t('common.loading')}</p></div></div>
             </div>
         </div>
     `;
@@ -14306,7 +14349,7 @@ async function refreshRules() {
                 return;
             }
             
-            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.4fr) minmax(max-content,1fr) minmax(max-content,.6fr) minmax(max-content,.6fr) minmax(max-content,.7fr) minmax(max-content,196px)';
+            const cols = 'var(--automation-columns)';
             container.innerHTML = gridTable(cols, `
                 <div class="tr th">
                     <div>ID</div><div>${t('automationPage.ruleNameHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.conditionHeader')}</div><div>${t('automationPage.actionHeader')}</div><div>${t('automationPage.triggerHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
@@ -14317,9 +14360,9 @@ async function refreshRules() {
                     const handler = (name, ...args) => escapeHtml(name + '(' + args.map(x => JSON.stringify(x)).join(',') + ')');
                     return `
                     <div class="tr">
-                        <div><span class="mono">${escapeHtml(r.id)}</span></div>
-                        <div>${escapeHtml(r.name || r.id)}${r.manual_trigger ? ' ' : ''}${r.manual_trigger ? `<span class="tag" style="margin-left:6px">${t('common.manual')}</span>` : ''}<p class="t-note" data-rule-start-status="${escapeHtml(r.id)}" aria-live="polite" style="margin:12px 0 0;line-height:1.5" ${r.automatic_start ? '' : 'hidden'}>${escapeHtml(automaticStartMessage(r.automatic_start))}</p></div>
-                        <div><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"></button></div>
+                        <div><span class="table-clip mono" title="${escapeHtml(r.id)}">${escapeHtml(r.id)}</span></div>
+                        <div><div class="automation-name"><span class="table-clip" title="${escapeHtml(r.name || r.id)}">${escapeHtml(r.name || r.id)}</span>${r.manual_trigger ? `<span class="tag">${t('common.manual')}</span>` : ''}</div><p class="t-note" data-rule-start-status="${escapeHtml(r.id)}" aria-live="polite" style="margin:12px 0 0;line-height:1.5" ${r.automatic_start ? '' : 'hidden'}>${escapeHtml(automaticStartMessage(r.automatic_start))}</p></div>
+                        <div class="automation-switch-cell"><button class="switch ${r.enabled ? 'on' : ''}" role="switch" aria-checked="${!!r.enabled}" aria-label="${label}" title="${label}" onclick="${handler('toggleRule', r.id, !r.enabled)}"></button></div>
                         <div>${r.conditions_count || 0}</div>
                         <div>${r.actions_count || 0}</div>
                         <div>${r.trigger_count || 0}</div>
@@ -14403,7 +14446,7 @@ async function refreshSources() {
                 return;
             }
             
-            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.2fr) minmax(max-content,.8fr) minmax(max-content,1fr) minmax(max-content,.8fr) minmax(max-content,156px)';
+            const cols = 'var(--automation-columns)';
             container.innerHTML = gridTable(cols, `
                 <div class="tr th">
                     <div>ID</div><div>${t('automationPage.labelHeader')}</div><div>${t('automationPage.typeHeader')}</div><div>${t('common.enable')}</div><div>${t('automationPage.updateIntervalHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
@@ -14412,10 +14455,10 @@ async function refreshSources() {
                     const label = s.enabled ? t('common.disabled') : t('common.enabled');
                     return `
                     <div class="tr">
-                        <div><span class="mono">${escapeHtml(s.id)}</span></div>
-                        <div>${escapeHtml(s.label || s.id)}</div>
+                        <div><span class="table-clip mono" title="${escapeHtml(s.id)}">${escapeHtml(s.id)}</span></div>
+                        <div><span class="table-clip" title="${escapeHtml(s.label || s.id)}">${escapeHtml(s.label || s.id)}</span></div>
                         <div>${escapeHtml(s.type || 'unknown')}</div>
-                        <div><button class="switch ${s.enabled ? 'on' : ''}" role="switch" aria-checked="${!!s.enabled}" aria-label="${label}" title="${label}" onclick="${configurationHandler('toggleSource', s.id, !s.enabled)}"></button></div>
+                        <div class="automation-switch-cell"><button class="switch ${s.enabled ? 'on' : ''}" role="switch" aria-checked="${!!s.enabled}" aria-label="${label}" title="${label}" onclick="${configurationHandler('toggleSource', s.id, !s.enabled)}"></button></div>
                         <div>${s.poll_interval_ms ? (s.poll_interval_ms / 1000) + ' ' + t('time.seconds') : '-'}</div>
                         <div class="act">${icoBtn('ri-eye-line', t('automation.viewVariables'), configurationHandler('showSourceVariables', s.id))}${icoBtn('ri-edit-line', t('common.edit'), configurationHandler('editSource', s.id))}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), configurationHandler('showExportSourceModal', s.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteSource', s.id), 'dg')}</div>
                     </div>`;
@@ -14517,18 +14560,18 @@ async function refreshActions() {
         if (actions.length === 0) {
             container.innerHTML = '<div class="empty"><p class="t-note">' + t('automationPage.noActions') + '</p></div>';
         } else {
-            const cols = 'minmax(max-content,1.2fr) minmax(max-content,1.2fr) minmax(max-content,.8fr) minmax(max-content,.9fr) minmax(max-content,1.4fr) minmax(max-content,196px)';
+            const cols = 'var(--automation-columns)';
             container.innerHTML = gridTable(cols, `
                 <div class="tr th">
                     <div>ID</div><div>${t('automationPage.actionNameHeader')}</div><div>${t('automationPage.actionTypeHeader')}</div><div>${t('automationPage.actionModeHeader')}</div><div>${t('automationPage.descriptionHeader')}</div><div class="act">${t('automationPage.operationHeader')}</div>
                 </div>
                 ${actions.map(a => `
                     <div class="tr">
-                        <div><span class="mono">${escapeHtml(a.id)}</span></div>
-                        <div>${escapeHtml(a.name || a.id)}</div>
+                        <div><span class="table-clip mono" title="${escapeHtml(a.id)}">${escapeHtml(a.id)}</span></div>
+                        <div><span class="table-clip" title="${escapeHtml(a.name || a.id)}">${escapeHtml(a.name || a.id)}</span></div>
                         <div>${getActionTypeLabel(a.type)}</div>
                         <div>${a.async ? t('automation.asyncAction') : t('automationPage.syncMode')}</div>
-                        <div>${escapeHtml(a.description || '-')}</div>
+                        <div><span class="table-clip" title="${escapeHtml(a.description || '')}">${escapeHtml(a.description || '-')}</span></div>
                         <div class="act">${icoBtn('ri-play-line', t('common.test'), configurationHandler('testAction', a.id))}${icoBtn('ri-edit-line', t('common.edit'), configurationHandler('editAction', a.id))}${icoBtn('ri-download-line', t('securityPage.exportConfigPack'), configurationHandler('showExportActionModal', a.id))}${icoBtn('ri-delete-bin-line', t('common.delete'), configurationHandler('deleteAction', a.id), 'dg')}</div>
                     </div>
                 `).join('')}
@@ -15392,10 +15435,10 @@ function selectVariable(varName) {
             const widget = dataWidgets.find(w => w.id === widgetId);
             if (widget) {
                 widget.variable = varName;
-                saveDataWidgets();
+                const saved = saveDataWidgets();
                 renderDataWidgets();
                 refreshDataWidgets();
-                showToast(typeof t === 'function' ? t('toast.widgetBound', { widget: widget.label, var: varName }) : `已绑定 ${widget.label} → ${varName}`, 'success');
+                saved.then(ok => { if (ok) showToast(typeof t === 'function' ? t('toast.widgetBound', { widget: widget.label, var: varName }) : `已绑定 ${widget.label} → ${varName}`, 'success'); });
             }
         }
         closeModal('variable-select-modal');
@@ -16089,25 +16132,32 @@ function showAddSourceModal() {
     setTimeout(() => modal.classList.add('show'), 10);
 }
 
-// 存储测试结果数据
-let lastTestData = null;
 let wsTestSocket = null;
+
+function sourceTestRequest(modal, type) {
+    const requests = modal._sourceTestRequests ||= {};
+    const sequence = requests[type] = (requests[type] || 0) + 1;
+    return () => modal.isConnected && modal.dataset.configurationClosed !== 'true' &&
+        document.getElementById('add-source-modal') === modal && requests[type] === sequence;
+}
 
 /**
  * 测试 REST API 连接
  */
 async function testRestConnection() {
-    const url = document.getElementById('source-rest-url').value.trim();
-    const method = document.getElementById('source-rest-method').value;
-    const auth = document.getElementById('source-rest-auth').value.trim();
+    const modal = document.getElementById('add-source-modal');
+    const url = modal.querySelector('#source-rest-url').value.trim();
+    const method = modal.querySelector('#source-rest-method').value;
+    const auth = modal.querySelector('#source-rest-auth').value.trim();
     
     if (!url) {
         fieldError('source-rest-url', t('ui.alertEnterApiAddress'));
         return;
     }
     
-    const btn = document.getElementById('btn-test-rest');
-    const resultPanel = document.getElementById('rest-test-result');
+    const current = sourceTestRequest(modal, 'rest');
+    const btn = modal.querySelector('#btn-test-rest');
+    const resultPanel = modal.querySelector('#rest-test-result');
     const statusSpan = resultPanel.querySelector('.test-status');
     
     btn.disabled = true;
@@ -16122,49 +16172,52 @@ async function testRestConnection() {
             method,
             headers: auth ? { 'Authorization': auth } : {}
         });
+        if (!current()) return;
         
         if (result.code === 0 && result.data) {
-            lastTestData = result.data.body;
+            const lastTestData = result.data.body;
             statusSpan.innerHTML = `<span class="state ok">${t('ssh.connectionSuccess')} (${result.data.status || 200})</span>`;
             
             // 解析并显示可选变量
             try {
                 const jsonData = typeof lastTestData === 'string' ? JSON.parse(lastTestData) : lastTestData;
-                renderVarSelector('rest-var-selector', jsonData, 'source-rest-path');
-                document.getElementById('rest-json-preview').textContent = JSON.stringify(jsonData, null, 2);
+                renderVarSelector('rest-var-selector', jsonData, 'source-rest-path', '', modal);
+                modal.querySelector('#rest-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
                 // 非 JSON 响应
-                document.querySelector('#rest-var-selector .var-list').innerHTML = 
+                modal.querySelector('#rest-var-selector .var-list').innerHTML =
                     ("<span class=\"t-note\">" + t('dataSource.responseNotJson') + "</span>");
-                document.getElementById('rest-json-preview').textContent = lastTestData;
+                modal.querySelector('#rest-json-preview').textContent = lastTestData;
             }
         } else {
             // a test changes nothing: write:false, so a lost connection is "cannot reach", not "result unconfirmed"
             statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testRest', params: { url: shortUrl(url) }, result, endpoint: 'automation.proxy.fetch', write: false })}</span>`;
-            document.querySelector('#rest-var-selector .var-list').innerHTML = '';
+            modal.querySelector('#rest-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
+        if (!current()) return;
         statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testRest', params: { url: shortUrl(url) }, error, endpoint: 'automation.proxy.fetch', write: false })}</span>`;
-        document.querySelector('#rest-var-selector .var-list').innerHTML = '';
+        modal.querySelector('#rest-var-selector .var-list').innerHTML = '';
+    } finally {
+        if (current()) { btn.disabled = false; btn.textContent = t('common.test'); }
     }
-    
-    btn.disabled = false;
-    btn.textContent = t('common.test');
 }
 
 /**
  * 测试 WebSocket 连接
  */
 async function testWsConnection() {
-    const uri = document.getElementById('source-ws-uri').value.trim();
+    const modal = document.getElementById('add-source-modal');
+    const uri = modal.querySelector('#source-ws-uri').value.trim();
     
     if (!uri) {
         fieldError('source-ws-uri', t('ui.alertEnterWsAddress'));
         return;
     }
     
-    const btn = document.getElementById('btn-test-ws');
-    const resultPanel = document.getElementById('ws-test-result');
+    const current = sourceTestRequest(modal, 'ws');
+    const btn = modal.querySelector('#btn-test-ws');
+    const resultPanel = modal.querySelector('#ws-test-result');
     const statusSpan = resultPanel.querySelector('.test-status');
     
     // 关闭之前的测试连接
@@ -16181,50 +16234,53 @@ async function testWsConnection() {
     try {
         // 通过 ESP32 测试 WebSocket（获取第一条消息）
         const result = await api.call('automation.proxy.websocket_test', { uri, timeout_ms: 5000 });
+        if (!current()) return;
         
         if (result.code === 0 && result.data) {
-            lastTestData = result.data.message;
+            const lastTestData = result.data.message;
             statusSpan.innerHTML = `<span class="state ok">${t('automationPage.testConnected')}</span>`;
             
             try {
                 const jsonData = typeof lastTestData === 'string' ? JSON.parse(lastTestData) : lastTestData;
-                renderVarSelector('ws-var-selector', jsonData, 'source-ws-path');
-                document.getElementById('ws-json-preview').textContent = JSON.stringify(jsonData, null, 2);
+                renderVarSelector('ws-var-selector', jsonData, 'source-ws-path', '', modal);
+                modal.querySelector('#ws-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
-                document.querySelector('#ws-var-selector .var-list').innerHTML = 
+                modal.querySelector('#ws-var-selector .var-list').innerHTML =
                     ("<span class=\"t-note\">" + t('dataSource.messageNotJson') + "</span>");
-                document.getElementById('ws-json-preview').textContent = lastTestData;
+                modal.querySelector('#ws-json-preview').textContent = lastTestData;
             }
         } else {
             statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testWs', params: { url: shortUrl(uri) }, result, endpoint: 'automation.proxy.websocket_test', write: false })}</span>`;
-            document.querySelector('#ws-var-selector .var-list').innerHTML = '';
+            modal.querySelector('#ws-var-selector .var-list').innerHTML = '';
         }
     } catch (error) {
+        if (!current()) return;
         statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testWs', params: { url: shortUrl(uri) }, error, endpoint: 'automation.proxy.websocket_test', write: false })}</span>`;
-        document.querySelector('#ws-var-selector .var-list').innerHTML = '';
+        modal.querySelector('#ws-var-selector .var-list').innerHTML = '';
+    } finally {
+        if (current()) { btn.disabled = false; btn.textContent = t('common.test'); }
     }
-    
-    btn.disabled = false;
-    btn.textContent = t('common.test');
 }
 
 /**
  * 测试 Socket.IO 连接
  */
 async function testSioConnection() {
-    const url = document.getElementById('source-sio-url').value.trim();
-    const event = document.getElementById('source-sio-event').value.trim();
-    const timeout = parseInt(document.getElementById('source-sio-timeout').value) || 15000;
+    const modal = document.getElementById('add-source-modal');
+    const url = modal.querySelector('#source-sio-url').value.trim();
+    const event = modal.querySelector('#source-sio-event').value.trim();
+    const timeout = parseInt(modal.querySelector('#source-sio-timeout').value) || 15000;
     
     if (!url) {
         fieldError('source-sio-url', t('ui.alertEnterSioAddress'));
         return;
     }
     
-    const btn = document.getElementById('btn-test-sio');
-    const resultPanel = document.getElementById('sio-test-result');
+    const current = sourceTestRequest(modal, 'sio');
+    const btn = modal.querySelector('#btn-test-sio');
+    const resultPanel = modal.querySelector('#sio-test-result');
     const statusSpan = resultPanel.querySelector('.test-status');
-    const eventInput = document.getElementById('source-sio-event');
+    const eventInput = modal.querySelector('#source-sio-event');
     
     btn.disabled = true;
     btn.textContent = t('network.connecting');
@@ -16241,11 +16297,12 @@ async function testSioConnection() {
         if (event) params.event = event;
         
         const result = await api.call('automation.proxy.socketio_test', params);
+        if (!current()) return;
         
         if (result.code === 0 && result.data) {
             const data = result.data;
             const eventName = data.event || t('sshPage.unknownEvent');
-            lastTestData = data.data;
+            const lastTestData = data.data;
             
             // 显示成功状态和发现的事件
             let statusHtml = `<span class="state ok">${t('ssh.connectionSuccess')}</span>`;
@@ -16265,32 +16322,32 @@ async function testSioConnection() {
             
             try {
                 const jsonData = typeof lastTestData === 'string' ? JSON.parse(lastTestData) : lastTestData;
-                renderVarSelector('sio-var-selector', jsonData, 'source-sio-path');
-                document.getElementById('sio-json-preview').textContent = JSON.stringify(jsonData, null, 2);
+                renderVarSelector('sio-var-selector', jsonData, 'source-sio-path', '', modal);
+                modal.querySelector('#sio-json-preview').textContent = JSON.stringify(jsonData, null, 2);
             } catch (e) {
-                document.querySelector('#sio-var-selector .var-list').innerHTML = 
+                modal.querySelector('#sio-var-selector .var-list').innerHTML =
                     ("<span class=\"t-note\">" + t('automationPage.eventDataNotJson') + "</span>");
-                document.getElementById('sio-json-preview').textContent = String(lastTestData);
+                modal.querySelector('#sio-json-preview').textContent = String(lastTestData);
             }
         } else {
             // the reason comes from the device; the folded details carry the rest
             statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testSio', params: { url: shortUrl(url) }, result, endpoint: 'automation.proxy.socketio_test', write: false })}</span>`;
-            document.querySelector('#sio-var-selector .var-list').innerHTML = 
+            modal.querySelector('#sio-var-selector .var-list').innerHTML =
                 ("<span class=\"t-note\">" + t('automationPage.hintAutoDiscoverEvent') + "</span>");
             
             // 显示详细错误
             if (result.data && result.data.error) {
-                document.getElementById('sio-json-preview').textContent = result.data.error;
-                document.getElementById('sio-json-preview').style.display = 'block';
+                modal.querySelector('#sio-json-preview').textContent = result.data.error;
+                modal.querySelector('#sio-json-preview').style.display = 'block';
             }
         }
     } catch (error) {
+        if (!current()) return;
         statusSpan.innerHTML = `<span class="state bad">${failureNote({ op: 'source.testSio', params: { url: shortUrl(url) }, error, endpoint: 'automation.proxy.socketio_test', write: false })}</span>`;
-        document.querySelector('#sio-var-selector .var-list').innerHTML = '';
+        modal.querySelector('#sio-var-selector .var-list').innerHTML = '';
+    } finally {
+        if (current()) { btn.disabled = false; btn.textContent = t('common.test'); }
     }
-    
-    btn.disabled = false;
-    btn.textContent = t('common.test');
 }
 
 /**
@@ -16304,8 +16361,8 @@ function toggleSioJsonPreview() {
 /**
  * 渲染变量选择器
  */
-function renderVarSelector(containerId, data, targetInputId, prefix = '') {
-    const container = document.querySelector(`#${containerId} .var-list`);
+function renderVarSelector(containerId, data, targetInputId, prefix = '', root = document) {
+    const container = root.querySelector(`#${containerId} .var-list`);
     if (!container) return;
     
     const items = [];
@@ -16786,7 +16843,7 @@ function showAddRuleModal(ruleData = null) {
         </div>
         <div class="grp" id="actions-container"><div class="row empty-hint"><span class="t-note">${t('automation.selectFromTemplatesHint')}</span></div></div>
         <div class="t-note" style="margin:6px 4px 0">${t('automation.createActionFirstHint')}</div>`,
-        `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="submitAddRule(${isEdit ? "'" + ruleData.id + "'" : ''})">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
+        `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="${isEdit ? configurationHandler('submitAddRule', ruleData.id) : 'submitAddRule()'}">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
     
     document.body.appendChild(modal);
     bindConfigurationEditor(modal, 'rules', ruleData?.active_version);

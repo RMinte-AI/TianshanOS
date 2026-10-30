@@ -88,11 +88,25 @@ source=Path('components/ts_automation/src/ts_source_manager.c').read_text()
 begin=source.index('typedef struct {\n    char source_id[')
 end=source.index('} s_sio_ctx = {0};',begin)+len('} s_sio_ctx = {0};')
 parts=[source[begin:end]]
-for name in ['find_source_index','current_source_index','current_connection_index','sio_find_connection',
-             'sio_release_connection','ts_source_transport_changed','sio_handle_event_message','read_variable_source']:
+for name in ['extract_json_value','cjson_to_value','auto_discover_json_fields','process_source_mappings',
+             'find_source_index','current_source_index','current_connection_index','sio_find_connection',
+             'sio_release_connection','ts_source_transport_changed','sio_handle_event_message',
+             'ws_handle_message','sio_websocket_event_handler','read_variable_source','ts_source_sio_websocket_url','read_rest_source','sio_http_handshake','stream_connect']:
     match=re.search(r'^(?:static )?(?:int|void|esp_err_t|sio_connection_t \*)\s*'+name+r'\([^;]+?\)\s*\{',source,re.M)
     assert match,name
     parts.append(source[match.start():source.index('\n}',match.start())+2])
+api_source=Path('components/ts_api/src/ts_api_automation.c').read_text()
+end=api_source.index('} ws_test_ctx_t;')+len('} ws_test_ctx_t;')
+parts.append(api_source[api_source.rfind('typedef struct {',0,end):end])
+match=re.search(r'^static void ws_test_handler\([^;]+?\)\s*\{',api_source,re.M)
+assert match
+parts.append(api_source[match.start():api_source.index('\n}',match.start())+2])
+config_start=source.index('    esp_websocket_client_config_t ws_cfg = {',source.index('static void sio_connection_task'))
+config_end=source.index('\n    };',config_start)+len('\n    };')
+parts.append('static esp_websocket_client_config_t test_stream_client_config(sio_connection_t *conn, uint32_t ws_reconnect_ms, char *ws_url) {\n'+source[config_start:config_end]+'\nreturn ws_cfg;\n}')
+start=source.index('        // 处理待处理的自动发现数据',source.index('static void sio_connection_task'))
+end=source.index('        // 检查心跳超时',start)
+parts.append('static void test_process_pending(sio_connection_t *conn) {\n'+source[start:end]+'\n}')
 Path(sys.argv[1],'source_transport.inc').write_text('\n'.join(parts))
 engine=Path('components/ts_automation/src/ts_rule_engine.c').read_text()
 begin=engine.index('typedef struct {\n    ts_auto_rule_t *rules;')
@@ -174,6 +188,7 @@ cc "${common[@]}" -DCONFIG_TS_AUTOMATION_MAX_RULES=64 -Itests/runtime/storage_st
   -Itests/runtime/rule_pack/stubs -Icomponents/ts_automation/src -Icomponents/ts_security/include \
   -Icomponents/ts_core/ts_config/include -Icomponents/ts_cert/include -Icomponents/ts_config_pack/include \
   -Icomponents/ts_storage/include \
+  -Icomponents/ts_jsonpath/include \
   -Icomponents/ts_api/include \
   -I"$IDF_PATH/components/json/cJSON" -I"$CONFIG_TEST_BUILD" \
   tests/runtime/test_automation_config.c components/ts_api/src/ts_api_auto_config.c \
@@ -185,6 +200,7 @@ cc "${common[@]}" -DCONFIG_TS_AUTOMATION_MAX_RULES=64 -Itests/runtime/storage_st
   components/ts_automation/src/ts_rule_pack.c tests/runtime/storage_stubs/crypto.c \
   components/ts_automation/src/ts_automation_references.c components/ts_automation/src/ts_rule_codec.c \
   components/ts_automation/src/ts_action_codec.c components/ts_automation/src/ts_action_filter.c \
+  components/ts_jsonpath/src/ts_jsonpath.c \
   components/ts_security/src/ts_ssh_config_codec.c components/ts_security/src/ts_ssh_commands_config.c \
   components/ts_security/src/ts_ssh_hosts_config.c "$IDF_PATH/components/json/cJSON/cJSON.c" \
   "${crypto_link[@]}" -lpthread -lm -o "$CONFIG_TEST_BUILD/owner"

@@ -22,7 +22,7 @@ code+=r'''
 #define TAG "native"
 #define TS_STRDUP_PSRAM strdup
 typedef void *QueueHandle_t;
-'''+typedef('action_manager_ctx_t')+'\n'+typedef('action_binding_t')+r'''
+'''+typedef('action_manager_ctx_t')+'\n'+typedef('action_binding_t')+'\n'+typedef('action_ssh_output_t')+r'''
 static action_manager_ctx_t context,*s_ctx=&context;
 static ts_action_queue_entry_t queued;static bool has_queue,fail_send;
 static int xQueueSend(void *queue,const void *entry,unsigned timeout){(void)queue;assert(!timeout);if(fail_send||has_queue)return 0;queued=*(const ts_action_queue_entry_t*)entry;has_queue=true;return 1;}
@@ -48,6 +48,20 @@ esp_err_t ts_ssh_commands_config_update_exec_time(const ts_ssh_command_config_t 
 esp_err_t ts_variable_get(const char *name,ts_auto_value_t *out){if(strcmp(name,"value"))return ESP_ERR_NOT_FOUND;out->type=TS_AUTO_VAL_STRING;strcpy(out->str_val,"expanded");return ESP_OK;}
 static esp_err_t exec_cli_bound(const ts_auto_action_cli_t *cli,ts_action_result_t *result,const ts_auto_action_t *origin){(void)cli;(void)result;(void)origin;return ESP_ERR_NOT_SUPPORTED;}
 static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;return ESP_ERR_NOT_SUPPORTED;}
+static esp_err_t control(const char *id,ts_service_operation_t kind){(void)id;(void)kind;assert(false);return ESP_FAIL;}
+static const char *stream_parts[4];static int stream_exit;static esp_err_t stream_result;
+static bool stream_aborted,replace_stream_variables;static unsigned stream_calls;
+void ts_ssh_abort(ts_ssh_session_t session){(void)session;stream_aborted=true;}
+esp_err_t ts_ssh_exec_stream(ts_ssh_session_t session,const char *text,ts_ssh_output_cb_t callback,void *arg,int *exit_code){
+    (void)session;strcpy(last_command,text);++stream_calls;stream_aborted=false;*exit_code=-1;
+    for(unsigned i=0;i<4 && stream_parts[i];++i){
+        callback(stream_parts[i],strlen(stream_parts[i]),false,arg);
+        if(replace_stream_variables){++variable_instance;replace_stream_variables=false;}
+        if(stream_aborted)return ESP_ERR_TIMEOUT;
+    }
+    if(stream_result!=ESP_OK)return stream_result;
+    *exit_code=stream_exit;return ESP_OK;
+}
 '''
 # Hardware leaves are not invoked by this test.
 for suffix,typ in [('led','led'),('gpio','gpio'),('log','log'),('set_var','set_var'),('device','device')]:
@@ -56,7 +70,7 @@ code+=re.search(r'^static const char \*const cli_outputs[^;]+;',source,re.M).gro
 for name in ['same_host','action_variable','ts_action_snapshot_current','action_result_begin','action_result_end',
              'ts_action_snapshot_release','snapshot_command','ts_action_get_ssh_host','action_finished','direct_service_admit',
              'direct_service_finished','entry_finished','ts_action_manager_check_start','prepare_run','ts_action_service_control','ts_action_expand_variables',
-             'exec_ssh_bound','automatic_start_expired','exec_ssh_ref_bound','execute_bound_ref','execute_action_internal','execute_service_control','execute_entry']:
+             'exec_ssh_bound','automatic_start_expired','action_ssh_output','exec_ssh_advanced','exec_ssh_ref_bound','execute_bound_ref','execute_action_internal','execute_service_control','execute_entry']:
  code+='\n'+fn(name)
 api=Path('components/ts_api/src/ts_api_ssh.c').read_text();core=Path('components/ts_api/src/ts_api.c').read_text();automation=Path('components/ts_api/src/ts_api_automation.c').read_text()
 for name,src in [('ts_api_result_ok',core),('ts_api_result_error',core),('ts_api_service_control',api),('api_ssh_service_start',api),
@@ -214,11 +228,67 @@ int main(void)
     ts_action_snapshot_release(&action);
     ts_ssh_run_record_t record;ts_ssh_service_status_t state;assert(ts_ssh_service_get(0,&record,&state)==ESP_OK);
     submit(TS_SERVICE_STOP,record.run_id,reply_id);drain();assert(!remote_running);
+    /* Ordinary rule commands use the saved options, preserving output, exit
+     * status and identity while background and option-free paths stay intact. */
+    command.nohup=false;command.service_mode=false;
+    strcpy(command.expect_pattern,"READY");strcpy(command.fail_pattern,"ERROR");
+    strcpy(command.extract_pattern,"value=(.*)");
+    stream_parts[0]="REA";stream_parts[1]="DY value=42\n";stream_parts[2]=NULL;stream_exit=7;stream_result=ESP_OK;
+    action=(ts_auto_action_t){.type=TS_AUTO_ACT_SSH_CMD_REF};strcpy(action.ssh_ref.cmd_id,command.id);
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_SUCCESS&&result.exit_code==7);
+    assert(!strcmp(last_command,"printf '%s' 'expanded'")&&!strcmp(status_value,"match_success"));
+    assert(expect_value&&!fail_value&&!strcmp(extracted_value,"42")&&last_exit_code==7&&!strcmp(host_value,current_host.host));
+    ts_action_snapshot_release(&action);
+    stream_parts[0]="ERROR\n";stream_parts[1]=NULL;stream_exit=0;
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_FAILED&&!strcmp(status_value,"match_failed"));
+    assert(!expect_value&&fail_value&&!strcmp(extracted_value,""));ts_action_snapshot_release(&action);
+    stream_parts[0]="nothing\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_FAILED&&!strcmp(status_value,"match_failed"));
+    ts_action_snapshot_release(&action);
+    command.stop_on_match=true;stream_parts[0]="READY\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_aborted&&result.status==TS_ACTION_STATUS_SUCCESS&&result.exit_code==-1);
+    assert(last_exit_code==-1&&expect_value&&!strcmp(status_value,"match_success"));ts_action_snapshot_release(&action);
+    stream_parts[0]="ERROR\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_aborted&&result.status==TS_ACTION_STATUS_FAILED&&fail_value);
+    assert(result.exit_code==-1&&!strcmp(status_value,"match_failed"));ts_action_snapshot_release(&action);
+    command.expect_pattern[0]=command.fail_pattern[0]=0;stream_parts[0]="value=33\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_aborted&&result.status==TS_ACTION_STATUS_SUCCESS);
+    assert(result.exit_code==-1&&!strcmp(extracted_value,"33"));ts_action_snapshot_release(&action);
+    strcpy(command.expect_pattern,"READY");strcpy(command.fail_pattern,"ERROR");
+    command.stop_on_match=false;stream_result=ESP_ERR_TIMEOUT;stream_parts[0]="waiting";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_ERR_TIMEOUT&&result.status==TS_ACTION_STATUS_TIMEOUT&&result.exit_code==-1);
+    assert(!strcmp(status_value,"timeout"));ts_action_snapshot_release(&action);
+    /* A deadline preserves an observed match even without stop_on_match. */
+    stream_parts[0]="READY\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_SUCCESS&&result.exit_code==-1);
+    assert(!stream_aborted&&expect_value&&!fail_value&&!strcmp(status_value,"match_success"));ts_action_snapshot_release(&action);
+    stream_parts[0]="ERROR\n";
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_FAILED&&result.exit_code==-1);
+    assert(!stream_aborted&&!expect_value&&fail_value&&!strcmp(status_value,"match_failed"));ts_action_snapshot_release(&action);
+    stream_result=ESP_OK;
+    stream_parts[0]="READY value=55\n";replace_stream_variables=true;before=variable_writes;
+    assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_SUCCESS&&variable_writes==before);
+    ts_action_snapshot_release(&action);
+    command.expect_pattern[0]=command.fail_pattern[0]=command.extract_pattern[0]=0;
+    unsigned streams_before=stream_calls;assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+    assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_calls==streams_before&&result.status==TS_ACTION_STATUS_SUCCESS);
+    ts_action_snapshot_release(&action);
+    puts("PASS ordinary rule SSH: saved match/extract/stop options, real exit code, timeout, expansion, replaced variables and option-free path");
     puts("PASS service API/executor: queued plan and persistence before launch, stale start cancellation, responsive cached reads, admitted-I/O cleanup, deleted-definition controls, frozen target, expiry, queue rejection and unknown remote state");
 }
 '''
-build=Path('/tmp/tianshan-service-runs-tests');build.mkdir(exist_ok=True);(build/'service_control.c').write_text(code)
+build=Path(os.environ.get('SERVICE_TEST_BUILD','/tmp/tianshan-service-runs-tests'));build.mkdir(exist_ok=True);(build/'service_control.c').write_text(code)
 args=['cc','-std=c11','-D_DEFAULT_SOURCE','-g','-fsanitize=address,undefined','-Wno-deprecated-declarations']
 for path in ['tests/runtime/state_stubs','tests/runtime/ssh_stubs','tests/runtime/stubs','tests/runtime/storage_stubs','tests/certificate/stubs','components/ts_security/include','components/ts_automation/include','components/ts_automation/src','components/ts_api/include',str(sdk)]:args+=['-I'+path]
-args += [str(build/'service_control.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_run_store.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c',str(sdk/'cJSON.c'),'-lpthread','-lm','-o',str(build/'service_control')]
+args += [str(build/'service_control.c'),'components/ts_security/src/ts_ssh_service.c','components/ts_security/src/ts_ssh_run_store.c','components/ts_security/src/ts_ssh_log_watch.c','components/ts_security/src/ts_ssh_probe.c','components/ts_security/src/ts_ssh_pattern.c',str(sdk/'cJSON.c'),'-lpthread','-lm','-o',str(build/'service_control')]
 subprocess.run(args,check=True);subprocess.run([str(build/'service_control')],check=True)

@@ -547,6 +547,20 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 .data-table>.table-body{display:contents}
 .data-table .table-message{display:block}
 .data-table[hidden]{display:none}
+/* Automation tables share every track and align their contents to its left edge. */
+.page-automation{--automation-columns:minmax(200px,1.05fr) minmax(240px,1.5fr) repeat(4,96px) 130px}
+.automation-table .data-table{column-gap:20px;padding:0 16px}
+.automation-table .tr{column-gap:20px;padding:0;min-height:52px}
+.automation-table .tr>div{min-width:0;padding:10px 0;line-height:20px;font-variant-numeric:tabular-nums}
+.automation-table .tr.th{min-height:36px}
+.automation-table .tr.th>div{padding:8px 0;line-height:18px}
+.automation-table .tr .act{justify-content:flex-start}
+.automation-table-six .tr>:nth-child(5){grid-column:5/7}
+.automation-table-six .tr>:last-child{grid-column:7}
+.automation-table .automation-switch-cell,.automation-table .automation-name{display:flex;align-items:center}
+.automation-table .automation-name{min-width:0;gap:8px}
+.automation-table .automation-name>.tag{flex:none}
+.automation-table .table-clip{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .action-type-grid{grid-auto-rows:1fr;align-items:stretch}
 .action-type-grid>.tile{height:100%}
 .command-icon,.inline-icon{display:inline-flex;align-items:center;justify-content:center}

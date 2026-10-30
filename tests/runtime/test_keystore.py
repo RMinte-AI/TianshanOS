@@ -36,6 +36,13 @@ prefix=r'''
 #define TS_API_MALLOC malloc
 typedef struct {size_t content_len,query_len;} test_http_req_t;
 typedef struct {const char *uri;const char *body;size_t body_len;int method;test_http_req_t *req;} ts_http_request_t;
+/* This suite uses an authenticated caller; role boundaries have their own suite. */
+enum { TS_PERM_READ=1, TS_PERM_ROOT=4 };
+static esp_err_t check_auth(ts_http_request_t *req,uint32_t *session,int required) {(void)req;(void)required;*session=1;return ESP_OK;}
+cJSON *ts_api_get_info(const char *name) {
+ (void)name;cJSON *info=cJSON_CreateObject();cJSON_AddBoolToObject(info,"requires_auth",true);return info;
+}
+esp_err_t ts_storage_check_write_path(const char *path,bool internal) {(void)path;(void)internal;assert(!"unexpected storage read in keystore test");return ESP_FAIL;}
 static size_t httpd_req_get_url_query_len(void *p){return p?((test_http_req_t *)p)->query_len:0;}
 static esp_err_t httpd_req_get_url_query_str(void *p,char *b,size_t n){return ESP_FAIL;}
 esp_err_t ts_http_send_json(ts_http_request_t *,int,const char *);
@@ -200,7 +207,8 @@ int main(int argc,char **argv){
   fail_key="new_meta";fail_write_at=1;assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(cJSON_GetObjectItem(response,"data")&&cJSON_GetObjectItem(response,"code")->valueint!=0);cJSON_Delete(response);absent("new");
   reset();assert(api_handler(&req,NULL)==ESP_OK);assert(find("new_priv"));response=cJSON_Parse(sent_json);assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"generated")));cJSON_Delete(response);
   req.uri="/api/v1/other/endpoint";assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(send_status==200&&cJSON_GetObjectItem(response,"code")->valueint==TS_API_ERR_INTERNAL);assert(!strcmp(cJSON_GetObjectItem(response,"error")->valuestring,"fixture")&&!cJSON_GetObjectItem(response,"message"));/* generic failures carry the handler's details (e.g. the host-key fingerprint of ssh.exec) */assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"failure_details")));cJSON_Delete(response);
-  req.uri="/api/v1/key/generate";cJSON_Hooks fail_request={always_fail,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
+  /* Policy metadata uses three allocations before the request object. */
+  req.uri="/api/v1/key/generate";json_alloc_count=0;json_fail_at=4;cJSON_Hooks fail_request={fail_one_json_alloc,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   r=(ts_api_result_t){.code=0,.data=cJSON_CreateObject()};cJSON_AddBoolToObject(r.data,"generated",true);cJSON_Hooks hooks={always_fail,free};cJSON_InitHooks(&hooks);send_key_generate_result(NULL,&r,"test",0);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   const char *invalid[]={"{\"tscfg\":\"{}\\u0000tail\"}","{\"preview\":true,\"preview\":false}","{} {}","[]"};
   test_http_req_t native={0};req=(ts_http_request_t){.uri="/api/v1/automation/rules/import",.req=&native};

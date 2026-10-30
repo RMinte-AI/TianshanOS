@@ -447,6 +447,7 @@ static bool rule_dependencies_same(const ts_auto_rule_t *rule,const ts_auto_docu
             const ts_ssh_command_config_t *a=binding_definition(previous,TS_AUTO_CONFIG_COMMAND,action->ssh_ref.cmd_id);
             const ts_ssh_command_config_t *b=binding_definition(next,TS_AUTO_CONFIG_COMMAND,action->ssh_ref.cmd_id);
             if(!a||!b||memcmp(a,b,offsetof(ts_ssh_command_config_t,last_exec_time)))return false;
+            if(a->object_id[0]&&strcmp(a->object_id,b->object_id))return false;
             host=b->host_id;
         }else if(action->type==TS_AUTO_ACT_SSH_CMD)host=action->ssh.host_ref;
         if(host){
@@ -471,6 +472,11 @@ void ts_rule_config_publish(ts_rule_config_view_t *view, bool enabled,
             if (same_config(&s_rule_ctx.rules[old], next)&&rule_dependencies_same(next,previous,document)) {
                 next->instance = s_rule_ctx.rules[old].instance;
                 metadata[i] = s_rule_ctx.meta[old];
+            } else if (s_rule_ctx.meta[old].start.state &&
+                       strcmp(s_rule_ctx.meta[old].start.state, "manual")) {
+                /* Only an unsuccessful automatic episode discards its old
+                 * cooldown when the definition changes. */
+                next->last_trigger_ms = 0;
             }
         }
         if (!next->instance) next->instance = ++s_rule_ctx.next_instance;

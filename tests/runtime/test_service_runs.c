@@ -54,6 +54,7 @@ static ts_ssh_host_config_t current_host;
 static unsigned execution_pauses;
 static bool definition_present=true;static uint64_t epoch=1,host_instance=5,variable_instance=9,template_instance=11;
 static unsigned timestamp_writes,exit_code_writes;static unsigned variable_writes,connections,launches;static char status_value[16];
+static char extracted_value[128],host_value[64];static bool expect_value,fail_value;static int last_exit_code;
 static pthread_mutex_t registry_gate=PTHREAD_MUTEX_INITIALIZER;
 void ts_variable_registration_begin(void){pthread_mutex_lock(&registry_gate);}
 void ts_variable_registration_end(void){pthread_mutex_unlock(&registry_gate);}
@@ -64,8 +65,9 @@ bool ts_auto_config_template_current(uint64_t instance){return instance==templat
 bool ts_auto_config_command_current(const char *id,uint64_t instance){return definition_present&&!strcmp(command.id,id)&&command.instance==instance;}
 bool ts_rule_instance_current(uint32_t instance){return definition_present&&instance==7;}
 uint64_t ts_variable_instance(const char *name){(void)name;return definition_present?variable_instance:0;}
-esp_err_t ts_variable_set_string(const char *name,const char *value){assert(!strcmp(name,"job.status"));++variable_writes;strcpy(status_value,value);return ESP_OK;}
-esp_err_t ts_variable_set_int(const char *name,int32_t value){(void)value;if(!strcmp(name,"job.timestamp"))++timestamp_writes;else if(!strcmp(name,"job.exit_code"))++exit_code_writes;else assert(!strcmp(name,"job.ready_time"));++variable_writes;return ESP_OK;}
+esp_err_t ts_variable_set_string(const char *name,const char *value){if(!strcmp(name,"job.status"))snprintf(status_value,sizeof(status_value),"%s",value);else if(!strcmp(name,"job.extracted"))snprintf(extracted_value,sizeof(extracted_value),"%s",value);else if(!strcmp(name,"job.host"))snprintf(host_value,sizeof(host_value),"%s",value);else assert(false);++variable_writes;return ESP_OK;}
+esp_err_t ts_variable_set_int(const char *name,int32_t value){if(!strcmp(name,"job.timestamp"))++timestamp_writes;else if(!strcmp(name,"job.exit_code")){++exit_code_writes;last_exit_code=value;}else assert(!strcmp(name,"job.ready_time"));++variable_writes;return ESP_OK;}
+esp_err_t ts_variable_set_bool(const char *name,bool value){if(!strcmp(name,"job.expect_matched"))expect_value=value;else if(!strcmp(name,"job.fail_matched"))fail_value=value;else assert(false);++variable_writes;return ESP_OK;}
 esp_err_t ts_ssh_commands_config_get(const char *id,ts_ssh_command_config_t *out)
 {if(!definition_present||strcmp(command.id,id))return ESP_ERR_NOT_FOUND;*out=command;return ESP_OK;}
 esp_err_t ts_ssh_hosts_config_get(const char *id,ts_ssh_host_config_t *out)
@@ -75,6 +77,9 @@ esp_err_t ts_keystore_load_private_key(const char *id,char **key,size_t *length)
 {assert(!strcmp(id,"original-key"));if(missing_key)return ESP_ERR_NOT_FOUND;*key=strdup("PRIVATE SYNTHETIC MATERIAL");*length=strlen(*key);return ESP_OK;}
 struct ts_ssh_session_s {char host[64],username[32];};
 static char last_target[64],last_command[8192],launched_command[8192];static bool remote_running,fail_transport,invalidate_on_log,ready_log=true;
+static const char *verify_during_log;
+static unsigned log_reads;
+static esp_err_t control(const char *id,ts_service_operation_t kind);
 static char identity[96]="abcd-1234:123:456";
 esp_err_t ts_ssh_session_create(const ts_ssh_config_t *cfg,ts_ssh_session_t *out)
 {*out=calloc(1,sizeof(**out));strcpy((*out)->host,cfg->host);strcpy((*out)->username,cfg->username);return ESP_OK;}
@@ -96,7 +101,13 @@ esp_err_t ts_ssh_exec(ts_ssh_session_t session,const char *text,ts_ssh_exec_resu
     if(!strncmp(text,"mkdir /tmp/ts_nohup_",20)){
         bool saved=false;for(unsigned i=0;i<TS_SSH_RUNS_MAX;++i)if(stored_size[i])saved=true;
         assert(saved);strcpy(launched_command,text);++launches;remote_running=true;snprintf(response,sizeof(response),"STARTED %s\n",identity);token=response;
-    }else if(strstr(text,"grep -qF")){if(invalidate_on_log){++epoch;invalidate_on_log=false;}token=ready_log?"READY\n":"WAITING\n";}
+    }else if(strstr(text,"grep -qF")){
+        ++log_reads;
+        if(invalidate_on_log){++epoch;invalidate_on_log=false;}
+        if(verify_during_log){const char *id=verify_during_log;verify_during_log=NULL;fail_transport=true;
+            assert(control(id,TS_SERVICE_VERIFY)==ESP_ERR_TIMEOUT);fail_transport=false;}
+        token=ready_log?"READY\n":"WAITING\n";
+    }
     else if(strstr(text,"kill -TERM")){remote_running=false;token="STOPPED\n";}
     else{snprintf(response,sizeof(response),"RUNNING %s\n",identity);token=remote_running?response:"STOPPED\n";}
     result->stdout_data=strdup(token);result->stdout_len=strlen(token);return ESP_OK;
@@ -169,6 +180,7 @@ static int real_remote_cases(void)
 int main(void)
 {
     strcpy(command.id,"command");strcpy(command.host_id,"host");strcpy(command.name,"job");strcpy(command.var_name,"job");
+    strcpy(command.object_id,"aaaaaaaaaaaaaaaaaaaaaaaa");
     command.instance=3;command.enabled=command.nohup=true; /* ordinary nohup is managed too */
     strcpy(current_host.id,"host");strcpy(current_host.host,"192.0.2.8");strcpy(current_host.username,"original-user");strcpy(current_host.keyid,"original-key");current_host.port=22;
     assert(ts_ssh_service_init()==ESP_OK&&ts_ssh_log_watch_init()==ESP_OK);
@@ -187,9 +199,9 @@ int main(void)
     assert(ts_ssh_service_check_start(command.id,&current_host,NULL,0,&reason)==ESP_ERR_INVALID_STATE);
     assert(!strcmp(cached(id).state,"ready")&&cached(id).generation==status.generation);
     char selected[TS_SSH_RUN_ID_MAX];ts_ssh_service_status_t projected;
-    assert(ts_ssh_service_current(command.id,&current_host,command.instance,selected,&projected)&&!strcmp(selected,id));
-    assert(!ts_ssh_service_current(command.id,&current_host,command.instance+1,selected,&projected));
-    assert(ts_ssh_service_current(command.id,&current_host,0,selected,&projected)&&!strcmp(projected.state,"ready"));
+    assert(ts_ssh_service_current(command.id,&current_host,command.instance,command.object_id,selected,&projected)&&!strcmp(selected,id));
+    assert(!ts_ssh_service_current(command.id,&current_host,command.instance+1,"bbbbbbbbbbbbbbbbbbbbbbbb",selected,&projected));
+    assert(ts_ssh_service_current(command.id,&current_host,0,NULL,selected,&projected)&&!strcmp(projected.state,"ready"));
     unsigned before=variable_writes;++template_instance;
     ++execution_pauses; /* Pausing new automation must not freeze a live service lamp. */
     ts_ssh_service_observe(id,status.generation,"ready");assert(variable_writes>before&&!strcmp(status_value,"ready"));before=variable_writes;
@@ -205,7 +217,13 @@ int main(void)
     assert(!strcmp(cached(id).operation_reason,"ssh_connect_timeout"));
     fail_transport=false;assert(control(id,TS_SERVICE_VERIFY)==ESP_OK&&!cached(id).operation_reason[0]);
     reboot_registry();status=cached(id);assert(!strcmp(status.state,"unknown")&&!strcmp(status.source,"restart")&&!status.busy&&!status.operation_id);
-    assert(ts_ssh_service_current(command.id,&saved.host,command.instance,selected,&projected)&&!strcmp(projected.state,"unknown"));
+    assert(ts_ssh_service_current(command.id,&saved.host,command.instance,saved.command_object_id,selected,&projected)&&!strcmp(projected.state,"unknown"));
+    assert(!ts_ssh_service_current(command.id,&saved.host,command.instance,"bbbbbbbbbbbbbbbbbbbbbbbb",selected,&projected));
+    /* The old wire format has no object identity: retain it for explicit control,
+     * but never claim that it belongs to a newly created same-ID command. */
+    assert(stored_size[0]>25);stored_size[0]-=25;stored[0][0]=1;
+    reboot_registry();assert(ts_ssh_service_get(0,&saved,&status)==ESP_OK&&!saved.command_object_id[0]);
+    assert(!ts_ssh_service_current(command.id,&saved.host,command.instance,command.object_id,selected,&projected));
     assert(control(id,TS_SERVICE_VERIFY)==ESP_OK&&variable_writes==before);
     assert(control(id,TS_SERVICE_STOP)==ESP_OK&&!remote_running&&!durable_count());
 
@@ -219,6 +237,26 @@ int main(void)
     strcpy(current_host.host,"192.0.2.8");launches=0;start(id,true);assert(durable_count()==1);
     reboot_registry();assert(control(id,TS_SERVICE_VERIFY)==ESP_OK&&remote_running);
     assert(control(id,TS_SERVICE_STOP)==ESP_OK&&!durable_count());
+
+    /* A log read that started before a failed verification cannot overwrite it.
+     * A later valid log read may still establish readiness. */
+    launches=0;start(id,false);status=cached(id);uint64_t revision;
+    assert(ts_ssh_service_observation_begin(id,status.generation,&revision));
+    fail_transport=true;assert(control(id,TS_SERVICE_VERIFY)==ESP_ERR_TIMEOUT);fail_transport=false;
+    assert(!strcmp(cached(id).state,"unknown"));
+    assert(!ts_ssh_service_observe_at(id,status.generation,revision,"ready")&&!strcmp(cached(id).state,"unknown"));
+    assert(ts_ssh_service_observation_begin(id,status.generation,&revision));
+    assert(ts_ssh_service_observe_at(id,status.generation,revision,"ready"));
+    assert(control(id,TS_SERVICE_VERIFY)==ESP_OK&&!strcmp(cached(id).state,"ready"));
+    assert(control(id,TS_SERVICE_STOP)==ESP_OK);
+
+    launches=0;start(id,false);status=cached(id);
+    ts_ssh_log_watch_config_t retry_watch={.run_generation=status.generation,.timeout_sec=1,.check_interval_ms=1};
+    strcpy(retry_watch.run_id,id);strcpy(retry_watch.ready_pattern,"ready");
+    verify_during_log=id;log_reads=0;ts_ssh_log_watch_handle_t retry_handle;
+    assert(ts_ssh_log_watch_start(&retry_watch,&retry_handle)==ESP_OK);join_tasks();
+    assert(log_reads>=2&&!strcmp(cached(id).state,"ready"));
+    assert(control(id,TS_SERVICE_STOP)==ESP_OK);
 
     /* Delayed log completion updates the old run, never the new source's vars. */
     launches=0;start(id,false);status=cached(id);before=variable_writes;

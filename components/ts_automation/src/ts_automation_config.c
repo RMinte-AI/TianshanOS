@@ -5,6 +5,7 @@
 #include "ts_automation_migrate.h"
 #include "ts_automation_runtime.h"
 #include "ts_rule_codec.h"
+#include "ts_ssh_config_codec.h"
 #include "ts_ssh_service.h"
 #include "ts_storage.h"
 #include "ts_crypto.h"
@@ -13,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -335,9 +337,61 @@ static bool explicit_pause(const cJSON *json)
 
 typedef enum { PREPARE_EDIT, PREPARE_LOAD, PREPARE_INSTALL, PREPARE_FORCE } prepare_mode_t;
 
+static const cJSON *row_id(const cJSON *array, const char *key, const char *id);
+
+static void new_command_object_id(char out[25])
+{
+    uint8_t random[12];
+    esp_fill_random(random, sizeof(random));
+    for (unsigned i = 0; i < sizeof(random); ++i) snprintf(out + 2 * i, 3, "%02x", random[i]);
+}
+
+/* Store identity with the definition, so a reboot or a saved source switch
+ * retains it. Compare the same command and host fields as runtime publication. */
+static esp_err_t command_object_ids(cJSON *json, prepare_mode_t mode)
+{
+    cJSON *commands = cJSON_GetObjectItemCaseSensitive(json, ts_auto_config_collection(TS_AUTO_CONFIG_COMMAND));
+    const cJSON *hosts = cJSON_GetObjectItemCaseSensitive(json, ts_auto_config_collection(TS_AUTO_CONFIG_HOST));
+    const cJSON *old_json = s_config.current ? s_config.current->json : NULL;
+    const cJSON *old_commands = cJSON_GetObjectItemCaseSensitive(old_json, ts_auto_config_collection(TS_AUTO_CONFIG_COMMAND));
+    const cJSON *old_hosts = cJSON_GetObjectItemCaseSensitive(old_json, ts_auto_config_collection(TS_AUTO_CONFIG_HOST));
+    if (!cJSON_GetArraySize(commands)) return ESP_OK;
+    /* Two command definitions exceed half of the HTTP server's stack. */
+    ts_ssh_command_config_t *definitions = heap_caps_malloc(2 * sizeof(*definitions), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!definitions) definitions = malloc(2 * sizeof(*definitions));
+    if (!definitions) return ESP_ERR_NO_MEM;
+    ts_ssh_command_config_t *next = &definitions[0], *previous = &definitions[1];
+    esp_err_t result = ESP_OK;
+    cJSON *row;
+    cJSON_ArrayForEach(row, commands) {
+        if (ts_ssh_command_decode(row, next) != ESP_OK) continue; /* Force deletion still accepts invalid drafts. */
+        char object_id[25] = {0};
+        if (mode == PREPARE_INSTALL) {
+            strcpy(object_id, next->object_id);
+        } else {
+            const cJSON *old = row_id(old_commands, "id", next->id);
+            if (old && ts_ssh_command_decode(old, previous) == ESP_OK &&
+                !memcmp(next, previous, offsetof(ts_ssh_command_config_t, last_exec_time))) {
+                const cJSON *a = row_id(hosts, "id", next->host_id), *b = row_id(old_hosts, "id", next->host_id);
+                bool same_host = !a && !b;
+                if (a && b) {
+                    ts_ssh_host_config_t new_host, old_host;
+                    same_host = ts_ssh_host_decode(a, &new_host) == ESP_OK &&
+                        ts_ssh_host_decode(b, &old_host) == ESP_OK && !memcmp(&new_host, &old_host, sizeof(new_host));
+                }
+                if (same_host) strcpy(object_id, previous->object_id);
+            }
+        }
+        if (!object_id[0]) new_command_object_id(object_id);
+        if (!set(row, "_object_id", cJSON_CreateString(object_id))) { result = ESP_ERR_NO_MEM; break; }
+    }
+    free(definitions);
+    return result;
+}
+
 static void strip_row_metadata(cJSON *row)
 {
-    const char *fields[]={"revision","_package","created_at","created_time"};
+    const char *fields[]={"revision","_package","created_at","created_time","_object_id"};
     for(unsigned i=0;i<sizeof(fields)/sizeof(fields[0]);++i)cJSON_DeleteItemFromObjectCaseSensitive(row,fields[i]);
 }
 
@@ -368,6 +422,10 @@ static esp_err_t prepare(cJSON *json, prepare_mode_t mode, ts_auto_config_source
 {
     *out = NULL;
     *runtime = (prepared_runtime_t){0};
+    if (mode != PREPARE_LOAD && command_object_ids(json, mode) != ESP_OK) {
+        cJSON_Delete(json);
+        return fail(error, "out_of_memory", ESP_ERR_NO_MEM);
+    }
     ts_auto_config_view_t *view = heap_caps_calloc(1, sizeof(*view), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!view) { cJSON_Delete(json); return fail(error, "out_of_memory", ESP_ERR_NO_MEM); }
     view->json = json;
@@ -460,6 +518,8 @@ static void publish(ts_auto_config_view_t *view, prepared_runtime_t *runtime, ts
             /* Both structures came from zero-initialized definition decoders.
              * Runtime time/identity fields follow this definition prefix. */
             if (!memcmp(command, &previous->commands[j], offsetof(ts_ssh_command_config_t, last_exec_time))) {
+                if (previous->commands[j].object_id[0] &&
+                    strcmp(command->object_id, previous->commands[j].object_id)) continue;
                 uint64_t before_host=0,after_host=0;
                 for(int h=0;h<previous->host_count;++h)if(!strcmp(previous->hosts[h].id,command->host_id))before_host=old->host_instances[h];
                 for(int h=0;h<next->host_count;++h)if(!strcmp(next->hosts[h].id,command->host_id))after_host=view->host_instances[h];

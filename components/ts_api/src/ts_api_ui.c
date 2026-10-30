@@ -35,15 +35,15 @@
 
 /**
  * @brief 从 NVS 加载 widgets 配置
- * @return cJSON* 配置对象，失败返回 NULL（调用者负责释放）
+ * @return ESP_ERR_NVS_NOT_FOUND only when the configuration does not exist.
  */
-static cJSON *load_widgets_from_nvs(void)
+static esp_err_t load_widgets_from_nvs(cJSON **out)
 {
+    *out = NULL;
     nvs_handle_t handle;
     esp_err_t ret = nvs_open(UI_WIDGETS_NVS_NS, NVS_READONLY, &handle);
     if (ret != ESP_OK) {
-        TS_LOGD(TAG, "NVS namespace not found");
-        return NULL;
+        return ret;
     }
     
     /* 获取数据大小 */
@@ -51,7 +51,7 @@ static cJSON *load_widgets_from_nvs(void)
     ret = nvs_get_blob(handle, UI_WIDGETS_NVS_KEY, NULL, &size);
     if (ret != ESP_OK || size == 0) {
         nvs_close(handle);
-        return NULL;
+        return ret == ESP_OK ? ESP_ERR_INVALID_RESPONSE : ret;
     }
     
     /* 读取数据 */
@@ -61,7 +61,7 @@ static cJSON *load_widgets_from_nvs(void)
     }
     if (!content) {
         nvs_close(handle);
-        return NULL;
+        return ESP_ERR_NO_MEM;
     }
     
     ret = nvs_get_blob(handle, UI_WIDGETS_NVS_KEY, content, &size);
@@ -69,7 +69,7 @@ static cJSON *load_widgets_from_nvs(void)
     
     if (ret != ESP_OK) {
         free(content);
-        return NULL;
+        return ret;
     }
     content[size] = '\0';
     
@@ -77,13 +77,15 @@ static cJSON *load_widgets_from_nvs(void)
     cJSON *json = cJSON_Parse(content);
     free(content);
     
-    if (!json) {
+    if (!cJSON_IsObject(json) || !cJSON_IsArray(cJSON_GetObjectItem(json, "widgets"))) {
+        cJSON_Delete(json);
         TS_LOGW(TAG, "Failed to parse NVS config");
-        return NULL;
+        return ESP_ERR_INVALID_RESPONSE;
     }
     
     TS_LOGI(TAG, "Loaded widgets from NVS");
-    return json;
+    *out = json;
+    return ESP_OK;
 }
 
 /**
@@ -154,37 +156,35 @@ static esp_err_t api_ui_widgets_get(const cJSON *params, ts_api_result_t *result
     cJSON *config = NULL;
     const char *source = "default";
     
-    config = load_widgets_from_nvs();
-    if (config) source = "nvs";
+    esp_err_t ret = load_widgets_from_nvs(&config);
+    if (ret == ESP_OK) source = "nvs";
+    else if (ret != ESP_ERR_NVS_NOT_FOUND) {
+        ts_api_result_error(result, ret == ESP_ERR_NO_MEM ? TS_API_ERR_NO_MEM : TS_API_ERR_INTERNAL,
+                            "widgets_load_failed");
+        return ret;
+    }
 
     /* 构建响应 */
     cJSON *data = cJSON_CreateObject();
-    
-    if (config) {
-        /* 提取 widgets 数组 */
-        cJSON *widgets = cJSON_GetObjectItem(config, "widgets");
-        if (widgets && cJSON_IsArray(widgets)) {
-            cJSON_AddItemToObject(data, "widgets", cJSON_Duplicate(widgets, true));
-        } else {
-            cJSON_AddArrayToObject(data, "widgets");
-        }
-        
-        /* 提取刷新间隔 */
-        cJSON *interval = cJSON_GetObjectItem(config, "refresh_interval");
-        if (interval && cJSON_IsNumber(interval)) {
-            cJSON_AddNumberToObject(data, "refresh_interval", interval->valueint);
-        } else {
-            cJSON_AddNumberToObject(data, "refresh_interval", 5000);
-        }
-        
+    if (!data) {
         cJSON_Delete(config);
-    } else {
-        /* 默认空配置 */
-        cJSON_AddArrayToObject(data, "widgets");
-        cJSON_AddNumberToObject(data, "refresh_interval", 5000);
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "widgets_load_failed");
+        return ESP_ERR_NO_MEM;
     }
     
-    cJSON_AddStringToObject(data, "source", source);
+    const cJSON *widgets = config ? cJSON_GetObjectItem(config, "widgets") : NULL;
+    const cJSON *interval = config ? cJSON_GetObjectItem(config, "refresh_interval") : NULL;
+    cJSON *copy = widgets ? cJSON_Duplicate(widgets, true) : cJSON_CreateArray();
+    bool built = copy && cJSON_AddItemToObject(data, "widgets", copy);
+    if (!built) cJSON_Delete(copy);
+    built = built && cJSON_AddNumberToObject(data, "refresh_interval", cJSON_IsNumber(interval) ? interval->valueint : 5000);
+    built = built && cJSON_AddStringToObject(data, "source", source);
+    cJSON_Delete(config);
+    if (!built) {
+        cJSON_Delete(data);
+        ts_api_result_error(result, TS_API_ERR_NO_MEM, "widgets_load_failed");
+        return ESP_ERR_NO_MEM;
+    }
     
     ts_api_result_ok(result, data);
     TS_LOGI(TAG, "Loaded UI widgets config (source: %s)", source);

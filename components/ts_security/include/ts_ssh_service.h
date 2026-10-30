@@ -33,6 +33,7 @@ typedef struct {
     char rule[TS_AUTO_NAME_MAX_LEN], config_version[33];
     ts_ssh_host_config_t host;
     char variable[TS_SSH_CMD_VARNAME_MAX], locator[32], instance[96];
+    char command_object_id[25];
     ts_ssh_run_kind_t kind;
 } ts_ssh_run_record_t;
 /* In-memory publication permission. epoch is configuration binding ownership,
@@ -76,13 +77,16 @@ esp_err_t ts_ssh_service_cached(const char *run_id, ts_ssh_service_status_t *out
 /* Cached run on a target. A nonzero definition instance scopes display state;
  * zero checks physical runs across definition changes for duplicate admission. */
 bool ts_ssh_service_current(const char *command_id,const ts_ssh_host_config_t *host,
-    uint64_t command_instance,char run_id[TS_SSH_RUN_ID_MAX],ts_ssh_service_status_t *status);
+    uint64_t command_instance,const char *command_object_id,
+    char run_id[TS_SSH_RUN_ID_MAX],ts_ssh_service_status_t *status);
 esp_err_t ts_ssh_service_get(unsigned slot, ts_ssh_run_record_t *record, ts_ssh_service_status_t *status);
 esp_err_t ts_ssh_service_target(const char *run_id, uint32_t generation,
     ts_ssh_host_config_t *host, char log_file[256]);
 esp_err_t ts_ssh_service_verify_instance(const char *run_id, uint32_t generation, ts_ssh_session_t session);
 bool ts_ssh_service_observation_valid(const char *run_id, uint32_t generation);
 void ts_ssh_service_observe(const char *run_id, uint32_t generation, const char *state);
+bool ts_ssh_service_observation_begin(const char *run_id, uint32_t generation, uint64_t *revision);
+bool ts_ssh_service_observe_at(const char *run_id, uint32_t generation, uint64_t revision, const char *state);
 void ts_ssh_service_cancel_observation(const char *run_id, uint32_t generation);
 /* Connect using the frozen target and key reference. Caller owns session/key. */
 esp_err_t ts_ssh_service_connect(const ts_ssh_host_config_t *host, ts_ssh_session_t *session,

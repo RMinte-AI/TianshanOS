@@ -57,6 +57,7 @@ test('foreground commands keep the streaming execution path',async()=>{
   await page.evaluate(()=>loadCommandsPage());await page.evaluate(()=>selectHost('host-one'));await page.evaluate(()=>executeCommand(2));
   assert.equal(d.state.starts.length,0);
   const stream=calls.find(c=>c.endpoint==='ssh/exec_stream');assert.equal(stream.params.command,'printf direct');
+  assert.equal(stream.params.command_id,'foreground');assert.equal(stream.params.command_instance,'0000000000000011');
  });
 });
 test('cached refresh preserves open details and keyboard focus, without remote verification',async()=>{

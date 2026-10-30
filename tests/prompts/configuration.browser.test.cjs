@@ -3,6 +3,34 @@ const fs = require('node:fs'), path = require('node:path');
 const kit = require('./pagekit.cjs');
 const {fixture, version, named} = require('./configuration-fixture.cjs');
 kit.install();
+for (const language of ['zh-CN','en-US']) test(`${language}: automation tables align columns and keep controls inside their cells`, async () => {
+    const d = fixture();
+    const respond = call => call.endpoint === 'automation/sources/list'
+        ? {code:0,data:{...d.status(),sources:[{id:'source-with-a-long-name-for-alignment',label:'Source label',type:'rest',enabled:true,poll_interval_ms:1000}]}}
+        : d.respond(call);
+    await kit.withPage(language, respond, async ({page}) => {
+        for (const width of [390,1440]) {
+            await page.setViewportSize({width,height:900});
+            await automation(page);
+            const tables = await page.evaluate(() => ['sources-list','rules-list','actions-list'].map(id => {
+                const card = document.getElementById(id), header = card.querySelector('.tr.th');
+                const left = card.getBoundingClientRect().left;
+                return {
+                    columns:[...header.children].slice(0,4).map(e => e.getBoundingClientRect().left-left),
+                    operations:header.lastElementChild.getBoundingClientRect().left-left,
+                    controlsFit:[...card.querySelectorAll('.tr:not(.th) .act')].every(cell =>
+                        [...cell.querySelectorAll('button')].every(button => button.getBoundingClientRect().right <= cell.getBoundingClientRect().right+.5))
+                };
+            }));
+            for (const table of tables) {
+                assert(table.controlsFit, 'operation buttons stay inside their shared column');
+                table.columns.forEach((left,i) => assert(Math.abs(left-tables[0].columns[i])<.5, 'matching columns align across all tables'));
+                assert(Math.abs(table.operations-tables[0].operations)<.5, 'operation columns align');
+            }
+            assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'table scrolling stays within the page');
+        }
+    });
+});
 async function automation(page) {
     await page.evaluate(() => loadAutomationPage());
     await page.waitForFunction(() => configurationList('actions')?.version);

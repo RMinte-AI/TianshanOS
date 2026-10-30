@@ -276,6 +276,11 @@ static cJSON *public_row(const ts_auto_config_view_t *view,ts_auto_config_kind_t
     const ts_auto_document_t *definitions=ts_auto_config_definitions(view);
     if(!definitions)cJSON_AddBoolToObject(item,"invalid",true);
     if(kind==TS_AUTO_CONFIG_COMMAND){
+        if (definitions && index < definitions->command_count) {
+            char instance[17];
+            snprintf(instance, sizeof(instance), "%016llx", (unsigned long long)definitions->commands[index].instance);
+            cJSON_AddStringToObject(item, "runtime_instance", instance);
+        }
         const char *const fields[][2]={{"expect_pattern","expectPattern"},{"fail_pattern","failPattern"},
             {"extract_pattern","extractPattern"},{"var_name","varName"},{"timeout_sec","timeout"},
             {"stop_on_match","stopOnMatch"},{"service_mode","serviceMode"},{"ready_pattern","readyPattern"},
@@ -426,6 +431,11 @@ static esp_err_t pack_item(cJSON *candidate,cJSON *changes,ts_auto_config_kind_t
     const char *created=kind==TS_AUTO_CONFIG_ACTION?"created_at":kind==TS_AUTO_CONFIG_COMMAND||kind==TS_AUTO_CONFIG_HOST?"created_time":NULL;
     const cJSON *stamp=created?cJSON_GetObjectItemCaseSensitive(old,created):NULL;
     if(ret==ESP_OK&&stamp&&!put(value,created,cJSON_Duplicate(stamp,true)))ret=ESP_ERR_NO_MEM;
+    if (kind == TS_AUTO_CONFIG_COMMAND) {
+        const cJSON *identity = cJSON_GetObjectItemCaseSensitive(old, "_object_id");
+        cJSON_DeleteItemFromObjectCaseSensitive(value, "_object_id");
+        if (ret == ESP_OK && identity && !put(value, "_object_id", cJSON_Duplicate(identity, true))) ret=ESP_ERR_NO_MEM;
+    }
     bool differs=index<0||!cJSON_Compare(old,value,true);
     if(ret==ESP_OK){
         cJSON *item=cJSON_CreateObject();

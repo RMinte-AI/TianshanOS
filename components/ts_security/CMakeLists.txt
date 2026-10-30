@@ -4,6 +4,7 @@ idf_component_register(
         "src/ts_crypto.c"
         "src/ts_auth.c"
         "src/ts_ssh_client.c"
+        "src/ts_ssh_pattern.c"
         "src/ts_sftp.c"
         "src/ts_scp.c"
         "src/ts_known_hosts.c"

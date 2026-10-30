@@ -46,7 +46,7 @@ typedef struct {
     char host[64];              /**< Hostname or IP */
     uint16_t port;              /**< Port number */
     ts_host_key_type_t type;    /**< Key type */
-    char fingerprint[64];       /**< SHA256 fingerprint (hex string) */
+    char fingerprint[65];       /**< 64 hex characters plus the terminator */
     uint32_t added_time;        /**< Unix timestamp when added */
 } ts_known_host_t;
 

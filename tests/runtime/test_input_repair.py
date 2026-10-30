@@ -53,7 +53,6 @@ void ts_led_preset_set_current_filter_config(const char *d,const ts_led_effect_c
 static int ts_console_exec(const char *cmd,void *out) { assert(strlen(cmd)<128);++cli_calls;return ESP_OK; }
 '''
 # The public API signatures remain real; only hardware/persistence interfaces are stubbed.
-code += extract(manager, 'ts_action_parse_color')
 code += r'''
 static FILE *resource_open(const char *path,const char *mode) {const char *root=getenv("RESOURCE_DIR");assert(root&&!strncmp(path,"/sdcard/",8));char full[512];snprintf(full,sizeof(full),"%s%s",root,path+7);return fopen(full,mode);}
 '''

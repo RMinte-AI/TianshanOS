@@ -864,6 +864,7 @@ static bool command_group_same(const ts_auto_document_t *next,const ts_auto_docu
         for(int j=0;j<previous->command_count;++j){
             const ts_ssh_command_config_t *old=&previous->commands[j];
             if(memcmp(command,old,offsetof(ts_ssh_command_config_t,last_exec_time)))continue;
+            if(old->object_id[0]&&strcmp(command->object_id,old->object_id))continue;
             const ts_ssh_host_config_t *a=definition_host(next,command->host_id),*b=definition_host(previous,old->host_id);
             matched=a&&b&&!memcmp(a,b,sizeof(*a));break;
         }

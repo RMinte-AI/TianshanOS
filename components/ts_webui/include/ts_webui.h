@@ -7,6 +7,7 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +77,8 @@ typedef struct {
     uint32_t max_output_size;      /**< 最大输出收集大小（0 = 默认 64KB）*/
     bool stop_on_match;            /**< 匹配成功后是否自动终止命令（用于 ping 等持续命令）*/
     const char *var_name;          /**< 变量名（用于存储结果到变量系统）*/
+    const char *command_id;        /**< 已保存命令的身份；临时命令为空 */
+    uint64_t command_instance;     /**< 发起时的命令实例 */
 } ts_webui_ssh_options_t;
 
 /**

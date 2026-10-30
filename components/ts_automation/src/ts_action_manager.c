@@ -102,6 +102,7 @@ typedef struct {
     ts_ssh_command_config_t command;
     ts_action_ssh_host_t host;
     uint64_t host_instance;
+    uint64_t result_instances[7];
     char owner_rule[TS_AUTO_NAME_MAX_LEN], config_version[33];
     char run_id[TS_SSH_RUN_ID_MAX];
     uint32_t control_id;
@@ -188,6 +189,15 @@ static esp_err_t snapshot_command(ts_auto_action_t *out, bool for_start, const c
     const char *failed="command_unavailable";
     if (ret == ESP_OK) {ret = ts_action_get_ssh_host(binding->command.host_id, &binding->host);failed="command_host_unavailable";}
     if(ret==ESP_OK)binding->host_instance=ts_auto_config_host_instance(binding->host.id);
+    if(ret==ESP_OK && !binding->command.nohup && binding->command.var_name[0] &&
+       (binding->command.expect_pattern[0] || binding->command.fail_pattern[0] || binding->command.extract_pattern[0])){
+        const char *suffixes[]={"status","exit_code","extracted","expect_matched","fail_matched","host","timestamp"};
+        char name[80];
+        for(unsigned i=0;i<7;++i){
+            snprintf(name,sizeof(name),"%s.%s",binding->command.var_name,suffixes[i]);
+            binding->result_instances[i]=ts_variable_instance(name);
+        }
+    }
     if (ret == ESP_OK && for_start && !binding->command.enabled) {ret = ESP_ERR_INVALID_STATE;failed="command_disabled";}
     ts_auto_config_status_t status;ts_auto_config_status(&status);
     strcpy(binding->config_version,status.active_version);
@@ -534,7 +544,7 @@ esp_err_t ts_action_manager_check_start(const ts_auto_action_t *action, ts_actio
         ts_ssh_host_config_t host={.port=binding->host.port};
         strcpy(host.host,binding->host.host);strcpy(host.username,binding->host.username);
         ts_ssh_service_status_t current;char run[TS_SSH_RUN_ID_MAX];
-        if(ts_ssh_service_current(binding->command.id,&host,0,run,&current)&&
+        if(ts_ssh_service_current(binding->command.id,&host,0,NULL,run,&current)&&
            (!strcmp(current.state,"running")||!strcmp(current.state,"ready"))){
             result->reason="service_already_running";return ESP_ERR_INVALID_STATE;
         }
@@ -1431,6 +1441,112 @@ static bool automatic_start_expired(void *context) {
     const ts_auto_action_t *action=context;
     return action->runtime_deadline_ms && esp_timer_get_time()/1000>=action->runtime_deadline_ms;
 }
+
+typedef struct {
+    ts_ssh_session_t session;
+    const ts_ssh_command_config_t *command;
+    char *output, *extracted;
+    size_t length, capacity;
+    bool match_found, expect_matched, fail_matched, stopped;
+} action_ssh_output_t;
+
+static void action_ssh_output(const char *data, size_t length, bool is_stderr, void *context)
+{
+    action_ssh_output_t *state=context;
+    (void)is_stderr;
+    size_t available=state->capacity-state->length-1;
+    size_t copied=length<available?length:available;
+    memcpy(state->output+state->length,data,copied);
+    state->length+=copied;
+    state->output[state->length]='\0';
+
+    const ts_ssh_command_config_t *cmd=state->command;
+    bool matched=false, first_extract=false;
+    if(!state->match_found && cmd->fail_pattern[0] &&
+       ts_ssh_pattern_match(state->output,cmd->fail_pattern,NULL)){
+        state->match_found=state->fail_matched=matched=true;
+    }
+    if(!state->match_found && cmd->expect_pattern[0] &&
+       ts_ssh_pattern_match(state->output,cmd->expect_pattern,NULL)){
+        state->match_found=state->expect_matched=matched=true;
+    }
+    if(cmd->extract_pattern[0]){
+        char *extracted=NULL;
+        if(ts_ssh_pattern_match(state->output,cmd->extract_pattern,&extracted) && extracted){
+            first_extract=state->extracted==NULL;
+            free(state->extracted);
+            state->extracted=extracted;
+        }
+    }
+    if(cmd->stop_on_match && (matched || first_extract)){
+        state->stopped=true;
+        ts_ssh_abort(state->session);
+    }
+}
+
+/* Only ordinary commands with saved matching options use streaming. Service
+ * launches and commands without these options retain their existing paths. */
+static esp_err_t exec_ssh_advanced(ts_ssh_session_t session, const char *command,
+                                   const action_binding_t *binding,
+                                   const ts_auto_action_t *origin, ts_action_result_t *result)
+{
+    const ts_ssh_command_config_t *cmd=&binding->command;
+    action_ssh_output_t state={.session=session,.command=cmd,.capacity=64*1024};
+    state.output=heap_caps_malloc(state.capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!state.output)state.output=malloc(state.capacity);
+    if(!state.output){
+        result->status=TS_ACTION_STATUS_FAILED;
+        snprintf(result->output,sizeof(result->output),"Out of memory");
+        return ESP_ERR_NO_MEM;
+    }
+    state.output[0]='\0';
+    int exit_code=-1;
+    esp_err_t ret=ts_ssh_exec_stream(session,command,action_ssh_output,&state,&exit_code);
+    const char *status;
+    if(ret==ESP_ERR_TIMEOUT && (state.stopped || state.match_found)){
+        status=state.fail_matched?"match_failed":"match_success";
+        ret=ESP_OK;
+    } else if(ret!=ESP_OK){
+        status=ret==ESP_ERR_TIMEOUT?"timeout":"failed";
+    } else if(exit_code!=0 && !state.match_found){
+        status="failed";
+    } else if(state.fail_matched){
+        status="match_failed";
+    } else if(cmd->expect_pattern[0]){
+        status=state.expect_matched?"match_success":"match_failed";
+    } else {
+        status=exit_code==0?"success":"failed";
+    }
+    result->exit_code=exit_code;
+    result->status=!strcmp(status,"success") || !strcmp(status,"match_success")
+                   ?TS_ACTION_STATUS_SUCCESS:!strcmp(status,"timeout")
+                   ?TS_ACTION_STATUS_TIMEOUT:TS_ACTION_STATUS_FAILED;
+    if(ret==ESP_OK)snprintf(result->output,sizeof(result->output),"%s",state.output);
+    else snprintf(result->output,sizeof(result->output),"SSH exec failed: %s",esp_err_to_name(ret));
+
+    if(cmd->var_name[0] && action_result_begin(origin)){
+        const char *suffixes[]={"status","exit_code","extracted","expect_matched","fail_matched","host","timestamp"};
+        char name[80];
+        for(unsigned i=0;i<7;++i){
+            snprintf(name,sizeof(name),"%s.%s",cmd->var_name,suffixes[i]);
+            if(!binding->result_instances[i] || ts_variable_instance(name)!=binding->result_instances[i])continue;
+            switch(i){
+                case 0: ts_variable_set_string(name,status); break;
+                case 1: ts_variable_set_int(name,exit_code); break;
+                case 2: ts_variable_set_string(name,state.extracted?state.extracted:""); break;
+                case 3: ts_variable_set_bool(name,state.expect_matched); break;
+                case 4: ts_variable_set_bool(name,state.fail_matched); break;
+                case 5: ts_variable_set_string(name,binding->host.host); break;
+                case 6: ts_variable_set_int(name,(int32_t)(esp_timer_get_time()/1000000)); break;
+            }
+        }
+        action_result_end();
+    }
+    free(state.extracted);
+    free(state.output);
+    return ret;
+}
+
 static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
                                     const action_binding_t *binding,const char *run_id, uint32_t launch_id, ts_action_result_t *result,const ts_auto_action_t *origin) {
     if (!ssh_ref || !result || !binding) {
@@ -1585,6 +1701,10 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
     const char *cmd_to_exec = cmd_config.nohup ? nohup_cmd : expanded_cmd;
     ESP_LOGD(TAG, "SSH execution: command=%s, bytes=%u", ssh_ref->cmd_id,
              (unsigned)strlen(cmd_to_exec));
+    if(!cmd_config.nohup &&
+       (cmd_config.expect_pattern[0] || cmd_config.fail_pattern[0] || cmd_config.extract_pattern[0])){
+        ret=exec_ssh_advanced(session,cmd_to_exec,binding,origin,result);
+    } else {
     ret = ts_ssh_exec(session, cmd_to_exec, &exec_result);
     if (run_generation) {
         esp_err_t finish=ts_ssh_service_finish(run_id,run_generation,
@@ -1670,6 +1790,7 @@ static esp_err_t exec_ssh_ref_bound(const ts_auto_action_ssh_ref_t *ssh_ref,
     }
 
     ts_ssh_exec_result_free(&exec_result);
+    }
     /* Cleanup */
     ts_ssh_disconnect(session);
     ts_ssh_session_destroy(session);

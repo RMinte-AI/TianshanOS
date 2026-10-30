@@ -78,6 +78,7 @@ cJSON *ts_ssh_command_encode(const ts_ssh_command_config_t *cfg)
     if (cfg->ready_timeout_sec > 0) if (!cJSON_AddNumberToObject(obj, "ready_timeout_sec", cfg->ready_timeout_sec)) goto failed;
     if (cfg->ready_check_interval_ms > 0) if (!cJSON_AddNumberToObject(obj, "ready_check_interval_ms", cfg->ready_check_interval_ms)) goto failed;
     if (!cJSON_AddNumberToObject(obj, "created_time", cfg->created_time)) goto failed;
+    if (cfg->object_id[0] && !cJSON_AddStringToObject(obj, "_object_id", cfg->object_id)) goto failed;
 
     return obj;
 failed:
@@ -92,6 +93,9 @@ esp_err_t ts_ssh_command_decode(const cJSON *obj, ts_ssh_command_config_t *cfg)
     cfg->enabled = true;
     cfg->timeout_sec = 30;
     STRING(id, NULL);
+    if (!read_string(obj, "_object_id", NULL, cfg->object_id, sizeof(cfg->object_id)) ||
+        (cfg->object_id[0] && (strlen(cfg->object_id) != 24 ||
+         strspn(cfg->object_id, "0123456789abcdef") != 24))) return ESP_ERR_INVALID_ARG;
     STRING(host_id, NULL);
     STRING(name, NULL);
     STRING(command, NULL);

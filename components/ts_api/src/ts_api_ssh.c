@@ -484,10 +484,28 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
     const cJSON *collect_output = cJSON_GetObjectItem(params, "collect_output");
     const cJSON *max_output_size = cJSON_GetObjectItem(params, "max_output_size");
     const cJSON *stop_on_match = cJSON_GetObjectItem(params, "stop_on_match");
+    const cJSON *command_id = cJSON_GetObjectItem(params, "command_id");
+    const cJSON *command_instance = cJSON_GetObjectItem(params, "command_instance");
+    uint64_t instance = 0;
+    if (command_id || command_instance) {
+        if (!cJSON_IsString(command_id) || !command_id->valuestring[0] ||
+            !cJSON_IsString(command_instance) || strlen(command_instance->valuestring) != 16) {
+            ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "invalid_command_instance");
+            return ESP_ERR_INVALID_ARG;
+        }
+        for (const char *p = command_instance->valuestring; *p; ++p) {
+            unsigned value;
+            if (*p >= '0' && *p <= '9') value = *p - '0';
+            else if (*p >= 'a' && *p <= 'f') value = *p - 'a' + 10;
+            else { ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "invalid_command_instance"); return ESP_ERR_INVALID_ARG; }
+            instance = (instance << 4) | value;
+        }
+        if (!instance) { ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "invalid_command_instance"); return ESP_ERR_INVALID_ARG; }
+    }
     
     /* 检查是否有任何可选参数 */
     bool has_options = (expect_pattern || fail_pattern || extract_pattern || var_name ||
-                        timeout || collect_output || max_output_size || stop_on_match);
+                        timeout || collect_output || max_output_size || stop_on_match || command_id);
     
     esp_err_t ret;
     uint32_t session_id = 0;
@@ -503,6 +521,8 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
                                    extract_pattern->valuestring : NULL;
         options.var_name = (var_name && cJSON_IsString(var_name)) ?
                             var_name->valuestring : NULL;
+        options.command_id = command_id ? command_id->valuestring : NULL;
+        options.command_instance = instance;
         options.timeout_ms = (timeout && cJSON_IsNumber(timeout)) ? 
                               (uint32_t)timeout->valueint : 0;
         options.collect_output = (collect_output && cJSON_IsBool(collect_output)) ? 
@@ -531,7 +551,9 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
     }
     
     if (ret != ESP_OK) {
-        if (ret == ESP_ERR_INVALID_STATE) {
+        if (ret == ESP_ERR_NOT_FOUND && command_id) {
+            ts_api_result_error(result, TS_API_ERR_BUSY, "configuration_changed");
+        } else if (ret == ESP_ERR_INVALID_STATE) {
             ts_api_result_error(result, TS_API_ERR_BUSY, "ssh_exec_busy");
         } else {
             ts_api_result_reason(result, TS_API_ERR_INTERNAL, "ssh_start_failed", esp_err_to_name(ret));

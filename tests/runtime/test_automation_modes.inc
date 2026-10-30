@@ -36,6 +36,10 @@ static void mode_cases(void)
     ts_auto_control_t control={.source=TS_AUTO_CONFIG_SD};assert(ts_auto_control_save(&control)==ESP_OK);
     mode_reboot();assert(ts_auto_config_startup(&error)==ESP_OK);
     assert(status().source==TS_AUTO_CONFIG_SD && status().configured && status().internal_valid && status().backup_matches);
+    ts_ssh_command_config_t persisted_before,persisted_after;
+    assert(ts_ssh_commands_config_get("cmd",&persisted_before)==ESP_OK&&strlen(persisted_before.object_id)==24);
+    mode_reboot();assert(ts_auto_config_startup(&error)==ESP_OK);
+    assert(ts_ssh_commands_config_get("cmd",&persisted_after)==ESP_OK&&!strcmp(persisted_before.object_id,persisted_after.object_id));
     unsigned probes=sd_probes;ts_auto_config_status_t before=status();assert(sd_probes==probes); /* GET does no I/O. */
     char internal[65],sd[65],changed[65];assert(ts_auto_file_fingerprint(TS_AUTO_FILE_INTERNAL,internal)==ESP_OK);
     mode_name("Edited on SD");assert(!status().backup_matches && status().comparison_known);

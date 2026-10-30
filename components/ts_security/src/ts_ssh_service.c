@@ -24,6 +24,7 @@ typedef struct {
     /* Readiness belongs to the observed process, independently of a control
      * operation's temporary state. Never restored from a historical record. */
     char readiness[16];
+    uint64_t observation_revision;
     uint32_t pending_control, operation;
 } service_t;
 static service_t *services;
@@ -144,6 +145,7 @@ static esp_err_t prepare(const ts_ssh_command_config_t *command,const ts_ssh_hos
             if(&services[i]!=s&&!strcmp(services[i].record.run_id,s->record.run_id)){ret=ESP_ERR_INVALID_STATE;if(reason)*reason="service_record_create_failed";}
         strcpy(s->record.command_id,command->id);strcpy(s->record.name,command->name);
         strcpy(s->record.variable,command->var_name);s->record.host=target;
+        strcpy(s->record.command_object_id,command->object_id);
         snprintf(s->record.locator,sizeof(s->record.locator),"r_%.24s",s->record.run_id);
         if(origin){s->origin=*origin;strcpy(s->record.rule,origin->rule);strcpy(s->record.config_version,origin->config_version);}
         if(ret==ESP_OK&&!queued){ret=ts_ssh_run_save(index_of(s),&s->record);if(ret!=ESP_OK&&reason)*reason=ret==ESP_ERR_NO_MEM?"out_of_memory":"service_record_save_failed";}
@@ -264,6 +266,7 @@ static esp_err_t apply_probe(service_t *s,esp_err_t ret,bool running,const char 
     const char **reason,bool *cancel_watch)
 {
     *cancel_watch=false;
+    ++s->observation_revision;
     if(ret!=ESP_OK){state_set(s,"unknown","pid");return ret;}
     /* A check of the same process preserves its readiness observer. Only a
      * confirmed end/replacement invalidates observations from the old process. */
@@ -528,16 +531,21 @@ esp_err_t ts_ssh_service_cached(const char *id,ts_ssh_service_status_t *out)
     xSemaphoreGive(mutex);return s?ESP_OK:ESP_ERR_NOT_FOUND;
 }
 bool ts_ssh_service_current(const char *command,const ts_ssh_host_config_t *host,
-    uint64_t command_instance,char run_id[TS_SSH_RUN_ID_MAX],ts_ssh_service_status_t *status)
+    uint64_t command_instance,const char *command_object_id,
+    char run_id[TS_SSH_RUN_ID_MAX],ts_ssh_service_status_t *status)
 {
     if(!initialized)return false;
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *selected=NULL;unsigned rank=0;
     for(unsigned i=0;i<TS_SSH_RUN_SLOTS;++i){
         service_t *s=&services[i];
         if(!s->record.run_id[0]||strcmp(s->record.command_id,command)||!same_target(&s->record.host,host))continue;
-        /* Live observations belong to the definition that launched them.
-         * Restored records have no local instance or readiness evidence. */
-        if(command_instance&&s->origin.command_instance&&s->origin.command_instance!=command_instance)continue;
+        /* A restored legacy record has no proof of which definition created it.
+         * It remains independently controllable, but is not projected as current. */
+        if(command_instance){
+            if(s->record.command_object_id[0]||(command_object_id&&command_object_id[0])){
+                if(!command_object_id||strcmp(s->record.command_object_id,command_object_id))continue;
+            }else if(!s->origin.command_instance||s->origin.command_instance!=command_instance)continue;
+        }
         unsigned candidate=s->durable?2:s->pending_control?1:0;
         if(!selected||candidate>rank||(candidate==rank&&s->status.operation_id>selected->status.operation_id)){
             selected=s;rank=candidate;
@@ -575,6 +583,21 @@ bool ts_ssh_service_observation_valid(const char *id,uint32_t generation)
     xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
     bool valid=s&&s->status.generation==generation&&s->record.instance[0]&&strcmp(s->status.state,"stopped")&&strcmp(s->status.state,"stopping");
     xSemaphoreGive(mutex);return valid;
+}
+bool ts_ssh_service_observation_begin(const char *id,uint32_t generation,uint64_t *revision)
+{
+    xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
+    bool valid=s&&s->status.generation==generation&&s->record.instance[0]&&strcmp(s->status.state,"stopped")&&strcmp(s->status.state,"stopping");
+    if(valid)*revision=s->observation_revision;
+    xSemaphoreGive(mutex);return valid;
+}
+bool ts_ssh_service_observe_at(const char *id,uint32_t generation,uint64_t revision,const char *state)
+{
+    xSemaphoreTake(mutex,portMAX_DELAY);service_t *s=find(id);
+    bool valid=s&&s->status.generation==generation&&s->record.instance[0]&&
+        s->observation_revision==revision&&strcmp(s->status.state,"stopped")&&strcmp(s->status.state,"stopping");
+    if(valid){snprintf(s->readiness,sizeof(s->readiness),"%s",state);state_set(s,state,"log");}
+    xSemaphoreGive(mutex);if(valid)publish(id,generation);return valid;
 }
 void ts_ssh_service_observe(const char *id,uint32_t generation,const char *state)
 {

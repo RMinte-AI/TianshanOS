@@ -159,6 +159,11 @@ ts_ssh_state_t ts_ssh_get_state(ts_ssh_session_t session);
 esp_err_t ts_ssh_exec(ts_ssh_session_t session, const char *command, 
                        ts_ssh_exec_result_t *result);
 
+/** Match command output using the same pattern rules as interactive SSH.
+ * The caller owns *extracted when a capture is produced.
+ */
+bool ts_ssh_pattern_match(const char *text, const char *pattern, char **extracted);
+
 /**
  * @brief Execute command with streaming output
  * 

@@ -16,6 +16,7 @@
 #include "ts_automation_types.h"
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -169,6 +170,9 @@ bool ts_source_ws_is_connected(const char *id);
 /*===========================================================================*/
 /*                           Socket.IO Sources                                */
 /*===========================================================================*/
+
+/* Both the test and the runtime upgrade the same polling URL. */
+void ts_source_sio_websocket_url(const char *base_url, const char *sid, char *out, size_t size);
 
 /**
  * @brief Connect Socket.IO source

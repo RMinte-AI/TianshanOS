@@ -592,7 +592,7 @@ static esp_err_t api_service_list(const cJSON *params,ts_api_result_t *result)
                 const ts_ssh_host_config_t *host=&document->hosts[h];
                 if(strcmp(host->id,command->host_id))continue;
                 char selected[TS_SSH_RUN_ID_MAX];ts_ssh_service_status_t cached;
-                current=ts_ssh_service_current(command->id,host,command->instance,selected,&cached)&&!strcmp(selected,record.run_id);
+                current=ts_ssh_service_current(command->id,host,command->instance,command->object_id,selected,&cached)&&!strcmp(selected,record.run_id);
                 break;
             }
             break;
@@ -1514,6 +1514,7 @@ static cJSON *extract_json_value(cJSON *json, const char *path)
 // WebSocket 测试状态
 typedef struct {
     char *message;                  // 接收到的消息
+    size_t message_len;
     char *error;                    // 错误信息
     bool connected;                 // 已连接标志
     bool received;                  // 已收到数据标志
@@ -1533,6 +1534,7 @@ static void ws_test_handler(void *handler_args, esp_event_base_t base, int32_t e
             if (ctx->connect_sem) xSemaphoreGive(ctx->connect_sem);
             break;
 
+        case WEBSOCKET_EVENT_CLOSED:
         case WEBSOCKET_EVENT_DISCONNECTED:
             TS_LOGI(TAG, "WS test: disconnected");
             ctx->connected = false;
@@ -1543,11 +1545,29 @@ static void ws_test_handler(void *handler_args, esp_event_base_t base, int32_t e
             break;
 
         case WEBSOCKET_EVENT_DATA:
-            if (data->data_len > 0 && !ctx->received) {
-                TS_LOGI(TAG, "WS test: received %d bytes", data->data_len);
-                ctx->message = strndup(data->data_ptr, data->data_len);
-                ctx->received = true;
-                if (ctx->data_sem) xSemaphoreGive(ctx->data_sem);
+            if (data->op_code < 8 && !ctx->received) {
+                if (data->data_len > 0 && data->data_ptr) {
+                    TS_LOGI(TAG, "WS test: received %d bytes", data->data_len);
+                    if (!ctx->message) {
+                        ctx->message = heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                        if (!ctx->message) ctx->message = malloc(8192);
+                    }
+                    if (!ctx->message) {
+                        ctx->error = strdup("no_memory");
+                        if (ctx->data_sem) xSemaphoreGive(ctx->data_sem);
+                        break;
+                    }
+                    size_t space = 8191 - ctx->message_len;
+                    size_t copied = (size_t)data->data_len < space ? (size_t)data->data_len : space;
+                    memcpy(ctx->message + ctx->message_len, data->data_ptr, copied);
+                    ctx->message_len += copied;
+                    ctx->message[ctx->message_len] = '\0';
+                }
+                if (ctx->message_len > 0 && data->fin && (data->payload_len == 0 ||
+                    data->payload_offset + data->data_len >= data->payload_len)) {
+                    ctx->received = true;
+                    if (ctx->data_sem) xSemaphoreGive(ctx->data_sem);
+                }
             }
             break;
 
@@ -1623,6 +1643,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         .buffer_size = 4096,
         .network_timeout_ms = timeout_ms,
         .reconnect_timeout_ms = timeout_ms,  // 禁用自动重连（使用大超时）
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_websocket_client_handle_t client = esp_websocket_client_init(&ws_cfg);
@@ -1668,6 +1689,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         esp_websocket_client_destroy(client);
         vSemaphoreDelete(ctx.connect_sem);
         vSemaphoreDelete(ctx.data_sem);
+        free(ctx.message);
         return ESP_OK;
     }
 
@@ -1678,7 +1700,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
     }
 
     // 等待数据消息
-    bool data_ok = (xSemaphoreTake(ctx.data_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) && ctx.message;
+    bool data_ok = (xSemaphoreTake(ctx.data_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) && ctx.received && ctx.message;
 
     if (data_ok && ctx.message) {
         TS_LOGI(TAG, "WS test: message received, len=%d", (int)strlen(ctx.message));
@@ -1710,12 +1732,11 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
         result->code = TS_API_OK;
         result->message = strdup("WebSocket test successful");
 
-        free(ctx.message);
     } else {
         // 未收到数据
         result->code = TS_API_ERR_INTERNAL;
-        result->message = strdup("ws_no_data");
-        cJSON_AddStringToObject(data, "error", "No data received within timeout");
+        result->message = strdup(ctx.error ? ctx.error : "ws_no_data");
+        cJSON_AddStringToObject(data, "error", ctx.error ? ctx.error : "No data received within timeout");
     }
 
     result->data = data;
@@ -1723,6 +1744,7 @@ static esp_err_t api_automation_proxy_ws_test(const cJSON *params, ts_api_result
     // 清理
     esp_websocket_client_stop(client);
     esp_websocket_client_destroy(client);
+    free(ctx.message);
     vSemaphoreDelete(ctx.connect_sem);
     vSemaphoreDelete(ctx.data_sem);
     if (ctx.error) free(ctx.error);
@@ -2045,6 +2067,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
         .method = HTTP_METHOD_GET,
         .timeout_ms = 10000,
         .buffer_size = 2048,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t http_client = esp_http_client_init(&http_config);
@@ -2108,18 +2131,8 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
     }
 
     // ========== Step 2: WebSocket 连接 ==========
-    // 解析 host 和 port
     char ws_url[384];
-    const char *host_start = strstr(base_url, "://");
-    if (host_start) {
-        host_start += 3;
-    } else {
-        host_start = base_url;
-    }
-
-    // 构造 WebSocket URL
-    snprintf(ws_url, sizeof(ws_url), "ws://%s/socket.io/?EIO=4&transport=websocket&sid=%s",
-             host_start, ctx.sid);
+    ts_source_sio_websocket_url(base_url, ctx.sid, ws_url, sizeof(ws_url));
 
     TS_LOGI(TAG, "Socket.IO WS URL: %s", ws_url);
 
@@ -2128,6 +2141,7 @@ static esp_err_t api_automation_proxy_socketio_test(const cJSON *params, ts_api_
         .buffer_size = 4096,
         .network_timeout_ms = timeout_ms,
         .reconnect_timeout_ms = timeout_ms * 2,  // 禁用自动重连
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_websocket_client_handle_t ws_client = esp_websocket_client_init(&ws_cfg);

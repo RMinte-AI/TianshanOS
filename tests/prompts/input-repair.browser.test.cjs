@@ -20,24 +20,27 @@ async function fixture(language='zh-CN'){
  const page=await context.newPage(),errors=[];page.setDefaultTimeout(5000);page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/*',async route=>{
   const u=new URL(route.request().url());if(u.origin!==base){await route.abort();return;}
-  if(u.pathname.startsWith('/api/')){await route.fulfill({json:{code:0,data:{}}});return;}
+  if(u.pathname.startsWith('/api/')){await route.fulfill({json:{code:0,data:u.pathname.endsWith('/ui/widgets/get')?{widgets:[],source:'nvs'}:{}}});return;}
   await route.continue();
  });
  await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&typeof editAction==='function');
- await page.evaluate(()=>{
+ await page.evaluate(async()=>{
   closeLoginModal();window.writes=[];window.stored=null;window.fixtureRevision=1;
   const configuration=()=>({active_version:fixtureRevision.toString(16).padStart(32,'0'),source:'sd',loaded:true,configured:true,enabled:true,sd_available:true});
   api.call=async(endpoint,params)=>{
+   if(endpoint==='ui.widgets.get')return {code:0,data:{widgets:[],source:'nvs'}};
    if(endpoint==='automation.config.status')return {code:0,data:configuration()};
    if(endpoint==='automation.actions.get')return {code:0,data:{...structuredClone(stored),active_version:configuration().active_version}};
    if(['automation.actions.add','automation.actions.update','automation.actions.delete','ui.widgets.set'].includes(endpoint)){
     writes.push({endpoint,params:structuredClone(params)});
     if(window.rejectSave)return {code:1,message:'storage_write_failed',data:{...configuration(),saved:false}};
     if(endpoint.startsWith('automation.actions.')){stored=structuredClone(params);++fixtureRevision;return {code:0,data:{...configuration(),saved:true}};}
+    return {code:0,data:{nvs_saved:true}};
    }
    return {code:0,data:{}};
   };
   api.ledList=async()=>({code:0,data:{devices:[{name:'matrix',count:256},{name:'board',count:28}]}});
+  await loadDataWidgets();
  });
  return {page,context,errors};
 }

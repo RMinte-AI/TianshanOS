@@ -332,6 +332,10 @@ int main(void) {
     persisted_case("192.0.2.8",22,TS_API_OK);
     assert(saved_count==1 && store_writes==1);
     assert(strlen(saved_hosts[0].value.fingerprint)==64);
+    ts_known_host_t public_host={0};
+    assert(ts_known_hosts_get("192.0.2.8",22,&public_host)==ESP_OK);
+    assert(strlen(public_host.fingerprint)==64);
+    assert(!strcmp(public_host.fingerprint,saved_hosts[0].value.fingerprint));
     assert(!strcmp(saved_hosts[0].value.host,"192.0.2.8") && saved_hosts[0].value.port==22);
     persisted_case("192.0.2.8",22,TS_API_OK);assert(store_writes==1);
     persisted_case("192.0.2.8",2222,TS_API_OK);
