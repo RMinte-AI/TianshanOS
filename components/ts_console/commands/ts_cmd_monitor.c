@@ -255,14 +255,14 @@ static int do_monitor_config(const char *server, int port, bool json)
         /* 需要重新初始化才能生效 */
         if (ts_compute_monitor_is_running()) {
             esp_err_t ret = ts_compute_monitor_stop();
-            if (ret != ESP_OK) {
+            if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
                 ts_console_error("Failed to stop: %s\n", esp_err_to_name(ret));
                 return 1;
             }
         }
         if (ts_compute_monitor_is_initialized()) {
             esp_err_t ret = ts_compute_monitor_deinit();
-            if (ret != ESP_OK) {
+            if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
                 ts_console_error("Failed to deinit: %s\n", esp_err_to_name(ret));
                 return 1;
             }

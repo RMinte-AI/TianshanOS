@@ -170,7 +170,15 @@ static int ts_api_call(const char *name,const cJSON *params,ts_api_result_t *r){
 static void ts_console_printf(const char *fmt,...){(void)fmt;}
 static void ts_console_error(const char *fmt,...){(void)fmt;}
 '''
+code += r'''
+static bool cli_query_running(void);
+static bool cli_query_initialized(void);
+#define ts_compute_monitor_is_running cli_query_running
+#define ts_compute_monitor_is_initialized cli_query_initialized
+'''
 code += body('components/ts_console/commands/ts_cmd_monitor.c', 'do_monitor_config')
+code += '\n#undef ts_compute_monitor_is_running\n#undef ts_compute_monitor_is_initialized\n'
+
 code += r'''
 static void collect(ts_compute_status_t status,const ts_compute_data_t *data,void *arg){
  (void)arg;if(status==TS_COMPUTE_STATUS_RECONNECTING&&self_check){
@@ -187,6 +195,20 @@ static void *control(void *arg){
  int op=(int)(intptr_t)arg;
  control_result=op==0?ts_compute_monitor_stop():op==1?ts_compute_monitor_deinit():ts_drivers_deinit();
  control_done=true;return NULL;
+}
+static bool stale_stop,stale_deinit;
+static void *query_interloper(void *arg){
+ int ret=(intptr_t)arg?ts_compute_monitor_deinit():ts_compute_monitor_stop();assert(ret==ESP_OK);return NULL;
+}
+static bool cli_query_running(void){
+ bool was=ts_compute_monitor_is_running();
+ if(was&&stale_stop){stale_stop=false;pthread_t t;assert(!pthread_create(&t,NULL,query_interloper,NULL));assert(!pthread_join(t,NULL));}
+ return was;
+}
+static bool cli_query_initialized(void){
+ bool was=ts_compute_monitor_is_initialized();
+ if(was&&stale_deinit){stale_deinit=false;pthread_t t;assert(!pthread_create(&t,NULL,query_interloper,(void *)1));assert(!pthread_join(t,NULL));}
+ return was;
 }
 static void *initialise(void *arg){(void)arg;init_result=ts_compute_monitor_init(NULL);return NULL;}
 static void *start(void *arg){(void)arg;control_result=ts_compute_monitor_start();control_done=true;return NULL;}
@@ -284,6 +306,19 @@ int main(void){
  assert(ts_compute_monitor_start()==ESP_FAIL&&!s_ctx->running&&!s_ctx->task_handle);
  assert(ts_compute_monitor_deinit()==ESP_OK);assert(!s_ctx&&!provider_live);
  puts("PASS self wait is distinct from no context; signal/task allocation failures release lifecycle ownership and clean resources");
+
+ reset();mode=1;assert(ts_compute_monitor_init(NULL)==ESP_OK);assert(ts_compute_monitor_start()==ESP_OK);
+ assert(xSemaphoreTake(retry_entered,portMAX_DELAY));stale_stop=true;
+ int stopped_config=do_monitor_config("stopped.fixture.invalid",123,false);
+ printf("OBS CLI after another controller already stopped: %d\n",stopped_config);fflush(stdout);
+ if(stopped_config==0)assert(s_ctx&&!s_ctx->running&&!strcmp(s_ctx->config.server_ip,"stopped.fixture.invalid"));
+ assert(ts_compute_monitor_deinit()==ESP_OK);join_workers();
+ reset();assert(ts_compute_monitor_init(NULL)==ESP_OK);stale_deinit=true;
+ int absent_config=do_monitor_config("absent.fixture.invalid",456,false);
+ printf("OBS CLI after another controller already deinitialized: %d\n",absent_config);fflush(stdout);
+ if(s_ctx){assert(!s_ctx->running&&!strcmp(s_ctx->config.server_ip,"absent.fixture.invalid"));assert(ts_compute_monitor_deinit()==ESP_OK);}
+ assert(stopped_config==0&&absent_config==0);
+ puts("PASS actual CLI continues configuration when another real controller already completed stop/deinit; BUSY and self errors stay distinct");
 
  for(unsigned i=0;i<sizeof(signals)/sizeof(signals[0]);i++)vSemaphoreDelete(*signals[i]);
 }
