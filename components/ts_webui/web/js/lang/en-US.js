@@ -274,6 +274,12 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         "startFailed": "Start failed",
         "partial": "Some tasks are not ready"
 },
+    modalSettings: {
+        loading: "Reading current settings… You can cancel at any time.",
+        defaults: "Could not read current settings. Showing defaults; you can edit and save manually.",
+        fanDraft: "Could not read current settings. Showing the previous draft for fan {id}; you can edit and save manually.",
+        bindingDraft: "Could not read all temperature binding settings. Showing the existing draft; you can edit and bind manually."
+    },
     runtimeRepair: {
         configLoading: 'Configuration is loading. Refresh shortly.',
         confirmFingerprint: 'Verify this server fingerprint through a trusted channel. Trust this exact fingerprint and connect?',

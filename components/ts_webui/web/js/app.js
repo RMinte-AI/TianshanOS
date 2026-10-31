@@ -2252,8 +2252,81 @@ let fanCurveConfig = {
 /**
  * 显示风扇曲线管理模态框
  */
-async function showFanCurveModal(fanId = 0) {
+let fanCurveModalOwner = null;
+let fanCurveDraftSource = null; // null: original defaults; otherwise the fan whose draft is displayed.
+
+function fanCurveModalCurrent(owner) {
+    return owner && fanCurveModalOwner === owner && owner.phase !== 'closed' &&
+        owner.modal.isConnected && owner.pageCurrent();
+}
+
+function fanCurveReadCurrent(owner, group, request) {
+    return fanCurveModalCurrent(owner) && owner[group] === request;
+}
+
+function updateFanCurveControls(owner) {
+    if (!fanCurveModalCurrent(owner)) return;
+    const writing = owner.phase === 'writing';
+    for (const control of owner.modal.querySelectorAll('[data-fan-curve-controls] input, [data-fan-curve-controls] select, [data-fan-curve-controls] button')) {
+        control.disabled = writing || owner.curveLoading;
+    }
+    for (const control of owner.modal.querySelectorAll('[data-fan-binding-controls] input, [data-fan-binding-controls] select, [data-fan-binding-controls] button')) {
+        control.disabled = writing || owner.bindingLoading || owner.bindingWriting;
+    }
+    owner.modal.querySelector('#fan-curve-fan-select').disabled = writing;
+    owner.modal.querySelector('[onclick="applyFanCurve()"]').disabled = writing || owner.curveLoading;
+}
+
+function fanCurveDraftNotice() {
+    return fanCurveDraftSource === null ? t('modalSettings.defaults') :
+        t('modalSettings.fanDraft', { id: fanCurveDraftSource });
+}
+
+async function loadFanCurveConfig(owner, fanId) {
+    if (!fanCurveModalCurrent(owner)) return;
+    const request = owner.curveRequest = Symbol('curve');
+    owner.fileRequest = null;
+    owner.curveLoading = true;
+    owner.phase = 'loading';
     fanCurveConfig.fanId = fanId;
+    const status = owner.modal.querySelector('#fan-curve-load-status');
+    status.textContent = t('modalSettings.loading');
+    updateFanCurveControls(owner);
+    try {
+        const result = await api.call('fan.config', { id: fanId });
+        if (!fanCurveReadCurrent(owner, 'curveRequest', request)) return;
+        if (result.code !== 0 || !result.data) {
+            status.textContent = fanCurveDraftNotice();
+            return;
+        }
+        const cfg = result.data;
+        if (cfg.curve && cfg.curve.length >= 2) fanCurveConfig.curve = cfg.curve;
+        if (typeof cfg.hysteresis === 'number') fanCurveConfig.hysteresis = cfg.hysteresis;
+        if (typeof cfg.min_interval === 'number') fanCurveConfig.minInterval = cfg.min_interval;
+        if (typeof cfg.min_duty === 'number') fanCurveConfig.minDuty = cfg.min_duty;
+        if (typeof cfg.max_duty === 'number') fanCurveConfig.maxDuty = cfg.max_duty;
+        owner.modal.querySelector('#fan-curve-hysteresis').value = fanCurveConfig.hysteresis;
+        owner.modal.querySelector('#fan-curve-interval').value = fanCurveConfig.minInterval;
+        owner.modal.querySelector('#fan-curve-min-duty').value = fanCurveConfig.minDuty;
+        owner.modal.querySelector('#fan-curve-max-duty').value = fanCurveConfig.maxDuty;
+        fanCurveDraftSource = fanId;
+        refreshCurveEditor();
+        status.textContent = '';
+    } catch (error) {
+        if (!fanCurveReadCurrent(owner, 'curveRequest', request)) return;
+        console.warn('加载风扇配置失败:', error);
+        status.textContent = fanCurveDraftNotice();
+    } finally {
+        if (fanCurveReadCurrent(owner, 'curveRequest', request)) {
+            owner.curveLoading = false;
+            owner.phase = 'ready';
+            updateFanCurveControls(owner);
+        }
+    }
+}
+
+async function showFanCurveModal(fanId = 0) {
+    closeFanCurveModal();
 
     const modal = document.createElement('div');
     modal.id = 'fan-curve-modal';
@@ -2264,6 +2337,8 @@ async function showFanCurveModal(fanId = 0) {
     const num = (id, w, val, attrs) => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
     modal.innerHTML = sheet(660, t('fanPage.curveManagement'), `
         ${grp(row(t('fanPage.fanRow'), `<select class="field" id="fan-curve-fan-select" style="width:120px" onchange="updateFanCurvePreview()">${fanOpts}</select>`))}
+        <div id="fan-curve-load-status" class="t-note" aria-live="polite"></div>
+        <div data-fan-binding-controls>
         ${gt(t('fanPage.tempVarBindingTitle'))}
         <div class="grp">
             <div class="row"><div class="rl">${t('common.status')}</div><div class="rc"><span id="fan-curve-temp-current" class="t-note">--°C</span><span id="variable-bind-status" class="state">${t('fanPage.unbound')}</span></div></div>
@@ -2273,6 +2348,8 @@ async function showFanCurveModal(fanId = 0) {
         <div id="temp-var-formula" class="t-note" style="display:none;margin:6px 4px 0"></div>
         <div id="temp-var-weight-warn" class="t-note warn-t" style="display:none;margin:6px 4px 0"></div>
         <div id="temp-source-hint" class="t-note" style="margin:6px 4px 0">${t('fanPage.selectVariableWeightHint')}</div>
+        </div>
+        <div data-fan-curve-controls>
         <div class="sec-h" style="margin:18px 4px 6px"><span class="t-label">${t('fanPage.curveNodes')}</span><span class="acts"><button class="btn sm" onclick="importFanCurveConfig()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('fan.importConfig')}</button><button class="btn sm" onclick="exportFanCurveConfig()"><svg class="i"><use href="#ri-download-line"/></svg>${t('fan.exportConfig')}</button><button class="btn sm" onclick="addCurvePoint()"><svg class="i"><use href="#ri-add-line"/></svg>${t('fanPage.addNode')}</button></span></div>
         <div class="grp" id="fan-curve-points">${renderCurvePoints()}</div>
         <div class="t-note" style="margin:6px 4px 0">${t('fanPage.curveHint')}</div>
@@ -2283,44 +2360,31 @@ async function showFanCurveModal(fanId = 0) {
             row(t('fanPage.minSpeed'), num('fan-curve-min-duty', 90, fanCurveConfig.minDuty, 'min="0" max="100" step="1"') + unit('%'), '', t('fanPage.minDutyHint')) +
             row(t('fanPage.maxSpeed'), num('fan-curve-max-duty', 90, fanCurveConfig.maxDuty, 'min="0" max="100" step="1"') + unit('%'), '', t('fanPage.maxDutyHint')) +
             row(t('fanPage.tempDiff'), num('fan-curve-hysteresis', 90, fanCurveConfig.hysteresis, 'min="0" max="20" step="0.5"') + unit('°C'), '', t('fanPage.hysteresisHint')) +
-            row(t('fanPage.minIntervalShort'), num('fan-curve-interval', 90, fanCurveConfig.minInterval, 'min="500" max="30000" step="100"') + unit('ms'), '', t('fanPage.intervalHint')))}`,
+            row(t('fanPage.minIntervalShort'), num('fan-curve-interval', 90, fanCurveConfig.minInterval, 'min="500" max="30000" step="100"') + unit('ms'), '', t('fanPage.intervalHint')))}</div>`,
         `<button class="btn lg" onclick="closeFanCurveModal()">${t('fanPage.cancel')}</button><button class="btn lg primary" onclick="applyFanCurve()">${t('fanPage.saveCurve')}</button>`);
 
     document.body.appendChild(modal);
 
     document.getElementById('fan-curve-fan-select').value = fanId;
 
-    loadTempSourceStatus();
-    setTimeout(() => drawCurvePreview(), 50);
-
-    // 异步加载设备配置并更新 UI（不阻塞 modal 显示）
-    api.call('fan.config', { id: fanId }).then(result => {
-        if (result.code === 0 && result.data) {
-            const cfg = result.data;
-            if (cfg.curve && cfg.curve.length >= 2) fanCurveConfig.curve = cfg.curve;
-            if (typeof cfg.hysteresis === 'number') fanCurveConfig.hysteresis = cfg.hysteresis;
-            if (typeof cfg.min_interval === 'number') fanCurveConfig.minInterval = cfg.min_interval;
-            if (typeof cfg.min_duty === 'number') fanCurveConfig.minDuty = cfg.min_duty;
-            if (typeof cfg.max_duty === 'number') fanCurveConfig.maxDuty = cfg.max_duty;
-            const hEl = document.getElementById('fan-curve-hysteresis');
-            const iEl = document.getElementById('fan-curve-interval');
-            const minEl = document.getElementById('fan-curve-min-duty');
-            const maxEl = document.getElementById('fan-curve-max-duty');
-            if (hEl) hEl.value = fanCurveConfig.hysteresis;
-            if (iEl) iEl.value = fanCurveConfig.minInterval;
-            if (minEl) minEl.value = fanCurveConfig.minDuty;
-            if (maxEl) maxEl.value = fanCurveConfig.maxDuty;
-            refreshCurveEditor();
-        }
-    }).catch(e => console.warn('从设备加载配置失败，使用默认值:', e));
+    const owner = fanCurveModalOwner = { modal, phase: 'loading', pageCurrent: capturePageValidity(),
+        curveLoading: true, bindingLoading: true, bindingWriting: false };
+    if (typeof router !== 'undefined') router.navigation?.onDispose(() => closeFanCurveModal(owner));
+    updateFanCurveControls(owner);
+    loadTempSourceStatus(owner);
+    loadFanCurveConfig(owner, fanId);
+    const drawRequest = owner.curveRequest;
+    setTimeout(() => { if (fanCurveReadCurrent(owner, 'curveRequest', drawRequest)) drawCurvePreview(); }, 50);
 }
 
 /**
  * 关闭风扇曲线模态框
  */
-function closeFanCurveModal() {
-    const modal = document.getElementById('fan-curve-modal');
-    if (modal) modal.remove();
+function closeFanCurveModal(owner = fanCurveModalOwner) {
+    if (!owner) return;
+    owner.phase = 'closed';
+    owner.modal.remove();
+    if (fanCurveModalOwner === owner) fanCurveModalOwner = null;
 }
 
 /**
@@ -2640,9 +2704,17 @@ function drawCurvePreview() {
 /**
  * 加载温度源状态
  */
-async function loadTempSourceStatus() {
+async function loadTempSourceStatus(owner = fanCurveModalOwner) {
+    if (!fanCurveModalCurrent(owner)) return;
+    const request = owner.bindingRequest = Symbol('binding');
+    owner.bindingLoading = true;
+    owner.bindingError = false;
+    owner.modal.querySelector('#temp-source-hint').textContent = t('modalSettings.loading');
+    updateFanCurveControls(owner);
     try {
         const result = await api.call('temp.status');
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        if (result.code !== 0 || !result.data) owner.bindingError = true;
         if (result.code === 0 && result.data) {
             const data = result.data;
             const tempEl = document.getElementById('fan-curve-temp-current');
@@ -2653,6 +2725,8 @@ async function loadTempSourceStatus() {
             }
         }
     } catch (e) {
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        owner.bindingError = true;
         console.error('获取温度源状态失败:', e);
         const tempEl = document.getElementById('fan-curve-temp-current');
         if (tempEl) {
@@ -2660,19 +2734,28 @@ async function loadTempSourceStatus() {
             tempEl.style.color = 'var(--bad)';
         }
     }
-    await loadVariableBindStatus();
+    if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+    await loadVariableBindStatus(owner, request);
+    if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+    owner.bindingLoading = false;
+    owner.modal.querySelector('#temp-source-hint').textContent = owner.bindingError ?
+        t('modalSettings.bindingDraft') : t('fanPage.selectVariableWeightHint');
+    updateFanCurveControls(owner);
 }
 
 /**
  * 加载变量绑定状态和变量列表
  */
-async function loadVariableBindStatus() {
+async function loadVariableBindStatus(owner, request) {
+    if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
     // 两个 API 调用独立 try-catch，互不阻塞
     try {
         const varsResult = await api.call('automation.variables.list', {
             include_value: true,
             include_meta: false
         });
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        if (varsResult.code !== 0 || !varsResult.data?.variables) owner.bindingError = true;
         if (varsResult.code === 0 && varsResult.data?.variables) {
             const tempVars = varsResult.data.variables.filter(v => {
                 const name = (v.name || '').toLowerCase();
@@ -2688,11 +2771,15 @@ async function loadVariableBindStatus() {
             );
         }
     } catch (e) {
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        owner.bindingError = true;
         console.warn('加载变量列表失败:', e.message);
     }
 
     try {
         const bindResult = await api.call('temp.bind');
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        if (bindResult.code !== 0 || !bindResult.data) owner.bindingError = true;
         const statusEl = document.getElementById('variable-bind-status');
 
         if (bindResult.code === 0 && bindResult.data) {
@@ -2780,16 +2867,20 @@ async function loadVariableBindStatus() {
             }
         }
     } catch (e) {
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        owner.bindingError = true;
         console.warn('加载绑定状态失败:', e.message);
     }
 
-    renderTempVarBindings();
+    if (fanCurveReadCurrent(owner, 'bindingRequest', request)) renderTempVarBindings();
 }
 
 /**
  * 绑定温度变量
  */
 async function bindTempVariable() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase === 'writing' || owner.bindingLoading || owner.bindingWriting) return;
     const validBindings = tempVarBindings.filter(b => b.name && b.name.trim() !== '');
 
     if (validBindings.length === 0) {
@@ -2797,6 +2888,9 @@ async function bindTempVariable() {
         return;
     }
 
+    const request = owner.bindingRequest = Symbol('binding-write');
+    owner.bindingWriting = true;
+    updateFanCurveControls(owner);
     try {
         const variables = validBindings.map(b => ({
             name: b.name,
@@ -2810,13 +2904,18 @@ async function bindTempVariable() {
 
             showToast(t('fanPage.tempBoundWeighted', { count: variables.length }), 'success');
 
-            await loadTempSourceStatus();
+            if (fanCurveReadCurrent(owner, 'bindingRequest', request)) await loadTempSourceStatus(owner);
         } else {
             reportFailure({ op: 'fanpage.bind', result, write: true });
         }
     } catch (e) {
         console.error('绑定温度变量失败:', e);
         reportFailure({ op: 'fanpage.bind', error: e, write: true });
+    } finally {
+        if (fanCurveModalCurrent(owner)) {
+            owner.bindingWriting = false;
+            updateFanCurveControls(owner);
+        }
     }
 }
 
@@ -2824,20 +2923,30 @@ async function bindTempVariable() {
  * 解绑温度变量
  */
 async function unbindTempVariable() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase === 'writing' || owner.bindingLoading || owner.bindingWriting) return;
+    const request = owner.bindingRequest = Symbol('binding-write');
+    owner.bindingWriting = true;
+    updateFanCurveControls(owner);
     try {
         const result = await api.call('temp.bind', { variables: [] });
 
         if (result.code === 0) {
-            tempVarBindings = [];
+            if (fanCurveReadCurrent(owner, 'bindingRequest', request)) tempVarBindings = [];
             showToast(t('fanPage.unbindSuccess'), 'success');
 
-            await loadTempSourceStatus();
+            if (fanCurveReadCurrent(owner, 'bindingRequest', request)) await loadTempSourceStatus(owner);
         } else {
             reportFailure({ op: 'fanpage.unbind', result, write: true });
         }
     } catch (e) {
         console.error('解绑温度变量失败:', e);
         reportFailure({ op: 'fanpage.unbind', error: e, write: true });
+    } finally {
+        if (fanCurveModalCurrent(owner)) {
+            owner.bindingWriting = false;
+            updateFanCurveControls(owner);
+        }
     }
 }
 
@@ -2845,6 +2954,8 @@ async function unbindTempVariable() {
  * 应用风扇曲线
  */
 async function applyFanCurve() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
     const fanId = parseInt(document.getElementById('fan-curve-fan-select').value);
     const hysteresis = parseFloat(document.getElementById('fan-curve-hysteresis').value);
     const minInterval = parseInt(document.getElementById('fan-curve-interval').value);
@@ -2874,8 +2985,11 @@ async function applyFanCurve() {
     }
 
     // 排序曲线点
-    const sortedCurve = [...fanCurveConfig.curve].sort((a, b) => a.temp - b.temp);
+    const sortedCurve = fanCurveConfig.curve.map(point => ({temp: point.temp, duty: point.duty})).sort((a, b) => a.temp - b.temp);
 
+    owner.fileRequest = null;
+    owner.phase = 'writing';
+    updateFanCurveControls(owner);
     try {
         // 1. 设置占空比限制
         const limitsResult = await api.call('fan.limits', {
@@ -2905,14 +3019,19 @@ async function applyFanCurve() {
         requireApiSuccess(modeResult, 'fan.mode');
 
         showToast(typeof t === 'function' ? t('fanPage.curveApplied', { id: fanId }) : `风扇 ${fanId} 曲线已应用并保存`, 'success');
-        closeFanCurveModal();
+        if (fanCurveModalCurrent(owner)) closeFanCurveModal(owner);
 
         // 刷新风扇状态
-        await refreshFans();
+        if (owner.pageCurrent()) await refreshFans();
 
     } catch (e) {
         console.error('应用曲线失败:', e);
         reportFailure({ op: 'fanpage.applycurve', error: e, write: true });
+    } finally {
+        if (fanCurveModalCurrent(owner)) {
+            owner.phase = 'ready';
+            updateFanCurveControls(owner);
+        }
     }
 }
 
@@ -2920,6 +3039,8 @@ async function applyFanCurve() {
  * 导出风扇曲线配置到本地 JSON 文件，并同时保存到 SD 卡 /sdcard/config
  */
 async function exportFanCurveConfig() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
     const fanId = parseInt(document.getElementById('fan-curve-fan-select').value);
     const hysteresis = parseFloat(document.getElementById('fan-curve-hysteresis').value);
     const minInterval = parseInt(document.getElementById('fan-curve-interval').value);
@@ -2931,7 +3052,7 @@ async function exportFanCurveConfig() {
         version: 1,
         type: 'fan_curve_config',
         fan_id: fanId,
-        curve: [...fanCurveConfig.curve].sort((a, b) => a.temp - b.temp),
+        curve: fanCurveConfig.curve.map(point => ({temp: point.temp, duty: point.duty})).sort((a, b) => a.temp - b.temp),
         hysteresis: hysteresis,
         min_interval: minInterval,
         min_duty: minDuty,
@@ -2966,16 +3087,21 @@ async function exportFanCurveConfig() {
  * 导入风扇曲线配置（从本地 JSON 文件）
  */
 function importFanCurveConfig() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
 
     input.onchange = async (e) => {
+        if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
+        const request = owner.fileRequest = Symbol('file');
         const file = e.target.files[0];
         if (!file) return;
 
         try {
             const text = await file.text();
+            if (!fanCurveReadCurrent(owner, 'fileRequest', request)) return;
             const config = JSON.parse(text);
 
             // 验证配置格式
@@ -2996,6 +3122,8 @@ function importFanCurveConfig() {
                 }
             }
 
+            fanCurveDraftSource = fanCurveConfig.fanId;
+            owner.modal.querySelector('#fan-curve-load-status').textContent = '';
             // 应用配置到当前界面
             fanCurveConfig.curve = config.curve.sort((a, b) => a.temp - b.temp);
 
@@ -3022,6 +3150,7 @@ function importFanCurveConfig() {
 
             showToast(typeof t === 'function' ? t('fanPage.configImported', { name: file.name }) : `已导入配置文件: ${file.name}`, 'success');
         } catch (err) {
+            if (!fanCurveReadCurrent(owner, 'fileRequest', request)) return;
             console.error('导入配置失败:', err);
             reportFailure({ op: 'fanpage.importcurve', error: err, write: true });
         }
@@ -3034,44 +3163,11 @@ function importFanCurveConfig() {
  * 更新曲线预览（风扇选择变化时）
  */
 async function updateFanCurvePreview() {
-    const newFanId = parseInt(document.getElementById('fan-curve-fan-select').value);
-
-    // 如果切换了风扇，重新加载该风扇的配置
-    if (newFanId !== fanCurveConfig.fanId) {
-        fanCurveConfig.fanId = newFanId;
-
-        try {
-            const result = await api.call('fan.config', { id: newFanId });
-            if (result.code === 0 && result.data) {
-                const cfg = result.data;
-                if (cfg.curve && cfg.curve.length >= 2) {
-                    fanCurveConfig.curve = cfg.curve;
-                }
-                if (typeof cfg.hysteresis === 'number') {
-                    fanCurveConfig.hysteresis = cfg.hysteresis;
-                    document.getElementById('fan-curve-hysteresis').value = cfg.hysteresis;
-                }
-                if (typeof cfg.min_interval === 'number') {
-                    fanCurveConfig.minInterval = cfg.min_interval;
-                    document.getElementById('fan-curve-interval').value = cfg.min_interval;
-                }
-                if (typeof cfg.min_duty === 'number') {
-                    fanCurveConfig.minDuty = cfg.min_duty;
-                    document.getElementById('fan-curve-min-duty').value = cfg.min_duty;
-                }
-                if (typeof cfg.max_duty === 'number') {
-                    fanCurveConfig.maxDuty = cfg.max_duty;
-                    document.getElementById('fan-curve-max-duty').value = cfg.max_duty;
-                }
-                // 刷新曲线点编辑器
-                refreshCurveEditor();
-            }
-        } catch (e) {
-            console.warn('加载风扇配置失败:', e);
-        }
-    }
-
-    drawCurvePreview();
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase === 'writing') return;
+    const fanId = parseInt(owner.modal.querySelector('#fan-curve-fan-select').value);
+    if (fanId !== fanCurveConfig.fanId) await loadFanCurveConfig(owner, fanId);
+    else drawCurvePreview();
 }
 
 async function serviceAction(name, action) {
@@ -15935,7 +16031,32 @@ function closeSourceVariablesModal() {
 /**
  * 显示关机设置模态框
  */
+let shutdownSettingsOwner = null;
+const shutdownSettingsDefaults = { low_threshold: 12.6, recovery_threshold: 18.0,
+    shutdown_delay: 60, recovery_hold: 5, fan_stop_delay: 60 };
+
+function shutdownSettingsCurrent(owner) {
+    return owner && shutdownSettingsOwner === owner && owner.phase !== 'closed' &&
+        owner.modal.isConnected && !owner.modal.classList.contains('hidden') && owner.pageCurrent();
+}
+
+function updateShutdownSettingsControls(owner) {
+    if (!shutdownSettingsCurrent(owner)) return;
+    for (const control of owner.modal.querySelectorAll('input, .sf button:not([onclick="closeShutdownSettingsModal()"])')) {
+        control.disabled = owner.phase !== 'ready';
+    }
+}
+
+function fillShutdownSettings(owner, config) {
+    owner.modal.querySelector('#ss-low-voltage').value = config.low_threshold;
+    owner.modal.querySelector('#ss-recovery-voltage').value = config.recovery_threshold;
+    owner.modal.querySelector('#ss-shutdown-delay').value = config.shutdown_delay;
+    owner.modal.querySelector('#ss-recovery-hold').value = config.recovery_hold;
+    owner.modal.querySelector('#ss-fan-stop-delay').value = config.fan_stop_delay;
+}
+
 async function showShutdownSettingsModal() {
+    closeShutdownSettingsModal();
     const modal = document.getElementById('shutdown-settings-modal');
     if (!modal) return;
     
@@ -15947,46 +16068,66 @@ async function showShutdownSettingsModal() {
             row(t('system.shutdownDelayLabel'), num('ss-shutdown-delay', '60', 'step="1" min="10" max="600"') + unit(t('common.seconds')), t('system.shutdownDelayNote')) +
             row(t('system.recoveryHoldLabel'), num('ss-recovery-hold', '5', 'step="1" min="1" max="300"') + unit(t('common.seconds')), '', t('system.recoveryHoldHint')) +
             row(t('system.fanStopDelayLabel'), num('ss-fan-stop-delay', '60', 'step="1" min="10" max="600"') + unit(t('common.seconds')), '', t('system.fanStopDelayHint'))) +
-        '<div id="shutdown-settings-error" class="form-error hidden"></div>',
+        '<div id="shutdown-settings-load-status" class="t-note" aria-live="polite"></div><div id="shutdown-settings-error" class="form-error hidden"></div>',
         `<button class="btn lg" onclick="resetShutdownSettings()">${t('system.restoreDefaults')}</button><button class="btn lg" onclick="closeShutdownSettingsModal()">${t('common.cancel')}</button><button class="btn lg primary" onclick="saveShutdownSettings()">${t('common.save')}</button>`);
     
     // 显示模态框
     modal.classList.remove('hidden');
     
-    // 加载当前配置
+    const owner = shutdownSettingsOwner = { modal, phase: 'loading', pageCurrent: capturePageValidity() };
+    if (typeof router !== 'undefined') router.navigation?.onDispose(() => closeShutdownSettingsModal(owner));
+    const request = owner.readRequest = Symbol('settings');
+    const current = () => shutdownSettingsCurrent(owner) && owner.readRequest === request;
+    const status = modal.querySelector('#shutdown-settings-load-status');
+    fillShutdownSettings(owner, shutdownSettingsDefaults);
+    status.textContent = t('modalSettings.loading');
+    updateShutdownSettingsControls(owner);
     try {
         const result = await api.powerProtectionConfig();
-        if (result.code === 0 && result.data) {
-            const config = result.data;
-            document.getElementById('ss-low-voltage').value = config.low_voltage_threshold || 12.6;
-            document.getElementById('ss-recovery-voltage').value = config.recovery_voltage_threshold || 18.0;
-            document.getElementById('ss-shutdown-delay').value = config.shutdown_delay_sec || 60;
-            document.getElementById('ss-recovery-hold').value = config.recovery_hold_sec || 5;
-            document.getElementById('ss-fan-stop-delay').value = config.fan_stop_delay_sec || 60;
+        if (!current()) return;
+        if (result.code !== 0 || !result.data) {
+            status.textContent = t('modalSettings.defaults');
+            return;
         }
-    } catch (e) {
-        console.error('Failed to load shutdown settings:', e);
-        // 使用默认值
-        document.getElementById('ss-low-voltage').value = 12.6;
-        document.getElementById('ss-recovery-voltage').value = 18.0;
-        document.getElementById('ss-shutdown-delay').value = 60;
-        document.getElementById('ss-recovery-hold').value = 5;
-        document.getElementById('ss-fan-stop-delay').value = 60;
+        const config = result.data;
+        fillShutdownSettings(owner, {
+            low_threshold: config.low_voltage_threshold ?? shutdownSettingsDefaults.low_threshold,
+            recovery_threshold: config.recovery_voltage_threshold ?? shutdownSettingsDefaults.recovery_threshold,
+            shutdown_delay: config.shutdown_delay_sec ?? shutdownSettingsDefaults.shutdown_delay,
+            recovery_hold: config.recovery_hold_sec ?? shutdownSettingsDefaults.recovery_hold,
+            fan_stop_delay: config.fan_stop_delay_sec ?? shutdownSettingsDefaults.fan_stop_delay
+        });
+        status.textContent = '';
+    } catch (error) {
+        if (!current()) return;
+        console.error('Failed to load shutdown settings:', error);
+        status.textContent = t('modalSettings.defaults');
+    } finally {
+        if (current()) {
+            owner.phase = 'ready';
+            updateShutdownSettingsControls(owner);
+        }
     }
 }
 
 /**
  * 关闭关机设置模态框
  */
-function closeShutdownSettingsModal() {
-    const modal = document.getElementById('shutdown-settings-modal');
-    if (modal) modal.classList.add('hidden');
+function closeShutdownSettingsModal(owner = shutdownSettingsOwner) {
+    if (!owner) return;
+    owner.phase = 'closed';
+    if (shutdownSettingsOwner === owner) {
+        owner.modal.classList.add('hidden');
+        shutdownSettingsOwner = null;
+    }
 }
 
 /**
  * 保存关机设置
  */
 async function saveShutdownSettings() {
+    const owner = shutdownSettingsOwner;
+    if (!shutdownSettingsCurrent(owner) || owner.phase !== 'ready') return;
     const errorDiv = document.getElementById('shutdown-settings-error');
     
     const config = {
@@ -16011,18 +16152,32 @@ async function saveShutdownSettings() {
         return;
     }
     
+    owner.phase = 'writing';
+    updateShutdownSettingsControls(owner);
+    errorDiv.classList.add('hidden');
     try {
         const result = await api.powerProtectionSet(config);
         if (result.code === 0) {
             showToast(typeof t === 'function' ? t('toast.shutdownSettingsSaved') : '关机设置已保存', 'success');
-            closeShutdownSettingsModal();
-        } else {
+            if (shutdownSettingsCurrent(owner)) closeShutdownSettingsModal(owner);
+        } else if (shutdownSettingsCurrent(owner)) {
             errorDiv.textContent = failureText({ op: 'system.saveshutdown', result, write: false });
             errorDiv.classList.remove('hidden');
+        } else {
+            reportFailure({ op: 'system.saveshutdown', result, write: true });
         }
     } catch (e) {
+        if (!shutdownSettingsCurrent(owner)) {
+            reportFailure({ op: 'system.saveshutdown', error: e, write: true });
+            return;
+        }
         errorDiv.textContent = failureText({ op: 'system.saveshutdown', error: e, endpoint: 'system.shutdown.set', write: true });
         errorDiv.classList.remove('hidden');
+    } finally {
+        if (shutdownSettingsCurrent(owner)) {
+            owner.phase = 'ready';
+            updateShutdownSettingsControls(owner);
+        }
     }
 }
 
@@ -16030,32 +16185,28 @@ async function saveShutdownSettings() {
  * 恢复默认关机设置
  */
 async function resetShutdownSettings() {
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRestoreDefaults') : '确认恢复默认设置？', { primary: t('system.restoreDefaults'), tone: 'neutral' })) return;
-    
-    const config = {
-        low_threshold: 12.6,
-        recovery_threshold: 18.0,
-        shutdown_delay: 60,
-        recovery_hold: 5,
-        fan_stop_delay: 60,
-        persist: true
-    };
-    
+    const owner = shutdownSettingsOwner;
+    if (!shutdownSettingsCurrent(owner) || owner.phase !== 'ready') return;
+    owner.phase = 'writing';
+    updateShutdownSettingsControls(owner);
     try {
+        if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRestoreDefaults') : '确认恢复默认设置？', { primary: t('system.restoreDefaults'), tone: 'neutral' })) return;
+        if (!shutdownSettingsCurrent(owner)) return;
+        const config = { ...shutdownSettingsDefaults, persist: true };
         const result = await api.powerProtectionSet(config);
         if (result.code === 0) {
-            // 更新界面
-            document.getElementById('ss-low-voltage').value = 12.6;
-            document.getElementById('ss-recovery-voltage').value = 18.0;
-            document.getElementById('ss-shutdown-delay').value = 60;
-            document.getElementById('ss-recovery-hold').value = 5;
-            document.getElementById('ss-fan-stop-delay').value = 60;
+            if (shutdownSettingsCurrent(owner)) fillShutdownSettings(owner, config);
             showToast(typeof t === 'function' ? t('toast.defaultsRestored') : '已恢复默认设置', 'success');
         } else {
             reportFailure({ op: 'system.resetshutdown', result, write: true });
         }
     } catch (e) {
         reportFailure({ op: 'system.resetshutdown', error: e, write: true });
+    } finally {
+        if (shutdownSettingsCurrent(owner)) {
+            owner.phase = 'ready';
+            updateShutdownSettingsControls(owner);
+        }
     }
 }
 

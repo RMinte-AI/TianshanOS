@@ -274,6 +274,12 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         "startFailed": "启动失败",
         "partial": "部分任务未就绪"
 },
+    modalSettings: {
+        loading: "正在读取当前设置，可随时取消。",
+        defaults: "未能读取当前设置，当前显示默认值，可手动修改并保存。",
+        fanDraft: "未能读取当前设置，当前显示风扇 {id} 的此前草稿，可手动修改并保存。",
+        bindingDraft: "未能完整读取温度绑定设置，当前显示已有草稿，可手动修改并绑定。"
+    },
     runtimeRepair: {
         configLoading: '配置正在加载，请稍后刷新。',
         confirmFingerprint: '请通过可信渠道核对以下服务器指纹。确认信任此指纹并继续连接？',
