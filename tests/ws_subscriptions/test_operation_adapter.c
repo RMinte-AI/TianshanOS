@@ -92,6 +92,9 @@ static bool variable_initialized = true, command_current = true;
 static int remote_failure;
 static void (*remote_hook)(void);
 static bool remote_timeout;
+static const char **matching_parts;
+static unsigned matching_callbacks;
+static void drive_matching_output(void);
 static struct host_timer {void *id;void (*fn)(TimerHandle_t);bool active;} *host_timer;
 static struct {void (*fn)(void *,uint32_t);void *arg;uint32_t value;TimerHandle_t deleted;} timer_queue[16];
 static unsigned timer_queued;static bool timer_queue_fail,timer_inline,timer_create_fail,timer_start_fail;
@@ -125,7 +128,11 @@ esp_err_t ts_ssh_shell_resize(ts_ssh_shell_t s,uint16_t w,uint16_t h){(void)s;(v
 esp_err_t ts_ssh_shell_send_signal(ts_ssh_shell_t s,const char *signal){(void)s;(void)signal;control_signals++;return 0;}
 esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s,const char *command,ts_ssh_output_cb_t cb,void *arg,int *code){
  if(expected_command)assert(!strcmp(command,expected_command));stage("submit");if(s->config.cancelled && s->config.cancelled(s->config.cancel_context))return ESP_ERR_TIMEOUT;commands_submitted++;if(remote_hook)remote_hook();if(remote_timeout && host_timer)host_timer->fn(host_timer);
- cb("value=42\n",9,false,arg);*code=0;return s->aborted || (s->config.cancelled && s->config.cancelled(s->config.cancel_context))?ESP_ERR_TIMEOUT:ESP_OK;
+ if(matching_parts){for(unsigned i=0;matching_parts[i];i++){
+  const char *part=matching_parts[i];size_t n=strlen(part);
+  for(size_t offset=0;offset<n;offset+=512){size_t count=n-offset<512?n-offset:512;cb(part+offset,count,false,arg);matching_callbacks++;drive_matching_output();if(s->aborted)break;}
+  if(s->aborted)break;
+ }}else cb("value=42\n",9,false,arg);*code=0;return s->aborted || (s->config.cancelled && s->config.cancelled(s->config.cancel_context))?ESP_ERR_TIMEOUT:ESP_OK;
 }
 #else
 #include "project_driver.inc"
@@ -165,6 +172,7 @@ static void adapter_delete_caps(TaskHandle_t task){
  caps_deletes++;
 }
 static void drive_all(void){for(unsigned i=0;i<12;i++){ts_ws_op_poll();pump();timer_pump();}assert(!timer_queued);}
+static void drive_matching_output(void){drive_all();}
 static void setup(void){variable_instance=1;variable_initialized=true;command_current=true;start();memset(s_clients,0,sizeof(s_clients));s_server=(void*)11;s_ws_stopping=false;ts_ws_op_enable();transport_server.closed=peer_closed;for(int fd=1;fd<=2;fd++){reqs[fd]=(httpd_req_t){.handle=(void*)11,.fd=fd};current=(void*)3;assert(add_client(&reqs[fd],WS_CLIENT_TYPE_EVENT)==ESP_OK);}current=(void*)1;}
 static void finish_all(void){drive_all();assert(!ts_ws_op_busy());stop();assert(!live_allocations);}
 static void connect_shell(void){cJSON *j=cJSON_Parse("{\"host\":\"fake\",\"user\":\"fake\"}");current=(void*)3;handle_ssh_connect(&reqs[1],j);current=(void*)1;cJSON_Delete(j);}
@@ -354,6 +362,55 @@ static void full_command_tests(void){
  rejected_allocation_size=0;assert(!id && commands_submitted==submitted);finish_all();
  puts("PASS full async commands: 511/512/757/1500 bytes preserved after request release; allocation failure submits nothing and reclaims ownership");
 }
+
+static char matching_status[32],matching_value[64];
+static void observe_matching(httpd_ws_frame_t *f){
+ observe(f);cJSON *msg=cJSON_Parse((const char*)f->payload);assert(msg);
+ const cJSON *type=cJSON_GetObjectItem(msg,"type");
+ if(cJSON_IsString(type)&&!strcmp(type->valuestring,"ssh_exec_done")){
+  const cJSON *status=cJSON_GetObjectItem(msg,"status"),*value=cJSON_GetObjectItem(msg,"extracted");
+  if(cJSON_IsString(status))snprintf(matching_status,sizeof(matching_status),"%s",status->valuestring);
+  if(cJSON_IsString(value))snprintf(matching_value,sizeof(matching_value),"%s",value->valuestring);
+ }
+ cJSON_Delete(msg);
+}
+static void matching_regressions(void){
+ char storage[16],*value=NULL;ts_ssh_match_window_t window={.data=storage,.capacity=sizeof(storage)};
+ ts_ssh_match_window_append(&window,"0123456789abcdefghij",20);
+ assert(!ts_ssh_match_window_match(&window,"(.*);",&value)&&!value);
+ ts_ssh_match_window_append(&window,"\n42;",4);
+ assert(ts_ssh_match_window_match(&window,"(.*);",&value)&&!strcmp(value,"42"));tracked_free(value);value=NULL;
+ assert(!ts_ssh_pattern_match("value=","value=(.*);",&value)&&!value);
+ assert(!ts_ssh_pattern_match("value=;","value=(.*);",&value)&&!value);
+ assert(ts_ssh_pattern_match("value= ;","value=(.*);",&value)&&!strcmp(value,""));tracked_free(value);value=NULL;
+ assert(ts_ssh_pattern_match("READY","READY",NULL));
+ assert(!ts_ssh_pattern_match("READY","READY",&value)&&!value);
+ char *noise=malloc(65537);memset(noise,'x',65536);noise[65536]=0;
+ const unsigned scenarios[]={6,0,1,2,3,4,5,7,8,9};
+ for(unsigned n=0;n<10;n++){unsigned scenario=scenarios[n];
+  setup();terminal_frames=0;matching_status[0]=matching_value[0]=0;matching_callbacks=0;sent_hook=observe_matching;
+  noise[65533]='x';const char *parts[6]={noise,NULL};
+  ts_webui_ssh_options_t options={.collect_output=true,.extract_pattern="value=(.*);",.stop_on_match=scenario==4||scenario==6};
+  if(scenario==0){options.expect_pattern="READY";parts[1]="READY";}
+  if(scenario==1){options.fail_pattern="ERROR";parts[1]="ERROR";}
+  if(scenario==2)parts[1]="value=42;";
+  if(scenario==3){options.expect_pattern="READY";parts[1]="REA";parts[2]="DY";}
+  if(scenario>=4&&scenario<=6){parts[1]="value=";parts[2]="42";parts[3]=";";}
+  if(scenario==6){parts[0]="value=";parts[1]="42";parts[2]=";";parts[3]=NULL;}
+  if(scenario==7){options.fail_pattern="ERROR";parts[1]="ERR";parts[2]="OR";}
+  if(scenario==8){noise[65533]=0;options.expect_pattern="READY";parts[1]="REA";parts[2]="DY";}
+  if(scenario==9){parts[1]="value=42;";parts[2]=noise;}
+  matching_parts=parts;unsigned before=aborts;uint32_t id;
+  assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&options,&id)==ESP_OK);
+  exec_task.fn(exec_task.arg);finish_all();matching_parts=NULL;
+  assert(!strcmp(matching_status,scenario==1||scenario==7?"match_failed":scenario==0||scenario==3||scenario==4||scenario==6||scenario==8?"match_success":"success"));
+  if(scenario==2||scenario==4||scenario==5||scenario==6||scenario==9)assert(!strcmp(matching_value,"42"));
+  assert(aborts==before+(options.stop_on_match?1:0));
+  if(scenario==6)assert(matching_callbacks==3);
+ }
+ free(noise);sent_hook=observe;
+ puts("PASS interactive SSH: long output matching, split capture waits for suffix, stop on/off and final wire status/value");
+}
 int main(void){
  cJSON_Hooks h={tracked_malloc,tracked_free};cJSON_InitHooks(&h);sent_hook=observe;
  setup();connect_shell();assert(shell_task.fn && connected_frames==1);
@@ -376,6 +433,7 @@ int main(void){
  operation_cross_tests();
  full_command_tests();
  foreground_identity_tests();
+ matching_regressions();
  printf("PASS complete production WS unit: Shell output failure/close/startup failure, Exec task/callback/match/variables/timer cleanup and task-before-create-return; destroyed=%u\n",session_destroys);
  return 0;
 }

@@ -23,9 +23,6 @@ bool ts_ssh_pattern_match(const char *text, const char *pattern, char **extracte
             prefix = strndup(pattern, prefix_len);
         }
 
-        size_t capture_len = cap_end - cap_start - 1;
-        char *capture_pattern = strndup(cap_start + 1, capture_len);
-
         const char *suffix = cap_end + 1;
 
         /* 查找前缀位置 - 找最后一个匹配 */
@@ -71,10 +68,41 @@ bool ts_ssh_pattern_match(const char *text, const char *pattern, char **extracte
         }
 
         free(prefix);
-        free(capture_pattern);
-        return (match_pos != NULL);
+        return *extracted != NULL;
     } else {
         /* 简单包含匹配 */
-        return strstr(text, pattern) != NULL;
+        return !extracted && strstr(text, pattern) != NULL;
     }
+}
+
+void ts_ssh_match_window_append(ts_ssh_match_window_t *window, const char *data, size_t length)
+{
+    size_t limit = window->capacity - 1;
+    if (length > limit) {
+        size_t skipped = length - limit;
+        window->partial_line = data[skipped - 1] != '\n';
+        data += skipped;
+        length = limit;
+        window->length = 0;
+    } else if (window->length + length > limit) {
+        size_t dropped = window->length + length - limit;
+        window->partial_line = window->data[dropped - 1] != '\n';
+        memmove(window->data, window->data + dropped, window->length - dropped);
+        window->length -= dropped;
+    }
+    memcpy(window->data + window->length, data, length);
+    window->length += length;
+    window->data[window->length] = '\0';
+}
+
+bool ts_ssh_match_window_match(const ts_ssh_match_window_t *window, const char *pattern,
+                               char **extracted)
+{
+    if (!window->data) return false;
+    /* A prefix-free capture must not report the tail of an overlong line as
+     * a complete value. Once a newline arrives, the existing last-line rule
+     * again has its full context. Explicit prefixes identify their own start. */
+    if (extracted && pattern[0] == '(' && window->partial_line &&
+        !strchr(window->data, '\n')) return false;
+    return ts_ssh_pattern_match(window->data, pattern, extracted);
 }

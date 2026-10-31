@@ -1281,6 +1281,7 @@ typedef struct {
     char *output_buffer;      /* 输出缓冲区 */
     size_t output_len;        /* 当前输出长度 */
     size_t output_capacity;   /* 缓冲区容量 */
+    ts_ssh_match_window_t matching;
     /* 实时匹配状态 */
     bool match_found;         /* 是否已找到匹配 */
     bool expect_matched;      /* 期望模式是否匹配 */
@@ -1365,15 +1366,15 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
     }
 
     /* 实时模式匹配 */
-    if (params && params->output_buffer) {
-        const char *output = params->output_buffer;
+    if (params->matching.data) {
+        ts_ssh_match_window_append(&params->matching,data,len);
         bool should_send_match = false;
         bool pattern_matched = false;  /* expect/fail 模式是否匹配 */
         bool is_first_extract = false;  /* 是否为首次提取 */
         
         /* 检查失败模式（仅在尚未匹配时） */
         if (!params->match_found && params->fail_pattern && params->fail_pattern[0]) {
-            if (ts_ssh_pattern_match(output, params->fail_pattern, NULL)) {
+            if (ts_ssh_match_window_match(&params->matching, params->fail_pattern, NULL)) {
                 params->fail_matched = true;
                 params->match_found = true;
                 should_send_match = true;
@@ -1385,7 +1386,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         /* 检查期望模式（仅在尚未匹配时，且失败模式没有匹配） */
         if (!params->match_found && !params->fail_matched &&
             params->expect_pattern && params->expect_pattern[0]) {
-            if (ts_ssh_pattern_match(output, params->expect_pattern, NULL)) {
+            if (ts_ssh_match_window_match(&params->matching, params->expect_pattern, NULL)) {
                 params->expect_matched = true;
                 params->match_found = true;
                 should_send_match = true;
@@ -1397,7 +1398,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         /* 提取值 */
         if (params->extract_pattern && params->extract_pattern[0]) {
             char *extracted = NULL;
-            if (ts_ssh_pattern_match(output, params->extract_pattern, &extracted)) {
+            if (ts_ssh_match_window_match(&params->matching, params->extract_pattern, &extracted)) {
                 /* 检查是否为首次提取 */
                 if (!params->extracted_value) {
                     is_first_extract = true;
@@ -1593,6 +1594,7 @@ static void exec_destroy(void *data)
     if(params->password_owned){memset(params->password_owned,0,strlen(params->password_owned));free(params->password_owned);}
     free(params->expect_pattern);free(params->fail_pattern);free(params->extract_pattern);
     free(params->output_buffer);free(params->extracted_value);
+    free(params->matching.data);
     vSemaphoreDelete(params->io);free(params);
 }
 
@@ -1789,23 +1791,22 @@ execution_finished:
         status = TS_WEBUI_SSH_STATUS_FAILED;
     } else {
         /* 命令完成，确定最终状态 */
-        const char *output = params->output_buffer ? params->output_buffer : "";
         
         /* 如果实时匹配没有找到，再做一次完整匹配 */
         if (!params->match_found) {
             /* 检查失败模式 */
             if (params->fail_pattern && params->fail_pattern[0]) {
-                fail_matched = ts_ssh_pattern_match(output, params->fail_pattern, NULL);
+                fail_matched = ts_ssh_match_window_match(&params->matching, params->fail_pattern, NULL);
             }
             
             /* 检查期望模式 */
             if (!fail_matched && params->expect_pattern && params->expect_pattern[0]) {
-                expect_matched = ts_ssh_pattern_match(output, params->expect_pattern, NULL);
+                expect_matched = ts_ssh_match_window_match(&params->matching, params->expect_pattern, NULL);
             }
             
             /* 提取值 */
             if (!extracted_value && params->extract_pattern && params->extract_pattern[0]) {
-                ts_ssh_pattern_match(output, params->extract_pattern, &extracted_value);
+                ts_ssh_match_window_match(&params->matching, params->extract_pattern, &extracted_value);
             }
         }
         
@@ -2103,6 +2104,16 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
     
 
     
+    if (params->collect_output &&
+        (params->expect_pattern || params->fail_pattern || params->extract_pattern)) {
+        params->matching.capacity = params->max_output_size;
+        params->matching.data = heap_caps_malloc(params->matching.capacity,
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!params->matching.data) params->matching.data = malloc(params->matching.capacity);
+        if (!params->matching.data) return ESP_ERR_NO_MEM;
+        params->matching.data[0] = '\0';
+    }
+
     /* Bind the saved command and result variables atomically with publication. */
     if ((params->command_id[0] || params->var_name[0]) && !ts_variable_is_initialized()) {
         if (params->command_id[0]) return ESP_ERR_NOT_FOUND;

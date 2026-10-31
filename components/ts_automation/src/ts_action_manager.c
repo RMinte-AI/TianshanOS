@@ -1447,6 +1447,7 @@ typedef struct {
     const ts_ssh_command_config_t *command;
     char *output, *extracted;
     size_t length, capacity;
+    ts_ssh_match_window_t matching;
     bool match_found, expect_matched, fail_matched, stopped;
 } action_ssh_output_t;
 
@@ -1459,20 +1460,21 @@ static void action_ssh_output(const char *data, size_t length, bool is_stderr, v
     memcpy(state->output+state->length,data,copied);
     state->length+=copied;
     state->output[state->length]='\0';
+    ts_ssh_match_window_append(&state->matching,data,length);
 
     const ts_ssh_command_config_t *cmd=state->command;
     bool matched=false, first_extract=false;
     if(!state->match_found && cmd->fail_pattern[0] &&
-       ts_ssh_pattern_match(state->output,cmd->fail_pattern,NULL)){
+       ts_ssh_match_window_match(&state->matching,cmd->fail_pattern,NULL)){
         state->match_found=state->fail_matched=matched=true;
     }
     if(!state->match_found && cmd->expect_pattern[0] &&
-       ts_ssh_pattern_match(state->output,cmd->expect_pattern,NULL)){
+       ts_ssh_match_window_match(&state->matching,cmd->expect_pattern,NULL)){
         state->match_found=state->expect_matched=matched=true;
     }
     if(cmd->extract_pattern[0]){
         char *extracted=NULL;
-        if(ts_ssh_pattern_match(state->output,cmd->extract_pattern,&extracted) && extracted){
+        if(ts_ssh_match_window_match(&state->matching,cmd->extract_pattern,&extracted)){
             first_extract=state->extracted==NULL;
             free(state->extracted);
             state->extracted=extracted;
@@ -1494,7 +1496,12 @@ static esp_err_t exec_ssh_advanced(ts_ssh_session_t session, const char *command
     action_ssh_output_t state={.session=session,.command=cmd,.capacity=64*1024};
     state.output=heap_caps_malloc(state.capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(!state.output)state.output=malloc(state.capacity);
-    if(!state.output){
+    state.matching.capacity=state.capacity;
+    state.matching.data=heap_caps_malloc(state.capacity,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!state.matching.data)state.matching.data=malloc(state.capacity);
+    if(!state.output || !state.matching.data){
+        free(state.output);
+        free(state.matching.data);
         result->status=TS_ACTION_STATUS_FAILED;
         snprintf(result->output,sizeof(result->output),"Out of memory");
         return ESP_ERR_NO_MEM;
@@ -1544,6 +1551,7 @@ static esp_err_t exec_ssh_advanced(ts_ssh_session_t session, const char *command
     }
     free(state.extracted);
     free(state.output);
+    free(state.matching.data);
     return ret;
 }
 
