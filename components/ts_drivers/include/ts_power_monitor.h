@@ -185,6 +185,9 @@ esp_err_t ts_power_monitor_stop(void);
  */
 bool ts_power_monitor_is_running(void);
 
+/** Whether retained ADC/UART and monitor resources are initialized. */
+bool ts_power_monitor_is_initialized(void);
+
 /**
  * @brief 获取电压数据（从缓存）
  * @param data 数据结构体指针

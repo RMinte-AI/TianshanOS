@@ -164,6 +164,9 @@ esp_err_t ts_console_stop(void);
  */
 bool ts_console_is_running(void);
 
+/** Check whether console resources and command registration are initialized. */
+bool ts_console_is_initialized(void);
+
 /*===========================================================================*/
 /*                           Command Registration                             */
 /*===========================================================================*/

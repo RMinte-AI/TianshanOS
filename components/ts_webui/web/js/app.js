@@ -1419,7 +1419,7 @@ async function refreshSystemPageOnce() {
         const protStatus = await api.powerProtectionStatus();
         if (!pageCurrent()) return;
         if (protStatus.data) {
-            const running = protStatus.data.running || protStatus.data.initialized;
+            const running = protStatus.data.running;
             updateProtectionUI(running);
         }
     } catch (e) {
@@ -1534,7 +1534,7 @@ async function toggleProtection() {
     let currentRunning = false;
     try {
         const protStatus = await api.powerProtectionStatus();
-        currentRunning = protStatus.data?.running || protStatus.data?.initialized || false;
+        currentRunning = protStatus.data?.running || false;
     } catch (e) {
         console.error('Failed to get protection status:', e);
     }

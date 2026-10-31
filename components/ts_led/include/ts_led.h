@@ -259,6 +259,9 @@ esp_err_t ts_led_init(void);
  */
 esp_err_t ts_led_deinit(void);
 
+/** Whether the retained LED subsystem resources are initialized. */
+bool ts_led_is_initialized(void);
+
 /*===========================================================================*/
 /*                           Device Management                                */
 /*===========================================================================*/

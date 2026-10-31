@@ -223,6 +223,7 @@ static esp_err_t led_service_init(ts_service_handle_t handle, void *user_data)
     
     ESP_LOGI(TAG, "Initializing LED service...");
     
+    if (ts_led_is_initialized()) return ESP_OK;
     esp_err_t ret = ts_led_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init LED: %s", esp_err_to_name(ret));
@@ -240,12 +241,10 @@ static esp_err_t led_service_start(ts_service_handle_t handle, void *user_data)
     ESP_LOGI(TAG, "Starting LED service...");
     
     // 初始化预设 LED 设备 (touch, board, matrix)
-    esp_err_t ret = ts_led_preset_init_all();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Some LED devices failed to init: %s", esp_err_to_name(ret));
-        // 不是致命错误，继续
-    }
-    
+    if (!ts_led_touch_get()) ts_led_touch_init();
+    if (!ts_led_board_get()) ts_led_board_init();
+    if (!ts_led_matrix_get()) ts_led_matrix_init();
+
     // 加载并应用保存的启动配置
     ts_led_load_all_boot_config();
     
@@ -323,7 +322,7 @@ static esp_err_t power_service_init(ts_service_handle_t handle, void *user_data)
     ESP_LOGI(TAG, "Initializing power service...");
     
     /* 初始化电压保护策略 */
-    esp_err_t ret = ts_power_policy_init(NULL);  // 使用默认配置
+    esp_err_t ret = ts_power_policy_is_initialized() ? ESP_OK : ts_power_policy_init(NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init power policy: %s", esp_err_to_name(ret));
         return ret;
@@ -334,7 +333,7 @@ static esp_err_t power_service_init(ts_service_handle_t handle, void *user_data)
     ts_power_monitor_get_default_config(&pm_config);
     pm_config.auto_start_monitoring = false;  // 禁用自动启动
     
-    ret = ts_power_monitor_init(&pm_config);
+    ret = ts_power_monitor_is_initialized() ? ESP_OK : ts_power_monitor_init(&pm_config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init power monitor: %s", esp_err_to_name(ret));
         /* 电源监控失败不影响系统运行，继续 */
@@ -362,6 +361,7 @@ static esp_err_t power_service_start(ts_service_handle_t handle, void *user_data
         ret = ts_power_policy_start();
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Failed to start power policy: %s", esp_err_to_name(ret));
+            return ret;
         } else {
             ESP_LOGI(TAG, "Power protection started (auto-start enabled)");
         }
@@ -379,8 +379,9 @@ static esp_err_t power_service_stop(ts_service_handle_t handle, void *user_data)
     
     ESP_LOGI(TAG, "Stopping power service...");
     
-    ts_power_policy_stop();
-    ts_power_monitor_stop();
+    esp_err_t ret = ts_power_policy_stop();
+    if (ret != ESP_OK) return ret;
+    if (ts_power_monitor_is_initialized()) return ts_power_monitor_stop();
     
     return ESP_OK;
 }
@@ -837,6 +838,7 @@ static esp_err_t console_service_init(ts_service_handle_t handle, void *user_dat
     
     ESP_LOGI(TAG, "Initializing console service...");
     
+    if (ts_console_is_initialized()) return ESP_OK;
     ts_console_config_t config = TS_CONSOLE_DEFAULT_CONFIG();
     config.prompt = "TianShanOS> ";
     

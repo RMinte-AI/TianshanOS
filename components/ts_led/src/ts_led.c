@@ -109,6 +109,11 @@ esp_err_t ts_led_init(void)
     return ESP_OK;
 }
 
+bool ts_led_is_initialized(void)
+{
+    return s_led.initialized;
+}
+
 esp_err_t ts_led_deinit(void)
 {
     if (!s_led.initialized) return ESP_ERR_INVALID_STATE;

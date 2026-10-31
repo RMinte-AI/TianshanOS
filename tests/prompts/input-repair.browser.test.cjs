@@ -45,6 +45,30 @@ async function fixture(language='zh-CN'){
  return {page,context,errors};
 }
 for(const language of ['zh-CN','en-US']){
+ test(`${language}: stopped initialized protection displays disabled and can enable again`,async()=>{
+  const f=await fixture(language);try{
+   await f.page.evaluate(async()=>{
+    window.protectionRunning=false;window.protectionWrites=[];
+    api.powerProtectionStatus=async()=>({code:0,data:{initialized:true,running:protectionRunning}});
+    api.powerProtectionSet=async params=>{protectionWrites.push(params.enable);protectionRunning=params.enable;return {code:0,data:{initialized:true,running:protectionRunning}};};
+    await loadSystemPage();await refreshSystemPageOnce();
+   });
+   const toggle=f.page.locator('#protection-toggle');
+   assert.equal(new URL(f.page.url()).origin,base);assert.match(await f.page.title(),/TianShanOS/i);
+   assert.equal(await f.page.locator('.page-system').count(),1);
+   assert.equal(await toggle.getAttribute('aria-checked'),'false');
+   assert.equal(await f.page.locator('#protection-status').innerText(),language==='zh-CN'?'已禁用':'Disabled');
+   if(process.env.TS_TEST_EVIDENCE_DIR){await toggle.scrollIntoViewIfNeeded();await f.page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a06-${language}-disabled.png`)});}
+   await toggle.click();await f.page.waitForFunction(()=>protectionWrites.length===1);
+   assert.equal(await toggle.getAttribute('aria-checked'),'true');
+   await toggle.click();await f.page.waitForFunction(()=>protectionWrites.length===2);
+   assert.equal(await toggle.getAttribute('aria-checked'),'false');
+   await toggle.click();await f.page.waitForFunction(()=>protectionWrites.length===3);
+   assert.deepEqual(await f.page.evaluate(()=>protectionWrites),[true,false,true]);
+   if(process.env.TS_TEST_EVIDENCE_DIR)await f.page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a06-${language}-enabled.png`)});
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
  test(`${language}: widget zero, negative bound, expressions and thresholds survive save/reopen`,async()=>{
   const f=await fixture(language);try{
    await f.page.evaluate(()=>{
