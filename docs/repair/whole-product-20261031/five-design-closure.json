@@ -1,0 +1,191 @@
+{
+  "reviewed_at": "2026-10-31T23:28:56.097862+08:00",
+  "plan_revision": "v3",
+  "code_commit": "2844de64e08c7a7c95f740a17ed937a7635da825",
+  "scope_count_unchanged": 48,
+  "design_open_items": [],
+  "implementation_and_validation_pending": true,
+  "review_method": "同一对话分别以Reviewer和正常使用反例核对；不是独立多代理评审",
+  "contracts": [
+    {
+      "id": "C-WS",
+      "batch": "A02",
+      "section": "一",
+      "title": "网页身份及私有输出",
+      "choice": "现有peer绑定已核验session，身份改变重连；逐私有发送检查，保留公开遥测与READ账户权限；本机代理复用同一现有会话策略",
+      "normal_use": "admin/root合法操作照常；Root终端可用；立即运行至多一次1000ms输出身份准备，观察失败不阻止业务；零观察者仍匹配/更新变量",
+      "minimal_files": [
+        "components/ts_net/src/ts_http_server.c",
+        "components/ts_api/src/ts_api.c",
+        "components/ts_api/include/ts_api.h",
+        "components/ts_api/src/ts_api_automation.c",
+        "components/ts_api/src/ts_api_storage.c",
+        "components/ts_api/src/ts_api_ssh.c",
+        "components/ts_webui/src/ts_webui_api.c",
+        "components/ts_webui/src/ts_webui_ws.c",
+        "components/ts_webui/src/ts_ws_transport.c",
+        "components/ts_webui/include/ts_ws_transport.h",
+        "components/ts_webui/src/ts_ws_operation.c",
+        "components/ts_webui/web/js/api.js",
+        "components/ts_webui/web/js/terminal.js",
+        "components/ts_webui/web/js/app.js"
+      ],
+      "review_counterexamples": [
+        "READ用户不得被升级为Root专属",
+        "同步terminal输出和transport快路径不得漏验",
+        "过期队列权限跳过不伪装发送成功、不停止业务",
+        "新池槽须清旧权限标记",
+        "代理不作同HTTPD同步回连、不信JSON身份",
+        "旧auth回执不能作用新账号"
+      ],
+      "test_entries": [
+        "tests/ws_subscriptions/run_operation_adapter.sh",
+        "tests/ws_subscriptions/test_terminal_auth.c",
+        "tests/prompts/package.json",
+        "tests/runtime/test_service_control.py"
+      ],
+      "status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+      "implementation_status": "NOT_IMPLEMENTED",
+      "validation_status": "NOT_RUN",
+      "contract_file": "five-designs.txt",
+      "reviewer_verdict": "按已确认需求审读，通过设计层复核；实现和实机结论尚不存在",
+      "user_verdict": "保留本文正常操作和明示取舍；不得用关闭功能或用户改公式来通过验收",
+      "planned_test_additions": [
+        "tests/ws_subscriptions/test_http_auth.c"
+      ]
+    },
+    {
+      "id": "C-EXPR",
+      "batch": "A03",
+      "section": "二",
+      "title": "数学与文本公式",
+      "choice": "同一app.js局部解析/结构校验/按值求值；固定运算、Math、纯转换、数值格式合同；不生成JS、不引入运行库",
+      "normal_use": "旧实证公式及合法数字/中文/引号文本、条件、单位保持；admin仍可编辑；未知不变0；原图标布局保留",
+      "minimal_files": [
+        "components/ts_webui/web/js/app.js"
+      ],
+      "review_counterexamples": [
+        "不能只替换字符串引号或把公式缩成四则",
+        "完整校验后短路，不执行未选分支",
+        "有括号负数幂不得被误拒绝",
+        "双引号内数值插值本来可用",
+        "不能因变量文字带null或引号就执行/丢弃脚本"
+      ],
+      "test_entries": [
+        "tests/prompts/package.json",
+        "tests/prompts/input-repair.browser.test.cjs",
+        "tests/prompts/widgets-structure.test.cjs"
+      ],
+      "status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+      "implementation_status": "NOT_IMPLEMENTED",
+      "validation_status": "NOT_RUN",
+      "contract_file": "five-designs.txt",
+      "reviewer_verdict": "按已确认需求审读，通过设计层复核；实现和实机结论尚不存在",
+      "user_verdict": "保留本文正常操作和明示取舍；不得用关闭功能或用户改公式来通过验收"
+    },
+    {
+      "id": "C-CONSOLE",
+      "batch": "A06",
+      "section": "三",
+      "title": "控制台停止与自重启",
+      "choice": "SDK read hook作50ms可结束UART读取，保留半行；局部退出信号/控制归属；外部交接后新读者、自调用原地恢复新读取循环",
+      "normal_use": "慢打字/停顿/退格/回车/历史保持；网页正常重启恢复；自身停止/重启不等自己，无第二输入任务",
+      "minimal_files": [
+        "components/ts_console/src/ts_console.c",
+        "components/ts_console/include/ts_console.h",
+        "main/ts_services.c",
+        "components/ts_core/ts_service/src/ts_service.c",
+        "components/ts_api/src/ts_api_service.c"
+      ],
+      "review_counterexamples": [
+        "零字节返回会令SDK复用旧字符，回调不得返回0",
+        "不能持mutex等任务尾部拿同锁",
+        "旧退出信号不能迟到下一轮",
+        "deinit须持归属至释放完成",
+        "真实命令忙拒绝时不先关console",
+        "自重启不需要后台控制任务或重注册",
+        "只有console回调锁住仍挡不住服务元状态交叉，须在同一服务公开控制入口先取得一位进行中归属"
+      ],
+      "test_entries": [
+        "tests/runtime/run_all.sh"
+      ],
+      "status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+      "implementation_status": "NOT_IMPLEMENTED",
+      "validation_status": "NOT_RUN",
+      "contract_file": "five-designs.txt",
+      "reviewer_verdict": "按已确认需求审读，通过设计层复核；实现和实机结论尚不存在",
+      "user_verdict": "保留本文正常操作和明示取舍；不得用关闭功能或用户改公式来通过验收",
+      "planned_test_additions": [
+        "tests/runtime/test_console_lifecycle.py"
+      ],
+      "test_method": "编译实际console/service源码和适配器；复用既有host SDK stub方式，不复制输入或生命周期算法。"
+    },
+    {
+      "id": "C-MODAL",
+      "batch": "B06",
+      "section": "四",
+      "title": "两设置窗口加载与异步归属",
+      "choice": "每次打开一个owner，按依赖组短暂等待；成功填全真值，失败结束等待且沿原手动设置；所有直接异步DOM回填核对owner",
+      "normal_use": "取消随时可用；保存和恢复默认沿实际写入语义；加载失败可手动设置；风扇应用仍切curve；没改字段不丢",
+      "minimal_files": [
+        "components/ts_webui/web/js/app.js",
+        "components/ts_webui/web/js/lang/zh-CN.js",
+        "components/ts_webui/web/js/lang/en-US.js"
+      ],
+      "review_counterexamples": [
+        "同一个关机DOM不是同一次打开",
+        "不能整窗dirty跳过全部真值",
+        "恢复默认实际会写设备，不是草稿",
+        "关闭不能撤销已接受写入，也不能让旧结果关新窗",
+        "文件读取和延时画图也有窗口归属",
+        "温度绑定读取不能成为曲线保存的新前置"
+      ],
+      "test_entries": [
+        "tests/prompts/package.json",
+        "tests/prompts/configuration.browser.test.cjs",
+        "tests/prompts/input-repair.browser.test.cjs"
+      ],
+      "status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+      "implementation_status": "NOT_IMPLEMENTED",
+      "validation_status": "NOT_RUN",
+      "contract_file": "five-designs.txt",
+      "reviewer_verdict": "按已确认需求审读，通过设计层复核；实现和实机结论尚不存在",
+      "user_verdict": "保留本文正常操作和明示取舍；不得用关闭功能或用户改公式来通过验收"
+    },
+    {
+      "id": "C-LED-FIELDS",
+      "batch": "B09",
+      "section": "五",
+      "title": "二维码与文字字段往返",
+      "choice": "保留单一RGB/image_path，加qr_color_set/manual_position两位必要信息；旧默认不变，完整codec复用，renderer不改",
+      "normal_use": "旧默认白/非零旧色、新显式黑/白、图片选择和auto_pos缺省/true/false从编辑到运行及导出往返一致",
+      "minimal_files": [
+        "components/ts_automation/include/ts_automation_types.h",
+        "components/ts_automation/src/ts_action_codec.c",
+        "components/ts_automation/src/ts_action_manager.c",
+        "components/ts_webui/web/js/app.js"
+      ],
+      "review_counterexamples": [
+        "旧color=#000不能证明明确选择黑",
+        "旧QR编辑界面不能显示假黑色使重存变黑",
+        "bg_image给前景模块着色，不是白底",
+        "center/right本来覆盖横坐标，不能为测试改renderer",
+        "直接C零初始化与JSON缺字段保持同一默认",
+        "只为新增CLI字符串参数作有界引用，不全局改CLI"
+      ],
+      "test_entries": [
+        "tests/runtime/test_input_repair.py",
+        "tests/prompts/input-repair.browser.test.cjs",
+        "tests/prompts/configuration.browser.test.cjs"
+      ],
+      "status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+      "implementation_status": "NOT_IMPLEMENTED",
+      "validation_status": "NOT_RUN",
+      "contract_file": "five-designs.txt",
+      "reviewer_verdict": "按已确认需求审读，通过设计层复核；实现和实机结论尚不存在",
+      "user_verdict": "保留本文正常操作和明示取舍；不得用关闭功能或用户改公式来通过验收"
+    }
+  ],
+  "approval_ref": "approval-local-phase.json",
+  "execution_phase": "LOCAL_VALIDATION_AND_BUILD"
+}

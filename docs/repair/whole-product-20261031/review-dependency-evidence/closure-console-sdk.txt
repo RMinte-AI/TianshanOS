@@ -1,0 +1,118 @@
+ESP-IDF v5.5.2 local SDK static excerpts; not runtime proof.
+
+SOURCE /Users/massif/esp/v5.5.2/esp-idf/components/console/linenoise/linenoise.h lines 80-83 full_source_sha256=67d0d645bd392175ee75d4e94f2cd1bdf0eb086679d5fd77a6b90c449dd6d94a
+80:
+81: typedef ssize_t (*linenoise_read_bytes_fn)(int, void*, size_t);
+82: void linenoiseSetReadFunction(linenoise_read_bytes_fn read_fn);
+83: void linenoiseSetReadCharacteristics(void);
+
+SOURCE /Users/massif/esp/v5.5.2/esp-idf/components/console/linenoise/linenoise.c lines 239-256 full_source_sha256=38753ab0df3140232ed65a9b412ba670497eaebe424a45098eaaebb2dc5c4fce
+239: }
+240:
+241: static linenoise_read_bytes_fn read_func = read;
+242: void linenoiseSetReadFunction(linenoise_read_bytes_fn read_fn)
+243: {
+244:     read_func = read_fn;
+245: }
+246:
+247: __attribute__((weak)) void linenoiseSetReadCharacteristics(void)
+248: {
+249:     /* By default linenoise uses blocking reads */
+250:     int stdin_fileno = fileno(stdin);
+251:     int flags = fcntl(stdin_fileno, F_GETFL);
+252:     flags &= ~O_NONBLOCK;
+253:     (void)fcntl(stdin_fileno, F_SETFL, flags);
+254:
+255:     linenoiseSetReadFunction(read);
+256: }
+
+SOURCE /Users/massif/esp/v5.5.2/esp-idf/components/console/linenoise/linenoise.c lines 1160-1205 full_source_sha256=38753ab0df3140232ed65a9b412ba670497eaebe424a45098eaaebb2dc5c4fce
+1160: static int linenoiseDumb(char* buf, size_t buflen, const char* prompt) {
+1161:     /* dumb terminal, fall back to fgets */
+1162:     fputs(prompt, stdout);
+1163:     flushWrite();
+1164:
+1165:     size_t count = 0;
+1166:     const int in_fd = fileno(stdin);
+1167:     char c = 'c';
+1168:
+1169:     while (count < buflen) {
+1170:
+1171:         int nread = read_func(in_fd, &c, 1);
+1172:         if (nread < 0) {
+1173:             return nread;
+1174:         }
+1175:         if (c == '\n') {
+1176:             break;
+1177:         } else if (c == BACKSPACE || c == CTRL_H) {
+1178:             if (count > 0) {
+1179:                 buf[count - 1] = 0;
+1180:                 count--;
+1181:
+1182:                 /* Only erase symbol echoed from stdin. */
+1183:                 fputs("\x08 ", stdout); /* Windows CMD: erase symbol under cursor */
+1184:                 flushWrite();
+1185:             } else {
+1186:                 /* Consume backspace if the command line is empty to avoid erasing the prompt */
+1187:                 continue;
+1188:             }
+1189:
+1190:         } else if (c <= UNIT_SEP) {
+1191:             /* Consume all character that are non printable (the backspace
+1192:              * case is handled above) */
+1193:             continue;
+1194:         } else {
+1195:             buf[count] = c;
+1196:             ++count;
+1197:         }
+1198:         fputc(c, stdout); /* echo */
+1199:         flushWrite();
+1200:     }
+1201:     fputc('\n', stdout);
+1202:     flushWrite();
+1203:     return count;
+1204: }
+1205:
+
+SOURCE /Users/massif/esp/v5.5.2/esp-idf/components/console/linenoise/linenoise.c lines 1218-1244 full_source_sha256=38753ab0df3140232ed65a9b412ba670497eaebe424a45098eaaebb2dc5c4fce
+1218: char *linenoise(const char *prompt) {
+1219:     char *buf = calloc(1, max_cmdline_length);
+1220:     int count = 0;
+1221:     if (buf == NULL) {
+1222:         return NULL;
+1223:     }
+1224:     if (!dumbmode) {
+1225:         count = linenoiseRaw(buf, max_cmdline_length, prompt);
+1226:     } else {
+1227:         count = linenoiseDumb(buf, max_cmdline_length, prompt);
+1228:     }
+1229:     if (count > 0) {
+1230:         sanitize(buf);
+1231:         count = strlen(buf);
+1232:     } else if (count == 0 && allow_empty) {
+1233:         /* will return an empty (0-length) string */
+1234:     } else {
+1235:         free(buf);
+1236:         return NULL;
+1237:     }
+1238:     return buf;
+1239: }
+1240:
+1241: /* This is just a wrapper the user may want to call in order to make sure
+1242:  * the linenoise returned buffer is freed with the same allocator it was
+1243:  * created with. Useful when the main program is using an alternative
+1244:  * allocator. */
+
+SOURCE /Users/massif/esp/v5.5.2/esp-idf/components/esp_driver_uart/src/uart_vfs.c lines 303-314 full_source_sha256=bb0ad020251a8da4a6278b4f19f5f6362c1e140c13f2562889ffc98ebfb559bf
+303:             if (c == '\r') {
+304:                 if (s_ctx[fd]->rx_mode == ESP_LINE_ENDINGS_CR) {
+305:                     c = '\n';
+306:                 } else if (s_ctx[fd]->rx_mode == ESP_LINE_ENDINGS_CRLF) {
+307:                     /* look ahead */
+308:                     int c2 = uart_read_char(fd);
+309:                     fetch_size--;
+310:                     if (c2 == NONE) {
+311:                         /* could not look ahead, put the current character back */
+312:                         uart_return_char(fd, c);
+313:                         c = NONE;
+314:                         break;

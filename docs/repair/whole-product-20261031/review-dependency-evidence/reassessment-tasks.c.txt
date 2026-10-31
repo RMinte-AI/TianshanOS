@@ -1,0 +1,150 @@
+source=/Users/massif/esp/v5.5.2/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c
+sha256=193c3d8379acc847097632da8e6d4dd2ee0bf8e069d78979d68dd26b653d48df
+1340: #if ( INCLUDE_vTaskDelete == 1 )
+1341:
+1342:     void vTaskDelete( TaskHandle_t xTaskToDelete )
+1343:     {
+1344:         TCB_t * pxTCB;
+1345:         BaseType_t xSelfDelete;
+1346:         BaseType_t xIsCurRunning;
+1347:
+1348:         taskENTER_CRITICAL( &xKernelLock );
+1349:         {
+1350:             /* Get current core ID as we can no longer be preempted. */
+1351:             const BaseType_t xCurCoreID = portGET_CORE_ID();
+1352:
+1353:             /* If null is passed in here then it is the calling task that is
+1354:              * being deleted. */
+1355:             pxTCB = prvGetTCBFromHandle( xTaskToDelete );
+1356:
+1357:             /* Remove task from the ready/delayed list. */
+1358:             if( uxListRemove( &( pxTCB->xStateListItem ) ) == ( UBaseType_t ) 0 )
+1359:             {
+1360:                 taskRESET_READY_PRIORITY( pxTCB->uxPriority );
+1361:             }
+1362:             else
+1363:             {
+1364:                 mtCOVERAGE_TEST_MARKER();
+1365:             }
+1366:
+1367:             /* Is the task waiting on an event also? */
+1368:             if( listLIST_ITEM_CONTAINER( &( pxTCB->xEventListItem ) ) != NULL )
+1369:             {
+1370:                 ( void ) uxListRemove( &( pxTCB->xEventListItem ) );
+1371:             }
+1372:             else
+1373:             {
+1374:                 mtCOVERAGE_TEST_MARKER();
+1375:             }
+1376:
+1377:             /* Increment the uxTaskNumber also so kernel aware debuggers can
+1378:              * detect that the task lists need re-generating.  This is done before
+1379:              * portPRE_TASK_DELETE_HOOK() as in the Windows port that macro will
+1380:              * not return. */
+1381:             uxTaskNumber++;
+1382:
+1383:             /* Check if the task is deleting itself, or is currently running on
+1384:              * the other core. */
+1385:             if( taskIS_CURRENTLY_RUNNING_ON_CORE( pxTCB, xCurCoreID ) == pdTRUE )
+1386:             {
+1387:                 xSelfDelete = pdTRUE;
+1388:                 xIsCurRunning = pdTRUE;
+1389:             }
+1390:
+1391:             #if ( configNUMBER_OF_CORES > 1 )
+1392:                 else if( taskIS_CURRENTLY_RUNNING_ON_CORE( pxTCB, !xCurCoreID ) == pdTRUE )
+1393:                 {
+1394:                     xSelfDelete = pdFALSE;
+1395:                     xIsCurRunning = pdTRUE;
+1396:                 }
+1397:             #endif /* configNUMBER_OF_CORES > 1 */
+1398:             else
+1399:             {
+1400:                 xSelfDelete = pdFALSE;
+1401:                 xIsCurRunning = pdFALSE;
+1402:             }
+1403:
+1404:             if( xIsCurRunning == pdTRUE )
+1405:             {
+1406:                 /* A task is deleting itself or is currently running.  This
+1407:                  * cannot complete within the task itself, as a context switch
+1408:                  * to another task is required. Place the task in the
+1409:                  * termination list.  The idle task will check the termination
+1410:                  * list and free up any memory allocated by the scheduler for
+1411:                  * the TCB and stack of the deleted task. */
+1412:                 vListInsertEnd( &xTasksWaitingTermination, &( pxTCB->xStateListItem ) );
+1413:
+1414:                 /* Increment the ucTasksDeleted variable so the idle task knows
+1415:                  * there is a task that has been deleted and that it should therefore
+1416:                  * check the xTasksWaitingTermination list. */
+1417:                 ++uxDeletedTasksWaitingCleanUp;
+1418:
+1419:                 /* Call the delete hook before portPRE_TASK_DELETE_HOOK() as
+1420:                  * portPRE_TASK_DELETE_HOOK() does not return in the Win32 port. */
+1421:                 traceTASK_DELETE( pxTCB );
+1422:
+1423:                 /* The pre-delete hook is primarily for the Windows simulator,
+1424:                  * in which Windows specific clean up operations are performed,
+1425:                  * after which it is not possible to yield away from this task -
+1426:                  * hence xYieldPending is used to latch that a context switch is
+1427:                  * required. */
+1428:                 portPRE_TASK_DELETE_HOOK( pxTCB, &xYieldPending[ xCurCoreID ] );
+1429:
+1430:                 #if ( configNUMBER_OF_CORES > 1 )
+1431:                     if( xSelfDelete == pdFALSE )
+1432:                     {
+1433:                         /* The task that is being deleted is currently running
+1434:                          * on the other core. Send a yield request to the other
+1435:                          * core so that the task is swapped out. */
+1436:                         taskYIELD_CORE( !xCurCoreID );
+1437:                     }
+1438:                 #else /* configNUMBER_OF_CORES > 1 */
+1439:                     /* xCurCoreID is unused */
+1440:                     ( void ) xCurCoreID;
+1441:                 #endif /* configNUMBER_OF_CORES > 1 */
+1442:             }
+1443:             else
+1444:             {
+1445:                 --uxCurrentNumberOfTasks;
+1446:                 traceTASK_DELETE( pxTCB );
+1447:
+1448:                 /* Reset the next expected unblock time in case it referred to
+1449:                  * the task that has just been deleted. */
+1450:                 prvResetNextTaskUnblockTime();
+1451:             }
+1452:         }
+1453:         taskEXIT_CRITICAL( &xKernelLock );
+1454:
+1455:         /* If the task is currently running, call prvDeleteTCB from outside of
+1456:          * critical section. If a task is currently running, prvDeleteTCB is
+1457:          * called from prvCheckTasksWaitingTermination which is called from
+1458:          * Idle task. */
+1459:         if( xIsCurRunning == pdFALSE )
+1460:         {
+1461:             prvDeleteTCB( pxTCB );
+1462:         }
+1463:
+1464:         /* For SMP, we need to take the kernel lock here as we are about to
+1465:          * access kernel data structures. */
+1466:         prvENTER_CRITICAL_SMP_ONLY( &xKernelLock );
+1467:         {
+1468:             /* Force a reschedule if it is the currently running task that has just
+1469:              * been deleted. */
+1470:             if( xSchedulerRunning != pdFALSE )
+1471:             {
+1472:                 if( xSelfDelete == pdTRUE )
+1473:                 {
+1474:                     configASSERT( taskIS_SCHEDULER_SUSPENDED() == pdFALSE );
+1475:                     portYIELD_WITHIN_API();
+1476:                 }
+1477:                 else
+1478:                 {
+1479:                     mtCOVERAGE_TEST_MARKER();
+1480:                 }
+1481:             }
+1482:         }
+1483:         /* Release the previously taken kernel lock. */
+1484:         prvEXIT_CRITICAL_SMP_ONLY( &xKernelLock );
+1485:     }
+1486:
+1487: #endif /* INCLUDE_vTaskDelete */

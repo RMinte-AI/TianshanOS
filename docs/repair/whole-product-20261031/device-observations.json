@@ -1,0 +1,51 @@
+{
+  "captured_at": "2026-10-31T16:08:29.151093+08:00",
+  "device_url": "http://10.10.99.97",
+  "browser": "本机Safari，用户授权Root登录；密码不写文件",
+  "running_version": "0.6.3+ce40082.10300449",
+  "idf": "v5.5.2",
+  "code_baseline_commit": "2844de64e08c7a7c95f740a17ed937a7635da825",
+  "deployed_baseline_identity": "未证明含本次2844de64六文件变更；不得以版本标注ce40082推断dirty修改是否已部署",
+  "actual_interactions": [
+    "Root登录；关闭默认密码提醒但未改密码",
+    "系统/服务状态只读，12/12",
+    "指令页选择已有主机，仅查看；新建指令填写匹配草稿后取消，重开为空",
+    "自动化规则新建表单、动作模板和数据源表单打开后取消，未保存/测试",
+    "LED文本动作默认自动位置开启；草稿手动5/7后取消，未输出",
+    "文件列表只读，未下载密钥或其他用户文件",
+    "GPU/温度组件编辑只读后取消，保留既有表达式",
+    "关机设置草稿300→240→取消→重开仍300",
+    "LED色彩校正及9节点风扇曲线只读后退出"
+  ],
+  "protected_state": {
+    "power_protection": "已启用，全程未切换",
+    "agx_power": "运行中，全程未操作",
+    "fan_mode": "智能，全程未切换；输出16–18%自然调节",
+    "real_model": "Qwen3.8-27B-NVFP4显示未启动；未执行启动/停止/核验",
+    "automation": "运行中；SD配置；已有1规则/1数据源/1动作模板均未编辑保存",
+    "emergency_copy": "2026-10-28 23:33:39；尚未包含最新修改，未保存或恢复",
+    "power_settings": {
+      "low_voltage": 12.6,
+      "recovery_voltage": 18,
+      "shutdown_seconds": 300,
+      "recovery_hold_seconds": 5,
+      "fan_delay_seconds": 60
+    },
+    "widget_expressions": [
+      "${agx_info.memory.ram.used}",
+      "${agx_info.temperature.tj}"
+    ]
+  },
+  "access_notes": [
+    "内置浏览器和Chrome显示ERR_ADDRESS_UNREACHABLE；本机ping有响应、HTTP HEAD返回405，Safari新标签实际加载成功。没有关闭代理、防火墙或更改权限。",
+    "设备显示时间未同步；记录以本机采集时间为准，不拿设备时钟做审计时间。"
+  ],
+  "not_performed": [
+    "任何新修复",
+    "设备刷机、重启、关机、保护/风扇模式切换",
+    "真实SSH或模型服务连接/任务控制",
+    "持久配置保存、导入、备份覆盖、SD卸载或物理插拔",
+    "破坏性/恶意数据实机试验"
+  ],
+  "is_post_repair_acceptance": false
+}

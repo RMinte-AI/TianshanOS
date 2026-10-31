@@ -1,0 +1,19 @@
+{
+  "committed_at": "2026-10-31T15:44:28.156812+08:00",
+  "branch": "massif/whole-product-repair-20261031",
+  "commit": "2844de64e08c7a7c95f740a17ed937a7635da825",
+  "parent": "ce400825f6b0d7d14cd7aa4aecc9f8eafee8c7fe",
+  "tree": "0eae4d7c4b1fdb3b051bb9e753e8300931bfd330",
+  "files": [
+    "components/ts_automation/src/ts_action_manager.c",
+    "components/ts_security/include/ts_ssh_client.h",
+    "components/ts_security/src/ts_ssh_pattern.c",
+    "components/ts_webui/src/ts_webui_ws.c",
+    "tests/runtime/test_service_control.py",
+    "tests/ws_subscriptions/test_operation_adapter.c"
+  ],
+  "source_patch_sha256": "386f042cfb5bc5b8aeb77841c2cff4acf34d925f9eeee645e3058539fbb6a877",
+  "status_after": "",
+  "pushed": false,
+  "audit": "/Users/massif/.codex/visualizations/2026/10/29/01a188dc-bc0c-7031-9d67-965a00ac9c59/whole-product-audit-20261030/repair-preparation-20261031/baseline-commit-audit.txt"
+}
