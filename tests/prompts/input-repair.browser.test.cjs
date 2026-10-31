@@ -433,7 +433,7 @@ for(const language of ['zh-CN','en-US']){
  test(language+': A03 Admin widget edit preserves the existing preview, then saves and refreshes each original formula',async()=>{
   const f=await fixture(language);try{
    await f.page.evaluate(async()=>{
-    api.user={username:'admin',role:'admin'};window.widgetSaved={widgets:[],source:'nvs'};
+    api.token='a03-local-admin-fixture';api.username='admin';api.level='admin';window.widgetSaved={widgets:[],source:'nvs'};
     const original=api.call;
     api.call=async(endpoint,params)=>{
      if(endpoint==='ui.widgets.set'){widgetSaved=structuredClone(params);writes.push({endpoint,params:structuredClone(params)});return {code:0,data:{nvs_saved:true}};}
@@ -444,12 +444,14 @@ for(const language of ['zh-CN','en-US']){
     };
     await loadSystemPage();
    });
+   assert.deepEqual(await f.page.evaluate(()=>[api.isLoggedIn(),api.isAdmin(),api.isRoot(),api.getLevel()]),[true,true,false,'admin']);
    for(const c of formulaContract.positive_cases.slice(0,11)){
     await f.page.evaluate(()=>{
      stopDataWidgetsAutoRefresh();
      dataWidgets=[{id:'formula',type:'text',label:'Formula',icon:'ri-dashboard-line',layout:'large',unit:'°C',decimals:1,expression:'$'+'{temp}'}];
-     renderDataWidgets();showWidgetEditPanel('formula');
+     renderDataWidgets();
     });
+    await f.page.locator('#data-widgets-grid [data-widget-id="formula"]').click();
     assert.equal(await f.page.locator('#dw-preview-card .dw-card').count(),1);
     assert.equal(await f.page.locator('#dw-preview-card svg.i').count()>0,true);
     await f.page.locator('#edit-expression').fill(c.expression);
