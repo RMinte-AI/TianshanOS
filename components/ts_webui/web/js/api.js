@@ -899,8 +899,7 @@ class TianShanWS {
             ws.onopen = () => {
                 if (!current()) return;
                 this.reconnectDelay = 1000;
-                if (token) ws.send(JSON.stringify({type: 'auth', token}));
-                else { this.authOutcome = 'rejected'; this.settleAuth(ws, false); }
+                ws.send(JSON.stringify({type: 'auth', token}));
                 this.send({type: 'subscribe', events: ['*']});
                 if (this.onConnect) this.onConnect();
             };
@@ -909,7 +908,7 @@ class TianShanWS {
                 try {
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'auth_ok' || msg.type === 'auth_error') {
-                        this.authenticated = msg.type === 'auth_ok' && !!token && api.token === token;
+                        this.authenticated = msg.type === 'auth_ok' && api.token === token;
                         this.authOutcome = this.authenticated ? 'ready' : 'rejected';
                         this.settleAuth(ws, this.authenticated);
                         if (msg.type === 'auth_error' && msg.reason === 'session_expired' && token && api.token === token) {

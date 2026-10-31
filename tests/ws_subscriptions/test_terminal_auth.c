@@ -50,6 +50,8 @@ static void close_exec(ts_ws_operation_t *op) {
 static void identity_and_delivery(void)
 {
     setup();sent_hook=count_private;
+    send_message(1,"{\"type\":\"auth\",\"token\":null}");
+    assert(strstr(payloads[1],"auth_error")&&!ts_ws_peer_authorized(peer(1),TS_PERM_READ));
     send_message(1,"{\"type\":\"auth\",\"token\":\"admin-token\",\"level\":4}");
     assert(strstr(payloads[1],"auth_ok") && !ts_ws_peer_authorized(peer(1),TS_PERM_ROOT));
     send_message(1,"{\"type\":\"auth\",\"token\":\"admin-token\"}");assert(strstr(payloads[1],"auth_ok"));

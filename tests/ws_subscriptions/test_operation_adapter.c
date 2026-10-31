@@ -424,6 +424,10 @@ static void matching_regressions(void){
 }
 int main(void){
  cJSON_Hooks h={tracked_malloc,tracked_free};cJSON_InitHooks(&h);sent_hook=observe;
+ setup();reqs[1].method=1;incoming="{\"type\":\"auth\",\"token\":null}";current=(void*)3;
+ assert(ws_handler(&reqs[1])==ESP_OK);current=(void*)1;incoming=NULL;
+ assert(strstr(payloads[1],"auth_ok")&&ts_ws_peer_authorized(*(ts_ws_peer_t*)reqs[1].sess_ctx,TS_PERM_READ));finish_all();
+ puts("PASS auth-disabled actual WS handler acknowledges null-token auth without requiring a login");
  setup();connect_shell();assert(shell_task.fn && connected_frames==1);
  ssh_shell_context_t *ctx=shell_task.arg;queue_fail=true;ssh_send_output(ctx,"out",3);queue_fail=false;test_now+=100000;drive_all();assert(terminal_frames==1);shell_task.fn(shell_task.arg);finish_all();
  setup();terminal_frames=0;output_after_terminal=false;connect_shell();ctx=shell_task.arg;

@@ -339,8 +339,8 @@ for(const language of ['zh-CN','en-US']) {
     root.message({type:'auth_ok'});const prepared=await ws.prepareOutputIdentity();
     root.message({type:'auth_error',reason:'session_expired'});
     const expired=api.token===null&&ws.ws!==root;
-    const anonymous=ws.ws;anonymous.open();
-    const publicOnly=anonymous.sent.length&&anonymous.sent[0].type==='subscribe'&&!anonymous.sent.some(m=>m.type==='auth');
+    const anonymous=ws.ws;anonymous.open();anonymous.message({type:'auth_error',message:'Unauthorized'});
+    const publicOnly=anonymous.sent[0].type==='auth'&&anonymous.sent[0].token===null&&anonymous.sent[1].type==='subscribe'&&!ws.authenticated&&api.token===null;
     term.destroy();const count=__sockets.length;api.clearAuth();const destroyedListenerRemoved=__sockets.length===count+1;
     return {order,restored,oldIgnored,firstTerminal,ssh,terminalIgnored,prepared,expired,publicOnly,destroyedListenerRemoved,events};
    });
@@ -415,3 +415,37 @@ for(const language of ['zh-CN','en-US']) {
   });
  }
 }
+
+for(const language of ['zh-CN','en-US'])test(`A02: no-auth server ACK keeps real logged-out UI output connected ${language}`,async()=>{
+ const {page,context,errors}=await pageFor(language);const submissions=[];try{
+  const version='00000000000000000000000000000001';
+  await page.route('**/api/**',async route=>{
+   const request=route.request(),u=new URL(request.url());let data={};
+   if(u.pathname.endsWith('/auth/logout')){await route.fulfill({json:{success:true}});return;}
+   if(u.pathname.endsWith('/auth/login'))data={token:'root-token',username:'root',level:'root',expires_in:3600,password_changed:true};
+   if(u.pathname.endsWith('/auth/status'))data={valid:true,username:'root',level:'root'};
+   if(u.pathname.endsWith('/ssh/hosts/list'))data={active_version:version,hosts:[{id:'local',host:'fixture.invalid',port:22,username:'ordinary',keyid:'default'}]};
+   if(u.pathname.endsWith('/ssh/commands/list'))data={active_version:version,commands:[{id:'foreground',host_id:'local',name:'Normal command',command:'printf ordinary',enabled:true}]};
+   if(u.pathname.endsWith('/ssh/exec_stream')){submissions.push({authorization:request.headers().authorization||null,params:request.postDataJSON()});data={session_id:25};}
+   await route.fulfill({json:{code:0,data}});
+  });
+  await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&window.ws);
+  await page.locator('#username').fill('root');await page.locator('#password').fill('fixture');await page.locator('#login-form button[type="submit"]').click();
+  await page.waitForFunction(()=>api.token==='root-token');await page.evaluate(()=>{ws.ws.open();ws.ws.message({type:'auth_ok'});location.hash='/commands';});
+  await page.locator('.page-commands .host-card').click();await page.locator('.page-commands .btn-exec').waitFor({state:'visible'});
+  await page.locator('#login-btn').click();await page.waitForFunction(()=>api.token===null&&!document.getElementById('login-modal').classList.contains('hidden'));
+  await page.locator('#login-form button[type="button"]').click();
+  const ack=await page.evaluate(()=>{
+   ws.ws.open();const before=ws.authenticated,sent=ws.ws.sent;
+   ws.ws.message({type:'auth_ok'});
+   return {before,after:ws.authenticated,sent,token:api.token,retainedCommands:!!document.querySelector('.page-commands'),routeDenied:!router.checkAccess('/commands').allowed};
+  });
+  assert(!ack.before&&ack.after&&ack.retainedCommands&&ack.routeDenied);assert.equal(ack.token,null);
+  assert.equal(ack.sent[0].type,'auth');assert.equal(ack.sent[0].token,null);assert.equal(ack.sent[1].type,'subscribe');
+  await page.locator('.page-commands .btn-exec').click();await page.waitForFunction(()=>currentExecSessionId===25);
+  await page.evaluate(()=>ws.ws.message({type:'ssh_exec_output',session_id:25,data:'VALUE_FROM_SERVER\n'}));
+  const output=await page.locator('#exec-result').innerText();assert.match(output,/VALUE_FROM_SERVER/);assert.doesNotMatch(output,/实时输出尚未连接|live output is not connected/);
+  assert.equal(submissions.length,1);assert.equal(submissions[0].authorization,null);assert.deepEqual(errors,[]);
+  if(process.env.TS_TEST_EVIDENCE_DIR)await page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a02-noauth-${language}-output-connected.png`)});
+ }finally{await context.close();}
+});
