@@ -14,6 +14,7 @@ python3 tests/runtime/test_registry_tables.py
 python3 tests/runtime/test_console_lifecycle.py
 python3 tests/runtime/test_power_lifecycle.py
 python3 tests/runtime/test_led_lifetimes.py
+python3 tests/runtime/test_led_image_bounds.py
 python3 tests/runtime/test_power_settings.py
 python3 tests/runtime/test_ui_widgets.py
 python3 tests/runtime/test_scp_recv.py
