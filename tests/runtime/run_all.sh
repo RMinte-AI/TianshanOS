@@ -11,6 +11,7 @@ python3 tests/runtime/test_completion.py
 python3 tests/runtime/test_service_control.py
 python3 tests/runtime/test_sensitive_auth.py
 python3 tests/runtime/test_port_forward.py
+python3 tests/runtime/test_compute_monitor.py
 python3 tests/runtime/test_registry_tables.py
 python3 tests/runtime/test_console_lifecycle.py
 python3 tests/runtime/test_power_lifecycle.py

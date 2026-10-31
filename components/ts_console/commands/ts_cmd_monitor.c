@@ -254,10 +254,18 @@ static int do_monitor_config(const char *server, int port, bool json)
     if (changed) {
         /* 需要重新初始化才能生效 */
         if (ts_compute_monitor_is_running()) {
-            ts_compute_monitor_stop();
+            esp_err_t ret = ts_compute_monitor_stop();
+            if (ret != ESP_OK) {
+                ts_console_error("Failed to stop: %s\n", esp_err_to_name(ret));
+                return 1;
+            }
         }
         if (ts_compute_monitor_is_initialized()) {
-            ts_compute_monitor_deinit();
+            esp_err_t ret = ts_compute_monitor_deinit();
+            if (ret != ESP_OK) {
+                ts_console_error("Failed to deinit: %s\n", esp_err_to_name(ret));
+                return 1;
+            }
         }
         
         esp_err_t ret = ts_compute_monitor_init(&config);
