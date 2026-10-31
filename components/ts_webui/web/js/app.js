@@ -7559,7 +7559,8 @@ async function batchDelete() {
         return;
     }
     
-    const count = selectedFiles.size;
+    const paths = Array.from(selectedFiles);
+    const count = paths.length;
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteFiles', { count }) : `确定要删除选中的 ${count} 个文件/文件夹吗？此操作不可撤销！`, { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
@@ -7569,7 +7570,7 @@ async function batchDelete() {
     let successCount = 0;
     const failures = [];
     
-    for (const path of selectedFiles) {
+    for (const path of paths) {
         try {
             requireApiSuccess(await api.storageDelete(path), 'storageDelete');
             successCount++;

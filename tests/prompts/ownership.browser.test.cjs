@@ -449,3 +449,87 @@ for(const language of ['zh-CN','en-US'])test(`A02: no-auth server ACK keeps real
   if(process.env.TS_TEST_EVIDENCE_DIR)await page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a02-noauth-${language}-output-connected.png`)});
  }finally{await context.close();}
 });
+
+async function batchFilesPage(language,{hold=false,failSecond=false}={}){
+ const f=await pageFor(language);
+ await f.page.goto(base);await f.page.waitForFunction(()=>i18n.isReady());
+ await f.page.evaluate(async({hold,failSecond})=>{
+  closeLoginModal();
+  window.batchEntries=[{name:'A 中文.txt',type:'file',size:3},{name:'B folder',type:'dir'},{name:'C.txt',type:'file',size:5}];
+  window.deleteCalls=[];window.fileListReads=0;
+  api.storageStatus=async()=>({code:0,data:{sd:{mounted:true},spiffs:{mounted:true}}});
+  api.storageList=async()=>{++fileListReads;return {code:0,data:{entries:structuredClone(batchEntries)}};};
+  api.storageDelete=async path=>{
+   deleteCalls.push(path);
+   if(hold&&deleteCalls.length===1)await new Promise(resolve=>{window.releaseDelete=resolve;});
+   if(failSecond&&path==='/sdcard/B folder')return {code:3,error:'Permission denied'};
+   batchEntries=batchEntries.filter(entry=>'/sdcard/'+entry.name!==path);
+   return {code:0,data:{}};
+  };
+  await loadFilesPage();
+ },{hold,failSecond});
+ return f;
+}
+for(const language of ['zh-CN','en-US']){
+ test(language+': A04 normal one/multiple file deletion and cancellation retain request counts and refresh behavior',async()=>{
+  for(const count of [1,2]){
+   const f=await batchFilesPage(language);try{
+    const {page}=f;
+    await page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).check();
+    if(count===2)await page.getByRole('checkbox',{name:'B folder',exact:true}).check();
+    const before=await page.evaluate(()=>fileListReads);
+    await page.locator('#batch-toolbar button[onclick="batchDelete()"]').click();
+    assert.match(await page.locator('.confirm-sheet').innerText(),new RegExp(String(count)));
+    await page.locator('.confirm-sheet button[data-r="1"]').click();
+    await page.waitForFunction(()=>document.getElementById('operation-summary'));
+    assert.deepEqual(await page.evaluate(()=>deleteCalls),['/sdcard/A 中文.txt','/sdcard/B folder'].slice(0,count));
+    assert.equal(await page.evaluate(()=>selectedFiles.size),0);
+    assert.equal(await page.evaluate(()=>fileListReads),before+1);
+    assert.equal(await page.locator('#toast').getAttribute('class').then(x=>x.includes('toast-success')),true);
+    assert.equal(await page.getByRole('checkbox',{name:'C.txt',exact:true}).isChecked(),false);
+    assert.deepEqual(f.errors,[]);
+   }finally{await f.context.close();}
+  }
+  const f=await batchFilesPage(language);try{
+   await f.page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).check();
+   const before=await f.page.evaluate(()=>fileListReads);
+   await f.page.locator('#batch-toolbar button[onclick="batchDelete()"]').click();
+   await f.page.locator('.confirm-sheet button[data-r="0"]').click();
+   assert.deepEqual(await f.page.evaluate(()=>deleteCalls),[]);
+   assert.equal(await f.page.evaluate(()=>fileListReads),before);
+   assert.deepEqual(await f.page.evaluate(()=>[...selectedFiles]),['/sdcard/A 中文.txt']);
+   assert.equal(await f.page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).isChecked(),true);
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ for(const failSecond of [false,true]){
+  test(language+': A04 confirmed paths stay fixed while awaiting the first delete; second failure='+failSecond,async()=>{
+   const f=await batchFilesPage(language,{hold:true,failSecond});try{
+    const {page}=f;
+    await page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).check();
+    await page.getByRole('checkbox',{name:'B folder',exact:true}).check();
+    const before=await page.evaluate(()=>fileListReads);
+    await page.locator('#batch-toolbar button[onclick="batchDelete()"]').click();
+    assert.match(await page.locator('.confirm-sheet').innerText(),/2/);
+    await page.locator('.confirm-sheet button[data-r="1"]').click();
+    await page.waitForFunction(()=>deleteCalls.length===1&&typeof releaseDelete==='function');
+    await page.getByRole('checkbox',{name:'C.txt',exact:true}).check();
+    await page.getByRole('checkbox',{name:'B folder',exact:true}).uncheck();
+    assert.deepEqual(await page.evaluate(()=>[...selectedFiles]),['/sdcard/A 中文.txt','/sdcard/C.txt']);
+    await page.evaluate(()=>releaseDelete());
+    await page.waitForFunction(()=>document.getElementById('operation-summary'));
+    assert.deepEqual(await page.evaluate(()=>deleteCalls),['/sdcard/A 中文.txt','/sdcard/B folder']);
+    const expected=await page.evaluate(failSecond=>t('promptRepair.deleteSummary',{success:failSecond?1:2,fail:failSecond?1:0}),failSecond);
+    assert.equal(await page.locator('#toast').innerText(),expected);
+    const summary=await page.locator('#operation-summary').innerText();
+    assert(summary.startsWith(expected));assert.equal(summary.includes('/sdcard/B folder'),failSecond);
+    assert.equal(summary.includes('/sdcard/C.txt'),false);
+    assert.equal(await page.evaluate(()=>fileListReads),before+1);
+    assert.equal(await page.evaluate(()=>selectedFiles.size),0);
+    assert.equal(await page.getByRole('checkbox',{name:'C.txt',exact:true}).isChecked(),false);
+    assert.equal(await page.locator('#toast').getAttribute('class').then(x=>x.includes('toast-'+(failSecond?'warning':'success'))),true);
+    assert.deepEqual(f.errors,[]);
+   }finally{await f.context.close();}
+  });
+ }
+}
