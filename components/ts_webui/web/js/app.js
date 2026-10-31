@@ -3571,6 +3571,28 @@ function generateWidgetId() {
     return 'w_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
 }
 
+// Formula names resolve only through these local tables, never through input data.
+const widgetExpressionFunctions = Object.freeze({
+    ...Object.fromEntries(('abs acos acosh asin asinh atan atan2 atanh cbrt ceil clz32 cos cosh exp expm1 floor fround hypot imul log log10 log1p log2 max min pow random round sign sin sinh sqrt tan tanh trunc')
+        .split(' ').map(name => ['Math.' + name, Math[name]])),
+    Number, String, Boolean, parseFloat, parseInt, isNaN, isFinite
+});
+const widgetExpressionConstants = Object.freeze({
+    true: true, false: false, null: null, NaN, Infinity,
+    ...Object.fromEntries('E LN10 LN2 LOG10E LOG2E PI SQRT1_2 SQRT2'.split(' ').map(name => ['Math.' + name, Math[name]]))
+});
+const widgetExpressionFormats = Object.freeze({
+    toFixed: Number.prototype.toFixed,
+    toPrecision: Number.prototype.toPrecision,
+    toExponential: Number.prototype.toExponential
+});
+const widgetExpressionPrecedence = Object.freeze({
+    '??': 1, '||': 2, '&&': 3, '|': 4, '^': 5, '&': 6,
+    '==': 7, '!=': 7, '===': 7, '!==': 7,
+    '<': 8, '<=': 8, '>': 8, '>=': 8, '<<': 9, '>>': 9, '>>>': 9,
+    '+': 10, '-': 10, '*': 11, '/': 11, '%': 11, '**': 12
+});
+
 /**
  * 计算表达式值
  * 支持: ${var}, 数学运算, 文本拼接
@@ -3580,30 +3602,230 @@ function generateWidgetId() {
  */
 function evaluateExpression(expression, variables) {
     if (!expression) return null;
-    
-    // 替换所有 ${varName} 为实际值
-    let evalStr = expression.replace(/\$\{([^}]+)\}/g, (match, varName) => {
-        const val = variables[varName.trim()];
-        if (val === undefined || val === null) return 'null';
-        if (typeof val === 'string') return `"${val}"`;
-        return val;
-    });
-    
-    // 如果只是单个变量引用，直接返回
-    if (expression.match(/^\$\{[^}]+\}$/)) {
-        const varName = expression.slice(2, -1).trim();
-        return variables[varName];
-    }
-    
-    // 安全计算表达式
+    const own = (object, name) => Object.prototype.hasOwnProperty.call(object, name);
+    const direct = expression.match(/^\$\{([^}]+)\}$/);
+    if (direct) return own(variables, direct[1].trim()) ? variables[direct[1].trim()] : undefined;
+
     try {
-        // 只允许基本数学运算和字符串操作
-        if (evalStr.includes('null')) return null;
-        // eslint-disable-next-line no-new-func
-        const result = new Function('return ' + evalStr)();
-        return result;
-    } catch (e) {
-        console.warn('表达式计算失败:', expression, e);
+        let position = 0, token, missing = false;
+        const invalid = () => { throw new SyntaxError('Unsupported formula'); };
+        const variable = () => {
+            const end = expression.indexOf('}', position + 2);
+            if (end <= position + 2) return null;
+            const name = expression.slice(position + 2, end).trim();
+            position = end + 1;
+            const value = own(variables, name) ? variables[name] : undefined;
+            if (value === undefined || value === null) missing = true;
+            return {kind: 'value', value};
+        };
+        const string = () => {
+            const quote = expression[position++], parts = [];
+            let text = '';
+            while (position < expression.length) {
+                const char = expression[position++];
+                if (char === quote) {
+                    parts.push({kind: 'value', value: text});
+                    return {kind: 'string', parts};
+                }
+                if (char === '$' && expression[position] === '{') {
+                    --position;
+                    const binding = variable();
+                    if (binding) {
+                        parts.push({kind: 'value', value: text}, binding);
+                        text = '';
+                        continue;
+                    }
+                    ++position;
+                }
+                if (char === '\\') {
+                    if (position >= expression.length) invalid();
+                    const escaped = expression[position++];
+                    const simple = {b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '0': '\0'};
+                    if (own(simple, escaped)) {
+                        if (escaped === '0' && /[0-9]/.test(expression[position] || '')) invalid();
+                        text += simple[escaped];
+                    } else if (escaped === 'x' || escaped === 'u') {
+                        let digits;
+                        if (escaped === 'u' && expression[position] === '{') {
+                            const end = expression.indexOf('}', ++position);
+                            if (end < 0) invalid();
+                            digits = expression.slice(position, end);
+                            if (!/^[0-9a-fA-F]{1,6}$/.test(digits)) invalid();
+                            position = end + 1;
+                        } else {
+                            const count = escaped === 'x' ? 2 : 4;
+                            digits = expression.slice(position, position + count);
+                            if (digits.length !== count || !/^[0-9a-fA-F]+$/.test(digits)) invalid();
+                            position += count;
+                        }
+                        text += String.fromCodePoint(parseInt(digits, 16));
+                    } else if (escaped === '\n' || escaped === '\r') {
+                        if (escaped === '\r' && expression[position] === '\n') ++position;
+                    } else {
+                        if (/[1-9]/.test(escaped)) invalid();
+                        text += escaped;
+                    }
+                } else {
+                    if (quote !== '`' && (char === '\n' || char === '\r')) invalid();
+                    if (quote === '`' && char === '\r') {
+                        if (expression[position] === '\n') ++position;
+                        text += '\n';
+                    } else text += char;
+                }
+            }
+            invalid();
+        };
+        const next = () => {
+            while (/\s/.test(expression[position] || '') && position < expression.length) ++position;
+            if (position === expression.length) return token = {kind: 'end'};
+            const char = expression[position];
+            if (char === '$' && expression[position + 1] === '{') {
+                token = variable();
+                if (!token) invalid();
+                return token;
+            }
+            if (char === '"' || char === "'" || char === '`') return token = string();
+            const rest = expression.slice(position);
+            const number = rest.match(/^(?:0[xX][\da-fA-F]+|0[bB][01]+|0[oO][0-7]+|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)/);
+            if (number) {
+                position += number[0].length;
+                return token = {kind: 'value', value: Number(number[0])};
+            }
+            const name = rest.match(/^[a-zA-Z_$][\w$]*/);
+            if (name) {
+                position += name[0].length;
+                return token = {kind: 'name', name: name[0]};
+            }
+            const operator = rest.match(/^(?:===|!==|>>>|\+\+|--|\*\*|\?\?|\|\||&&|==|!=|<=|>=|<<|>>|[+\-*/%<>&|^!~?:(),.])/);
+            if (!operator) invalid();
+            position += operator[0].length;
+            return token = {kind: 'operator', op: operator[0]};
+        };
+        const is = op => token.kind === 'operator' && token.op === op;
+        const take = op => { if (!is(op)) invalid(); next(); };
+        const argumentsList = () => {
+            take('(');
+            const args = [];
+            if (!is(')')) {
+                for (;;) {
+                    args.push(parse(0));
+                    if (!is(',')) break;
+                    next();
+                    if (is(')')) break;
+                }
+            }
+            take(')');
+            return args;
+        };
+        const primary = () => {
+            let node;
+            if (token.kind === 'value' || token.kind === 'string') {
+                node = token; next();
+            } else if (is('(')) {
+                next(); node = {kind: 'group', value: parse(0)}; take(')');
+            } else if (token.kind === 'name') {
+                let name = token.name; next();
+                if (name === 'Math') {
+                    take('.');
+                    if (token.kind !== 'name') invalid();
+                    name += '.' + token.name; next();
+                }
+                if (own(widgetExpressionConstants, name)) node = {kind: 'value', value: widgetExpressionConstants[name]};
+                else if (own(widgetExpressionFunctions, name)) node = {kind: 'call', fn: widgetExpressionFunctions[name], args: argumentsList()};
+                else invalid();
+            } else invalid();
+            while (is('.')) {
+                next();
+                if (token.kind !== 'name' || !own(widgetExpressionFormats, token.name)) invalid();
+                const fn = widgetExpressionFormats[token.name]; next();
+                node = {kind: 'format', fn, value: node, args: argumentsList()};
+            }
+            return node;
+        };
+        const parse = minimum => {
+            let left;
+            if (token.kind === 'operator' && ['+', '-', '!', '~'].includes(token.op)) {
+                const op = token.op; next();
+                left = {kind: 'unary', op, value: parse(13)};
+            } else left = primary();
+            while (token.kind === 'operator' && own(widgetExpressionPrecedence, token.op) && widgetExpressionPrecedence[token.op] >= minimum) {
+                const op = token.op, precedence = widgetExpressionPrecedence[op]; next();
+                const right = parse(precedence + (op === '**' ? 0 : 1));
+                if (op === '**' && left.kind === 'unary') invalid();
+                const logical = node => node.kind === 'binary' && ['&&', '||'].includes(node.op);
+                const coalesce = node => node.kind === 'binary' && node.op === '??';
+                if ((op === '??' && (logical(left) || logical(right))) ||
+                    (['&&', '||'].includes(op) && (coalesce(left) || coalesce(right)))) invalid();
+                left = {kind: 'binary', op, left, right};
+            }
+            if (minimum === 0 && is('?')) {
+                next(); const yes = parse(0); take(':');
+                left = {kind: 'conditional', condition: left, yes, no: parse(0)};
+            }
+            return left;
+        };
+        next();
+        const tree = parse(0);
+        if (token.kind !== 'end') invalid();
+        if (missing) return null;
+        // Parsing validates every branch before any allowed native function runs.
+        const calculate = node => {
+            switch (node.kind) {
+                case 'value': return node.value;
+                case 'string': return node.parts.map(part => String(calculate(part))).join('');
+                case 'group': return calculate(node.value);
+                case 'call': return node.fn(...node.args.map(calculate));
+                case 'format': {
+                    const value = calculate(node.value);
+                    if (typeof value !== 'number') invalid();
+                    return node.fn.apply(value, node.args.map(calculate));
+                }
+                case 'conditional': return calculate(node.condition) ? calculate(node.yes) : calculate(node.no);
+                case 'unary': {
+                    const value = calculate(node.value);
+                    switch (node.op) {
+                        case '+': return +value;
+                        case '-': return -value;
+                        case '!': return !value;
+                        case '~': return ~value;
+                    }
+                    break;
+                }
+                case 'binary': {
+                    const left = calculate(node.left);
+                    if (node.op === '&&') return left && calculate(node.right);
+                    if (node.op === '||') return left || calculate(node.right);
+                    if (node.op === '??') return left ?? calculate(node.right);
+                    const right = calculate(node.right);
+                    switch (node.op) {
+                        case '+': return left + right;
+                        case '-': return left - right;
+                        case '*': return left * right;
+                        case '/': return left / right;
+                        case '%': return left % right;
+                        case '**': return left ** right;
+                        case '|': return left | right;
+                        case '^': return left ^ right;
+                        case '&': return left & right;
+                        case '==': return left == right;
+                        case '!=': return left != right;
+                        case '===': return left === right;
+                        case '!==': return left !== right;
+                        case '<': return left < right;
+                        case '<=': return left <= right;
+                        case '>': return left > right;
+                        case '>=': return left >= right;
+                        case '<<': return left << right;
+                        case '>>': return left >> right;
+                        case '>>>': return left >>> right;
+                    }
+                }
+            }
+            invalid();
+        };
+        return calculate(tree);
+    } catch (error) {
+        console.warn('表达式计算失败:', expression, error);
         return null;
     }
 }
@@ -3840,7 +4062,7 @@ async function refreshDataWidgets() {
         });
 
         // 一次 API 调用获取全部变量（替代 N 次 variables.get）
-        const variables = {};
+        const variables = Object.create(null);
         if (varNames.size > 0) {
             try {
                 const resp = await api.call('automation.variables.list', { include_meta: false });
@@ -14624,17 +14846,17 @@ function formatVariableValue(value, type) {
     } else if (type === 'string') {
         const str = String(value);
         if (str.length > 50) {
-            return `<span class="string-value" title="${str}">"${str.substring(0, 47)}..."</span>`;
+            return `<span class="string-value" title="${escapeHtml(str)}">"${escapeHtml(str.substring(0, 47))}..."</span>`;
         }
-        return `<span class="string-value">"${str}"</span>`;
+        return `<span class="string-value">"${escapeHtml(str)}"</span>`;
     }
     
     // 默认：JSON 格式
     const str = JSON.stringify(value);
     if (str.length > 60) {
-        return `<code title="${str}">${str.substring(0, 57)}...</code>`;
+        return `<code title="${escapeHtml(str)}">${escapeHtml(str.substring(0, 57))}...</code>`;
     }
-    return `<code>${str}</code>`;
+    return `<code>${escapeHtml(str)}</code>`;
 }
 
 /**

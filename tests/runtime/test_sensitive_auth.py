@@ -78,7 +78,7 @@ static cJSON *ts_api_get_info(const char *name) {
     if (!strcmp(name,"missing")) return NULL;
     cJSON *info=cJSON_CreateObject();
     bool required=!strncmp(name,"storage.",8)&&strcmp(name,"storage.read")&&strcmp(name,"storage.list")&&strcmp(name,"storage.status")&&strcmp(name,"storage.info");
-    required=required||!strcmp(name,"ssh.exec")||!strcmp(name,"ssh.cancel")||!strcmp(name,"automation.sources.export")||!strcmp(name,"automation.actions.add")||!strcmp(name,"ui.widgets.set")||
+    required=required||!strcmp(name,"ssh.exec")||!strcmp(name,"ssh.cancel")||!strcmp(name,"automation.sources.export")||!strcmp(name,"automation.actions.add")||
         !strncmp(name,"automation.services.",20)||!strcmp(name,"automation.rules.trigger")||!strcmp(name,"automation.actions.execute");
     cJSON_AddBoolToObject(info,"requires_auth",required);return info;
 }
@@ -101,8 +101,9 @@ metadata = r"""
 typedef struct { const char *name, *description; int category; void *handler; bool requires_auth; } ts_api_endpoint_t;
 #define TS_API_CAT_STORAGE 0
 #define TS_API_CAT_SECURITY 1
+#define TS_API_CAT_SYSTEM 2
 """
-for filename, array in [('ts_api_storage.c','s_storage_endpoints'),('ts_api_ssh.c','ssh_endpoints')]:
+for filename, array in [('ts_api_storage.c','s_storage_endpoints'),('ts_api_ssh.c','ssh_endpoints'),('ts_api_ui.c','ui_endpoints')]:
     implementation = Path('components/ts_api/src', filename).read_text()
     start = implementation.index('static const ts_api_endpoint_t ' + array + '[]')
     table = implementation[start:implementation.index('\n};', start) + 3]
@@ -119,6 +120,8 @@ code = code.replace(marker, r"""
         if(!strcmp(s_storage_endpoints[i].name,name))required=s_storage_endpoints[i].requires_auth;
     for(unsigned i=0;i<sizeof(ssh_endpoints)/sizeof(ssh_endpoints[0]);i++)
         if(!strcmp(ssh_endpoints[i].name,name))required=ssh_endpoints[i].requires_auth;
+    for(unsigned i=0;i<sizeof(ui_endpoints)/sizeof(ui_endpoints[0]);i++)
+        if(!strcmp(ui_endpoints[i].name,name))required=ui_endpoints[i].requires_auth;
     cJSON_AddBoolToObject(info,"requires_auth",required);return info;
 """, 1)
 code += extract('ts_api_call_for_session', Path('components/ts_api/src/ts_api.c').read_text())
@@ -153,6 +156,8 @@ int main(void) {
     }
     api("/api/v1/ui/widgets/set","{}",NULL,401);
     api("/api/v1/ui/widgets/set","{}","admin",200);
+    api("/api/v1/ui/widgets/set","{}","root",200);
+    api("/api/v1/ui/widgets/get",NULL,NULL,200);
     api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}",NULL,401);
     api("/api/v1/storage/read","{\"Path\":\"/sdcard/config/automation/state.json\"}",NULL,401);
     api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}","root",200);
@@ -207,6 +212,8 @@ with tempfile.TemporaryDirectory(prefix='ts-sensitive-auth-') as directory:
     noauth = noauth[:start] + r"""
 int main(void) {
     api("/api/v1/automation/sources/export","{}",NULL,200);
+    api("/api/v1/ui/widgets/set","{}",NULL,200);
+    api("/api/v1/ui/widgets/get",NULL,NULL,200);
     api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}",NULL,200);
     api("/api/v1/automation/sources/list",NULL,NULL,200);assert(strstr(response,"secret"));
     free(response);puts("PASS auth-disabled shared API preserves original public/internal behavior");

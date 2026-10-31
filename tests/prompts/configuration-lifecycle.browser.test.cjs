@@ -119,3 +119,37 @@ for(const language of ['zh-CN','en-US']) {
         });
     });
 }
+
+for(const language of ['zh-CN','en-US']){
+ test(language+': A03 source and command variable windows keep strings and JSON as ordinary text, with original truncation and icons',async()=>{
+  const d=lifecycleFixture();
+  const short='中文 "双" \'单\' \\ <em>普通</em> &';
+  const long='<strong title="中文">Ordinary & quoted text</strong>'.repeat(3);
+  const values=[{type:'string',value:short},{type:'string',value:long},{type:'object',value:{text:'<b> & "'}},
+   {type:'object',value:{text:long}},{type:'boolean',value:true},{type:'number',value:12.345}];
+  const respond=call=>call.endpoint==='automation/variables/list'?{code:0,data:{variables:values.map((row,i)=>({...row,name:(call.params.source_id?'sensor':'command')+'.value'+i,source_id:call.params.source_id||'command'}))}}:d.respond(call);
+  await kit.withPage(language,respond,async({page})=>{
+   await page.evaluate(()=>loadAutomationPage());
+   for(const mode of ['source','command']){
+    await page.evaluate(mode=>mode==='source'?showSourceVariables('sensor'):showCommandVariables('command'),mode);
+    const body=page.locator('#source-variables-body');
+    const strings=body.locator('.string-value');
+    assert.equal(await strings.nth(0).textContent(),'"'+short+'"');
+    assert.equal(await strings.nth(0).getAttribute('title'),null);
+    assert.equal(await strings.nth(1).textContent(),'"'+long.substring(0,47)+'..."');
+    assert.equal(await strings.nth(1).getAttribute('title'),long);
+    const json=body.locator('code');
+    const shortJson=JSON.stringify(values[2].value),longJson=JSON.stringify(values[3].value);
+    assert.equal(await json.nth(0).textContent(),shortJson);
+    assert.equal(await json.nth(0).getAttribute('title'),null);
+    assert.equal(await json.nth(1).textContent(),longJson.substring(0,57)+'...');
+    assert.equal(await json.nth(1).getAttribute('title'),longJson);
+    assert.equal(await body.locator('em,strong,b').count(),0);
+    assert.equal(await body.locator('.bool-true svg.i use').getAttribute('href'),'#ri-check-line');
+    assert.equal(await body.locator('.number-value').textContent(),'12.35');
+    await page.evaluate(()=>closeSourceVariablesModal());
+   }
+  });
+  assert.equal(values[0].value,short);assert.equal(values[1].value,long);
+ });
+}

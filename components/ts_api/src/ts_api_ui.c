@@ -265,7 +265,7 @@ static const ts_api_endpoint_t ui_endpoints[] = {
         .description = "Save data widgets configuration",
         .category = TS_API_CAT_SYSTEM,
         .handler = api_ui_widgets_set,
-        .requires_auth = false,  /* WebUI 内部使用，暂不要求认证 */
+        .requires_auth = true,
     },
 };
 

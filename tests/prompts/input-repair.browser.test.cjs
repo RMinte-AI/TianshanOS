@@ -16,7 +16,7 @@ before(async()=>{
 after(async()=>{await browser?.close();await new Promise(resolve=>server?.close(resolve));});
 async function fixture(language='zh-CN'){
  const context=await browser.newContext({viewport:{width:1280,height:900}});
- await context.addInitScript(language=>{localStorage.setItem('ts_language',language);class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}window.WebSocket=Socket;},language);
+ await context.addInitScript(language=>{localStorage.setItem('ts_language',language);const random=Math.random;Math.random=()=>{window.formulaRandomCalls=(window.formulaRandomCalls||0)+1;return window.formulaRandomValue??random();};class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}window.WebSocket=Socket;},language);
  const page=await context.newPage(),errors=[];page.setDefaultTimeout(5000);page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/*',async route=>{
   const u=new URL(route.request().url());if(u.origin!==base){await route.abort();return;}
@@ -350,4 +350,136 @@ for (const language of ['zh-CN', 'en-US']) {
             } finally { await f.context.close(); }
         });
     }
+}
+
+const formulaContract=JSON.parse(fs.readFileSync(path.join(__dirname,'../../docs/repair/whole-product-20261031/review-evidence/v3-formula-contract-cases.json'),'utf8'));
+test('A03: actual formula evaluator retains all 24 approved math/text cases and the fixed native function contract',async()=>{
+ const f=await fixture();try{
+  for(const c of formulaContract.positive_cases){
+   assert.deepEqual(await f.page.evaluate(c=>evaluateExpression(c.expression,c.variables),c),c.expected,c.id);
+  }
+  const cases=[
+   ['1 + 2 * 3 ** 2',19],['(1 + 2) * 3',9],['false ? 1 : true ? 2 : 3',2],
+   ['1 | 2 ^ 3 & 1',3],['128 >>> 2',32],['1 << 3 + 1',16],['~1',-2],
+   ['1 == "1"',true],['1 !== "1"',true],['2 <= 2 && 3 > 2',true],
+   ['0x10 + 0b10 + 0o10 + .5e1',31],['0.5 + 2.5e-1',.75],
+   ['null ?? 4',4],['(null ?? false) || 3',3],['null ?? (false || 3)',3],
+   ['!false && +2 + -3 === -1',true],
+   ['"中文\\n\\t\\x41\\u4e2d\\u{1f600}"','中文\n\tA中😀'],
+   ["'a\\'b\\\\c'", "a'b\\c"],
+   [String.fromCharCode(96)+'中文\n$'+'{temp}'+String.fromCharCode(96),'中文\n42.36'],
+   [String.fromCharCode(96)+'a\r\nb'+String.fromCharCode(96),'a\nb'],
+   ['parseInt("ff", 16)',255],['Boolean(0)',false],['String(12) + Number("3")','123'],
+   ['isNaN("no")',true],['isFinite("3")',true],
+   ['(123.45).toPrecision(4)','123.5'],['(2).toFixed(100)',(2).toFixed(100)],
+   ['(2).toExponential(100)',(2).toExponential(100)],['(2).toPrecision(100)',(2).toPrecision(100)],
+   ['(2).toFixed()','2'],['Math.max(1, 3,)',3],
+   ['Math.max()',-Infinity],['Infinity / 2',Infinity]
+  ];
+  for(const [expression,expected]of cases){
+   assert.deepEqual(await f.page.evaluate(expression=>evaluateExpression(expression,{temp:42.36}),expression),expected,expression);
+  }
+  const mathArgs={abs:[-2],acos:[.5],acosh:[2],asin:[.5],asinh:[2],atan:[2],atan2:[2,3],atanh:[.5],cbrt:[-8],
+   ceil:[1.2],clz32:[1],cos:[1],cosh:[1],exp:[1],expm1:[1],floor:[1.8],fround:[1.2345],hypot:[3,4],imul:[3,4],
+   log:[2],log10:[100],log1p:[1],log2:[8],max:[-1,2,3],min:[-1,2,3],pow:[2,3],round:[1.8],sign:[-2],
+   sin:[1],sinh:[1],sqrt:[4],tan:[1],tanh:[1],trunc:[-1.8]};
+  for(const [name,args]of Object.entries(mathArgs)){
+   const expression='Math.'+name+'('+args.join(',')+')';
+   const pair=await f.page.evaluate(({expression,name,args})=>[evaluateExpression(expression,{}),Math[name](...args)],{expression,name,args});
+   assert.equal(pair[0],pair[1],name);
+  }
+  for(const name of 'E LN10 LN2 LOG10E LOG2E PI SQRT1_2 SQRT2'.split(' ')){
+   assert.equal(await f.page.evaluate(name=>evaluateExpression('Math.'+name,{}),name),Math[name],name);
+  }
+  assert.equal(await f.page.evaluate(()=>Number.isNaN(evaluateExpression('0 / 0',{}))),true);
+  assert.equal(await f.page.evaluate(()=>Number.isNaN(evaluateExpression('NaN',{}))),true);
+  assert.deepEqual(f.errors,[]);
+ }finally{await f.context.close();}
+});
+
+test('A03: data bindings stay values, all structure is checked before native calls, and selected branches alone execute',async()=>{
+ const f=await fixture();try{
+  const result=await f.page.evaluate(blocked=>{
+   const ref=name=>'$'+'{'+name+'}';
+   const text='中文 "quote" \\ slash\n<em>plain</em> $'+'{nested} null';
+   const variables={name:text,temp:12,nil:null};
+   const own=Object.assign(Object.create({inherited:9}),{constructor:7,'a.b 中文':8});
+   const data=[evaluateExpression(ref('name'),variables),evaluateExpression('"'+ref('name')+'"',variables),
+    evaluateExpression(ref('name')+' + " end"',variables),evaluateExpression('"'+ref('name')+' '+ref('temp')+'"',variables),
+    evaluateExpression(ref(' a.b 中文 '),own),evaluateExpression(ref('constructor')+' + 1',own),
+    evaluateExpression(ref('inherited'),own),evaluateExpression(ref('nil'),variables),
+    evaluateExpression(ref('missing')+' + 1',variables),evaluateExpression('true ? 1 : '+ref('nil'),variables),
+    evaluateExpression('"null '+ref('temp')+'"',variables)];
+   window.formulaRandomValue=.25;window.formulaRandomCalls=0;
+   const lazy=['true ? 4 : Math.random()','false && Math.random()','true || Math.random()','1 ?? Math.random()',
+    'true ? 4 : (0).toFixed(101)'].map(expression=>evaluateExpression(expression,{}));
+   const before=formulaRandomCalls;
+   const invalid=blocked.concat(['-2 ** 2','null ?? true || false','true && null ?? 1','++2','--2',
+    'Math.random() +','true ? 1 : Math.noSuch(2)','Math.random() + true.noSuch()',
+    'Math.random() + 1 2','"unfinished','1e','0x','1;','(1,2)','[1]','"a".toFixed(1)'])
+    .map(expression=>evaluateExpression(expression,{}));
+   const after=formulaRandomCalls;
+   const called=evaluateExpression('Math.random() + (false ? Math.random() : 1)',{});
+   return {text,data,lazy,before,invalid,after,called,calls:formulaRandomCalls};
+  },formulaContract.blocked_expressions_not_executed_on_baseline);
+  assert.deepEqual(result.data,[result.text,result.text,result.text+' end',result.text+' 12',8,8,undefined,null,null,null,'null 12']);
+  assert.deepEqual(result.lazy,[4,false,true,1,4]);assert.equal(result.before,0);
+  assert(result.invalid.every(value=>value===null));assert.equal(result.after,0);
+  assert.equal(result.called,1.25);assert.equal(result.calls,1);assert.deepEqual(f.errors,[]);
+ }finally{await f.context.close();}
+});
+
+for(const language of ['zh-CN','en-US']){
+ test(language+': A03 Admin widget edit preserves the existing preview, then saves and refreshes each original formula',async()=>{
+  const f=await fixture(language);try{
+   await f.page.evaluate(async()=>{
+    api.user={username:'admin',role:'admin'};window.widgetSaved={widgets:[],source:'nvs'};
+    const original=api.call;
+    api.call=async(endpoint,params)=>{
+     if(endpoint==='ui.widgets.set'){widgetSaved=structuredClone(params);writes.push({endpoint,params:structuredClone(params)});return {code:0,data:{nvs_saved:true}};}
+     if(endpoint==='ui.widgets.get')return {code:0,data:{...structuredClone(widgetSaved),source:'nvs'}};
+     if(endpoint==='automation.variables.list')return {code:0,data:{variables:[
+      {name:'temp',value:42.36},{name:'used',value:0},{name:'name',value:'GPU'},{name:'enabled',value:true}]}};
+     return original(endpoint,params);
+    };
+    await loadSystemPage();
+   });
+   for(const c of formulaContract.positive_cases.slice(0,11)){
+    await f.page.evaluate(()=>{
+     stopDataWidgetsAutoRefresh();
+     dataWidgets=[{id:'formula',type:'text',label:'Formula',icon:'ri-dashboard-line',layout:'large',unit:'°C',decimals:1,expression:'$'+'{temp}'}];
+     renderDataWidgets();showWidgetEditPanel('formula');
+    });
+    assert.equal(await f.page.locator('#dw-preview-card .dw-card').count(),1);
+    assert.equal(await f.page.locator('#dw-preview-card svg.i').count()>0,true);
+    await f.page.locator('#edit-expression').fill(c.expression);
+    await f.page.locator('#widget-edit-modal .sf .primary').click();
+    await f.page.waitForFunction(()=>!document.getElementById('widget-edit-modal'));
+    await f.page.waitForFunction(expected=>document.getElementById('dw-formula-value')?.textContent===String(expected),c.expected);
+    assert.equal(await f.page.evaluate(()=>widgetSaved.widgets[0].expression),c.expression,c.id);
+    await f.page.evaluate(async()=>{dataWidgets=[];await loadDataWidgets();renderDataWidgets();await refreshDataWidgets();});
+    assert.equal(await f.page.locator('#dw-formula-value').textContent(),String(c.expected),c.id);
+    assert.equal(await f.page.locator('#data-widgets-grid [data-widget-id="formula"]').getAttribute('data-layout'),'large');
+    assert.equal(await f.page.evaluate(()=>dataWidgets[0].unit),'°C');
+   }
+   assert.equal(await f.page.evaluate(()=>writes.filter(w=>w.endpoint==='ui.widgets.set').length),11);
+   await f.page.evaluate(async()=>{
+    const original=api.call;
+    api.call=async(endpoint,params)=>endpoint==='automation.variables.list'?{code:0,data:{variables:[
+     {name:'__proto__',value:2},{name:'constructor',value:3},{name:'a.b 中文',value:4},{name:'external',value:'中文 "quote" \\ slash\n<em>plain</em> & null'}]}}:original(endpoint,params);
+    dataWidgets[0].expression='$'+'{__proto__} + $'+'{constructor} + $'+'{a.b 中文}';
+    await refreshDataWidgets();
+   });
+   assert.equal(await f.page.locator('#dw-formula-value').textContent(),'9');
+   await f.page.evaluate(async()=>{
+    dataWidgets[0].expression='"$'+'{external}"';await refreshDataWidgets();
+   });
+   assert.equal(await f.page.locator('#dw-formula-value').textContent(),'中文 "quote" \\ slash\n<em>plain</em> & null');
+   assert.equal(await f.page.locator('#dw-formula-value em').count(),0);
+   await f.page.evaluate(async()=>{dataWidgets[0].expression='$'+'{missing} + 1';await refreshDataWidgets();});
+   assert.equal(await f.page.locator('#dw-formula-value').textContent(),'-');
+
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
 }
