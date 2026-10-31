@@ -41,11 +41,12 @@ with tempfile.TemporaryDirectory(prefix='fan-review-') as tmp:
              'apply_auto_immediate', 'apply_curve_with_hysteresis', 'update_pwm',
              'fan_update_callback', 'ts_fan_configure', 'ts_fan_set_mode', 'ts_fan_set_duty',
              'ts_fan_enable', 'ts_fan_get_status', 'ts_fan_emergency_full',
-             'ts_fan_save_config', 'ts_fan_save_full_config', 'ts_fan_load_config']
+             'ts_fan_save_config', 'ts_fan_save_full_config', 'ts_fan_load_config',
+             'ts_fan_get_config', 'ts_fan_set_limits', 'ts_fan_set_curve', 'ts_fan_set_hysteresis']
     if 'static void update_guard_observation(' in source:
         names.insert(names.index('apply_adaptive_auto'), 'update_guard_observation')
     (out / 'fan_core.inc').write_text('\n\n'.join(function(source, n) for n in names))
-    (out / 'api_core.inc').write_text('\n\n'.join(function(api, n) for n in ['mode_to_string', 'auto_state_to_string', 'status_to_json', 'api_fan_set']))
+    (out / 'api_core.inc').write_text('\n\n'.join(function(api, n) for n in ['mode_to_string', 'string_to_mode', 'auto_state_to_string', 'status_to_json', 'api_fan_set', 'api_fan_mode', 'api_fan_limits', 'api_fan_curve', 'api_fan_save']))
     (out / 'device_core.inc').write_text('\n\n'.join(function(device_api, n) for n in ['fan_mode_to_str', 'fan_auto_state_to_str', 'api_device_fan_status']))
     console = args.console.read_text()
     (out / 'console_core.inc').write_text('\n\n'.join(function(console, n) for n in ['mode_to_str', 'do_fan_status']))

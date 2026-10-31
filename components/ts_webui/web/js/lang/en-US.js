@@ -4301,6 +4301,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
             wifi_sta_not_connected: { why: 'the device is not connected to an upstream WiFi network', hint: 'Connect the device to WiFi first, then turn on NAT.' },
             fan_curve_too_many: { why: 'there are too many curve points', hint: 'Use fewer curve points and save again.' },
             fan_limits_invalid: { why: 'the duty limits are not valid', hint: 'Both limits must be between 0 and 100, and the lower one cannot be above the upper one.' },
+            fan_config_save_failed: { why: 'the fan settings were applied, but the configuration was not fully saved', hint: 'A restart may restore earlier settings. Check that device storage is available, then save the configuration again.' },
             temp_too_many_variables: { why: 'too many variables are bound (at most 8)', hint: 'Use fewer variables.' },
             temp_name_missing: { why: 'a variable has no name', hint: 'Give every variable a name.' },
             temp_weight_required: { why: 'no variable has a weight above 0', hint: 'Give at least one variable a weight above 0.' },

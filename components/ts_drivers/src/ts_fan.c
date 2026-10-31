@@ -1200,6 +1200,7 @@ esp_err_t ts_fan_save_config(void)
         return ret;
     }
     
+    esp_err_t save_error = ESP_OK;
     for (int i = 0; i < TS_FAN_MAX; i++) {
         if (!s_fans[i].initialized) continue;
         
@@ -1225,6 +1226,7 @@ esp_err_t ts_fan_save_config(void)
         ret = nvs_set_blob(nvs, key, &cfg, sizeof(cfg));
         if (ret != ESP_OK) {
             TS_LOGE(TAG, "Failed to save fan %d: %s", i, esp_err_to_name(ret));
+            if (save_error == ESP_OK) save_error = ret;
         } else {
             TS_LOGI(TAG, "Saved fan %d: mode=%d, duty=%d%%, curve=%d pts", 
                     i, cfg.mode, cfg.duty, cfg.curve_points);
@@ -1234,7 +1236,7 @@ esp_err_t ts_fan_save_config(void)
     ret = nvs_commit(nvs);
     nvs_close(nvs);
     
-    return ret;
+    return save_error != ESP_OK ? save_error : ret;
 }
 
 esp_err_t ts_fan_save_full_config(ts_fan_id_t fan)

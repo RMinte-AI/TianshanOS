@@ -4263,6 +4263,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
             wifi_sta_not_connected: { why: '设备还没有连上上级 WiFi', hint: '请先让设备连上 WiFi，再开启 NAT。' },
             fan_curve_too_many: { why: '曲线点太多', hint: '请减少曲线点的数量后再保存。' },
             fan_limits_invalid: { why: '占空比的上下限不合法', hint: '上下限都要在 0 到 100 之间，且下限不能大于上限。' },
+            fan_config_save_failed: { why: '风扇设置已应用，但配置未全部保存', hint: '重新启动后可能恢复旧设置。请确认设备内部存储可用后，再保存配置。' },
             temp_too_many_variables: { why: '绑定的变量太多（最多 8 个）', hint: '请减少变量的数量。' },
             temp_name_missing: { why: '有变量没有填名称', hint: '请给每个变量填上名称。' },
             temp_weight_required: { why: '没有一个变量的权重大于 0', hint: '请至少让一个变量的权重大于 0。' },

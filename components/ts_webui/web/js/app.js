@@ -2531,8 +2531,6 @@ function removeCurvePoint(index) {
  */
 function updateCurvePoint(index, field, value) {
     fanCurveConfig.curve[index][field] = parseFloat(value);
-    // 排序（按温度升序）
-    fanCurveConfig.curve.sort((a, b) => a.temp - b.temp);
     drawCurvePreview();
 }
 

@@ -279,3 +279,75 @@ for (const lang of ['zh-CN', 'en-US']) {
         } finally { await f.context.close(); }
     });
 }
+
+async function prepareFanCurveFixture(page, failedEndpoint = null) {
+    await page.evaluate(async failed => {
+        window.fanWrites = []; window.fanMode = 'auto';
+        window.savedFan = {curve:[{temp:30,duty:30},{temp:50,duty:60},{temp:70,duty:100}],hysteresis:3,min_interval:2000,min_duty:20,max_duty:100};
+        const original = api.call;
+        api.call = async (endpoint, params) => {
+            if (endpoint === 'fan.config') return {code:0,data:structuredClone(savedFan)};
+            if (['fan.limits','fan.curve','fan.mode'].includes(endpoint)) {
+                fanWrites.push({endpoint,params:structuredClone(params)});
+                if (endpoint === 'fan.mode') fanMode = params.mode;
+                else Object.assign(savedFan, structuredClone(params));
+                if (endpoint === failed) return {code:9,message:'fan_config_save_failed',data:{applied:true,persisted:false}};
+                return {code:0,data:{...params,applied:true,persisted:true}};
+            }
+            return original(endpoint, params);
+        };
+        await showFanCurveModal(0);
+    }, failedEndpoint);
+}
+for (const language of ['zh-CN', 'en-US']) {
+    test(`${language}: fan curve row identity, deletion and successful mode switch`, async () => {
+        const f = await fixture(language);
+        try {
+            const {page} = f; await prepareFanCurveFixture(page);
+            const rows = page.locator('#fan-curve-points .row');
+            await rows.nth(0).locator('input').nth(0).fill('35');
+            await rows.nth(0).locator('input').nth(0).press('Tab');
+            await page.evaluate(() => closeFanCurveModal());
+            assert.deepEqual(await page.evaluate(() => [fanWrites.length,fanMode]), [0,'auto']);
+            await page.evaluate(() => showFanCurveModal(0));
+            await rows.nth(0).locator('input').nth(0).fill('60');
+            await rows.nth(0).locator('input').nth(0).press('Tab');
+            await rows.nth(0).locator('input').nth(1).fill('80');
+            await rows.nth(0).locator('input').nth(1).press('Tab');
+            assert.deepEqual(await page.evaluate(() => fanCurveConfig.curve), [{temp:60,duty:80},{temp:50,duty:60},{temp:70,duty:100}]);
+            await page.evaluate(() => applyFanCurve());
+            assert.equal(await page.locator('#fan-curve-modal').count(), 0);
+            assert.equal(await page.evaluate(() => fanMode), 'curve');
+            const first = await page.evaluate(() => fanWrites);
+            assert.deepEqual(first.map(write => write.endpoint), ['fan.limits','fan.curve','fan.mode']);
+            assert.deepEqual(first[1].params.curve, [{temp:50,duty:60},{temp:60,duty:80},{temp:70,duty:100}]);
+            await page.evaluate(() => showFanCurveModal(0));
+            await rows.nth(1).locator('button').click();
+            assert.equal(await rows.count(), 2);
+            await rows.nth(0).locator('input').nth(1).fill('65');
+            await rows.nth(0).locator('input').nth(1).press('Tab');
+            assert.deepEqual(await page.evaluate(() => fanCurveConfig.curve), [{temp:50,duty:65},{temp:70,duty:100}]);
+            await page.evaluate(() => applyFanCurve());
+            assert.deepEqual(await page.evaluate(() => savedFan.curve), [{temp:50,duty:65},{temp:70,duty:100}]);
+            assert.equal(await page.evaluate(() => fanMode), 'curve');
+            assert.deepEqual(f.errors, []);
+        } finally { await f.context.close(); }
+    });
+    for (const failed of ['fan.limits','fan.curve','fan.mode']) {
+        test(`${language}: fan curve ${failed} persistence failure remains applied and reports failure`, async () => {
+            const f = await fixture(language);
+            try {
+                await prepareFanCurveFixture(f.page, failed);
+                await f.page.evaluate(() => applyFanCurve());
+                assert.equal(await f.page.locator('#fan-curve-modal').count(), 1);
+                assert.equal(await f.page.locator('#toast.toast-error.show').count(), 1);
+                const why = await f.page.evaluate(() => t('failure.reasons.fan_config_save_failed.why'));
+                assert((await f.page.locator('#toast .toast-msg').innerText()).includes(why));
+                const writes = await f.page.evaluate(() => fanWrites.map(write => write.endpoint));
+                assert.equal(writes.at(-1), failed);
+                assert.equal(await f.page.evaluate(() => fanMode), failed === 'fan.mode' ? 'curve' : 'auto');
+                assert.deepEqual(f.errors, []);
+            } finally { await f.context.close(); }
+        });
+    }
+}
