@@ -136,7 +136,12 @@ static esp_err_t init_user_if_needed(const char *username, ts_perm_level_t level
     user_credential_t cred;
     
     if (load_user_credential(username, &cred) == ESP_OK) {
-        /* 用户已存在 */
+        /* 开机计时相关的临时锁定不能沿用到本次启动。 */
+        if (cred.failed_attempts || cred.lockout_until) {
+            cred.failed_attempts = 0;
+            cred.lockout_until = 0;
+            return save_user_credential(username, &cred);
+        }
         return ESP_OK;
     }
     
@@ -183,8 +188,10 @@ esp_err_t ts_auth_init(void)
         nvs_commit(s_auth_nvs);
     } else {
         /* 初始化默认用户（如果不存在） */
-        init_user_if_needed("admin", TS_PERM_ADMIN);
-        init_user_if_needed("root", TS_PERM_ROOT);
+        ret = init_user_if_needed("admin", TS_PERM_ADMIN);
+        if (ret != ESP_OK) return ret;
+        ret = init_user_if_needed("root", TS_PERM_ROOT);
+        if (ret != ESP_OK) return ret;
     }
     
     s_auth_initialized = true;
@@ -252,9 +259,10 @@ esp_err_t ts_auth_verify_password(const char *username, const char *password,
         return ESP_ERR_INVALID_ARG;
     }
     
-    /* 密码正确，重置失败计数 */
-    if (cred.failed_attempts > 0) {
+    /* 密码正确，清除失败计数及已过期的锁定。 */
+    if (cred.failed_attempts || cred.lockout_until) {
         cred.failed_attempts = 0;
+        cred.lockout_until = 0;
         save_user_credential(username, &cred);
     }
     
@@ -361,8 +369,7 @@ esp_err_t ts_auth_login(const char *username, const char *password,
         }
     }
     
-    TS_LOGI(TAG, "User %s logged in (level %d, session %08lx)",
-            username, level, (unsigned long)*session_id);
+    TS_LOGI(TAG, "User %s logged in (level %d)", username, level);
     return ESP_OK;
 }
 
