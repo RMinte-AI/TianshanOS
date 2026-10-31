@@ -46,7 +46,8 @@ static const char *s_category_names[] = {
     [TS_API_CAT_POWER]   = "power",
     [TS_API_CAT_NETWORK] = "network",
     [TS_API_CAT_DEVICE]  = "device",
-    [TS_API_CAT_STORAGE] = "storage"
+    [TS_API_CAT_STORAGE] = "storage",
+    [TS_API_CAT_SECURITY] = "security"
 };
 
 /*===========================================================================*/

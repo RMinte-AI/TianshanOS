@@ -10,6 +10,7 @@ bash tests/runtime/run_rule_pack.sh
 python3 tests/runtime/test_completion.py
 python3 tests/runtime/test_service_control.py
 python3 tests/runtime/test_sensitive_auth.py
+python3 tests/runtime/test_registry_tables.py
 python3 tests/runtime/test_ui_widgets.py
 python3 tests/runtime/test_scp_recv.py
 python3 tests/runtime/test_condition_roundtrip.py
