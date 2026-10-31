@@ -182,6 +182,10 @@ static void image_handoff(bool replace,ts_led_layer_t layer) {
 int main(void) {
     mkdir("fonts",0700);mkdir("images",0700);make_font("/sdcard/fonts/A.fnt",0xf7);make_font("/sdcard/fonts/B.fnt",0xab);make_font("/sdcard/fonts/C.fnt",0xf7);make_font("/sdcard/fonts/cjk.fnt",0xf7);
     FILE *file=fopen("/sdcard/images/movie.gif","wb");assert(file);fwrite(gif_fixture,sizeof(gif_fixture),1,file);fclose(file);
+    /* Structurally complete first frame, but LZW ends after one of four pixels. */
+    uint8_t damaged[sizeof(gif_fixture)];memcpy(damaged,gif_fixture,sizeof(damaged));
+    assert(damaged[37]==2&&damaged[38]==4);damaged[39]=0x44;damaged[40]=0x01;damaged[41]=damaged[42]=0;
+    file=fopen("/sdcard/images/damaged.gif","wb");assert(file);fwrite(damaged,sizeof(damaged),1,file);fclose(file);
     glyph_entered=xSemaphoreCreateBinary();glyph_release=xSemaphoreCreateBinary();frame_entered=xSemaphoreCreateBinary();frame_release=xSemaphoreCreateBinary();
     assert(ts_led_init()==ESP_OK);ts_led_device_t devices[3];const char *names[]={"led_matrix","led_touch","led_board"};
     for(int i=0;i<3;i++){ts_led_config_t config=TS_LED_DEFAULT_CONFIG();config.name=names[i];config.led_count=64;config.width=config.height=8;config.layout=TS_LED_LAYOUT_MATRIX;assert(ts_led_device_create(&config,&devices[i])==ESP_OK);}
@@ -212,6 +216,17 @@ int main(void) {
     animation.func=anim_solid;assert(ts_led_animation_start(board,&animation)==ESP_OK);assert(ts_led_animation_stop(board)==ESP_OK);assert(color.r==25&&color.g==40&&color.b==55);
     /* Remove the first watch pair before watching the same live allocation again. */
     watched_count-=2;image_handoff(true,matrix);image_handoff(false,matrix);assert(!s_current_image&&!s_current_image_layer);
+    /* The same public file-load output slot follows the API/CLI NULL contract. */
+    ts_led_image_t reusable=NULL;
+    assert(ts_led_image_load("/sdcard/images/movie.gif",TS_LED_IMG_FMT_AUTO,&reusable)==ESP_OK);
+    assert(ts_led_image_free(reusable)==ESP_OK);reusable=NULL;
+    assert(ts_led_image_load("/sdcard/images/damaged.gif",TS_LED_IMG_FMT_AUTO,&reusable)==ESP_ERR_INVALID_SIZE&&!reusable);
+    assert(ts_led_image_load("/sdcard/images/movie.gif",TS_LED_IMG_FMT_AUTO,&reusable)==ESP_OK);
+    assert(ts_led_layer_clear(matrix)==ESP_OK&&ts_led_image_display(matrix,reusable,NULL)==ESP_OK);
+    xSemaphoreTake(((ts_led_layer_impl_t*)matrix)->device->mutex,portMAX_DELAY);int red=0;
+    for(int p=0;p<64;p++)if(((ts_led_layer_impl_t*)matrix)->buffer[p].r==255)++red;
+    xSemaphoreGive(((ts_led_layer_impl_t*)matrix)->device->mutex);assert(red>0);
+    assert(ts_led_image_free(reusable)==ESP_OK);reusable=NULL;
     ts_led_rgb_t static_pixels[4]={{255,0,0},{0,255,0},{0,0,255},{255,255,0}};
     assert(ts_led_image_create(static_pixels,2,2,&s_current_image)==ESP_OK);s_current_image_layer=matrix;
     assert(ts_led_image_display(matrix,s_current_image,NULL)==ESP_OK&&!ts_led_image_is_playing(matrix));assert(do_led_clear("matrix")==0);

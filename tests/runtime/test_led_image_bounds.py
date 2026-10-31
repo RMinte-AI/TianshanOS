@@ -178,8 +178,14 @@ int main(int argc,char **argv) {
         invalid(gif_bad_palette,sizeof(gif_bad_palette));puts("PASS GIF undefined code, incomplete pixels and local palette bounds");
     }
     if(!strcmp(which,"all")){
-        check_bmp(bmp_bottom,sizeof(bmp_bottom),2);ts_led_image_t image=decode(gif_single,sizeof(gif_single));
-        rgb(image->pixels[0],255,0,0);release(image);puts("PASS normal BMP/GIF remain usable after rejected images");
+        /* API/CLI clear their released output slot before the next load. */
+        ts_led_image_t slot=NULL;
+        assert(ts_led_image_load_mem(gif_single,sizeof(gif_single),TS_LED_IMG_FMT_AUTO,&slot)==ESP_OK);release(slot);slot=NULL;
+        assert(ts_led_image_load_mem(gif_bad_code,sizeof(gif_bad_code),TS_LED_IMG_FMT_AUTO,&slot)==ESP_ERR_INVALID_SIZE);
+        assert(!slot&&!live_images);
+        assert(ts_led_image_load_mem(bmp_bottom,sizeof(bmp_bottom),TS_LED_IMG_FMT_AUTO,&slot)==ESP_OK);
+        rgb(slot->pixels[0],0,0,255);release(slot);slot=NULL;
+        puts("PASS reused public load_mem output slot: release, reject, reload, read and release");
     }
     assert(!live_images);puts("PASS image decoder bounds with strict ASan/UBSan");
 }
