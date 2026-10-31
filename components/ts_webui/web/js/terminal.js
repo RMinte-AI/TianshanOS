@@ -58,6 +58,10 @@ class WebTerminal {
         this.restoring = false;
         this.restoreTimer = null;
         this.destroyed = false;
+        this.authChanged = () => {
+            if (!this.destroyed && this.ws) { this.disconnect(); this.connect(); }
+        };
+        window.addEventListener('authChanged', this.authChanged);
     }
 
     /**
@@ -312,7 +316,7 @@ class WebTerminal {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws`;
         
-        const ws = new WebSocket(wsUrl);
+        const ws = new WebSocket(wsUrl), token = api.token;
         this.ws = ws;
         const current = () => !this.destroyed && this.ws === ws;
         this.pingInterval = null;
@@ -321,7 +325,7 @@ class WebTerminal {
             if (!current()) return;
             console.log('Terminal WebSocket connected');
             // 发送终端启动请求
-            ws.send(JSON.stringify({ type: 'terminal_start', token: api.token }));
+            ws.send(JSON.stringify({ type: 'terminal_start', token }));
             
             // 启动心跳机制
             this.pingInterval = setInterval(() => {
@@ -335,6 +339,13 @@ class WebTerminal {
             if (!current()) return;
             try {
                 const msg = JSON.parse(event.data);
+                if (msg.type === 'auth_error' && msg.reason === 'session_expired') {
+                    if (token && api.token === token) {
+                        api.clearAuth();
+                        window.dispatchEvent(new CustomEvent('authExpired'));
+                    }
+                    return;
+                }
                 this.handleMessage(msg);
             } catch (e) {
                 console.error('Failed to parse message:', e);
@@ -637,6 +648,7 @@ class WebTerminal {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({
                 type: 'ssh_connect',
+                token: api.token,
                 host: params.host,
                 port: params.port,
                 user: params.user,
@@ -803,6 +815,7 @@ class WebTerminal {
      */
     destroy() {
         this.destroyed = true;
+        window.removeEventListener('authChanged', this.authChanged);
         this.disconnect();
         if (this.terminal) {
             this.terminal.dispose();

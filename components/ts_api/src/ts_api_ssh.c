@@ -1773,7 +1773,7 @@ static const ts_api_endpoint_t ssh_endpoints[] = {
         .description = "Cancel running SSH exec session",
         .category = TS_API_CAT_SECURITY,
         .handler = api_ssh_cancel,
-        .requires_auth = false,
+        .requires_auth = true,
     },
     {
         .name = "ssh.test",

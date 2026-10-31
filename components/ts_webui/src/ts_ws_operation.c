@@ -27,6 +27,9 @@ static portMUX_TYPE s_op_lock = portMUX_INITIALIZER_UNLOCKED;
 static ts_ws_operation_t s_ops[TS_WS_OP_KINDS];
 static uint64_t s_op_sequence, s_op_delivery;
 static bool s_op_accepting, s_op_tick;
+static ts_perm_level_t output_level(ts_ws_operation_t *op) {
+    return op->kind == TS_WS_OP_SHELL ? TS_PERM_ROOT : TS_PERM_READ;
+}
 #define OP_LOCK() portENTER_CRITICAL(&s_op_lock)
 #define OP_UNLOCK() portEXIT_CRITICAL(&s_op_lock)
 
@@ -48,6 +51,7 @@ ts_ws_operation_t *ts_ws_op_create(ts_ws_op_kind_t kind, ts_ws_peer_t peer, esp_
     OP_UNLOCK();
     esp_err_t ret=kind==TS_WS_OP_SHELL ? ts_ws_reserve(&peer,1,true,4096,&op->terminal) :
         ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&op->terminal);
+    if (ret == ESP_OK) ts_ws_message_require(op->terminal.message, output_level(op));
     OP_LOCK(); op->initializing=false; OP_UNLOCK();
     if(error)*error=ret;
     if(ret!=ESP_OK) { ts_ws_op_discard(op); ts_ws_op_executor_done(op); return NULL; }
@@ -94,8 +98,8 @@ static bool close_locked(ts_ws_operation_t *op) {
     op->ledger.phase=OP_CLOSING;op->builder=true;op->ledger.refs++;return true;
 }
 static void close_snapshot(ts_ws_operation_t *op) {
-    if(op->kind==TS_WS_OP_SHELL){op->terminal_peers[0]=op->peer;op->terminal_count=1;}
-    else op->terminal_count=ts_ws_peer_snapshot(op->terminal_peers,TS_WS_CONNECTIONS);
+    if(op->kind==TS_WS_OP_SHELL){op->terminal_peers[0]=op->peer;op->terminal_count=ts_ws_peer_authorized(op->peer,TS_PERM_ROOT)?1:0;}
+    else op->terminal_count=ts_ws_peer_snapshot_for_level(op->terminal_peers,TS_WS_CONNECTIONS,TS_PERM_READ);
 }
 bool ts_ws_op_close_begin(ts_ws_operation_t *op) {
     OP_LOCK();bool winner=close_locked(op);OP_UNLOCK();
@@ -129,7 +133,7 @@ static void settle_target(uint64_t identity,uint64_t token,esp_err_t result) {
     record->active=false;
     if(terminal){assert(op->ledger.terminals);op->ledger.terminals--;}
     else {
-        if(result!=ESP_OK)fail_locked(op,&winner);
+        if(result!=ESP_OK && result!=ESP_ERR_NOT_ALLOWED)fail_locked(op,&winner);
         assert(op->ledger.unsettled);op->ledger.unsettled--;op->ledger.settled++;
     }
     /* Target ref becomes the callback ref; not dropped at counter decrement. */
@@ -143,14 +147,15 @@ bool ts_ws_op_output_begin(ts_ws_operation_t *op,ts_ws_output_ticket_t *t) {
     OP_LOCK();bool ok=op->ledger.phase==OP_OPEN;
     if(ok){op->ledger.preparing++;t->sequence=++op->ledger.tickets;op->ledger.refs++;t->op=op;}OP_UNLOCK();
     if(!ok)return false;
-    if(op->kind==TS_WS_OP_SHELL){t->peers[0]=op->peer;t->count=1;}
-    else t->count=ts_ws_peer_snapshot(t->peers,TS_WS_CONNECTIONS);
+    if(op->kind==TS_WS_OP_SHELL){t->peers[0]=op->peer;t->count=ts_ws_peer_authorized(op->peer,TS_PERM_ROOT)?1:0;}
+    else t->count=ts_ws_peer_snapshot_for_level(t->peers,TS_WS_CONNECTIONS,TS_PERM_READ);
     TS_WS_TEST_POINT("B02");return true;
 }
 void ts_ws_op_output_finish(ts_ws_output_ticket_t *t,const char *json) {
     if(!t->op)return;
     ts_ws_operation_t *op=t->op;ts_ws_message_t *m=NULL;
     if(t->count && json)m=ts_ws_message_text(json,strlen(json));
+    ts_ws_message_require(m, output_level(op));
     uint64_t tokens[TS_WS_CONNECTIONS]={0};bool winner=false,registered=false;
     TS_WS_TEST_POINT("B03");
     OP_LOCK();

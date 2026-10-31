@@ -309,6 +309,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         "controlVerifying": "正在核验远端状态",
         "controlBusy": "服务控制正忙或当前状态不允许操作。",
         "controlExpired": "操作排队已超时，未执行远端操作。",
+        "output_not_connected": "指令已提交，实时输出尚未连接。",
         "launch_accepted": "启动请求已受理，可通过服务状态查看执行结果。",
         "launch_queued": "启动操作正在排队。",
         "launch_executing": "正在执行启动操作。",

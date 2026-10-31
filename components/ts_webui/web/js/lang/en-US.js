@@ -309,6 +309,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         "controlVerifying": "Verifying remote state",
         "controlBusy": "Service control is busy or the current state does not permit this operation.",
         "controlExpired": "The operation expired in the queue; no remote action was executed.",
+        "output_not_connected": "Command submitted; live output is not connected.",
         "launch_accepted": "Launch accepted. Service status will show the outcome.",
         "launch_queued": "Launch is queued.",
         "launch_executing": "Launch is executing.",

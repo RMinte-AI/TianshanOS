@@ -18,7 +18,16 @@ async function pageFor(language='en-US',handler){
  const context=await browser.newContext({locale:language,viewport:{width:1280,height:900}});
  await context.addInitScript(({language})=>{
    localStorage.setItem('ts_language',language);
-   class Socket {static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}
+   window.__sockets=[];
+   class Socket {
+     static OPEN=1;static CONNECTING=0;static CLOSING=2;static CLOSED=3;
+     constructor(){this.readyState=0;this.sent=[];window.__sockets.push(this);}
+     send(text){this.sent.push(JSON.parse(text));}
+     open(){this.readyState=1;this.onopen?.();}
+     message(msg){this.onmessage?.({data:JSON.stringify(msg)});}
+     close(){this.readyState=3;queueMicrotask(()=>this.onclose?.({code:1000}));}
+     emitClose(code=1006){this.readyState=3;this.onclose?.({code});}
+   }
    window.WebSocket=Socket;
  },{language});
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -300,4 +309,109 @@ for (const language of ['zh-CN','en-US']) {
    }
   }finally{await first.context.close();await second.context.close();}
  });
+}
+
+for(const language of ['zh-CN','en-US']) {
+ test(`A02: login/logout replaces only current main and terminal sockets ${language}`,async()=>{
+  const {page,context,errors}=await pageFor(language);try{
+   await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&window.ws);
+   const result=await page.evaluate(async()=>{
+    closeLoginModal();
+    api.call=async(name,params)=>name==='auth.login'?{code:0,data:{token:params.username+'-token',username:params.username,level:params.username,expires_in:3600}}:{code:0,data:{}};
+    const old=ws.ws,events=[];window.addEventListener('authChanged',()=>events.push(api.token));
+    const set=window.setTimeout,clear=window.clearTimeout;let staleReconnect,clearedReconnect=false;
+    window.setTimeout=(fn,delay,...args)=>{if(delay===1000){staleReconnect=fn;return 271828;}return set(fn,delay,...args);};
+    window.clearTimeout=id=>{if(id===271828){clearedReconnect=true;return;}return clear(id);};
+    old.emitClose();
+    subscriptionManager.subscribe('system.cpu',()=>{},{interval:2345});
+    await api.login('admin','fixture');const admin=ws.ws;admin.open();
+    const order=admin.sent.map(m=>m.type),restored=admin.sent.find(m=>m.topic==='system.cpu');
+    staleReconnect();window.setTimeout=set;window.clearTimeout=clear;
+    old.onmessage({data:JSON.stringify({type:'auth_error',reason:'session_expired'})});old.onclose({code:1006});
+    const oldIgnored=api.token==='admin-token'&&ws.ws===admin&&clearedReconnect;
+    const term=new WebTerminal('unused');term.connect();term.ws.open();const firstTerminal=term.ws.sent[0];
+    const oldTerminal=term.ws;
+    await api.login('root','fixture');const root=ws.ws;root.open();const rootTerminal=term.ws;rootTerminal.open();rootTerminal.message({type:'connected'});
+    term.startSshShell({host:'fixture.invalid',port:22,user:'u',password:'p'});
+    const ssh=rootTerminal.sent.find(m=>m.type==='ssh_connect');
+    oldTerminal.onmessage({data:JSON.stringify({type:'auth_error',reason:'session_expired'})});oldTerminal.onclose({code:1006});
+    const terminalIgnored=term.ws===rootTerminal&&api.token==='root-token';
+    root.message({type:'auth_ok'});const prepared=await ws.prepareOutputIdentity();
+    root.message({type:'auth_error',reason:'session_expired'});
+    const expired=api.token===null&&ws.ws!==root;
+    const anonymous=ws.ws;anonymous.open();
+    const publicOnly=anonymous.sent.length&&anonymous.sent[0].type==='subscribe'&&!anonymous.sent.some(m=>m.type==='auth');
+    term.destroy();const count=__sockets.length;api.clearAuth();const destroyedListenerRemoved=__sockets.length===count+1;
+    return {order,restored,oldIgnored,firstTerminal,ssh,terminalIgnored,prepared,expired,publicOnly,destroyedListenerRemoved,events};
+   });
+   assert.equal(result.order[0],'auth');assert.equal(result.order[1],'subscribe');assert.deepEqual(result.restored.params,{interval:2345});
+   assert(result.oldIgnored&&result.terminalIgnored&&result.prepared&&result.expired&&result.publicOnly&&result.destroyedListenerRemoved);
+   assert.equal(result.firstTerminal.token,'admin-token');assert.equal(result.ssh.token,'root-token');assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+ test(`A02: upload paths retain their original body/result and send current token ${language}`,async()=>{
+  const {page,context,errors}=await pageFor(language);try{
+   await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+   const result=await page.evaluate(async()=>{
+    closeLoginModal();api.token='admin-token';const calls=[];
+    window.fetch=async(url,options)=>{calls.push({url,headers:options.headers,body:options.body});return {ok:true,status:200,json:async()=>({status:String(url).includes('/file/upload')?'uploaded':'success'})};};
+    const file=await api.fileUpload('/sdcard/ordinary file.txt','ordinary');
+    const firmware=await uploadImageToDevice('/api/v1/ota/firmware?auto_reboot=false','firmware','ota.firmware');
+    const www=await uploadImageToDevice('/api/v1/ota/www','www','ota.www');
+    return {calls,file,firmware,www};
+   });
+   assert.equal(result.file.status,'uploaded');assert(result.firmware.success&&result.www.success);
+   assert.deepEqual(result.calls.map(c=>c.headers.Authorization),['Bearer admin-token','Bearer admin-token','Bearer admin-token']);
+   assert.deepEqual(result.calls.map(c=>c.body),['ordinary','firmware','www']);assert.equal(result.calls[1].headers['Content-Type'],'application/octet-stream');assert.match(result.calls[1].url,/auto_reboot=false$/);assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+ for(const mode of ['early','late','auth-error','timeout','closed','http-error','logout','same-token-auth-change','cancel','page-replaced']) {
+  test(`A02: immediate foreground execution ${mode} ${language}`,async()=>{
+   const {page,context,errors}=await pageFor(language);try{
+    await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&window.ws);
+    const result=await page.evaluate(async mode=>{
+     closeLoginModal();window.submitted=[];
+     api.call=async(name,params)=>{
+      if(name==='auth.login')return {code:0,data:{token:'admin-token',username:'admin',level:'admin',expires_in:3600}};
+      if(name==='ssh.exec_stream'){submitted.push(structuredClone(params));return mode==='http-error'?{code:4,message:'ssh_exec_busy'}:{code:0,data:{session_id:25}};}
+      return {code:0,data:{hosts:name==='ssh.hosts.list'?[{id:'local',username:'ordinary',host:'fixture.invalid',port:22,keyid:'default'}]:[],commands:[]}};
+     };
+     await api.login('admin','fixture');updateAuthUI();await loadCommandsPage();
+     window._cmdHostsList=[{id:'local',username:'ordinary',host:'fixture.invalid',port:22,keyid:'default'}];
+     sshCommands={local:[{id:'foreground',name:'Normal command',command:'printf ordinary',enabled:true}]};selectHost('local');
+     const socket=ws.ws;socket.open();
+     if(mode==='early')socket.message({type:'auth_ok'});
+     if(mode==='closed')socket.emitClose(1000);
+     const set=window.setTimeout,clear=window.clearTimeout;let deadline,deadlines=0,cleared=0;
+     if(mode==='timeout') {
+      window.setTimeout=(fn,delay,...args)=>{if(delay===1000){deadlines++;deadline=fn;return 314159;}return set(fn,delay,...args);};
+      window.clearTimeout=id=>{if(id===314159){cleared++;return;}return clear(id);};
+     }
+     const pending=executeCommand(0);await Promise.resolve();const before=submitted.length;
+     if(mode==='late')socket.message({type:'auth_ok'});
+     if(mode==='auth-error'||mode==='http-error')socket.message({type:'auth_error',message:'Unauthorized'});
+     if(mode==='timeout'){deadline();window.setTimeout=set;window.clearTimeout=clear;}
+     if(mode==='logout')api.clearAuth();
+     if(mode==='same-token-auth-change')window.dispatchEvent(new CustomEvent('authChanged'));
+     if(mode==='cancel')await cancelExecution();
+     if(mode==='page-replaced')releaseExecDisplay();
+     await pending;
+     const after=submitted.length,text=document.getElementById('exec-result').textContent,token=api.token;
+     socket.onmessage({data:JSON.stringify({type:'auth_ok'})});await Promise.resolve();
+     return {before,after,final:submitted.length,text,token,deadlines,cleared,waiters:ws.authWaiters?.size||0,hasSession:currentExecSessionId===25,params:submitted[0]};
+    },mode);
+    const cancelled=['logout','same-token-auth-change','cancel','page-replaced'].includes(mode);
+    assert.equal(result.after,cancelled?0:1);assert.equal(result.final,result.after);assert.equal(result.waiters,0);
+    if(!['early','closed'].includes(mode))assert.equal(result.before,0);
+    if(mode==='timeout'){assert.equal(result.deadlines,1);assert.equal(result.cleared,1);}
+    if(!cancelled&&mode!=='http-error')assert(result.hasSession);
+    if(['auth-error','timeout','closed'].includes(mode))assert.match(result.text,language==='zh-CN'?/指令已提交，实时输出尚未连接/:/Command submitted; live output is not connected/);
+    if(mode==='http-error'){assert(!result.hasSession);assert.doesNotMatch(result.text,/实时输出尚未连接|live output is not connected/);}
+    if(mode==='auth-error')assert.equal(result.token,'admin-token');
+    if(result.params)assert.equal(result.params.command,'printf ordinary');
+    assert.deepEqual(errors,[]);
+    if(mode==='auth-error'&&process.env.TS_TEST_EVIDENCE_DIR)await page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a02-${language}-submitted-output-unavailable.png`)});
+   }finally{await context.close();}
+  });
+ }
 }

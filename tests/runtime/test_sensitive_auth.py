@@ -8,10 +8,10 @@ import tempfile
 source = Path('components/ts_webui/src/ts_webui_api.c').read_text()
 
 
-def extract(name):
-    match = re.search(r'^static [^\n;]+\b' + name + r'\([^;]+?\)\s*\{', source, re.M)
+def extract(name, implementation=source):
+    match = re.search(r'^(?:static )?[^\n;]+\b' + name + r'\([^;]+?\)\s*\{', implementation, re.M)
     assert match, name
-    return source[match.start():source.index('\n}', match.start()) + 2] + '\n'
+    return implementation[match.start():implementation.index('\n}', match.start()) + 2] + '\n'
 
 
 code = r'''
@@ -26,11 +26,20 @@ code = r'''
 #include <string.h>
 #include "cJSON.h"
 typedef int esp_err_t;
-enum { ESP_OK=0, ESP_FAIL=-1, ESP_ERR_NOT_FOUND=1, ESP_ERR_NOT_ALLOWED=2, TS_API_OK=0, TS_API_ERR_NOT_FOUND=3 };
+enum { ESP_OK=0, ESP_FAIL=-1, ESP_ERR_NOT_FOUND=1, ESP_ERR_NOT_ALLOWED=2, ESP_ERR_INVALID_ARG=4, TS_API_OK=0, TS_API_ERR_NOT_FOUND=3, TS_API_ERR_INTERNAL=7, TS_API_ERR_INVALID_ARG=1, TS_API_ERR_AUTH=11 };
 typedef enum { TS_PERM_NONE=0, TS_PERM_READ=1, TS_PERM_ADMIN=3, TS_PERM_ROOT=4 } ts_perm_level_t;
 typedef struct { int content_len; } httpd_req_t;
 typedef struct { httpd_req_t *req; const char *uri; int method; const char *body; size_t body_len; const char *auth; const char *path; } ts_http_request_t;
 typedef struct { int code; char *message; cJSON *data; } ts_api_result_t;
+typedef struct { uint32_t session_id; ts_perm_level_t level; } ts_session_t;
+static bool session_live = true;
+static esp_err_t ts_security_validate_session(uint32_t sid, ts_session_t *session) {
+    if (!session_live || !sid || sid > 3) return ESP_ERR_NOT_FOUND;
+    if (session) *session = (ts_session_t){sid,sid==1?TS_PERM_ROOT:sid==2?TS_PERM_ADMIN:TS_PERM_READ};
+    return ESP_OK;
+}
+static void ts_api_result_init(ts_api_result_t *r) {memset(r,0,sizeof(*r));}
+static void ts_api_result_error(ts_api_result_t *r,int code,const char *message) {r->code=code;r->message=strdup(message);}
 static int status, calls;
 static char *response;
 #define TS_LOGD(...) ((void)0)
@@ -47,6 +56,7 @@ static esp_err_t ts_http_get_header(ts_http_request_t *r,const char *key,char *o
 static esp_err_t ts_auth_validate_request(const char *header,uint32_t *session,ts_perm_level_t *level) {
     if (!strcmp(header,"Bearer root")) {*session=1;*level=TS_PERM_ROOT;return ESP_OK;}
     if (!strcmp(header,"Bearer admin")) {*session=2;*level=TS_PERM_ADMIN;return ESP_OK;}
+    if (!strcmp(header,"Bearer read")) {*session=3;*level=TS_PERM_READ;return ESP_OK;}
     return ESP_ERR_NOT_FOUND;
 }
 static esp_err_t ts_http_send_error(ts_http_request_t *r,int code,const char *message) {
@@ -65,8 +75,10 @@ static esp_err_t ts_storage_check_write_path(const char *path,bool children) {
     (void)children;return strstr(path,"/config/automation/")||!strncmp(path,"/autocfg/",9)?ESP_ERR_NOT_ALLOWED:ESP_OK;
 }
 static cJSON *ts_api_get_info(const char *name) {
+    if (!strcmp(name,"missing")) return NULL;
     cJSON *info=cJSON_CreateObject();
-    bool required=!strcmp(name,"automation.sources.export")||!strcmp(name,"automation.actions.add")||!strcmp(name,"ui.widgets.set")||
+    bool required=!strncmp(name,"storage.",8)&&strcmp(name,"storage.read")&&strcmp(name,"storage.list")&&strcmp(name,"storage.status")&&strcmp(name,"storage.info");
+    required=required||!strcmp(name,"ssh.exec")||!strcmp(name,"ssh.cancel")||!strcmp(name,"automation.sources.export")||!strcmp(name,"automation.actions.add")||!strcmp(name,"ui.widgets.set")||
         !strncmp(name,"automation.services.",20)||!strcmp(name,"automation.rules.trigger")||!strcmp(name,"automation.actions.execute");
     cJSON_AddBoolToObject(info,"requires_auth",required);return info;
 }
@@ -85,6 +97,35 @@ static esp_err_t send_key_generate_result(ts_http_request_t *r,ts_api_result_t *
     (void)r;(void)result;(void)id;(void)start;return ESP_OK;
 }
 '''
+metadata = r"""
+typedef struct { const char *name, *description; int category; void *handler; bool requires_auth; } ts_api_endpoint_t;
+#define TS_API_CAT_STORAGE 0
+#define TS_API_CAT_SECURITY 1
+"""
+for filename, array in [('ts_api_storage.c','s_storage_endpoints'),('ts_api_ssh.c','ssh_endpoints')]:
+    implementation = Path('components/ts_api/src', filename).read_text()
+    start = implementation.index('static const ts_api_endpoint_t ' + array + '[]')
+    table = implementation[start:implementation.index('\n};', start) + 3]
+    for handler in set(re.findall(r'\.handler\s*=\s*(\w+)', table)):
+        metadata += '#define ' + handler + ' NULL\n'
+    metadata += table + '\n'
+# Insert declarations before get_info; its metadata decisions come from real tables.
+marker = 'static cJSON *ts_api_get_info'
+index = code.index(marker)
+code = code[:index] + metadata + code[index:]
+marker = '    cJSON_AddBoolToObject(info,"requires_auth",required);return info;'
+code = code.replace(marker, r"""
+    for(unsigned i=0;i<sizeof(s_storage_endpoints)/sizeof(s_storage_endpoints[0]);i++)
+        if(!strcmp(s_storage_endpoints[i].name,name))required=s_storage_endpoints[i].requires_auth;
+    for(unsigned i=0;i<sizeof(ssh_endpoints)/sizeof(ssh_endpoints[0]);i++)
+        if(!strcmp(ssh_endpoints[i].name,name))required=ssh_endpoints[i].requires_auth;
+    cJSON_AddBoolToObject(info,"requires_auth",required);return info;
+""", 1)
+code += extract('ts_api_call_for_session', Path('components/ts_api/src/ts_api.c').read_text())
+# Keep the actual local proxy branch; the external network path is forbidden in this offline fixture.
+proxy = extract('ts_api_automation_proxy_fetch_for_session', Path('components/ts_api/src/ts_api_automation.c').read_text())
+code += proxy[:proxy.index('    // 外部 HTTP 请求')] + '    assert(!"external network reached"); return ESP_FAIL;\n}\n'
+code += extract('api_automation_proxy_fetch', Path('components/ts_api/src/ts_api_automation.c').read_text())
 code += extract('check_auth') + extract('api_handler') + extract('url_decode') + extract('file_download_handler')
 code += r'''
 static void api(const char *uri,const char *body,const char *auth,int expected_status) {
@@ -120,7 +161,36 @@ int main(void) {
     file("/sdcard/config/automation/state.json","admin",401);
     file("/sdcard/config/automation/state.json","root",200);
     file("/sdcard/hello.txt",NULL,200);
-    free(response);puts("PASS source secrets, protected files, role policy and public reads");
+    const char *writes[]={"storage.mount","storage.unmount","storage.delete","storage.mkdir","storage.rename","ssh.exec","ssh.cancel"};
+    for(unsigned i=0;i<sizeof(writes)/sizeof(writes[0]);++i) {
+        char uri[96]; snprintf(uri,sizeof(uri),"/api/v1/%s",writes[i]);
+        before=calls;api(uri,"{}",NULL,401);assert(calls==before);
+        api(uri,"{}","admin",200);api(uri,"{}","root",200);assert(calls==before+2);
+    }
+    api("/api/v1/ui/widgets/set","{}","read",401);
+    const char *targets[]={"system.memory","ssh.exec","automation.sources.export","automation.sources.list"};
+    for(unsigned i=0;i<4;i++)for(uint32_t sid=0;sid<=2;sid++) {
+        char url[160];snprintf(url,sizeof(url),"http://127.0.0.1/api/v1/%s",targets[i]);
+        cJSON *params=cJSON_CreateObject();cJSON_AddStringToObject(params,"url",url);
+        cJSON_AddNumberToObject(params,"session_id",1);cJSON *headers=cJSON_AddObjectToObject(params,"headers");
+        cJSON_AddStringToObject(headers,"Authorization","Bearer root");
+        ts_api_result_t direct={0},proxy={0};
+        ts_api_call_for_session(targets[i],NULL,sid,&direct);
+        ts_api_automation_proxy_fetch_for_session(params,sid,&proxy);
+        assert(direct.code==proxy.code);
+        if(direct.code==TS_API_OK && !strcmp(targets[i],"automation.sources.list")) {
+            char *d=cJSON_PrintUnformatted(direct.data),*p=cJSON_PrintUnformatted(proxy.data);
+            assert(!!strstr(d,"secret")==!!strstr(p,"secret"));assert(!!strstr(p,"secret")== (sid==1));free(d);free(p);
+        }
+        ts_api_result_free(&direct);ts_api_result_free(&proxy);cJSON_Delete(params);
+    }
+    cJSON *params=cJSON_Parse("{\"url\":\"http://localhost/api/v1/ssh.exec\",\"session_id\":1}");
+    ts_api_result_t denied={0};before=calls;api_automation_proxy_fetch(params,&denied);
+    assert(denied.code==TS_API_ERR_AUTH && calls==before);ts_api_result_free(&denied);cJSON_Delete(params);
+    session_live=false;
+    api("/api/v1/system/memory",NULL,"root",200);api("/api/v1/ssh/exec","{}","root",401);
+    api("/api/v1/automation/sources/list",NULL,"root",200);assert(!strstr(response,"secret"));session_live=true;
+    free(response);puts("PASS shared HTTP/local proxy roles, public reads, protected paths, redaction, forged JSON and revoked sessions");
 }
 '''
 
@@ -129,9 +199,23 @@ cjson = idf / 'components/json/cJSON'
 with tempfile.TemporaryDirectory(prefix='ts-sensitive-auth-') as directory:
     build = Path(directory)
     (build / 'test.c').write_text(code)
-    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-I' + str(cjson),
+    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-I' + str(cjson),
                     str(build / 'test.c'), str(cjson / 'cJSON.c'), '-o', str(build / 'test')], check=True)
     subprocess.run([str(build / 'test')], check=True)
+    noauth = code.replace('#define CONFIG_TS_WEBUI_AUTH_REQUIRED 1', '')
+    start = noauth.index('int main(void) {')
+    noauth = noauth[:start] + r"""
+int main(void) {
+    api("/api/v1/automation/sources/export","{}",NULL,200);
+    api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}",NULL,200);
+    api("/api/v1/automation/sources/list",NULL,NULL,200);assert(strstr(response,"secret"));
+    free(response);puts("PASS auth-disabled shared API preserves original public/internal behavior");
+}
+"""
+    (build / 'noauth.c').write_text(noauth)
+    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-I' + str(cjson),
+                    str(build / 'noauth.c'), str(cjson / 'cJSON.c'), '-o', str(build / 'noauth')], check=True)
+    subprocess.run([str(build / 'noauth')], check=True)
 
 
 # Run the production credential/session implementation with a persistent NVS
@@ -333,7 +417,7 @@ with tempfile.TemporaryDirectory(prefix='ts-auth-session-') as directory:
     build = Path(directory)
     (build / 'auth.c').write_text(auth_code)
     mbed = idf / 'components/mbedtls/mbedtls'
-    subprocess.run(['cc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
+    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                     '-Itests/runtime/rule_pack/stubs', '-Icomponents/ts_security/include',
                     '-Icomponents/ts_auth_layout/include', '-I' + str(mbed / 'include'),
                     str(build / 'auth.c'), *[str(mbed / 'library' / name) for name in

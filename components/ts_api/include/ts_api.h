@@ -154,6 +154,12 @@ esp_err_t ts_api_unregister(const char *name);
  */
 esp_err_t ts_api_call(const char *name, const cJSON *params, ts_api_result_t *result);
 
+/* Browser/session boundary. Trusted internal callers continue to use ts_api_call. */
+esp_err_t ts_api_call_for_session(const char *name, const cJSON *params,
+                                  uint32_t session_id, ts_api_result_t *result);
+esp_err_t ts_api_automation_proxy_fetch_for_session(const cJSON *params,
+                                  uint32_t session_id, ts_api_result_t *result);
+
 /**
  * @brief Call an API endpoint with string parameters
  * 

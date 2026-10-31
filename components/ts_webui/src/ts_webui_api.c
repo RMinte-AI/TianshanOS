@@ -174,30 +174,10 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
                 req->method, uri, api_name);
     }
     
-    /* Respect the endpoint's registered policy, irrespective of HTTP method:
-     * the browser also uses POST for several public reads. */
-    cJSON *info = ts_api_get_info(api_name);
-    if (!info) return ts_http_send_error(req, 404, "API not found");
-    const cJSON *auth_required = cJSON_GetObjectItemCaseSensitive(info, "requires_auth");
-    if (!cJSON_IsBool(auth_required)) {
-        cJSON_Delete(info);
-        return ts_http_send_error(req, 500, "API policy unavailable");
-    }
-    bool needs_auth = cJSON_IsTrue(auth_required);
-    cJSON_Delete(info);
     uint32_t session_id = 0;
-    /* Configuration is root-only; signed-in users retain homepage execution
-     * and independent service controls. */
-    bool root_only = needs_auth && !strncmp(api_name, "automation.", 11) &&
-        strcmp(api_name, "automation.actions.execute") &&
-        strcmp(api_name, "automation.rules.trigger") &&
-        strcmp(api_name, "automation.services.list") &&
-        strcmp(api_name, "automation.services.status") &&
-        strcmp(api_name, "automation.services.stop");
-    if (needs_auth && check_auth(req, &session_id, root_only ? TS_PERM_ROOT : TS_PERM_READ) != ESP_OK)
-        return ts_http_send_error(req, 401, "Unauthorized");
-    bool source_secrets = check_auth(req, &session_id, TS_PERM_ROOT) == ESP_OK;
-    
+    /* Only verified request headers supply the C session identity. */
+    check_auth(req, &session_id, TS_PERM_NONE);
+
     bool key_generation = strcmp(api_name, "key.generate") == 0;
     bool rule_import = strcmp(api_name,"automation.rules.import")==0;
     if(rule_import&&(!is_binary_upload_complete(req)||!req->body||httpd_req_get_url_query_len(req->req)>0))
@@ -305,26 +285,16 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
         }
         TS_LOGI(TAG, "key.generate request=%s arrived", key_request_id);
     }
-    /* The managed automation document contains source credentials. Its file
-     * can also be read through the general storage API. */
-    if (!strcmp(api_name, "storage.read")) {
-        const cJSON *path = cJSON_GetObjectItem(request, "path");
-        if (cJSON_IsString(path) && ts_storage_check_write_path(path->valuestring, false) != ESP_OK && !source_secrets) {
-            cJSON_Delete(request);
-            return ts_http_send_error(req, 401, "Unauthorized");
-        }
-    }
-    // Call API
     ts_api_result_t result = {0};
-    esp_err_t ret = ts_api_call(api_name, request, &result);
-    if (!strcmp(api_name, "automation.sources.list") && !source_secrets && result.data) {
-        cJSON *source;
-        cJSON_ArrayForEach(source, cJSON_GetObjectItemCaseSensitive(result.data, "sources")) {
-            cJSON_DeleteItemFromObjectCaseSensitive(source, "rest_auth");
-            cJSON_DeleteItemFromObjectCaseSensitive(source, "auth_header");
-        }
+    esp_err_t ret = !strcmp(api_name, "automation.proxy.fetch") ?
+        ts_api_automation_proxy_fetch_for_session(request, session_id, &result) :
+        ts_api_call_for_session(api_name, request, session_id, &result);
+    if (ret == ESP_ERR_NOT_ALLOWED && result.code == TS_API_ERR_AUTH) {
+        cJSON_Delete(request);
+        ts_api_result_free(&result);
+        return ts_http_send_error(req, 401, "Unauthorized");
     }
-    
+
     // API 结果日志使用 DEBUG 级别
     if (strncmp(api_name, "log.", 4) != 0) {
         TS_LOGD(TAG, "API call result: api=%s ret=%d code=%d msg=%s", 
@@ -936,7 +906,7 @@ esp_err_t ts_webui_api_init(void)
         .uri = API_PREFIX "/file/upload",
         .method = TS_HTTP_POST,
         .handler = file_upload_handler,
-        .requires_auth = false,
+        .requires_auth = true,
         .user_data = NULL
     };
     ts_http_server_register_route(&file_upload);
@@ -946,7 +916,7 @@ esp_err_t ts_webui_api_init(void)
         .uri = API_PREFIX "/ota/firmware",
         .method = TS_HTTP_POST,
         .handler = ota_firmware_upload_handler,
-        .requires_auth = false,  // TODO: 生产环境应设为 true
+        .requires_auth = true,
         .user_data = NULL
     };
     ts_http_server_register_route(&ota_firmware);
@@ -956,7 +926,7 @@ esp_err_t ts_webui_api_init(void)
         .uri = API_PREFIX "/ota/www",
         .method = TS_HTTP_POST,
         .handler = ota_www_upload_handler,
-        .requires_auth = false,  // TODO: 生产环境应设为 true
+        .requires_auth = true,
         .user_data = NULL
     };
     ts_http_server_register_route(&ota_www);
@@ -969,7 +939,7 @@ esp_err_t ts_webui_api_init(void)
             .uri = API_PREFIX "/*",
             .method = methods[i],
             .handler = api_handler,
-            .requires_auth = true,
+            .requires_auth = false,
             .user_data = NULL
         };
         esp_err_t ret = ts_http_server_register_route(&route);

@@ -209,6 +209,7 @@ class TianShanAPI {
         localStorage.removeItem('ts_username');
         localStorage.removeItem('ts_level');
         localStorage.removeItem('ts_expires');
+        window.dispatchEvent(new CustomEvent('authChanged'));
     }
     
     // Only the latest generation is retained; no credentials or key material.
@@ -353,6 +354,7 @@ class TianShanAPI {
             localStorage.setItem('ts_username', result.data.username);
             localStorage.setItem('ts_level', result.data.level);
             localStorage.setItem('ts_expires', Date.now() + (result.data.expires_in * 1000));
+            window.dispatchEvent(new CustomEvent('authChanged'));
         }
         return result;
     }
@@ -846,62 +848,115 @@ class TianShanWS {
         this.onDisconnect = onDisconnect;
         this.reconnectDelay = 1000;
         this.shouldReconnect = true;
+        this.reconnectTimer = null;
+        this.authenticated = false;
+        this.authWaiters = new Set();
+        this.authChanged = () => {
+            if (!this.shouldReconnect) return;
+            this.connect();
+        };
+        window.addEventListener('authChanged', this.authChanged);
     }
-    
+
+    settleAuth(ws, ready) {
+        for (const done of [...this.authWaiters]) done(ws, ready);
+    }
+
+    // One bounded observation wait; it never retries or submits business work.
+    prepareOutputIdentity(signal) {
+        const ws = this.ws;
+        if (!ws || ws.readyState >= WebSocket.CLOSING) return Promise.resolve(false);
+        if (this.authenticated) return Promise.resolve(true);
+        if (this.authOutcome === 'rejected') return Promise.resolve(false);
+        return new Promise(resolve => {
+            let timer;
+            const done = (socket, ready) => {
+                if (socket !== ws) return;
+                clearTimeout(timer);
+                this.authWaiters.delete(done);
+                signal?.removeEventListener('abort', cancelled);
+                resolve(ready);
+            };
+            const cancelled = () => done(ws, false);
+            this.authWaiters.add(done);
+            timer = setTimeout(() => done(ws, false), 1000);
+            signal?.addEventListener('abort', cancelled, {once: true});
+            if (signal?.aborted) cancelled();
+        });
+    }
+
     connect() {
+        this.closeCurrent();
         const host = getApiHost();
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const url = `${protocol}//${host}/ws`;
-        
         try {
-            this.ws = new WebSocket(url);
-            
-            this.ws.onopen = () => {
-                console.log('WebSocket connected');
+            const ws = new WebSocket(url), token = api.token;
+            this.ws = ws;
+            this.authenticated = false;
+            this.authOutcome = 'pending';
+            const current = () => this.ws === ws;
+            ws.onopen = () => {
+                if (!current()) return;
                 this.reconnectDelay = 1000;
-                this.send({ type: 'subscribe', events: ['*'] });
+                if (token) ws.send(JSON.stringify({type: 'auth', token}));
+                else { this.authOutcome = 'rejected'; this.settleAuth(ws, false); }
+                this.send({type: 'subscribe', events: ['*']});
                 if (this.onConnect) this.onConnect();
             };
-            
-            this.ws.onmessage = (event) => {
+            ws.onmessage = event => {
+                if (!current()) return;
                 try {
                     const msg = JSON.parse(event.data);
+                    if (msg.type === 'auth_ok' || msg.type === 'auth_error') {
+                        this.authenticated = msg.type === 'auth_ok' && !!token && api.token === token;
+                        this.authOutcome = this.authenticated ? 'ready' : 'rejected';
+                        this.settleAuth(ws, this.authenticated);
+                        if (msg.type === 'auth_error' && msg.reason === 'session_expired' && token && api.token === token) {
+                            api.clearAuth();
+                            window.dispatchEvent(new CustomEvent('authExpired'));
+                        }
+                        return;
+                    }
                     if (this.onMessage) this.onMessage(msg);
-                } catch (e) {
-                    console.error('WebSocket parse error:', e);
-                }
+                } catch (e) { console.error('WebSocket parse error:', e); }
             };
-            
-            this.ws.onclose = () => {
-                console.log('WebSocket disconnected');
+            ws.onclose = () => {
+                if (!current()) return;
+                this.authenticated = false;
+                this.settleAuth(ws, false);
                 if (this.onDisconnect) this.onDisconnect();
                 if (this.shouldReconnect) {
-                    setTimeout(() => this.connect(), this.reconnectDelay);
+                    this.reconnectTimer = setTimeout(() => {
+                        if (current() && this.shouldReconnect) this.connect();
+                    }, this.reconnectDelay);
                     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
                 }
             };
-            
-            this.ws.onerror = (error) => console.error('WebSocket error:', error);
-        } catch (e) {
-            console.error('WebSocket connect failed:', e);
-        }
+            ws.onerror = error => { if (current()) console.error('WebSocket error:', error); };
+        } catch (e) { console.error('WebSocket connect failed:', e); }
     }
-    
+
+    closeCurrent() {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        const ws = this.ws;
+        this.ws = null;
+        this.authenticated = false;
+        if (ws) { this.settleAuth(ws, false); ws.close(); }
+    }
+
     disconnect() {
         this.shouldReconnect = false;
-        if (this.ws) { this.ws.close(); this.ws = null; }
+        window.removeEventListener('authChanged', this.authChanged);
+        this.closeCurrent();
     }
-    
+
     send(data) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
-        }
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(data));
     }
-    
-    // 暴露 readyState 属性，供日志页面检查连接状态
-    get readyState() {
-        return this.ws ? this.ws.readyState : WebSocket.CLOSED;
-    }
+
+    get readyState() { return this.ws ? this.ws.readyState : WebSocket.CLOSED; }
 }
 
 // 全局实例

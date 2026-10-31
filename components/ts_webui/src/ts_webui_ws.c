@@ -78,9 +78,6 @@ static _Atomic(httpd_handle_t) s_server = NULL;
 static atomic_bool s_ws_stopping;
 static SemaphoreHandle_t s_terminal_mutex = NULL;
 static int s_terminal_client_fd = -1;  // 当前终端会话的 fd
-#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
-static uint32_t s_terminal_session_id;
-#endif
 
 /* 终端输出缓冲区 */
 static char *s_terminal_output_buf = NULL;
@@ -199,6 +196,34 @@ static void ssh_request_error(httpd_req_t *req, const char *message)
     free(json);
 }
 
+static bool bind_request_session(httpd_req_t *req, const cJSON *msg, ts_perm_level_t required)
+{
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    const cJSON *token = cJSON_GetObjectItemCaseSensitive(msg, "token");
+    char authorization[136];
+    uint32_t session_id = 0;
+    ts_perm_level_t level = TS_PERM_NONE;
+    int n = cJSON_IsString(token) ? snprintf(authorization, sizeof(authorization), "Bearer %s", token->valuestring) : -1;
+    if (n < 0 || n >= sizeof(authorization) ||
+        ts_auth_validate_request(authorization, &session_id, &level) != ESP_OK || level < required)
+        return false;
+    ts_ws_peer_t peer = *(ts_ws_peer_t *)req->sess_ctx;
+    return ts_ws_peer_bind_session(peer, session_id) == ESP_OK && ts_ws_peer_authorized(peer, required);
+#else
+    (void)req;
+    (void)msg;
+    (void)required;
+    return true;
+#endif
+}
+static void handle_auth(httpd_req_t *req, const cJSON *msg)
+{
+    const char *text = bind_request_session(req, msg, TS_PERM_READ) ?
+        "{\"type\":\"auth_ok\"}" : "{\"type\":\"auth_error\",\"message\":\"Unauthorized\"}";
+    httpd_ws_frame_t frame = {.type=HTTPD_WS_TYPE_TEXT, .payload=(uint8_t *)text, .len=strlen(text)};
+    httpd_ws_send_frame(req, &frame);
+}
+
 static void shell_resources_close(ssh_shell_context_t *ctx)
 {
     xSemaphoreTake(ctx->io,portMAX_DELAY);
@@ -249,8 +274,8 @@ static esp_err_t ssh_start_status(ssh_shell_context_t *ctx,const char *status,co
     char *json=ok?cJSON_PrintUnformatted(msg):NULL;cJSON_Delete(msg);
     esp_err_t ret=ESP_ERR_NO_MEM;
     if(json){ts_ws_peer_t peer=ts_ws_op_peer(ctx->op);httpd_ws_frame_t f={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)json,.len=strlen(json)};
-        ret=ts_ws_transport_send(peer.server,peer.fd,&f);}
-    free(json);return ret;
+        ret=ts_ws_transport_send_private(peer,&f,TS_PERM_ROOT);}
+    free(json);return ret==ESP_ERR_NOT_ALLOWED ? ESP_OK : ret;
 }
 /* Poller remains the only ordinary observation producer. User disconnect is
  * handed to that producer, preserving the disconnecting/closed wire messages. */
@@ -291,6 +316,11 @@ static void ssh_cleanup(void)
 }
 static void handle_ssh_connect(httpd_req_t *req,cJSON *params)
 {
+    if (!bind_request_session(req, params, TS_PERM_ROOT)) {
+        ssh_request_error(req, "Unauthorized");
+        return;
+    }
+
     cJSON *host=cJSON_GetObjectItem(params,"host"),*user=cJSON_GetObjectItem(params,"user");
     cJSON *port=cJSON_GetObjectItem(params,"port"),*password=cJSON_GetObjectItem(params,"password");
     if(!cJSON_IsString(host) || !cJSON_IsString(user)){ssh_request_error(req,"Missing host or user");return;}
@@ -333,6 +363,11 @@ failed:
  * pinned across resource I/O; no handler can retarget the current Shell. */
 static void handle_ssh_control(httpd_req_t *req,ts_ws_peer_t peer,const char *type,cJSON *msg)
 {
+    if (!ts_ws_peer_authorized(peer, TS_PERM_ROOT)) {
+        ssh_request_error(req, "Unauthorized");
+        return;
+    }
+
     ts_ws_operation_t *op=ts_ws_op_shell_control(peer);
     if(!op){ssh_request_error(req,"This connection does not own an active SSH session");return;}
     ssh_shell_context_t *ctx=ts_ws_op_data(op);
@@ -471,7 +506,8 @@ static void handle_terminal_command(httpd_req_t *req, const char *command)
                     .payload = (uint8_t *)json,
                     .len = strlen(json)
                 };
-                httpd_ws_send_frame(req, &ws_pkt);
+                if (ts_ws_peer_authorized(*(ts_ws_peer_t *)req->sess_ctx, TS_PERM_ROOT))
+                    httpd_ws_send_frame(req, &ws_pkt);
                 free(json);
             }
         }
@@ -491,7 +527,8 @@ static void handle_terminal_command(httpd_req_t *req, const char *command)
             .payload = (uint8_t *)json,
             .len = strlen(json)
         };
-        httpd_ws_send_frame(req, &ws_pkt);
+        if (ts_ws_peer_authorized(*(ts_ws_peer_t *)req->sess_ctx, TS_PERM_ROOT))
+            httpd_ws_send_frame(req, &ws_pkt);
         free(json);
     }
 }
@@ -500,31 +537,19 @@ static void handle_terminal_command(httpd_req_t *req, const char *command)
 static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
 {
     int fd = httpd_req_to_sockfd(req);
-#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
-    const cJSON *token = cJSON_GetObjectItemCaseSensitive(msg, "token");
-    char authorization[136];
-    uint32_t session_id = 0;
-    ts_perm_level_t level = TS_PERM_NONE;
-    int n = cJSON_IsString(token) ? snprintf(authorization, sizeof(authorization), "Bearer %s", token->valuestring) : -1;
-    if (n < 0 || n >= sizeof(authorization) ||
-        ts_auth_validate_request(authorization, &session_id, &level) != ESP_OK || level < TS_PERM_ROOT) {
+    if (!bind_request_session(req, msg, TS_PERM_ROOT)) {
         ssh_request_error(req, "Unauthorized");
         return;
     }
-#else
-    (void)msg;
-#endif
-    
+
     // 检查是否有其他终端会话
     if (s_terminal_client_fd >= 0 && s_terminal_client_fd != fd) {
         // 检查旧的终端 fd 是否还在活跃客户端列表中
         bool old_fd_active = false;
-        httpd_handle_t old_hd = NULL;
         ts_ws_peer_t old_peer={0};
         for (int i = 0; i < MAX_WS_CLIENTS; i++) {
             if (s_clients[i].active && s_clients[i].fd == s_terminal_client_fd) {
                 old_fd_active = true;
-                old_hd = s_clients[i].hd;
                 old_peer=s_clients[i].peer;
                 break;
             }
@@ -555,7 +580,7 @@ static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
                     .payload = (uint8_t *)close_json,
                     .len = strlen(close_json)
                 };
-                ts_ws_transport_send(old_hd, s_terminal_client_fd, &ws_pkt);
+                ts_ws_transport_send_private(old_peer, &ws_pkt, TS_PERM_ROOT);
                 free(close_json);
             }
             
@@ -578,9 +603,6 @@ static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
     
     // 设置输出回调
     s_terminal_client_fd = fd;
-#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
-    s_terminal_session_id = session_id;
-#endif
     ts_console_set_output_cb(terminal_output_cb, NULL);
     
     // 发送确认消息和欢迎信息
@@ -597,7 +619,8 @@ static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
             .payload = (uint8_t *)json,
             .len = strlen(json)
         };
-        httpd_ws_send_frame(req, &ws_pkt);
+        if (ts_ws_peer_authorized(*(ts_ws_peer_t *)req->sess_ctx, TS_PERM_ROOT))
+            httpd_ws_send_frame(req, &ws_pkt);
         free(json);
     }
     
@@ -723,7 +746,14 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
             TS_LOGD(TAG, "WS msg type=%s from fd=%d", type->valuestring, httpd_req_to_sockfd(req));
             
-            if (strcmp(type->valuestring, "ping") == 0) {
+            if (strcmp(type->valuestring, "auth") == 0) {
+                handle_auth(req, msg);
+            }
+            else if (strcmp(type->valuestring, "ping") == 0) {
+                /* Existing heartbeat retires a revoked binding even when the
+                 * producer has already filtered every private recipient. Pong
+                 * remains public, including for anonymous connections. */
+                (void)ts_ws_peer_authorized(peer, TS_PERM_READ);
                 // Respond to ping
                 cJSON *pong = cJSON_CreateObject();
                 cJSON_AddStringToObject(pong, "type", "pong");
@@ -796,7 +826,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
                 // 终端命令输入
 #ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
                 if (s_terminal_client_fd != httpd_req_to_sockfd(req) ||
-                    !ts_security_check_permission(s_terminal_session_id, TS_PERM_ROOT)) {
+                    !ts_ws_peer_authorized(peer, TS_PERM_ROOT)) {
                     ssh_request_error(req, "Unauthorized");
                 } else
 #endif
@@ -811,7 +841,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
                 // 发送中断信号 (Ctrl+C)
 #ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
                 if (s_terminal_client_fd != httpd_req_to_sockfd(req) ||
-                    !ts_security_check_permission(s_terminal_session_id, TS_PERM_ROOT)) {
+                    !ts_ws_peer_authorized(peer, TS_PERM_ROOT)) {
                     ssh_request_error(req, "Unauthorized");
                 } else
 #endif

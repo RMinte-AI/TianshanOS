@@ -1189,6 +1189,12 @@ static esp_err_t api_automation_action_stats_reset(const cJSON *params, ts_api_r
  */
 static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t *result)
 {
+    return ts_api_automation_proxy_fetch_for_session(params, 0, result);
+}
+
+esp_err_t ts_api_automation_proxy_fetch_for_session(const cJSON *params, uint32_t session_id,
+                                                   ts_api_result_t *result)
+{
     cJSON *url_json = cJSON_GetObjectItem(params, "url");
     cJSON *method_json = cJSON_GetObjectItem(params, "method");
     cJSON *headers_json = cJSON_GetObjectItem(params, "headers");
@@ -1238,7 +1244,7 @@ static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t
             ts_api_result_t local_result = {0};
             cJSON *api_params = cJSON_CreateObject();  // 空参数，实际应解析 query string
 
-            esp_err_t ret = ts_api_call(api_name, api_params, &local_result);
+            esp_err_t ret = ts_api_call_for_session(api_name, api_params, session_id, &local_result);
             cJSON_Delete(api_params);
 
             if (ret == ESP_OK && local_result.code == TS_API_OK) {

@@ -138,7 +138,11 @@ esp_err_t ts_ssh_exec_stream(ts_ssh_session_t s,const char *command,ts_ssh_outpu
 #include "project_driver.inc"
 #endif
 esp_err_t ts_keystore_load_private_key(const char *id,char **out,size_t *n){(void)id;stage("key");*out=host_strdup("fake-key");*n=9;return ESP_OK;}
-esp_err_t ts_variable_upsert(const ts_auto_variable_t *v){(void)v;variable_writes++;return 0;}
+static char stored_extract[64];
+esp_err_t ts_variable_upsert(const ts_auto_variable_t *v){
+ if(v->value.type==TS_AUTO_VAL_STRING && strstr(v->name,".extracted"))snprintf(stored_extract,sizeof(stored_extract),"%s",v->value.str_val);
+ variable_writes++;return 0;
+}
 bool ts_variable_is_initialized(void){return variable_initialized;}
 uint64_t ts_variable_instance(const char *name){(void)name;return variable_instance;}
 void ts_variable_registration_begin(void){}
@@ -146,9 +150,16 @@ void ts_variable_registration_end(void){}
 void ts_ssh_binding_lock(void){}
 void ts_ssh_binding_unlock(void){}
 bool ts_auto_config_command_current(const char *id,uint64_t instance){(void)id;(void)instance;return command_current;}
-esp_err_t ts_console_exec(const char *cmd,ts_cmd_result_t *result){(void)cmd;memset(result,0,sizeof(*result));return 0;}
-esp_err_t ts_console_clear_output_cb(void){return 0;}
-esp_err_t ts_console_set_output_cb(ts_console_output_cb_t cb,void *arg){(void)cb;(void)arg;return 0;}
+static void (*console_hook)(void);
+static ts_console_output_cb_t console_output;
+static void *console_output_arg;
+esp_err_t ts_console_exec(const char *cmd,ts_cmd_result_t *result){
+ (void)cmd;memset(result,0,sizeof(*result));
+ if(console_output)console_output("private-console",15,console_output_arg);
+ if(console_hook)console_hook();return 0;
+}
+esp_err_t ts_console_clear_output_cb(void){console_output=NULL;return 0;}
+esp_err_t ts_console_set_output_cb(ts_console_output_cb_t cb,void *arg){console_output=cb;console_output_arg=arg;return 0;}
 void ts_console_request_interrupt(void){}
 esp_err_t ts_log_add_callback(ts_log_callback_t cb,ts_log_level_t l,void *arg,ts_log_callback_handle_t *out){(void)cb;(void)l;(void)arg;*out=(void*)1;return 0;}
 static int remove_log_result;

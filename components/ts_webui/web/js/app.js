@@ -549,6 +549,7 @@ class SubscriptionManager {
     constructor(ws) {
         this.ws = ws;
         this.subscriptions = new Map(); // topic -> Set(callbacks)
+        this.subscriptionParams = new Map();
         this.activeSubs = new Set();    // 已激活的 topic
     }
 
@@ -562,6 +563,7 @@ class SubscriptionManager {
         // 添加回调
         if (!this.subscriptions.has(topic)) {
             this.subscriptions.set(topic, new Set());
+            this.subscriptionParams.set(topic, params);
         }
         this.subscriptions.get(topic).add(callback);
 
@@ -596,6 +598,7 @@ class SubscriptionManager {
         // 如果没有回调了，发送取消订阅消息
         if (this.subscriptions.get(topic).size === 0) {
             this.subscriptions.delete(topic);
+            this.subscriptionParams.delete(topic);
             if (this.activeSubs.has(topic)) {
                 this.ws.send({
                     type: 'unsubscribe',
@@ -605,6 +608,12 @@ class SubscriptionManager {
                 console.log(`[SubscriptionMgr] Unsubscribed from: ${topic}`);
             }
         }
+    }
+
+    restore() {
+        this.subscriptions.forEach((callbacks, topic) => {
+            this.ws.send({type: 'subscribe', topic, params: this.subscriptionParams.get(topic)});
+        });
     }
 
     /**
@@ -646,6 +655,7 @@ class SubscriptionManager {
             this.ws.send({ type: 'unsubscribe', topic });
         });
         this.subscriptions.clear();
+        this.subscriptionParams.clear();
         this.activeSubs.clear();
         console.log('[SubscriptionMgr] Cleared all subscriptions');
     }
@@ -935,7 +945,7 @@ window.addEventListener('languageChanged', () => {
 function setupWebSocket() {
     ws = new TianShanWS(
         (msg) => handleEvent(msg),
-        () => renderWsStatus(true),
+        () => { renderWsStatus(true); subscriptionManager?.restore(); },
         () => renderWsStatus(false)
     );
     ws.connect();
@@ -8953,6 +8963,7 @@ let currentExecSessionId = null;
 let execDisplayOwner = null;
 function releaseExecDisplay() {
     if (execDisplayOwner) {
+        execDisplayOwner.identityWait?.abort();
         execDisplayOwner.messages=[];
         delete execDisplayOwner.element.dataset.serviceRun;
         delete execDisplayOwner.element.dataset.operationId;
@@ -9057,21 +9068,48 @@ async function executeCommand(idx) {
     if (cmd.varName) params.var_name=cmd.varName;
     if (cmd.timeout) params.timeout=cmd.timeout*1000;
     if (cmd.stopOnMatch) params.stop_on_match=true;
+    const submittedToken = api.token, pageCurrent = capturePageValidity();
+    owner.identityWait = new AbortController();
+    owner.preparingIdentity = true;
+    const identityChanged = () => { owner.identityChanged = true; owner.identityWait.abort(); };
+    window.addEventListener('authChanged', identityChanged, {once: true});
     try {
+        const outputReady = await ws?.prepareOutputIdentity(owner.identityWait.signal);
+        owner.preparingIdentity = false;
+        window.removeEventListener('authChanged', identityChanged);
+        if (owner.identityChanged || !ownsExecDisplay(owner) || !pageCurrent() || owner.cancelled || api.token !== submittedToken) {
+            if (ownsExecDisplay(owner)) { owner.finished = true; cancel.style.display = 'none'; }
+            return;
+        }
         const result=requireApiSuccess(await api.call('ssh.exec_stream',params),'ssh.exec_stream');
         if (!Number.isInteger(result.data?.session_id)) throw new ApiOperationError({},'ssh.exec_stream',{kind:'format',uncertain:true});
         if (!ownsExecDisplay(owner)) return;
         output.textContent+=t('promptRepair.sessionWaiting',{id:result.data.session_id});
         acknowledgeExecSession(owner,result.data.session_id);
+        if (!outputReady) {
+            const message = runtimeText('output_not_connected');
+            output.textContent += '\n' + message;
+            showToast(message, 'warning');
+        }
     } catch (error) {
         if (!ownsExecDisplay(owner)) return;
         owner.finished=true;owner.messages=[];cancel.style.display='none';currentExecSessionId=null;
         const failure=describeFailure({op:'ssh.run',params:owner.target,error,endpoint:'ssh.exec_stream',write:true});
         output.textContent+='\n'+failure.message;showFailureToast(failure.message,failure.details,{type:failure.uncertain?'warning':'error'});
+    } finally {
+        owner.preparingIdentity = false;
+        window.removeEventListener('authChanged', identityChanged);
     }
 }
 
 async function cancelExecution() {
+    if (execDisplayOwner?.preparingIdentity) {
+        execDisplayOwner.cancelled = true;
+        execDisplayOwner.finished = true;
+        execDisplayOwner.identityWait.abort();
+        document.getElementById('cancel-exec-btn').style.display = 'none';
+        return;
+    }
     if (!currentExecSessionId) {
         showToast((typeof t === 'function' ? t('toast.noRunningCommand') : '没有正在执行的命令'), 'info');
         return;
@@ -13865,7 +13903,7 @@ async function uploadImageToDevice(url, body, operation) {
     try {
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/octet-stream' },
+            headers: { 'Content-Type': 'application/octet-stream', ...(api.token ? {Authorization: `Bearer ${api.token}`} : {}) },
             body
         });
         const result = await response.json();

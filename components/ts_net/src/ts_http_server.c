@@ -9,6 +9,7 @@
 #include "ts_core.h"  /* TS_MALLOC_PSRAM */
 #include "ts_log.h"
 #include "ts_storage.h"
+#include "ts_security.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
@@ -145,6 +146,17 @@ static esp_err_t http_handler_wrapper(httpd_req_t *req)
         .body = NULL,
         .body_len = 0
     };
+
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    if (route->requires_auth) {
+        char auth[128];
+        uint32_t session_id;
+        ts_perm_level_t level;
+        if (ts_http_get_header(&ts_req, "Authorization", auth, sizeof(auth)) != ESP_OK ||
+            ts_auth_validate_request(auth, &session_id, &level) != ESP_OK || level < TS_PERM_READ)
+            return ts_http_send_error(&ts_req, 401, "Unauthorized");
+    }
+#endif
     
     // Read body if present - must loop to receive all data
     if (req->content_len > 0) {

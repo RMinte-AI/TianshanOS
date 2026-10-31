@@ -446,14 +446,14 @@ static const ts_api_endpoint_t s_storage_endpoints[] = {
         .description = "Mount SD card",
         .category = TS_API_CAT_STORAGE,
         .handler = api_storage_mount,
-        .requires_auth = false
+        .requires_auth = true
     },
     {
         .name = "storage.unmount",
         .description = "Unmount SD card",
         .category = TS_API_CAT_STORAGE,
         .handler = api_storage_unmount,
-        .requires_auth = false
+        .requires_auth = true
     },
     {
         .name = "storage.list",
@@ -467,21 +467,21 @@ static const ts_api_endpoint_t s_storage_endpoints[] = {
         .description = "Delete file or directory",
         .category = TS_API_CAT_STORAGE,
         .handler = api_storage_delete,
-        .requires_auth = false
+        .requires_auth = true
     },
     {
         .name = "storage.mkdir",
         .description = "Create directory",
         .category = TS_API_CAT_STORAGE,
         .handler = api_storage_mkdir,
-        .requires_auth = false
+        .requires_auth = true
     },
     {
         .name = "storage.rename",
         .description = "Rename/move file",
         .category = TS_API_CAT_STORAGE,
         .handler = api_storage_rename,
-        .requires_auth = false
+        .requires_auth = true
     },
     {
         .name = "storage.info",
