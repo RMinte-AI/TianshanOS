@@ -292,30 +292,25 @@ static int cmd_voltprot_handler(int argc, char **argv)
     if (s_voltprot_args.config->count > 0) {
         bool modified = false;
         
-        /* 修改低电压阈值 */
-        if (s_voltprot_args.low_threshold->count > 0) {
-            float low = (float)s_voltprot_args.low_threshold->dval[0];
-            float recovery;
-            ts_power_policy_get_thresholds(NULL, &recovery);
-            
-            esp_err_t ret = ts_power_policy_set_thresholds(low, recovery);
-            if (ret == ESP_OK) {
-                ts_console_printf("✅ 低电压阈值已设置为 %.2f V\n", low);
-                modified = true;
-            } else {
-                ts_console_printf("❌ 设置失败: %s\n", esp_err_to_name(ret));
+        /* 读取完整阈值对，再合并本次明确指定的值 */
+        if (s_voltprot_args.low_threshold->count > 0 || s_voltprot_args.recovery_threshold->count > 0) {
+            float low, recovery;
+            esp_err_t ret = ts_power_policy_get_thresholds(&low, &recovery);
+            if (ret != ESP_OK) {
+                ts_console_printf("❌ 读取阈值失败: %s\n", esp_err_to_name(ret));
+                return 1;
             }
-        }
-        
-        /* 修改恢复电压阈值 */
-        if (s_voltprot_args.recovery_threshold->count > 0) {
-            float recovery = (float)s_voltprot_args.recovery_threshold->dval[0];
-            float low;
-            ts_power_policy_get_thresholds(&low, NULL);
+            if (s_voltprot_args.low_threshold->count > 0)
+                low = (float)s_voltprot_args.low_threshold->dval[0];
+            if (s_voltprot_args.recovery_threshold->count > 0)
+                recovery = (float)s_voltprot_args.recovery_threshold->dval[0];
             
-            esp_err_t ret = ts_power_policy_set_thresholds(low, recovery);
+            ret = ts_power_policy_set_thresholds(low, recovery);
             if (ret == ESP_OK) {
-                ts_console_printf("✅ 恢复电压阈值已设置为 %.2f V\n", recovery);
+                if (s_voltprot_args.low_threshold->count > 0)
+                    ts_console_printf("✅ 低电压阈值已设置为 %.2f V\n", low);
+                if (s_voltprot_args.recovery_threshold->count > 0)
+                    ts_console_printf("✅ 恢复电压阈值已设置为 %.2f V\n", recovery);
                 modified = true;
             } else {
                 ts_console_printf("❌ 设置失败: %s\n", esp_err_to_name(ret));

@@ -248,3 +248,34 @@ for(const language of ['zh-CN','en-US'])test(`${language}: late font metadata pr
   assert.deepEqual(f.errors,[]);
  }finally{await f.context.close();}
 });
+
+for (const lang of ['zh-CN', 'en-US']) {
+    test(`${lang}: power telemetry valid UART, zero readings, invalid UART and independent ADC`, async () => {
+        const f=await fixture(lang);
+        try { const {page}=f;
+            await page.evaluate(() => loadSystemPage());
+            const readings = await page.evaluate(() => {
+                const snapshot = data => {
+                    updatePowerInfo(data);
+                    return ['voltage', 'current', 'power-watts', 'internal-voltage'].map(id => document.getElementById(id).textContent);
+                };
+                return {
+                    valid: snapshot({power_chip:{valid:true,crc_valid:true,voltage_v:24,current_a:2,power_w:48},voltage:{supply_v:13.6}}),
+                    zero: snapshot({power_chip:{valid:true,crc_valid:true,voltage_v:24,current_a:0,power_w:0},current:{value_a:99},power:{value_w:99},voltage:{supply_v:13.6}}),
+                    crcBad: snapshot({power_chip:{valid:false,crc_valid:false,voltage_v:75,current_a:19,power_w:1425},current:{value_a:99},power:{value_w:99},voltage:{supply_v:13.6}}),
+                    crcOnly: snapshot({power_chip:{valid:true,crc_valid:false,voltage_v:75,current_a:19,power_w:1425},voltage:{supply_v:13.6}}),
+                    invalid: snapshot({power_chip:{valid:false,crc_valid:true,voltage_v:75,current_a:19,power_w:1425},voltage:{supply_v:13.6}}),
+                    noChip: snapshot({current:{value_a:2},power:{value_w:48},voltage:{supply_v:13.6}})
+                };
+            });
+            // Assert the validity defect first; keep zero/fallback expectations alongside it.
+            assert.deepEqual(readings.crcBad, ['-', '-', '-', '12.60 V']);
+            assert.deepEqual(readings.crcOnly, ['-', '-', '-', '12.60 V']);
+            assert.deepEqual(readings.invalid, ['-', '-', '-', '12.60 V']);
+            assert.deepEqual(readings.valid, ['24.0 V', '2.00 A', '48.0 W', '12.60 V']);
+            assert.deepEqual(readings.zero, ['24.0 V', '0.00 A', '0.0 W', '12.60 V']);
+            assert.deepEqual(readings.noChip, ['-', '2.00 A', '48.0 W', '12.60 V']);
+            assert.deepEqual(f.errors, []);
+        } finally { await f.context.close(); }
+    });
+}

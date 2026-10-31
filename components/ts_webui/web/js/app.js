@@ -1905,12 +1905,14 @@ function updatePowerInfo(data) {
     if (!data) return;
 
     // 输入电压：来自电源芯片 (GPIO47 UART)
-    const inputVoltage = data.power_chip?.voltage_v;
+    const chip = data.power_chip;
+    const chipValid = chip?.valid === true && chip?.crc_valid === true;
+    const inputVoltage = chipValid ? chip.voltage_v : undefined;
     // 内部电压：来自 ADC 监控 (GPIO18 ADC)
     const internalVoltage = data.voltage?.supply_v;
 
-    const current = data.power_chip?.current_a || data.current?.value_a;
-    const power = data.power_chip?.power_w || data.power?.value_w;
+    const current = chip ? (chipValid ? chip.current_a : undefined) : data.current?.value_a;
+    const power = chip ? (chipValid ? chip.power_w : undefined) : data.power?.value_w;
 
     // 显示输入电压（主电压）
     document.getElementById('voltage').textContent =

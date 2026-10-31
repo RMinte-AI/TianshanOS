@@ -13,6 +13,7 @@ python3 tests/runtime/test_sensitive_auth.py
 python3 tests/runtime/test_registry_tables.py
 python3 tests/runtime/test_console_lifecycle.py
 python3 tests/runtime/test_power_lifecycle.py
+python3 tests/runtime/test_power_settings.py
 python3 tests/runtime/test_ui_widgets.py
 python3 tests/runtime/test_scp_recv.py
 python3 tests/runtime/test_condition_roundtrip.py
