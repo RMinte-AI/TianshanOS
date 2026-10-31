@@ -574,7 +574,7 @@ static esp_err_t api_system_memory_detail(const cJSON *params, ts_api_result_t *
             /* Since we don't have stack size, we use high water mark directly (lower is worse) */
             
             /* Simple bubble sort for top tasks - sort by stack usage (ascending high water = more used) */
-            for (UBaseType_t i = 0; i < actual_count - 1; i++) {
+            for (UBaseType_t i = 0; i + 1 < actual_count; i++) {
                 for (UBaseType_t j = 0; j < actual_count - i - 1; j++) {
                     if (task_array[j].usStackHighWaterMark > task_array[j + 1].usStackHighWaterMark) {
                         TaskStatus_t temp = task_array[j];
