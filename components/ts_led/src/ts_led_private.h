@@ -98,6 +98,9 @@ typedef struct {
 /* Global state accessor */
 extern ts_led_state_t *ts_led_get_state(void);
 
+/* Release only GIF-owned callback data; caller holds the layer device mutex. */
+void ts_led_image_release_animation(ts_led_layer_t layer);
+
 /* Driver functions */
 esp_err_t ts_led_driver_init(ts_led_device_impl_t *dev);
 esp_err_t ts_led_driver_send(ts_led_device_impl_t *dev);

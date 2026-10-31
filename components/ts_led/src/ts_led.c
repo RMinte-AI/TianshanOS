@@ -36,13 +36,15 @@ static void render_task(void *arg)
             // 处理每个 layer 的特效
             for (int j = 0; j < dev->layer_count; j++) {
                 ts_led_layer_impl_t *layer = (ts_led_layer_impl_t *)dev->layers[j];
-                if (layer && layer->effect_fn && layer->visible) {
-                    // 检查是否到达特效帧间隔
-                    if (tick_ms - layer->effect_last_time >= layer->effect_interval) {
+                if (layer) {
+                    xSemaphoreTake(dev->mutex, portMAX_DELAY);
+                    if (layer->effect_fn && layer->visible &&
+                        tick_ms - layer->effect_last_time >= layer->effect_interval) {
                         layer->effect_fn(layer, tick_ms, layer->effect_data);
                         layer->effect_last_time = tick_ms;
                         layer->dirty = true;
                     }
+                    xSemaphoreGive(dev->mutex);
                 }
             }
             

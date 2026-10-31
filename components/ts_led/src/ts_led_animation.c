@@ -616,10 +616,13 @@ esp_err_t ts_led_animation_start(ts_led_layer_t layer, const ts_led_animation_de
     if (!layer || !animation) return ESP_ERR_INVALID_ARG;
     ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
     
+    xSemaphoreTake(l->device->mutex, portMAX_DELAY);
+    ts_led_image_release_animation(layer);
     l->anim_fn = animation->func;
     l->anim_data = animation->user_data;
     l->anim_interval = animation->frame_interval_ms;
     l->anim_last_time = 0;
+    xSemaphoreGive(l->device->mutex);
     
     return ESP_OK;
 }
@@ -628,7 +631,11 @@ esp_err_t ts_led_animation_stop(ts_led_layer_t layer)
 {
     if (!layer) return ESP_ERR_INVALID_ARG;
     ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
+    xSemaphoreTake(l->device->mutex, portMAX_DELAY);
+    ts_led_image_release_animation(layer);
     l->anim_fn = NULL;
+    l->anim_data = NULL;
+    xSemaphoreGive(l->device->mutex);
     return ESP_OK;
 }
 
@@ -636,12 +643,14 @@ bool ts_led_animation_is_running(ts_led_layer_t layer)
 {
     if (!layer) return false;
     ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
-    return l->anim_fn != NULL;
+    xSemaphoreTake(l->device->mutex, portMAX_DELAY);
+    bool running = l->anim_fn != NULL;
+    xSemaphoreGive(l->device->mutex);
+    return running;
 }
 
 ts_led_animation_state_t ts_led_animation_get_state(ts_led_layer_t layer)
 {
     if (!layer) return TS_LED_ANIMATION_STOPPED;
-    ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
-    return l->anim_fn ? TS_LED_ANIMATION_PLAYING : TS_LED_ANIMATION_STOPPED;
+    return ts_led_animation_is_running(layer) ? TS_LED_ANIMATION_PLAYING : TS_LED_ANIMATION_STOPPED;
 }

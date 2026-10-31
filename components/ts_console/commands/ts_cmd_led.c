@@ -109,6 +109,7 @@ static struct {
 
 /* 当前加载的图像（用于持续显示） */
 static ts_led_image_t s_current_image = NULL;
+static ts_led_layer_t s_current_image_layer = NULL;
 
 /*===========================================================================*/
 /*                          Command: led --status                             */
@@ -266,9 +267,10 @@ static int do_led_clear(const char *device_name)
     }
     
     /* Free current image if any */
-    if (s_current_image) {
+    if (s_current_image && s_current_image_layer == layer) {
         ts_led_image_free(s_current_image);
         s_current_image = NULL;
+        s_current_image_layer = NULL;
     }
     
     /* Clear image path record */
@@ -1172,6 +1174,7 @@ static int do_led_image(const char *device_name, const char *file_path, const ch
     if (s_current_image) {
         ts_led_image_free(s_current_image);
         s_current_image = NULL;
+        s_current_image_layer = NULL;
     }
     
     // 加载图像
@@ -1182,6 +1185,8 @@ static int do_led_image(const char *device_name, const char *file_path, const ch
         return 1;
     }
     
+    s_current_image_layer = layer;
+
     // 获取图像信息
     ts_led_image_info_t info;
     ts_led_image_get_info(s_current_image, &info);

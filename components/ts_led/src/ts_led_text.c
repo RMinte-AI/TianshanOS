@@ -755,8 +755,10 @@ static void update_scroll(ts_text_overlay_state_t *state, uint32_t now_ms)
 static void overlay_render_task(void *arg)
 {
     (void)arg;
+    SemaphoreHandle_t mutex = ts_led_get_state()->mutex;
     
     while (1) {
+        xSemaphoreTake(mutex, portMAX_DELAY);
         bool any_active = false;
         uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
         
@@ -782,10 +784,13 @@ static void overlay_render_task(void *arg)
         // 如果没有活动的覆盖层，删除任务
         if (!any_active) {
             s_overlay_task = NULL;
-            vTaskDelete(NULL);
+            xSemaphoreGive(mutex);
+            vTaskDeleteWithCaps(NULL);
             return;
         }
         
+        xSemaphoreGive(mutex);
+
         // 约 30fps（主渲染是 60fps，覆盖层可以稍慢）
         vTaskDelay(pdMS_TO_TICKS(33));
     }
@@ -833,6 +838,8 @@ esp_err_t ts_led_text_overlay_start(const char *device_name,
         return ESP_ERR_NOT_FOUND;
     }
     
+    SemaphoreHandle_t mutex = ts_led_get_state()->mutex;
+    xSemaphoreTake(mutex, portMAX_DELAY);
     ts_text_overlay_state_t *state = &s_overlays[idx];
     
     // 停止之前的覆盖层
@@ -854,6 +861,7 @@ esp_err_t ts_led_text_overlay_start(const char *device_name,
         esp_err_t ret = ts_led_layer_create(dev, &layer_cfg, &state->overlay_layer);
         if (ret != ESP_OK || !state->overlay_layer) {
             ESP_LOGE(TAG, "Failed to create overlay layer");
+            xSemaphoreGive(mutex);
             return ESP_ERR_NO_MEM;
         }
         ESP_LOGI(TAG, "Created overlay layer for text");
@@ -905,31 +913,44 @@ esp_err_t ts_led_text_overlay_start(const char *device_name,
     ESP_LOGI(TAG, "Text overlay started on '%s': \"%s\" (scroll=%d, invert=%d)",
              device_name, state->text, config->scroll, config->invert_on_overlap);
     
+    xSemaphoreGive(mutex);
     return ESP_OK;
+}
+
+/* Caller owns the existing LED state mutex, also held for a complete glyph frame. */
+static void stop_overlay(ts_text_overlay_state_t *state)
+{
+    state->active = false;
+    state->font = NULL;
+    if (state->overlay_layer) {
+        ts_led_layer_clear(state->overlay_layer);
+        ts_led_layer_set_visible(state->overlay_layer, false);
+        ((ts_led_layer_impl_t *)state->overlay_layer)->dirty = true;
+    }
 }
 
 esp_err_t ts_led_text_overlay_stop(const char *device_name)
 {
     if (!device_name) return ESP_ERR_INVALID_ARG;
-    
     int idx = get_overlay_index(device_name);
     if (idx < 0) return ESP_ERR_NOT_FOUND;
-    
-    ts_text_overlay_state_t *state = &s_overlays[idx];
-    
-    // 隐藏并清除覆盖层
-    if (state->overlay_layer) {
-        ts_led_layer_clear(state->overlay_layer);
-        ts_led_layer_set_visible(state->overlay_layer, false);
-        // 标记 dirty，让主渲染任务在下一帧更新
-        ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)state->overlay_layer;
-        l->dirty = true;
-    }
-    
-    state->active = false;
-    
-    ESP_LOGI(TAG, "Text overlay stopped on '%s'", device_name);
+    ts_led_state_t *led = ts_led_get_state();
+    if (!led->initialized) return ESP_OK;
+    xSemaphoreTake(led->mutex, portMAX_DELAY);
+    stop_overlay(&s_overlays[idx]);
+    xSemaphoreGive(led->mutex);
     return ESP_OK;
+}
+
+void ts_led_text_overlay_release_font(ts_font_t *font)
+{
+    ts_led_state_t *led = ts_led_get_state();
+    if (!font || !led->initialized) return;
+    xSemaphoreTake(led->mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_OVERLAY_DEVICES; i++) {
+        if (s_overlays[i].font == font) stop_overlay(&s_overlays[i]);
+    }
+    xSemaphoreGive(led->mutex);
 }
 
 esp_err_t ts_led_text_overlay_update(const char *device_name, const char *text)
@@ -937,7 +958,13 @@ esp_err_t ts_led_text_overlay_update(const char *device_name, const char *text)
     if (!device_name || !text) return ESP_ERR_INVALID_ARG;
     
     int idx = get_overlay_index(device_name);
-    if (idx < 0 || !s_overlays[idx].active) return ESP_ERR_INVALID_STATE;
+    if (idx < 0 || !ts_led_get_state()->initialized) return ESP_ERR_INVALID_STATE;
+    SemaphoreHandle_t mutex = ts_led_get_state()->mutex;
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    if (!s_overlays[idx].active) {
+        xSemaphoreGive(mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     ts_text_overlay_state_t *state = &s_overlays[idx];
     strncpy(state->text, text, sizeof(state->text) - 1);
@@ -951,6 +978,7 @@ esp_err_t ts_led_text_overlay_update(const char *device_name, const char *text)
         state->text_height = metrics.height;
     }
     
+    xSemaphoreGive(mutex);
     return ESP_OK;
 }
 
@@ -961,7 +989,12 @@ bool ts_led_text_overlay_is_active(const char *device_name)
     int idx = get_overlay_index(device_name);
     if (idx < 0) return false;
     
-    return s_overlays[idx].active;
+    if (!ts_led_get_state()->initialized) return false;
+    SemaphoreHandle_t mutex = ts_led_get_state()->mutex;
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    bool active = s_overlays[idx].active;
+    xSemaphoreGive(mutex);
+    return active;
 }
 
 esp_err_t ts_led_text_overlay_set_position(const char *device_name, 
@@ -970,10 +1003,17 @@ esp_err_t ts_led_text_overlay_set_position(const char *device_name,
     if (!device_name) return ESP_ERR_INVALID_ARG;
     
     int idx = get_overlay_index(device_name);
-    if (idx < 0 || !s_overlays[idx].active) return ESP_ERR_INVALID_STATE;
+    if (idx < 0 || !ts_led_get_state()->initialized) return ESP_ERR_INVALID_STATE;
+    SemaphoreHandle_t mutex = ts_led_get_state()->mutex;
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    if (!s_overlays[idx].active) {
+        xSemaphoreGive(mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     s_overlays[idx].scroll_x = x - s_overlays[idx].base_x;
     s_overlays[idx].scroll_y = y - s_overlays[idx].base_y;
     
+    xSemaphoreGive(mutex);
     return ESP_OK;
 }

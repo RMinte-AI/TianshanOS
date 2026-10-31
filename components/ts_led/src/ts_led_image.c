@@ -46,8 +46,6 @@ typedef struct {
     ts_led_layer_t layer;
 } ts_led_anim_ctx_t;
 
-/* Global animation context (one per layer max for simplicity) */
-static ts_led_anim_ctx_t *s_anim_ctx = NULL;
 
 /* Forward declarations */
 static void gif_animation_effect(ts_led_layer_t layer, uint32_t time_ms, void *user_data);
@@ -1467,7 +1465,6 @@ esp_err_t ts_led_image_animate_start(ts_led_layer_t layer, ts_led_image_t image,
     ctx->last_frame_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
     ctx->layer = layer;
     
-    s_anim_ctx = ctx;
     
     /* Display first frame */
     ts_led_image_display_frame(layer, image, 0, &ctx->options);
@@ -1483,7 +1480,6 @@ esp_err_t ts_led_image_animate_start(ts_led_layer_t layer, ts_led_image_t image,
     esp_err_t ret = ts_led_animation_start(layer, &anim_def);
     if (ret != ESP_OK) {
         free(ctx);
-        s_anim_ctx = NULL;
         return ret;
     }
     
@@ -1491,21 +1487,26 @@ esp_err_t ts_led_image_animate_start(ts_led_layer_t layer, ts_led_image_t image,
     return ESP_OK;
 }
 
+void ts_led_image_release_animation(ts_led_layer_t layer)
+{
+    ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
+    if (l->anim_fn == gif_animation_effect) {
+        free(l->anim_data);
+        l->anim_data = NULL;
+    }
+}
+
 esp_err_t ts_led_image_animate_stop(ts_led_layer_t layer)
 {
-    if (!layer) return ESP_ERR_INVALID_ARG;
-    
-    ts_led_animation_stop(layer);
-    
-    if (s_anim_ctx) {
-        free(s_anim_ctx);
-        s_anim_ctx = NULL;
-    }
-    
-    return ESP_OK;
+    return ts_led_animation_stop(layer);
 }
 
 bool ts_led_image_is_playing(ts_led_layer_t layer)
 {
-    return s_anim_ctx != NULL && s_anim_ctx->layer == layer;
+    if (!layer) return false;
+    ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
+    xSemaphoreTake(l->device->mutex, portMAX_DELAY);
+    bool playing = l->anim_fn == gif_animation_effect && l->anim_data != NULL;
+    xSemaphoreGive(l->device->mutex);
+    return playing;
 }

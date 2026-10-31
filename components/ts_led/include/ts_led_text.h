@@ -236,6 +236,9 @@ esp_err_t ts_led_text_overlay_start(const char *device_name,
  */
 esp_err_t ts_led_text_overlay_stop(const char *device_name);
 
+/** Detach this font from its actual overlays after current glyph readers finish. */
+void ts_led_text_overlay_release_font(ts_font_t *font);
+
 /**
  * @brief Update overlay text (for dynamic content)
  * 

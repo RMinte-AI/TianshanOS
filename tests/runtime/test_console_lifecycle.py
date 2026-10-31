@@ -111,7 +111,7 @@ def run_native(code, extra_sources=(), extra_headers=None):
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
-        subprocess.run(['cc', '-std=gnu11', '-g', '-fsanitize=address,undefined',
+        subprocess.run(['cc', '-std=gnu11', '-g', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                         '-Wno-deprecated-declarations', '-I' + str(root),
                         '-Itests/runtime/rule_pack/stubs', '-Icomponents/ts_core/ts_service/include',
                         '-Icomponents/ts_console/include', '-Icomponents/ts_drivers/include',
