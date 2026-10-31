@@ -158,6 +158,7 @@ static ts_auth_user_credential_t stored[2];
 static bool present[2];
 static uint8_t version;
 static int writes;
+static int open_handles, fail_write_user=-1;
 static int64_t clock_us;
 static uint32_t random_state=12345;
 static char logs[8192];
@@ -178,17 +179,18 @@ static int user_index(const char *key) {
     if(!strcmp(key,"cred_admin"))return 0;
     assert(!strcmp(key,"cred_root"));return 1;
 }
-static int nvs_open(const char *name,int mode,nvs_handle_t *handle) {(void)name;(void)mode;*handle=1;return ESP_OK;}
+static int nvs_open(const char *name,int mode,nvs_handle_t *handle) {(void)name;(void)mode;*handle=++open_handles;return ESP_OK;}
 static int nvs_open_from_partition(const char *part,const char *name,int mode,nvs_handle_t *handle) {
     (void)part;return nvs_open(name,mode,handle);
 }
-static void nvs_close(nvs_handle_t handle) {(void)handle;}
+static void nvs_close(nvs_handle_t handle) {(void)handle;assert(open_handles>0);--open_handles;}
 static int nvs_get_blob(nvs_handle_t handle,const char *key,void *out,size_t *len) {
     (void)handle;int i=user_index(key);if(!present[i])return ESP_ERR_NOT_FOUND;
     assert(*len>=sizeof(stored[i]));memcpy(out,&stored[i],sizeof(stored[i]));*len=sizeof(stored[i]);return ESP_OK;
 }
 static int nvs_set_blob(nvs_handle_t handle,const char *key,const void *data,size_t len) {
     (void)handle;int i=user_index(key);assert(len==sizeof(stored[i]));
+    if(i==fail_write_user){fail_write_user=-1;return ESP_FAIL;}
     memcpy(&stored[i],data,len);present[i]=true;++writes;return ESP_OK;
 }
 static int nvs_commit(nvs_handle_t handle) {(void)handle;return ESP_OK;}
@@ -210,7 +212,7 @@ for filename in ['ts_security.c', 'ts_auth.c']:
     auth_code += '\n#undef TAG\n' + re.sub(r'^#include[^\n]*\n', '', implementation, flags=re.M)
 auth_code += r'''
 static void boot(void) {
-    s_auth_initialized=false;s_initialized=false;clock_us=0;
+    s_auth_initialized=false;s_initialized=false;clock_us=0;open_handles=0;
     assert(ts_security_init()==ESP_OK);assert(ts_auth_init()==ESP_OK);
 }
 static void fixture(void) {
@@ -305,6 +307,19 @@ int main(int argc,char **argv) {
     } else if(!strcmp(mode,"clean_boot")) {
         int before=writes;boot();assert(writes==before);
         char token[128];login("root","root-fixture",token);request(token,TS_PERM_ROOT);
+    } else if(!strcmp(mode,"init_failure_admin")||!strcmp(mode,"init_failure_root")) {
+        int user=!strcmp(mode,"init_failure_admin")?0:1;
+        stored[user].lockout_until=300;stored[user].failed_attempts=1;
+        ts_auth_user_credential_t original=stored[user];
+        s_auth_initialized=false;s_initialized=false;clock_us=0;open_handles=0;
+        assert(ts_security_init()==ESP_OK);int before=open_handles;fail_write_user=user;
+        assert(ts_auth_init()==ESP_FAIL);assert(!s_auth_initialized&&open_handles==before);
+        assert(!memcmp(&original,&stored[user],sizeof(original)));
+        assert(ts_auth_init()==ESP_OK);assert(open_handles==before+1);
+        assert(!stored[user].lockout_until&&!stored[user].failed_attempts);
+        char token[128];login(user?"root":"admin",user?"root-fixture":"admin-fixture",token);
+        request(token,user?TS_PERM_ROOT:TS_PERM_ADMIN);
+        before=open_handles;assert(ts_auth_init()==ESP_OK&&open_handles==before);
     } else if(!strcmp(mode,"logs")) {
         char token[128],sid_text[16];uint32_t sid=login("root","root-fixture",token);
         snprintf(sid_text,sizeof(sid_text),"%08lx",(unsigned long)sid);
@@ -326,7 +341,8 @@ with tempfile.TemporaryDirectory(prefix='ts-auth-session-') as directory:
                     '-o', str(build / 'auth')], check=True)
     failed = []
     for case in ['normal', 'sid_only', 'altered_tail', 'lengths_and_unissued',
-                 'expiry_and_reuse', 'lockout', 'reboot_locked', 'reboot_expired', 'clean_boot', 'logs']:
+                 'expiry_and_reuse', 'lockout', 'reboot_locked', 'reboot_expired', 'clean_boot',
+                 'init_failure_admin', 'init_failure_root', 'logs']:
         result = subprocess.run([str(build / 'auth'), case])
         if result.returncode:
             failed.append(case)

@@ -189,9 +189,11 @@ esp_err_t ts_auth_init(void)
     } else {
         /* 初始化默认用户（如果不存在） */
         ret = init_user_if_needed("admin", TS_PERM_ADMIN);
-        if (ret != ESP_OK) return ret;
-        ret = init_user_if_needed("root", TS_PERM_ROOT);
-        if (ret != ESP_OK) return ret;
+        if (ret == ESP_OK) ret = init_user_if_needed("root", TS_PERM_ROOT);
+        if (ret != ESP_OK) {
+            nvs_close(s_auth_nvs);
+            return ret;
+        }
     }
     
     s_auth_initialized = true;
