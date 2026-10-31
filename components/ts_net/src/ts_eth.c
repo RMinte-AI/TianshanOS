@@ -85,7 +85,7 @@ static void dhcp_start_task(void *arg)
     }
     
     s_dhcp_task = NULL;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 /**

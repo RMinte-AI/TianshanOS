@@ -2095,7 +2095,7 @@ static void action_executor_task(void *arg)
     xSemaphoreTake(s_ctx->stats_mutex, portMAX_DELAY);
     s_ctx->executor_task = NULL;
     xSemaphoreGive(s_ctx->stats_mutex);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 /*===========================================================================*/

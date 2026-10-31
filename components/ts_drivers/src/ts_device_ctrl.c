@@ -945,7 +945,7 @@ static void lpmu_startup_detect_task(void *arg)
     }
     
     s_lpmu_detect_task = NULL;
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 esp_err_t ts_device_lpmu_start_detection(void)
