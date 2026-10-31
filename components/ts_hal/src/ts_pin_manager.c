@@ -19,6 +19,7 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "soc/soc_caps.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +33,7 @@
 #define PIN_MANAGER_NVS_NAMESPACE   "ts_pins"
 #define PIN_MANAGER_NVS_KEY         "pin_map"
 #define MAX_OWNER_NAME_LEN          32
-#define MAX_GPIO_NUM                48
+#define MAX_GPIO_NUM                SOC_GPIO_PIN_COUNT
 
 /*===========================================================================*/
 /*                          Function Name Table                               */

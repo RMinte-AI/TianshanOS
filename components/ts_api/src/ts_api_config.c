@@ -40,7 +40,10 @@ static ts_config_module_t parse_module_name(const char *name)
 
 static const char* module_to_name(ts_config_module_t mod)
 {
-    static const char *names[] = {"net", "dhcp", "wifi", "nat", "led", "fan", "device", "system"};
+    static const char *names[] = {
+        "net", "dhcp", "wifi", "nat", "led", "fan", "device", "system",
+        "temp", "rules", "actions", "sources"
+    };
     if (mod < TS_CONFIG_MODULE_MAX) return names[mod];
     return "unknown";
 }
