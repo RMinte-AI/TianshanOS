@@ -718,3 +718,4 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 .led-track{flex:1;position:relative}
 .led-ends{position:absolute;left:0;right:0;top:12px;display:flex;justify-content:space-between;font-size:12px;line-height:16px;color:var(--ink-3);pointer-events:none}
 .led-br.has-ends{margin-bottom:14px}
+#login-form .sb>div:has(>#login-error.hidden){display:none}
