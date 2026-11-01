@@ -485,42 +485,6 @@ static esp_err_t options_handler(ts_http_request_t *req, void *user_data)
 /*===========================================================================*/
 
 /**
- * @brief URL decode a string in place
- */
-static void url_decode(char *str)
-{
-    char *src = str;
-    char *dst = str;
-    
-    while (*src) {
-        if (*src == '%' && src[1] && src[2]) {
-            int high = src[1];
-            int low = src[2];
-            
-            // Convert hex chars to int
-            if (high >= '0' && high <= '9') high -= '0';
-            else if (high >= 'A' && high <= 'F') high = high - 'A' + 10;
-            else if (high >= 'a' && high <= 'f') high = high - 'a' + 10;
-            else { *dst++ = *src++; continue; }
-            
-            if (low >= '0' && low <= '9') low -= '0';
-            else if (low >= 'A' && low <= 'F') low = low - 'A' + 10;
-            else if (low >= 'a' && low <= 'f') low = low - 'a' + 10;
-            else { *dst++ = *src++; continue; }
-            
-            *dst++ = (char)((high << 4) | low);
-            src += 3;
-        } else if (*src == '+') {
-            *dst++ = ' ';
-            src++;
-        } else {
-            *dst++ = *src++;
-        }
-    }
-    *dst = '\0';
-}
-
-/**
  * @brief Handle file download request
  * GET /api/v1/file/download?path=/sdcard/xxx
  */
@@ -539,8 +503,7 @@ static esp_err_t file_download_handler(ts_http_request_t *req, void *user_data)
         return ts_http_send_error(req, 400, "Missing 'path' parameter");
     }
     
-    // URL decode path
-    url_decode(path);
+    // ts_http_get_query_param already decodes the query value once.
     TS_LOGD(TAG, "Download request: %s", path);
     
     // 安全检查：只允许访问 /sdcard 和 /spiffs
@@ -587,8 +550,7 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
         return ts_http_send_error(req, 400, "Missing 'path' parameter");
     }
     
-    // URL 解码路径
-    url_decode(path);
+    // ts_http_get_query_param already decodes the query value once.
     TS_LOGD(TAG, "Upload request: path=%s, body_len=%d", path, (int)(req->body_len));
     
     // 安全检查：只允许写入 /sdcard

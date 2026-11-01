@@ -533,3 +533,48 @@ for(const language of ['zh-CN','en-US']){
   });
  }
 }
+
+for(const language of ['zh-CN','en-US']) {
+ test('ordinary file names survive upload and download '+language,async()=>{
+  const f=await pageFor(language);try{
+   const names=['report.txt','report+v1.txt','report v1.txt','report%20v1.txt','report%25v1.txt','进度100%.txt','记录.txt'];
+   const directory='/sdcard/b02',stored=new Map(),uploads=[],downloads=[];
+   // Register these routes after the common fixture; only this flow models file bytes.
+   await f.page.route('**/api/v1/storage/list',async route=>{
+    assert.equal(route.request().postDataJSON().path,directory);
+    await route.fulfill({json:{code:0,data:{entries:[...stored].map(([file,body])=>({name:file.slice(directory.length+1),type:'file',size:body.length}))}}});
+   });
+   await f.page.route('**/api/v1/file/*',async route=>{
+    const request=route.request(),url=new URL(request.url()),file=url.searchParams.get('path');
+    assert(names.some(name=>file===directory+'/'+name));
+    assert.equal(request.url(),base+url.pathname+'?path='+encodeURIComponent(file));
+    if(url.pathname.endsWith('/upload')){
+     assert.equal(request.method(),'POST');const body=request.postDataBuffer();assert(body);
+     stored.set(file,body);uploads.push(file);
+     await route.fulfill({json:{path:file,size:body.length,status:'uploaded'}});
+    }else{
+     assert(url.pathname.endsWith('/download'));assert(stored.has(file));downloads.push(file);
+     await route.fulfill({status:200,contentType:'text/plain',body:stored.get(file)});
+    }
+   });
+   await f.page.goto(base);await f.page.waitForFunction(()=>i18n.isReady());
+   await f.page.evaluate(async directory=>{
+    closeLoginModal();currentFilePath=directory;
+    api.storageStatus=async()=>({code:0,data:{sd:{mounted:true}}});
+    await loadFilesPage();showUploadDialog();
+   },directory);
+   const files=names.map((name,i)=>({name,mimeType:'text/plain',buffer:Buffer.from('independent file contents '+i)}));
+   await f.page.locator('#file-input').setInputFiles(files);
+   await f.page.evaluate(()=>uploadFiles());
+   assert.deepEqual(uploads,names.map(name=>directory+'/'+name));assert.equal(stored.size,names.length);
+   for(let i=0;i<names.length;i++){
+    const pending=f.page.waitForEvent('download');
+    assert.deepEqual(await f.page.evaluate(file=>downloadFile(file),directory+'/'+names[i]),{started:true});
+    const download=await pending;assert.equal(download.suggestedFilename(),names[i]);
+    const stream=await download.createReadStream(),parts=[];for await(const part of stream)parts.push(part);
+    assert.deepEqual(Buffer.concat(parts),files[i].buffer);
+   }
+   assert.deepEqual(downloads,names.map(name=>directory+'/'+name));assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+}
