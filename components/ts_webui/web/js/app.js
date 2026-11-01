@@ -13987,8 +13987,8 @@ function renderTaskRows(tasks, formatBytes) {
             <td class="mono">${task.name}</td>
             <td>${alloc ? formatBytes(alloc) : '-'}</td>
             <td>${used ? formatBytes(used) : '-'}</td>
-            <td><span class="state ${hwmState}" style="font-size:inherit;font-weight:500">${formatBytes(hwm)}</span></td>
-            <td><span class="state ${usageState}" style="font-size:inherit">${usagePct}%</span></td>
+            <td>${hwmState ? `<span class="state ${hwmState}" style="font-size:inherit;font-weight:500">${formatBytes(hwm)}</span>` : `<span style="font-weight:500">${formatBytes(hwm)}</span>`}</td>
+            <td>${usageState ? `<span class="state ${usageState}" style="font-size:inherit">${usagePct}%</span>` : `${usagePct}%`}</td>
             <td>${task.priority}</td>
             <td><span class="state ${stateCls}" style="font-size:inherit">${userStateLabel(task.state)}</span></td>
             ${task.cpu_percent !== undefined ? `<td>${task.cpu_percent}%</td>` : ''}
