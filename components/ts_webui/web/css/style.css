@@ -621,7 +621,7 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 .net-grid{grid-template-columns:1fr}
 .led-f{flex-wrap:wrap}
 .seg.full:has(>button:nth-child(4)){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr}
-.seg.full:has(>button:nth-child(4)) button{min-height:28px;padding:5px 8px}
+.seg.full:has(>button:nth-child(4)) button{min-height:34px;padding:5px 8px}
 .seg button{height:auto;min-height:28px;line-height:18px;padding:5px 8px;white-space:normal}
 .memory-gauges{grid-template-columns:minmax(0,1fr)}
 .ota-server{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -679,7 +679,7 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 #automation-config-result:empty,#configuration-delete-result:empty,#configuration-delete-options:empty{display:none}
 #configuration-delete-modal .delete-method-label{margin:0 4px 10px;font-weight:600}
 #configuration-delete-modal .delete-method{display:flex;width:100%;padding:3px;border-radius:var(--r-ctl)}
-#configuration-delete-modal .delete-method button{flex:1;min-width:0;min-height:28px;white-space:normal}
+#configuration-delete-modal .delete-method button{flex:1;min-width:0;min-height:34px;white-space:normal}
 .delete-impact{min-width:0;overflow-wrap:anywhere;margin-top:24px;padding:18px;background:rgba(255,255,255,.62);border-radius:var(--r-inner)}
 .delete-impact>h3{font-size:14px;line-height:20px;font-weight:600;margin:0 0 5px}
 #configuration-delete-impact{font-size:13px;line-height:22px;color:var(--ink-2)}

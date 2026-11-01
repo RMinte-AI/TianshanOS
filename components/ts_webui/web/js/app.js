@@ -7596,7 +7596,8 @@ function showUploadDialog() {
     uploadGeneration++;
     filesToUpload = [];
     document.getElementById('upload-list').innerHTML = '';
-    document.getElementById('upload-btn').disabled = true;
+    const uploadBtn = document.getElementById('upload-btn');
+    if (uploadBtn) uploadBtn.disabled = true;
     document.getElementById('upload-modal').classList.remove('hidden');
 }
 
@@ -7629,7 +7630,8 @@ function setupDragAndDrop() {
 function handleFileSelect(event) {
     const files = Array.from(event.target.files);
     filesToUpload = filesToUpload.concat(files);
-    document.getElementById('upload-btn').disabled = !filesToUpload.length;
+    const uploadBtn = document.getElementById('upload-btn');
+    if (uploadBtn) uploadBtn.disabled = !filesToUpload.length;
     
     const listContainer = document.getElementById('upload-list');
     listContainer.replaceChildren();
