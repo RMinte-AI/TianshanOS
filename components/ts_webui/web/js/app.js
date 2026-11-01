@@ -5120,19 +5120,17 @@ function generateLedModalContent(device, type) {
         return [body, `<button class="btn lg" onclick="stopEffectFromModal('${device}')"><svg class="i"><use href="#ri-stop-circle-line"/></svg>${t('ledPage.stop')}</button>${cancelReset(`resetEffectFromModal('${device}')`)}<button class="btn lg primary" onclick="applyEffectFromModal('${device}')">${t('ledPage.ccApply')}</button>`];
     }
     if (type === 'content') {
-        const body = `<div style="display:flex;justify-content:center;margin:12px 0 4px"><div class="seg"><button class="on" onclick="switchModalTab(this, 'modal-tab-image')">${t('ledPage.imageTab')}</button><button onclick="switchModalTab(this, 'modal-tab-qr')">${t('ledPage.qrTabSp')}</button></div></div>
-            <div id="modal-tab-image">${grp(
+        const typeSeg = `<div class="seg"><button class="on" onclick="switchModalTab(this, 'modal-tab-image')">${t('ledPage.imageTab')}</button><button onclick="switchModalTab(this, 'modal-tab-qr')">${t('ledPage.qrTabSp')}</button></div>`;
+        const body = grp(
+            row(t('common.type'), typeSeg) +
+            `<div class="rows" id="modal-tab-image">${
                 row(t('automationPage.imagePath'), inp('modal-image-path', 200, '/sdcard/images/...', 'mono', 'value="/sdcard/images/"') + `<button class="btn sm" onclick="browseImages()">${t('ledPage.browse')}</button>`) +
-                row(t('ledPage.centerDisplay'), swc('modal-image-center', true)))}</div>
-            <div class="gw" id="modal-tab-qr" style="display:none">
-                ${gt(t('ledPage.contentGroup'))}
-                <input type="text" class="field" id="modal-qr-text" placeholder="${t('ledPage.enterTextOrUrl')}" aria-label="${t('ledPage.enterTextOrUrl')}" style="width:100%">
-                ${gt(t('ledPage.styleGroup'))}
-                ${grp(
-                    row(t('ledPage.errorCorrection'), `<select class="field" id="modal-qr-ecc" style="width:130px"><option value="L">L · 7%</option><option value="M" selected>M · 15%</option><option value="Q">Q · 25%</option><option value="H">H · 30%</option></select>`) +
-                    row(t('ledPage.foregroundColor'), swatch('modal-qr-fg', '#ffffff')) +
-                    row(t('ledPage.backgroundImage'), `<input class="field" id="modal-qr-bg-image" placeholder="${t('ledPage.noBackgroundImage')}" aria-label="${t('ledPage.noBackgroundImage')}" readonly style="width:150px;cursor:pointer" onclick="openFilePickerFor('modal-qr-bg-image', '/sdcard/images')"><button class="btn sm" onclick="openFilePickerFor('modal-qr-bg-image', '/sdcard/images')">${t('ledPage.browse')}</button><button class="btn sm" onclick="document.getElementById('modal-qr-bg-image').value=''">${t('ledPage.clear')}</button>`))}
-            </div>`;
+                row(t('ledPage.centerDisplay'), swc('modal-image-center', true))}</div>` +
+            `<div class="rows" id="modal-tab-qr" style="display:none">${
+                row(t('ledPage.contentGroup'), `<input type="text" class="field" id="modal-qr-text" placeholder="${t('ledPage.enterTextOrUrl')}" aria-label="${t('ledPage.enterTextOrUrl')}" style="width:260px">`) +
+                row(t('ledPage.errorCorrection'), `<select class="field" id="modal-qr-ecc" style="width:130px"><option value="L">L · 7%</option><option value="M" selected>M · 15%</option><option value="Q">Q · 25%</option><option value="H">H · 30%</option></select>`) +
+                row(t('ledPage.foregroundColor'), swatch('modal-qr-fg', '#ffffff')) +
+                row(t('ledPage.backgroundImage'), `<input class="field" id="modal-qr-bg-image" placeholder="${t('ledPage.noBackgroundImage')}" aria-label="${t('ledPage.noBackgroundImage')}" readonly style="width:150px;cursor:pointer" onclick="openFilePickerFor('modal-qr-bg-image', '/sdcard/images')"><button class="btn sm" onclick="openFilePickerFor('modal-qr-bg-image', '/sdcard/images')">${t('ledPage.browse')}</button><button class="btn sm" onclick="document.getElementById('modal-qr-bg-image').value=''">${t('ledPage.clear')}</button>`)}</div>`);
         return [body, `<button class="btn lg primary" id="led-foot-image" onclick="displayImageFromModal()">${t('ledPage.displayImage')}</button><button class="btn lg primary hidden" id="led-foot-qr" onclick="generateQrCodeFromModal()">${t('ledPage.generateQrCode')}</button>`];
     }
     if (type === 'text') {
@@ -5221,8 +5219,8 @@ function closeLedModal() {
 function switchModalTab(btn, tabId) {
     btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
     const isQr = tabId === 'modal-tab-qr';
-    document.getElementById('modal-tab-image').style.display = isQr ? 'none' : 'block';
-    document.getElementById('modal-tab-qr').style.display = isQr ? 'block' : 'none';
+    document.getElementById('modal-tab-image').style.display = isQr ? 'none' : '';
+    document.getElementById('modal-tab-qr').style.display = isQr ? '' : 'none';
     document.getElementById('led-foot-image').classList.toggle('hidden', isQr);
     document.getElementById('led-foot-qr').classList.toggle('hidden', !isQr);
 }
