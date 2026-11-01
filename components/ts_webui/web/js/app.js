@@ -4900,8 +4900,10 @@ function hexToHs(hex) {
     return { h: Math.round(h * 60) % 360, s: max ? Math.round(d / max * 100) : 0 };
 }
 // 色相 / 饱和度两条滑条：prefix 是 id 前缀（卡片 led-<设备>，自动化弹窗 action-led）；fixedWidth 给弹窗行用
+// 每台设备上次松手时的色相：白光（饱和度 0）读回后没有色相信息，刷新卡片时用它保持滑块位置
+const ledHueMemory = {};
 function ledHsControls(prefix, device, hex, fixedWidth = 0) {
-    const { h, s } = hexToHs(hex), cur = hsvToHex(h, s);
+    const hs = hexToHs(hex), s = hs.s, h = s === 0 && ledHueMemory[device] !== undefined ? ledHueMemory[device] : hs.h, cur = hsvToHex(h, s);
     const sl = fixedWidth ? `width:${fixedWidth}px;flex:none;` : '';
     const valStyle = fixedWidth ? ' style="width:40px"' : '';
     const input = (kind, max, val, name) => `<input type="range" id="${prefix}-${kind}" min="0" max="${max}" value="${val}" title="${name}" aria-label="${name}" oninput="ledHsInput('${prefix}')" onchange="ledHsCommit('${prefix}', '${device}')">`;
@@ -4936,6 +4938,7 @@ function ledHsCommit(prefix, device) {
     if (!hue || !sat) return;
     if (+sat.value > 0 && +sat.value <= 3) { sat.value = 0; ledHsInput(prefix); }
     const hex = hsvToHex(+hue.value, +sat.value);
+    if (device) ledHueMemory[device] = +hue.value;
     if (device) quickFillColor(device, hex);
     else document.getElementById(`${prefix}-color`).value = hex;
 }
