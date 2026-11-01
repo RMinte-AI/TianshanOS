@@ -84,6 +84,16 @@
    "phosphor": "download-simple",
    "use": "下载 / 导出"
   },
+  "ri-drop-half-line": {
+   "phosphor": "drop-half",
+   "use": "LED 饱和度条",
+   "note": "2026-11-01 新增；ri-contrast-line 已用于色彩校正，不复用"
+  },
+  "ri-drop-line": {
+   "phosphor": "drop",
+   "use": "LED 色相条",
+   "note": "2026-11-01 新增"
+  },
   "ri-edit-line": {
    "phosphor": "pencil-simple",
    "use": "编辑"
