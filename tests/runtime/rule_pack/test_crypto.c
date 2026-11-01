@@ -44,10 +44,48 @@ esp_err_t ts_cert_get_pack_snapshot(ts_cert_snapshot_t *s){
  memset(s,0,sizeof *s);s->key=strdup(device_key);s->certificate=strdup(device_cert);s->ca=strdup(ca);s->generation=generation;return ESP_OK;
 }
 void ts_cert_free_snapshot(ts_cert_snapshot_t *s){if(s->key)memset(s->key,0,strlen(s->key));free(s->key);free(s->certificate);free(s->ca);memset(s,0,sizeof *s);}
+#ifdef PACK_EXPORT_PAYLOADS
+static void export_payload_cases(const char *dir,const char *path)
+{
+ FILE *file=fopen(path,"rb");assert(file);fseek(file,0,SEEK_END);long size=ftell(file);assert(size>0);rewind(file);
+ char *json=malloc(size+1);assert(json&&fread(json,1,size,file)==(size_t)size);json[size]=0;assert(!fclose(file));
+ cJSON *records=cJSON_Parse(json);free(json);assert(cJSON_IsArray(records)&&cJSON_GetArraySize(records)>0);
+ cJSON *record;unsigned count=0;
+ cJSON_ArrayForEach(record,records){
+  const char *name=cJSON_GetStringValue(cJSON_GetObjectItem(record,"name")),*description=cJSON_GetStringValue(cJSON_GetObjectItem(record,"description"));
+  const char *content=cJSON_GetStringValue(cJSON_GetObjectItem(record,"content")),*hash=cJSON_GetStringValue(cJSON_GetObjectItem(record,"sha256"));
+  const char *target=cJSON_GetStringValue(cJSON_GetObjectItem(record,"recipient"));assert(name&&description&&content&&hash&&target);
+  size_t content_len=strlen(content);assert(content_len==(size_t)cJSON_GetObjectItem(record,"length")->valuedouble);
+  unsigned char digest[32];char hex[65];assert(ts_crypto_hash(TS_HASH_SHA256,content,content_len,digest,32)==ESP_OK&&ts_crypto_hex_encode(digest,32,hex,65)==ESP_OK&&!strcmp(hex,hash));
+  free(device_key);free(device_cert);device_key=read_file(dir,"developer.key");device_cert=read_file(dir,"developer.pem");
+  char *recipient=!strcmp(target,"self")?strdup(device_cert):read_file(dir,"recipient.pem");
+  ts_config_pack_export_opts_t opts={.recipient_cert_pem=recipient,.recipient_cert_len=strlen(recipient),.description=description};
+  char *bytes=NULL;size_t length=0;assert(ts_config_pack_create(name,content,content_len,&opts,&bytes,&length)==TS_CONFIG_PACK_OK&&length==strlen(bytes));
+  cJSON *wire=ts_config_pack_parse_json(bytes,length);assert(wire);const cJSON *metadata=cJSON_GetObjectItem(wire,"metadata");
+  assert(cJSON_IsString(cJSON_GetObjectItem(metadata,"name"))&&!strcmp(cJSON_GetObjectItem(metadata,"name")->valuestring,name));
+  assert(cJSON_IsString(cJSON_GetObjectItem(metadata,"description"))&&!strcmp(cJSON_GetObjectItem(metadata,"description")->valuestring,description));cJSON_Delete(wire);
+  if(strcmp(target,"self")){free(device_key);free(device_cert);device_key=read_file(dir,"recipient.key");device_cert=strdup(recipient);}
+  ts_config_pack_t *pack=NULL;assert(ts_config_pack_load_verified_mem(bytes,length,NULL,&pack,NULL,NULL)==TS_CONFIG_PACK_OK&&pack);
+  assert(pack->content_len==content_len&&!memcmp(pack->content,content,content_len));
+  assert(ts_crypto_hash(TS_HASH_SHA256,pack->content,pack->content_len,digest,32)==ESP_OK&&ts_crypto_hex_encode(digest,32,hex,65)==ESP_OK&&!strcmp(hex,hash));
+  printf("PASS export payload %s %s %zu %s: actual signed/encrypted create + verified decrypt, exact content/hash; original outbound metadata\n",name,target,content_len,hash);
+  ts_config_pack_free(pack);free(bytes);free(recipient);++count;
+ }
+ cJSON_Delete(records);printf("PASS %u exact configuration-owner export payload records through production PKI crypto\n",count);
+}
+#endif
 int main(int argc,char **argv) {
- assert(argc==2);const char *dir=argv[1];
+#ifdef PACK_EXPORT_PAYLOADS
+ assert(argc==3);
+#else
+ assert(argc==2);
+#endif
+ const char *dir=argv[1];
  device_key=read_file(dir,"developer.key");device_cert=read_file(dir,"developer.pem");ca=read_file(dir,"root.pem");
  assert(ts_config_pack_init()==ESP_OK);
+#ifdef PACK_EXPORT_PAYLOADS
+ export_payload_cases(dir,argv[2]);free(device_key);free(device_cert);free(ca);return 0;
+#endif
  char *recipient=read_file(dir,"recipient.pem");
  const char *content="{\"type\":\"automation_rule\",\"rule\":{\"id\":\"night\",\"name\":\"Night\",\"enabled\":true,\"actions\":[{\"type\":\"log\",\"message\":\"test\"}]}}";
  ts_config_pack_export_opts_t opts={.recipient_cert_pem=recipient,.recipient_cert_len=strlen(recipient)};

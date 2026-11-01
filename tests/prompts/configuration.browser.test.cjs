@@ -905,3 +905,106 @@ for(const language of ['zh-CN','en-US']) for(const rejected of [false,true]) {
         });
     });
 }
+
+function ruleBatchFixture() {
+ const d=fixture(),templates=['late_A1','late_A2','late_A3','current_B'].map(id=>({id,name:id,type:'log',enabled:true}));
+ const inline={type:'cli',command:'synthetic --inline',delay_ms:17,repeat_mode:'count',repeat_count:2,repeat_interval_ms:500,condition:{variable:'ready',operator:'eq',value:false}};
+ const actions=[{template_id:'late_A1',delay_ms:123,repeat_mode:'count',repeat_count:3,repeat_interval_ms:0,condition:{variable:'ready',operator:'eq',value:false}},inline,
+  {template_id:'late_A2',delay_ms:456,repeat_mode:'while_true',repeat_count:1,repeat_interval_ms:2345},{template_id:'late_A3',delay_ms:0}];
+ const rules={A:{id:'A',name:'Old multi-action rule',enabled:false,manual_trigger:true,conditions:[],actions,revision:1},
+  B:{id:'B',name:'Current rule',enabled:false,manual_trigger:true,conditions:[],actions:[{template_id:'current_B'}],revision:1}};
+ const writes=[];
+ const respond=call=>{
+  const {endpoint,params}=call;
+  if(endpoint==='automation/rules/list')return {code:0,data:{...d.status(),rules:Object.values(rules)}};
+  if(endpoint==='automation/rules/get')return {code:0,data:{...rules[params.id],active_version:version(1)}};
+  if(endpoint==='automation/actions/list')return {code:0,data:{...d.status(),templates}};
+  if(endpoint==='automation/rules/update'||endpoint==='automation/rules/add'){writes.push(call);rules[params.id]={...params,revision:1};return {code:0,data:d.status({saved:true})};}
+  return d.respond(call);
+ };
+ return {d,templates,rules,writes,respond,inline};
+}
+async function ruleBatchPage(page) {
+ if(process.env.RULE_MODAL_BASELINE_APP){
+  let served=0;await page.route(url=>new URL(url).pathname==='/js/app.js',route=>{served++;return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(process.env.RULE_MODAL_BASELINE_APP,'utf8')});});
+  await page.reload();await page.waitForFunction(()=>i18n.isReady());await page.evaluate(()=>closeLoginModal());assert.equal(served,1,'archived app source was actually served for this trigger');
+ }
+ await automation(page);
+}
+for(const language of ['zh-CN','en-US']) {
+ for(const outcome of ['success','failure'])for(const target of ['edit','new'])test(`${language}: F51 old multi-action ${outcome} batch cannot enter ${target} rule`,async()=>{
+  const f=ruleBatchFixture();
+  await kit.withPage(language,f.respond,async({page})=>{
+   await ruleBatchPage(page);
+   let release,reached;const gate=new Promise(resolve=>release=resolve),paused=new Promise(resolve=>reached=resolve);let first=true;
+   await page.route('**/api/v1/automation/actions/list',async route=>{
+    if(first){first=false;reached();await gate;await route.fulfill({json:outcome==='success'?{code:0,data:{...f.d.status(),templates:f.templates}}:{code:7,message:'synthetic old list failure',data:f.d.status()}});}
+    else await route.fulfill({json:{code:0,data:{...f.d.status(),templates:f.templates}}});
+   });
+   await page.locator('#rules-list [onclick*="editRule"]').first().click();await paused;
+   await page.evaluate(()=>{window.__oldRuleBatch=document.getElementById('add-rule-modal');});
+   await page.locator('#add-rule-modal .sf button:not(.primary)').click();
+   if(target==='edit')await page.locator('#rules-list [onclick*="editRule"]').nth(1).click();
+   else {
+    await page.locator('[onclick="showAddRuleModal()"]').click();
+    await page.locator('#rule-id').fill('new_B');await page.locator('#rule-name').fill('New current rule');
+    await page.locator('#add-rule-modal [onclick="addActionTemplateRow()"]').click();
+   }
+   await page.waitForFunction(()=>document.querySelectorAll('#add-rule-modal .action-template-id').length===1);
+   await page.locator('#add-rule-modal .action-template-id').selectOption('current_B');
+   release();await page.waitForFunction(()=>__oldRuleBatch.dataset.loading==='false');
+   assert.equal(await page.locator('#add-rule-modal .action-row').count(),1,'the remaining old batch never appends its inline or template tail');
+   assert.deepEqual(await page.locator('#add-rule-modal .action-template-id').evaluateAll(nodes=>nodes.map(node=>node.value)),['current_B']);
+   await page.locator('#add-rule-modal .sf .primary').click();
+   await page.waitForFunction(()=>!document.getElementById('add-rule-modal'));
+   assert.equal(f.writes.length,1);assert.equal(f.writes[0].params.id,target==='edit'?'B':'new_B');
+   assert.deepEqual(f.writes[0].params.actions.map(action=>action.template_id),['current_B']);
+  });
+ });
+ test(`${language}: F51 current multi-action batch saves and reopens in order with inline and repeat fields`,async()=>{
+  const f=ruleBatchFixture();
+  await kit.withPage(language,f.respond,async({page})=>{
+   await ruleBatchPage(page);await page.locator('#rules-list [onclick*="editRule"]').first().click();
+   await page.waitForFunction(()=>document.getElementById('add-rule-modal')?.dataset.loading==='false');
+   assert.equal(await page.locator('#add-rule-modal .action-row').count(),4);
+   await page.locator('#rule-name').fill('Kept multi-action order');await page.locator('#add-rule-modal .sf .primary').click();
+   await page.waitForFunction(()=>!document.getElementById('add-rule-modal'));
+   const actions=f.writes[0].params.actions;
+   assert.deepEqual(actions.map(action=>action.template_id||action.type),['late_A1','cli','late_A2','late_A3']);assert.deepEqual(actions[1],f.inline);
+   assert.equal(actions[0].delay_ms,123);assert.equal(actions[0].repeat_mode,'count');assert.equal(actions[0].repeat_count,3);assert.equal(actions[0].repeat_interval_ms,0);assert.equal(actions[0].condition.value,false);
+   assert.equal(actions[2].delay_ms,456);assert.equal(actions[2].repeat_mode,'while_true');assert.equal(actions[2].repeat_interval_ms,2345);
+   await page.locator('#rules-list [onclick*="editRule"]').first().click();await page.waitForFunction(()=>document.getElementById('add-rule-modal')?.dataset.loading==='false');
+   assert.deepEqual(await page.locator('#add-rule-modal .action-template-id').evaluateAll(nodes=>nodes.map(node=>node.value)),['late_A1','late_A2','late_A3']);
+   assert.match(await page.locator('#add-rule-modal [data-inline="true"]').innerText(),/synthetic --inline/);
+  });
+ });
+}
+
+for(const language of ['zh-CN','en-US'])test(`${language}: F48 source and action export downloads feed the original import preview and confirmation`,async()=>{
+ const d=fixture(),calls=[],payloads={source:JSON.stringify({fixture:'source export bytes'}),action:JSON.stringify({fixture:'action export bytes'})};
+ const respond=call=>{
+  calls.push(call);
+  if(call.endpoint==='automation/sources/list')return {code:0,data:{...d.status(),sources:[{id:'source',label:'SSH variable source',type:'variable',enabled:false,poll_interval_ms:60000}]}};
+  const kind=call.endpoint==='automation/sources/export'?'source':call.endpoint==='automation/actions/export'?'action':null;
+  if(kind)return {code:0,data:{tscfg:payloads[kind],filename:`${kind}_${call.params.id}.tscfg`}};
+  return d.respond(call);
+ };
+ await kit.withPage(language,respond,async({page})=>{
+  await automation(page);
+  for(const [key,collection,id,title] of [['source','sources','source','Source'],['action','actions','act','Action']]){
+   await page.locator(`#${collection}-list [onclick*="showExport${title}Modal"]`).first().click();
+   const download=page.waitForEvent('download');await page.locator(`#export-${key}-btn`).click();const artifact=await download;
+   assert.equal(artifact.suggestedFilename(),`${key}_${id}.tscfg`);const bytes=fs.readFileSync(await artifact.path());assert.equal(bytes.toString(),payloads[key]);
+   const exported=calls.find(call=>call.endpoint===`automation/${collection}/export`);assert.deepEqual(exported.params,{id});
+   await page.waitForFunction(key=>document.getElementById(`export-${key}-modal`).classList.contains('hidden'),key);
+   await page.locator(`[onclick="showImport${title}Modal()"]`).click();
+   await page.locator(`#import-${key}-file`).setInputFiles({name:artifact.suggestedFilename(),mimeType:'application/json',buffer:bytes});
+   await page.waitForFunction(key=>!document.getElementById(`import-${key}-btn`).disabled,key);
+   const previews=calls.filter(call=>call.endpoint===`automation/${collection}/import`);assert.equal(previews.length,1);assert.equal(previews[0].params.preview,true);assert.equal(previews[0].params.tscfg,payloads[key]);
+   await page.locator(`#import-${key}-overwrite`).check();await page.locator(`#import-${key}-btn`).click();
+   await page.waitForFunction(key=>document.getElementById(`import-${key}-result`).classList.contains('success'),key);
+   const writes=calls.filter(call=>call.endpoint===`automation/${collection}/import`);assert.equal(writes.length,2);assert.equal(writes[1].params.tscfg,payloads[key]);assert.equal(writes[1].params.overwrite,true);assert.equal(writes[1].params.active_version,previews[0].params.active_version);
+   await page.locator(`#import-${key}-modal .sf button`).first().click();
+  }
+ });
+});

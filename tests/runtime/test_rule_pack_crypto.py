@@ -59,13 +59,17 @@ cmd = ['cc','-std=c11','-D_DEFAULT_SOURCE','-g','-fsanitize=address,undefined','
        '-I'+str(mbed/'include'),'-I'+str(idf/'components/json/cJSON')]
 if '--baseline' in sys.argv: cmd += ['-DPACK_BASELINE']
 if '--unconfigured' in sys.argv: cmd += ['-DPACK_UNCONFIGURED']
+export_payloads=Path(sys.argv[sys.argv.index('--export-payloads')+1]).resolve() if '--export-payloads' in sys.argv else None
+if export_payloads:
+    assert export_payloads.is_file()
+    cmd += ['-DPACK_EXPORT_PAYLOADS']
 integration='--store' in sys.argv or '--engine' in sys.argv
 if integration:
     case=next((arg.split('=',1)[1] for arg in sys.argv if arg.startswith('--case=')),None)
     if case not in (None,'view'): raise ValueError('The delayed-rule-store cases were retired; use the configuration owner suite.')
     run(['bash',root/'tests/runtime/run_config_storage.sh'],cwd=root)
-executable=build/('crypto-baseline' if '--baseline' in sys.argv else 'unconfigured' if '--unconfigured' in sys.argv else 'engine' if '--engine' in sys.argv else 'store' if '--store' in sys.argv else 'crypto')
+executable=build/('export-payloads' if export_payloads else 'crypto-baseline' if '--baseline' in sys.argv else 'unconfigured' if '--unconfigured' in sys.argv else 'engine' if '--engine' in sys.argv else 'store' if '--store' in sys.argv else 'crypto')
 cmd += sources+[native/'library/libmbedx509.a',native/'library/libmbedcrypto.a','-lpthread','-lm','-o',executable]
 run(cmd,cwd=root)
 case=None if integration else next((a.split('=',1)[1] for a in sys.argv if a.startswith('--case=')),None)
-run([executable,pki,*([case] if case else [])],cwd=root,env={**env,'ASAN_OPTIONS':'detect_leaks=0'} if '--store' in sys.argv else env)
+run([executable,pki,*([export_payloads] if export_payloads else [case] if case else [])],cwd=root,env={**env,'ASAN_OPTIONS':'detect_leaks=0'} if '--store' in sys.argv else env)

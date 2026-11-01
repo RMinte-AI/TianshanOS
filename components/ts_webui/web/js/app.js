@@ -17252,7 +17252,7 @@ function showAddRuleModal(ruleData = null) {
         `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="${isEdit ? configurationHandler('submitAddRule', ruleData.id) : 'submitAddRule()'}">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
     
     document.body.appendChild(modal);
-    bindConfigurationEditor(modal, 'rules', ruleData?.active_version);
+    const context = bindConfigurationEditor(modal, 'rules', ruleData?.active_version);
     setTimeout(() => modal.classList.add('show'), 10);
     
     // 如果是编辑模式，填充现有数据
@@ -17301,6 +17301,7 @@ function showAddRuleModal(ruleData = null) {
             modal.dataset.loading = 'true';
             (async () => {
                 try { for (const act of ruleData.actions) {
+                    if (!context.current()) return;
                     await addActionTemplateRow(
                         act.template_id, 
                         act.delay_ms || 0,

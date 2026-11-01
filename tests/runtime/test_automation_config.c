@@ -15,6 +15,7 @@
 #include "nvs.h"
 #include <math.h>
 #include "ts_action_codec.h"
+#include "ts_action_filter.h"
 #include "esp_timer.h"
 #include "ts_jsonpath.h"
 #include "ts_api.h"
@@ -184,6 +185,26 @@ void ts_rule_config_publish(ts_rule_config_view_t *view,bool enabled,const ts_au
 void ts_rule_config_pause(void) { ++pauses;engine_pause(); }
 
 
+/* Export is a controlled plaintext boundary here; real encryption is exercised
+ * with these exact captured records by the existing crypto executable. */
+static bool export_allowed=true;static cJSON *export_records;
+bool ts_config_pack_can_export(void){return export_allowed;}
+esp_err_t ts_cert_get_certificate(char *out,size_t *length){const char *cert="fixture-self-cert";assert(*length>strlen(cert));strcpy(out,cert);*length=strlen(cert)+1;return ESP_OK;}
+ts_config_pack_result_t ts_config_pack_create(const char *name,const char *content,size_t length,const ts_config_pack_export_opts_t *opts,char **out,size_t *out_length)
+{
+    assert(length==strlen(content)&&opts&&opts->description);
+    assert(!strcmp(opts->recipient_cert_pem,"fixture-self-cert")||!strcmp(opts->recipient_cert_pem,"fixture-recipient-cert"));
+    if(!export_records)export_records=cJSON_CreateArray();assert(export_records);
+    cJSON *record=cJSON_CreateObject();assert(record);
+    cJSON_AddStringToObject(record,"name",name);cJSON_AddStringToObject(record,"description",opts->description);
+    cJSON_AddStringToObject(record,"recipient",!strcmp(opts->recipient_cert_pem,"fixture-self-cert")?"self":"specified");
+    cJSON_AddStringToObject(record,"content",content);cJSON_AddNumberToObject(record,"length",length);
+    unsigned char digest[32];char hex[65];assert(ts_crypto_hash(TS_HASH_SHA256,content,length,digest,32)==ESP_OK&&ts_crypto_hex_encode(digest,32,hex,65)==ESP_OK);
+    cJSON_AddStringToObject(record,"sha256",hex);assert(cJSON_AddItemToArray(export_records,record));
+    *out=strdup(content);*out_length=length;return *out?TS_CONFIG_PACK_OK:TS_CONFIG_PACK_ERR_NO_MEM;
+}
+const char *ts_config_pack_reason(ts_config_pack_result_t result){(void)result;return "fixture_pack_error";}
+const char *ts_config_pack_strerror(ts_config_pack_result_t result){(void)result;return "fixture pack error";}
 static bool reject_package;
 cJSON *ts_config_pack_parse_json(const char *text,size_t length)
 { return cJSON_ParseWithLengthOpts(text,length+1,NULL,true); }
@@ -602,6 +623,7 @@ static void source_cases(void)
 #define TS_STRDUP_PSRAM strdup
 #include "api_result.inc"
 #undef TS_STRDUP_PSRAM
+#include "../../components/ts_api/src/ts_api_pack.h"
 #include "config_api.inc"
 #include "test_automation_modes.inc"
 #include "test_action_lifecycle.inc"
@@ -924,6 +946,7 @@ int main(void)
     lifecycle_crud_api_cases();
     reference_origin_api_cases();
     config_pack_api_cases();
+    export_roundtrip_cases();
     mode_cases();
     ts_ssh_commands_config_deinit();ts_ssh_hosts_config_deinit();
     for(int location=TS_AUTO_FILE_SD;location<=TS_AUTO_FILE_INTERNAL;++location)
