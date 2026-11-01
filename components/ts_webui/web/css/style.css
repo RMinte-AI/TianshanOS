@@ -530,7 +530,7 @@ textarea.field{height:auto;padding:8px 12px;width:100%;resize:vertical}textarea.
 .ws-status{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ink-3);flex:none}
 .ws-status.connected{background:var(--ok-dot)}
 button.tile{border:0;font:inherit;color:inherit;cursor:default;text-align:center}
-input[type=color].swi{-webkit-appearance:none;appearance:none;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:none;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.2);flex:none;cursor:pointer}
+input[type=color].swi{-webkit-appearance:none;appearance:none;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.18);flex:none;cursor:pointer}
 input[type=color].swi::-webkit-color-swatch-wrapper{padding:0}
 input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 .cols-wifi{--cols:minmax(max-content,1fr) minmax(max-content,90px) minmax(max-content,80px)}
@@ -719,3 +719,4 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 .led-ends{position:absolute;left:0;right:0;top:12px;display:flex;justify-content:space-between;font-size:12px;line-height:16px;color:var(--ink-3);pointer-events:none}
 .led-br.has-ends{margin-bottom:14px}
 #login-form .sb>div:has(>#login-error.hidden){display:none}
+#led-modal .row:has(>.rl>small){padding:8px 0}
