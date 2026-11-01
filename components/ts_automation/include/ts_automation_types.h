@@ -196,6 +196,7 @@ typedef struct {
     ts_auto_value_t last_value;          /**< Last received value (deprecated) */
     int64_t last_update_ms;              /**< Last update timestamp */
     uint64_t instance;                   /**< Runtime identity; never persisted */
+    int64_t last_attempt_ms;             /**< REST attempt completion; never persisted */
 } ts_auto_source_t;
 
 /*===========================================================================*/

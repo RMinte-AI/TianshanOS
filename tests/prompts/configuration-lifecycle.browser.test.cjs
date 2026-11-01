@@ -153,3 +153,55 @@ for(const language of ['zh-CN','en-US']){
   assert.equal(values[0].value,short);assert.equal(values[1].value,long);
  });
 }
+
+for (const language of ['zh-CN', 'en-US']) {
+    test(`${language}: REST source query survives test, creation, edit and variable viewing`, async () => {
+        const base = fixture(), sources = [], seen = [];
+        const first = 'http://127.0.0.1/api/v1/hosts/info?host=192.0.2.8&port=2222&label=A+B%252E';
+        const next = 'http://127.0.0.1/api/v1/hosts/info?host=192.0.2.9&port=2223';
+        const ok = data => ({code: 0, data: {...base.status(), ...data}});
+        const respond = call => {
+            seen.push(call);
+            const {endpoint, params} = call;
+            if (endpoint === 'automation/sources/list') return ok({sources});
+            if (endpoint === 'automation/proxy/fetch') return ok({status: 200, body: {host: '192.0.2.8', port: 2222}});
+            if (endpoint === 'automation/sources/add') {
+                sources.push({...params, rest_url: params.url, rest_method: params.method, rest_auth: params.auth_header, rest_path: params.json_path});
+                return ok({saved: true, id: params.id});
+            }
+            if (endpoint === 'automation/sources/update') {Object.assign(sources[0], params); return ok({saved: true, id: params.id});}
+            if (endpoint === 'automation/variables/list') return ok({variables: sources[0]?.enabled
+                ? [{name: 'query.port', source_id: 'query', type: 'int', value: 2223}] : []});
+            return base.respond(call);
+        };
+        await kit.withPage(language, respond, async ({page}) => {
+            await page.evaluate(() => loadAutomationPage());
+            await page.locator('[onclick="showAddSourceModal()"]').click();
+            await page.locator('#source-id').fill('query');
+            await page.locator('#source-label').fill('Query source');
+            await page.locator('#source-rest-url').fill(first);
+            await page.locator('#source-rest-path').fill('port');
+            await page.locator('#source-interval').fill('60000');
+            await page.locator('#source-enabled').uncheck();
+            await page.locator('#btn-test-rest').click();
+            await page.locator('#rest-test-result .state.ok').waitFor();
+            assert.equal(seen.find(call => call.endpoint === 'automation/proxy/fetch').params.url, first);
+            await page.locator('[onclick="submitAddSource()"]').click();
+            await page.waitForFunction(() => !document.getElementById('add-source-modal'));
+            const created = seen.find(call => call.endpoint === 'automation/sources/add');
+            assert.equal(created.params.url, first); assert.equal(created.params.poll_interval_ms, 60000); assert.equal(created.params.enabled, false);
+            await page.locator('#sources-list [onclick*="editSource"]').click();
+            assert.equal(await page.locator('#source-edit-rest_url').inputValue(), first);
+            await page.locator('#source-edit-rest_url').fill(next);
+            await page.locator('#source-edit-enabled').check();
+            await page.locator('#source-edit-modal .sf .primary').click();
+            await page.waitForFunction(() => !document.getElementById('source-edit-modal'));
+            const updated = seen.find(call => call.endpoint === 'automation/sources/update');
+            assert.equal(updated.params.rest_url, next); assert.equal(updated.params.enabled, true); assert.equal(sources[0].rest_path, 'port');
+            await page.locator('#sources-list [onclick*="showSourceVariables"]').click();
+            await page.waitForFunction(() => document.getElementById('source-variables-body')?.textContent.includes('query.port'));
+            assert.match(await page.locator('#source-variables-body').innerText(), /2223/);
+            assert.equal(seen.filter(call => call.endpoint === 'automation/variables/list' && call.params.source_id === 'query').length, 1);
+        });
+    });
+}

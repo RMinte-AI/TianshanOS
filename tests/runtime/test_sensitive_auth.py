@@ -26,9 +26,9 @@ code = r'''
 #include <string.h>
 #include "cJSON.h"
 typedef int esp_err_t;
-enum { ESP_OK=0, ESP_FAIL=-1, ESP_ERR_NOT_FOUND=1, ESP_ERR_NOT_ALLOWED=2, ESP_ERR_INVALID_ARG=4, TS_API_OK=0, TS_API_ERR_NOT_FOUND=3, TS_API_ERR_INTERNAL=7, TS_API_ERR_INVALID_ARG=1, TS_API_ERR_AUTH=11 };
+enum { ESP_OK=0, ESP_FAIL=-1, ESP_ERR_NOT_FOUND=1, ESP_ERR_NOT_ALLOWED=2, ESP_ERR_INVALID_ARG=4, TS_API_OK=0, TS_API_ERR_NOT_FOUND=3, TS_API_ERR_INTERNAL=7, TS_API_ERR_INVALID_ARG=1, TS_API_ERR_AUTH=11, ESP_ERR_NO_MEM=0x101, TS_API_ERR_NO_MEM=6 };
 typedef enum { TS_PERM_NONE=0, TS_PERM_READ=1, TS_PERM_ADMIN=3, TS_PERM_ROOT=4 } ts_perm_level_t;
-typedef struct { int content_len; } httpd_req_t;
+typedef struct { int content_len;const char *query; } httpd_req_t;
 typedef struct { httpd_req_t *req; const char *uri; int method; const char *body; size_t body_len; const char *auth; const char *path; } ts_http_request_t;
 typedef struct { int code; char *message; cJSON *data; } ts_api_result_t;
 typedef struct { uint32_t session_id; ts_perm_level_t level; } ts_session_t;
@@ -40,7 +40,9 @@ static esp_err_t ts_security_validate_session(uint32_t sid, ts_session_t *sessio
 }
 static void ts_api_result_init(ts_api_result_t *r) {memset(r,0,sizeof(*r));}
 static void ts_api_result_error(ts_api_result_t *r,int code,const char *message) {r->code=code;r->message=strdup(message);}
-static int status, calls;
+static bool fail_query_copy;
+static char *query_strdup(const char *s){return fail_query_copy?NULL:strdup(s);}
+static int status, calls;static cJSON *received_params;static char received_name[64];
 static char *response;
 #define TS_LOGD(...) ((void)0)
 #define TS_LOGI(...) ((void)0)
@@ -48,8 +50,8 @@ static char *response;
 #define TS_API_MALLOC(size) malloc(size)
 static const char *esp_err_to_name(int e) {(void)e; return "error";}
 static int64_t esp_timer_get_time(void) {return 0;}
-static size_t httpd_req_get_url_query_len(httpd_req_t *r) {(void)r;return 0;}
-static esp_err_t httpd_req_get_url_query_str(httpd_req_t *r,char *b,size_t n) {(void)r;(void)b;(void)n;return ESP_FAIL;}
+static size_t httpd_req_get_url_query_len(httpd_req_t *r) {return r->query?strlen(r->query):0;}
+static esp_err_t httpd_req_get_url_query_str(httpd_req_t *r,char *b,size_t n) {assert(r->query&&strlen(r->query)<n);strcpy(b,r->query);return ESP_OK;}
 static esp_err_t ts_http_get_header(ts_http_request_t *r,const char *key,char *out,size_t n) {
     (void)key;if (!r->auth) return ESP_ERR_NOT_FOUND;snprintf(out,n,"Bearer %s",r->auth);return ESP_OK;
 }
@@ -83,7 +85,7 @@ static cJSON *ts_api_get_info(const char *name) {
     cJSON_AddBoolToObject(info,"requires_auth",required);return info;
 }
 static esp_err_t ts_api_call(const char *name,const cJSON *request,ts_api_result_t *result) {
-    (void)request;++calls;result->code=0;result->data=cJSON_CreateObject();
+    ++calls;strcpy(received_name,name);cJSON_Delete(received_params);received_params=cJSON_Duplicate(request,true);result->code=0;result->data=cJSON_CreateObject();
     if(!strcmp(name,"automation.sources.list")) {
         cJSON *items=cJSON_AddArrayToObject(result->data,"sources"),*row=cJSON_CreateObject();
         cJSON_AddStringToObject(row,"id","weather");cJSON_AddStringToObject(row,"rest_auth","secret");cJSON_AddStringToObject(row,"auth_header","alias-secret");cJSON_AddItemToArray(items,row);
@@ -124,16 +126,18 @@ code = code.replace(marker, r"""
         if(!strcmp(ui_endpoints[i].name,name))required=ui_endpoints[i].requires_auth;
     cJSON_AddBoolToObject(info,"requires_auth",required);return info;
 """, 1)
+code += extract('ts_api_parse_query', Path('components/ts_api/src/ts_api.c').read_text())
 code += extract('ts_api_call_for_session', Path('components/ts_api/src/ts_api.c').read_text())
 # Keep the actual local proxy branch; the external network path is forbidden in this offline fixture.
-proxy = extract('ts_api_automation_proxy_fetch_for_session', Path('components/ts_api/src/ts_api_automation.c').read_text())
-code += proxy[:proxy.index('    // 外部 HTTP 请求')] + '    assert(!"external network reached"); return ESP_FAIL;\n}\n'
+proxy_root=Path(os.environ.get('SOURCE_BASELINE_ROOT','.'))
+proxy = extract('ts_api_automation_proxy_fetch_for_session', (proxy_root/'components/ts_api/src/ts_api_automation.c').read_text())
+code += '#define strdup query_strdup\n' + proxy[:proxy.index('    // 外部 HTTP 请求')] + '    assert(!"external network reached"); return ESP_FAIL;\n}\n#undef strdup\n'
 code += extract('api_automation_proxy_fetch', Path('components/ts_api/src/ts_api_automation.c').read_text())
-code += extract('check_auth') + extract('api_handler') + extract('url_decode') + extract('file_download_handler')
+code += extract('check_auth') + extract('api_handler') + extract('file_download_handler')
 code += r'''
 static void api(const char *uri,const char *body,const char *auth,int expected_status) {
-    httpd_req_t native={0};ts_http_request_t req={.req=&native,.uri=uri,.method=1,.body=body,.body_len=body?strlen(body):0,.auth=auth};
-    status=0;free(response);response=NULL;api_handler(&req,NULL);assert(status==expected_status);
+    const char *query=strchr(uri,'?');httpd_req_t native={.query=query?query+1:NULL};ts_http_request_t req={.req=&native,.uri=uri,.method=1,.body=body,.body_len=body?strlen(body):0,.auth=auth};
+    status=0;free(response);response=NULL;api_handler(&req,NULL);if(status!=expected_status)fprintf(stderr,"HTTP %s expected %d received %d: %s\n",uri,expected_status,status,response?response:"");assert(status==expected_status);
 }
 static void file(const char *path,const char *auth,int expected_status) {
     ts_http_request_t req={.path=path,.auth=auth};status=0;file_download_handler(&req,NULL);assert(status==expected_status);
@@ -192,10 +196,46 @@ int main(void) {
     cJSON *params=cJSON_Parse("{\"url\":\"http://localhost/api/v1/ssh.exec\",\"session_id\":1}");
     ts_api_result_t denied={0};before=calls;api_automation_proxy_fetch(params,&denied);
     assert(denied.code==TS_API_ERR_AUTH && calls==before);ts_api_result_free(&denied);cJSON_Delete(params);
+    /* Query grammar reaches the actual HTTP dispatch and local proxy receiver. */
+    api("/api/v1/hosts/info?host=192.0.2.8&port=2222&label=A+B%252E&empty=&bad=%Q2&h%6fst=key&bare&dup=first&dup=second",
+        "{\"host\":\"body\",\"extra\":7}",NULL,200);
+    assert(!strcmp(received_name,"hosts.info"));
+    assert(cJSON_IsString(cJSON_GetObjectItem(received_params,"host"))&&!strcmp(cJSON_GetObjectItem(received_params,"host")->valuestring,"192.0.2.8"));
+    assert(cJSON_GetObjectItem(received_params,"port")->valueint==2222&&cJSON_IsNumber(cJSON_GetObjectItem(received_params,"port")));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"label")->valuestring,"A B%2E"));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"empty")->valuestring,"")&&!strcmp(cJSON_GetObjectItem(received_params,"bad")->valuestring,"%Q2"));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"h%6fst")->valuestring,"key")&&!cJSON_GetObjectItem(received_params,"bare"));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"dup")->valuestring,"first")&&cJSON_GetObjectItem(received_params,"extra")->valueint==7);
+    /* Original cJSON append order retains duplicate query/body items, unchanged. */
+    unsigned hosts=0,dups=0;for(cJSON *i=received_params->child;i;i=i->next){hosts+=!strcmp(i->string,"host");dups+=!strcmp(i->string,"dup");}assert(hosts==2&&dups==2);
+    const char *query_targets[]={"system.memory","hosts.info","ssh.exec","automation.sources.export","storage.read"};
+    for(unsigned i=0;i<5;++i)for(uint32_t sid=0;sid<=3;++sid){
+        const char *query="host=192.0.2.8&port=2222&label=A+B%252E&session_id=1&path=%2Fsdcard%2Fconfig%2Fautomation%2Fstate.json";
+        cJSON *expected=cJSON_Parse("{\"host\":\"192.0.2.8\",\"port\":2222,\"label\":\"A B%2E\",\"session_id\":1,\"path\":\"/sdcard/config/automation/state.json\"}");
+        ts_api_result_t direct={0},proxy_result={0};ts_api_call_for_session(query_targets[i],expected,sid,&direct);
+        char url[320];snprintf(url,sizeof(url),"http://localhost/api/v1/%s?%s",query_targets[i],query);
+        cJSON *input=cJSON_CreateObject();cJSON_AddStringToObject(input,"url",url);cJSON_AddNumberToObject(input,"session_id",1);
+        int previous=calls;ts_api_automation_proxy_fetch_for_session(input,sid,&proxy_result);
+        assert(proxy_result.code==direct.code);
+        if(direct.code==TS_API_OK){
+            assert(calls==previous+1&&!strcmp(received_name,query_targets[i]));
+            assert(cJSON_IsString(cJSON_GetObjectItem(received_params,"host"))&&!strcmp(cJSON_GetObjectItem(received_params,"host")->valuestring,"192.0.2.8"));
+            assert(cJSON_GetObjectItem(received_params,"port")->valueint==2222&&!strcmp(cJSON_GetObjectItem(received_params,"label")->valuestring,"A B%2E"));
+        }else assert(calls==previous);
+        ts_api_result_free(&direct);ts_api_result_free(&proxy_result);cJSON_Delete(input);cJSON_Delete(expected);
+    }
+    fail_query_copy=true;before=calls;
+    cJSON *allocation_input=cJSON_Parse("{\"url\":\"http://localhost/api/v1/hosts/info?host=192.0.2.8\"}");ts_api_result_t allocation_result={0};
+    assert(ts_api_automation_proxy_fetch_for_session(allocation_input,1,&allocation_result)==ESP_ERR_NO_MEM&&allocation_result.code==TS_API_ERR_NO_MEM&&calls==before);
+    ts_api_result_free(&allocation_result);cJSON_Delete(allocation_input);fail_query_copy=false;
+    /* The verified HTTP caller, not query or nested JSON, supplies proxy identity. */
+    before=calls;api("/api/v1/automation/proxy/fetch?session_id=1","{\"url\":\"http://localhost/api/v1/ssh/exec?session_id=1\"}",NULL,200);assert(calls==before);cJSON *refused=cJSON_Parse(response);assert(cJSON_GetObjectItem(refused,"code")->valueint==TS_API_ERR_AUTH);cJSON_Delete(refused);
+    api("/api/v1/automation/proxy/fetch","{\"url\":\"http://localhost/api/v1/hosts/info?host=192.0.2.8&port=2222\"}",NULL,200);
+    assert(!strcmp(received_name,"hosts.info")&&!strcmp(cJSON_GetObjectItem(received_params,"host")->valuestring,"192.0.2.8"));
     session_live=false;
     api("/api/v1/system/memory",NULL,"root",200);api("/api/v1/ssh/exec","{}","root",401);
     api("/api/v1/automation/sources/list",NULL,"root",200);assert(!strstr(response,"secret"));session_live=true;
-    free(response);puts("PASS shared HTTP/local proxy roles, public reads, protected paths, redaction, forged JSON and revoked sessions");
+    cJSON_Delete(received_params);free(response);puts("PASS shared HTTP/local proxy roles, public reads, protected paths, redaction, forged JSON and revoked sessions");
 }
 '''
 
@@ -216,7 +256,7 @@ int main(void) {
     api("/api/v1/ui/widgets/get",NULL,NULL,200);
     api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}",NULL,200);
     api("/api/v1/automation/sources/list",NULL,NULL,200);assert(strstr(response,"secret"));
-    free(response);puts("PASS auth-disabled shared API preserves original public/internal behavior");
+    cJSON_Delete(received_params);free(response);puts("PASS auth-disabled shared API preserves original public/internal behavior");
 }
 """
     (build / 'noauth.c').write_text(noauth)

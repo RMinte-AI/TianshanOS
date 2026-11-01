@@ -104,6 +104,7 @@ void ts_source_config_publish(ts_source_config_view_t *view)
             next->auto_discovered = old->auto_discovered;
             next->last_value = old->last_value;
             next->last_update_ms = old->last_update_ms;
+            next->last_attempt_ms = old->last_attempt_ms;
             break;
         }
     }

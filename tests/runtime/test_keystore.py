@@ -7,6 +7,8 @@ idf=Path(os.environ.get('IDF_PATH','/Users/massif/esp/v5.5.2/esp-idf'))
 source=Path(os.environ.get('TS_KEYSTORE_TEST_SOURCE', root/'components/ts_security/src/ts_keystore.c')).read_text()
 api_source=(root/'components/ts_api/src/ts_api_key.c').read_text()
 a=api_source.index('static esp_err_t api_key_generate(');api_handler=api_source[a:api_source.index('\n}',a)+2]
+core_api=(root/'components/ts_api/src/ts_api.c').read_text()
+a=core_api.index('void ts_api_parse_query(');query_parser=core_api[a:core_api.index('\n}',a)+2]
 web_source=(root/'components/ts_webui/src/ts_webui_api.c').read_text()
 a=web_source.index('static esp_err_t send_key_generate_result(');web_handler=web_source[a:web_source.index('\nstatic esp_err_t',a+1)]
 a=web_source.index('static esp_err_t api_handler(');web_handler+=web_source[a:web_source.index('\nstatic esp_err_t login_handler',a)]
@@ -230,7 +232,7 @@ int main(int argc,char **argv){
 '''
 
 with tempfile.TemporaryDirectory(prefix='ts-keystore-') as tmp:
- p=Path(tmp);(p/'platform.h').write_text(platform);(p/'esp_err.h').write_text('#include "platform.h"\n');(p/'test.c').write_text(prefix+strict_json+body_complete+source+api_handler+web_handler+boundaries)
+ p=Path(tmp);(p/'platform.h').write_text(platform);(p/'esp_err.h').write_text('#include "platform.h"\n');(p/'test.c').write_text(prefix+query_parser+strict_json+body_complete+source+api_handler+web_handler+boundaries)
  env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
  subprocess.run(['cc','-std=c11','-g','-Wno-deprecated-declarations','-fsanitize=address,undefined','-I'+tmp,'-I'+str(root/'components/ts_security/include'),'-I'+str(root/'components/ts_api/include'),'-I'+str(root/'components/ts_core/ts_config/include'),'-I'+str(root/'components/ts_storage/include'),'-I'+str(idf/'components/json/cJSON'),str(p/'test.c'),str(idf/'components/json/cJSON/cJSON.c'),'-lm','-lpthread','-o',str(p/'test')],check=True,env=env)
  failures=[]

@@ -274,6 +274,63 @@ esp_err_t ts_api_unregister(const char *name)
     return ESP_OK;
 }
 
+void ts_api_parse_query(cJSON *params, char *query)
+{
+    // Parse query string parameters
+    char *saveptr = NULL;
+    char *pair = strtok_r(query, "&", &saveptr);
+    while (pair) {
+        char *eq = strchr(pair, '=');
+        if (eq) {
+            *eq = '\0';
+            char *key = pair;
+            char *value = eq + 1;
+
+            // URL decode the value
+            char *src = value;
+            char *dst = value;
+            while (*src) {
+                if (*src == '%' && src[1] && src[2]) {
+                    int high = src[1];
+                    int low = src[2];
+                    // Convert hex
+                    if (high >= '0' && high <= '9') high -= '0';
+                    else if (high >= 'A' && high <= 'F') high = high - 'A' + 10;
+                    else if (high >= 'a' && high <= 'f') high = high - 'a' + 10;
+                    else { *dst++ = *src++; continue; }
+
+                    if (low >= '0' && low <= '9') low -= '0';
+                    else if (low >= 'A' && low <= 'F') low = low - 'A' + 10;
+                    else if (low >= 'a' && low <= 'f') low = low - 'a' + 10;
+                    else { *dst++ = *src++; continue; }
+
+                    *dst++ = (char)((high << 4) | low);
+                    src += 3;
+                } else if (*src == '+') {
+                    *dst++ = ' ';
+                    src++;
+                } else {
+                    *dst++ = *src++;
+                }
+            }
+            *dst = '\0';
+
+            // Try to parse as number first
+            char *endptr;
+            long num = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && value[0] != '\0') {
+                // It's a number
+                cJSON_AddNumberToObject(params, key, num);
+            } else {
+                // It's a string
+                cJSON_AddStringToObject(params, key, value);
+            }
+        }
+        pair = strtok_r(NULL, "&", &saveptr);
+    }
+}
+
+
 esp_err_t ts_api_call(const char *name, const cJSON *params, ts_api_result_t *result)
 {
     if (!s_api.initialized) {

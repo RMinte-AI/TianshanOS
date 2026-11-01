@@ -200,58 +200,7 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
         char *query_buf = TS_API_MALLOC(query_len + 1);
         if (query_buf) {
             if (httpd_req_get_url_query_str(req->req, query_buf, query_len + 1) == ESP_OK) {
-                // Parse query string parameters
-                char *saveptr = NULL;
-                char *pair = strtok_r(query_buf, "&", &saveptr);
-                while (pair) {
-                    char *eq = strchr(pair, '=');
-                    if (eq) {
-                        *eq = '\0';
-                        char *key = pair;
-                        char *value = eq + 1;
-                        
-                        // URL decode the value
-                        char *src = value;
-                        char *dst = value;
-                        while (*src) {
-                            if (*src == '%' && src[1] && src[2]) {
-                                int high = src[1];
-                                int low = src[2];
-                                // Convert hex
-                                if (high >= '0' && high <= '9') high -= '0';
-                                else if (high >= 'A' && high <= 'F') high = high - 'A' + 10;
-                                else if (high >= 'a' && high <= 'f') high = high - 'a' + 10;
-                                else { *dst++ = *src++; continue; }
-                                
-                                if (low >= '0' && low <= '9') low -= '0';
-                                else if (low >= 'A' && low <= 'F') low = low - 'A' + 10;
-                                else if (low >= 'a' && low <= 'f') low = low - 'a' + 10;
-                                else { *dst++ = *src++; continue; }
-                                
-                                *dst++ = (char)((high << 4) | low);
-                                src += 3;
-                            } else if (*src == '+') {
-                                *dst++ = ' ';
-                                src++;
-                            } else {
-                                *dst++ = *src++;
-                            }
-                        }
-                        *dst = '\0';
-                        
-                        // Try to parse as number first
-                        char *endptr;
-                        long num = strtol(value, &endptr, 10);
-                        if (*endptr == '\0' && value[0] != '\0') {
-                            // It's a number
-                            cJSON_AddNumberToObject(request, key, num);
-                        } else {
-                            // It's a string
-                            cJSON_AddStringToObject(request, key, value);
-                        }
-                    }
-                    pair = strtok_r(NULL, "&", &saveptr);
-                }
+                ts_api_parse_query(request, query_buf);
             }
             free(query_buf);
         }

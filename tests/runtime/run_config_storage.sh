@@ -159,7 +159,7 @@ assert match
 Path(sys.argv[1],'rule_sequence.inc').write_text(engine[match.start():engine.index('\n}',match.start())+2].replace('execute_actions_with_stats','execute_auto_sequence',1))
 api_result=Path('components/ts_api/src/ts_api.c').read_text()
 results=[]
-for name in ['ts_api_result_free','ts_api_result_ok','ts_api_result_error','ts_api_result_reason']:
+for name in ['ts_api_parse_query','ts_api_result_free','ts_api_result_ok','ts_api_result_error','ts_api_result_reason']:
     match=re.search(r'^void '+name+r'\([^;]+?\)\s*\{',api_result,re.M);assert match,name
     results.append(api_result[match.start():api_result.index('\n}',match.start())+2])
 Path(sys.argv[1],'api_result.inc').write_text('\n'.join(results))

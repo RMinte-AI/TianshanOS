@@ -1242,7 +1242,18 @@ esp_err_t ts_api_automation_proxy_fetch_for_session(const cJSON *params, uint32_
 
             // 直接调用本地 API
             ts_api_result_t local_result = {0};
-            cJSON *api_params = cJSON_CreateObject();  // 空参数，实际应解析 query string
+            cJSON *api_params = cJSON_CreateObject();
+            const char *query = strchr(api_path, '?');
+            if (query) {
+                char *copy = strdup(query + 1);
+                if (!copy) {
+                    cJSON_Delete(api_params);
+                    ts_api_result_error(result, TS_API_ERR_NO_MEM, "Query allocation failed");
+                    return ESP_ERR_NO_MEM;
+                }
+                ts_api_parse_query(api_params, copy);
+                free(copy);
+            }
 
             esp_err_t ret = ts_api_call_for_session(api_name, api_params, session_id, &local_result);
             cJSON_Delete(api_params);

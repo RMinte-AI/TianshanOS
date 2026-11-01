@@ -144,6 +144,9 @@ esp_err_t ts_api_register_multiple(const ts_api_endpoint_t *endpoints, size_t co
  */
 esp_err_t ts_api_unregister(const char *name);
 
+/** Parse the existing HTTP query grammar into params; query is modified in place. */
+void ts_api_parse_query(cJSON *params, char *query);
+
 /**
  * @brief Call an API endpoint
  * 
