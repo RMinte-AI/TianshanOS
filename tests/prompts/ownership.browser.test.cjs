@@ -611,3 +611,68 @@ for (const language of ['zh-CN','en-US']) {
   }finally{await context.close();}
  });
 }
+
+for (const language of ['zh-CN', 'en-US']) {
+ test(`F50: network-only automatic reconnect restores visible home data and current listeners ${language}`, async () => {
+  const {page,context,errors}=await pageFor(language);
+  try {
+   await page.addInitScript(()=>{
+    localStorage.setItem('ts_token','f50-fixture-root');localStorage.setItem('ts_username','root');
+    localStorage.setItem('ts_level','root');localStorage.setItem('ts_expires',String(Date.now()+3600000));
+   });
+   await page.route('**/api/v1/auth/status',route=>route.fulfill({json:{code:0,data:{valid:true,username:'root',level:'root'}}}));
+   await page.route('**/api/v1/ui/widgets/get',route=>route.fulfill({json:{code:0,data:{widgets:[],refresh_interval:0,source:'nvs'}}}));
+   await page.goto(base);
+   await page.waitForFunction(()=>i18n.isReady()&&subscriptionManager?.subscriptions.has('system.dashboard'));
+   const initial=await page.evaluate(()=>{
+    closeLoginModal();window.__f50Cpu=document.getElementById('cpu-avg');window.__f50Identity=api.token;
+    const transport=ws.ws;transport.open();transport.message({type:'auth_ok'});
+    // Two independent current listeners legitimately share this telemetry topic.
+    window.__f50Shared=[[],[]];
+    subscriptionManager.subscribe('system.memory',msg=>__f50Shared[0].push(msg.data.internal.free),{interval:2345});
+    subscriptionManager.subscribe('system.memory',msg=>__f50Shared[1].push(msg.data.internal.free),{interval:2345});
+    return {count:__sockets.length,topics:[...subscriptionManager.subscriptionParams].map(([topic,params])=>({type:'subscribe',topic,params}))};
+   });
+   const topicFrames=()=>page.evaluate(()=>ws.ws.sent.filter(message=>message.type==='subscribe'&&message.topic));
+   assert.deepEqual(await topicFrames(),initial.topics);
+   const dashboard=usage=>page.evaluate(usage=>ws.ws.message({type:'data',topic:'system.dashboard',data:{cpu:{cores:[{id:0,usage},{id:1,usage}],total_usage:usage}},timestamp:1}),usage);
+   await dashboard(13);await page.waitForFunction(()=>document.getElementById('cpu-avg')?.textContent==='13');
+   assert.equal(await page.locator('#cpu-avg').isVisible(),true);
+   for (const [round,usage] of [37,52].entries()) {
+    await page.evaluate(()=>ws.ws.emitClose());
+    // Let the production onclose timer create the next transport itself.
+    await page.waitForFunction(count=>__sockets.length===count,initial.count+round+1);
+    const connection=await page.evaluate(()=>{
+     const transport=ws.ws;transport.open();transport.message({type:'auth_ok'});
+     return {token:transport.sent[0].token,identity:__f50Identity,samePage:document.getElementById('cpu-avg')===__f50Cpu};
+    });
+    assert.equal(connection.token,connection.identity);assert.equal(connection.samePage,true);
+    assert.deepEqual(await topicFrames(),initial.topics,'each current topic is restored once with its original params');
+    await dashboard(usage);await page.waitForFunction(value=>document.getElementById('cpu-avg')?.textContent===String(value),usage);
+    assert.equal(await page.locator('#cpu-avg').isVisible(),true);
+   }
+   const beforeAway=await page.evaluate(()=>{const count=__sockets.length;ws.ws.emitClose();return count;});
+   await page.locator('a.nav-link[href="#/network"]').click();
+   await page.locator('.page-network').waitFor();
+   assert.equal(await page.evaluate(()=>subscriptionManager.subscriptions.has('system.dashboard')),false);
+   assert.equal(await page.evaluate(()=>__sockets.length),beforeAway,'leave the page before the pending reconnect timer fires');
+   await page.waitForFunction(count=>__sockets.length===count,beforeAway+1);
+   const away=await page.evaluate(()=>{
+    const transport=ws.ws;transport.open();transport.message({type:'auth_ok'});
+    transport.message({type:'data',topic:'system.memory',data:{internal:{total:1000,free:444,allocated:556}},timestamp:2});
+    return {token:transport.sent[0].token,identity:__f50Identity,shared:__f50Shared,homeGone:!document.getElementById('cpu-avg')};
+   });
+   assert.equal(away.token,away.identity);assert.equal(away.homeGone,true);assert.deepEqual(away.shared,[[444],[444]]);
+   assert.deepEqual(await topicFrames(),[{type:'subscribe',topic:'system.memory',params:{interval:2345}}],'disposed home topic stays absent while shared listeners survive');
+   await page.locator('a.nav-link[href="#/"]').click();
+   await page.waitForFunction(()=>subscriptionManager.subscriptions.has('system.dashboard'));
+   await dashboard(76);await page.waitForFunction(()=>document.getElementById('cpu-avg')?.textContent==='76');
+   assert.equal(await page.locator('#cpu-avg').isVisible(),true);
+   const final=await topicFrames();
+   assert.equal(final.filter(message=>message.topic==='system.dashboard').length,1);
+   assert.equal(final.filter(message=>message.topic==='system.memory').length,1);
+   assert.deepEqual(final.find(message=>message.topic==='system.dashboard').params,{interval:1000});
+   assert.equal(await page.evaluate(()=>__sockets.length),beforeAway+1);assert.deepEqual(errors,[]);
+  } finally {await context.close();}
+ });
+}
