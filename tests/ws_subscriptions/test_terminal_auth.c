@@ -89,7 +89,7 @@ static void identity_and_delivery(void)
     assert(ts_ws_op_output_begin(op,&ticket)&&ticket.count==2);
     send_fail_fd=1;ts_ws_op_output_finish(&ticket,"{\"type\":\"ssh_exec_output\"}");pump();send_fail_fd=-1;
     ts_ws_op_stats(TS_WS_OP_EXEC,&stats);assert(stats.failed);
-    ts_ws_op_executor_done(op);finish_all();
+    close_exec(op);
     puts("PASS WS token binding/roles, idempotence, one-binding history, queued revocation, public reuse and complete-peer fd reuse");
 }
 static void heartbeat_expiry(void)
@@ -120,15 +120,15 @@ static void terminal_and_shell(void)
     send_message(1,"{\"type\":\"terminal_start\",\"token\":\"root-token\"}");assert(s_terminal_client_fd==1);
     s_output_mutex=xSemaphoreCreateMutex();s_terminal_output_buf=tracked_malloc(TERMINAL_OUTPUT_BUF_SIZE);
     unsigned before=private_frames;
-    send_message(1,"{\"type\":\"terminal_input\",\"data\":\"help\"}");assert(private_frames==before+2);
+    send_message(1,"{\"type\":\"terminal_input\",\"data\":\"help\"}");exec_task.fn(exec_task.arg);drive_all();assert(private_frames==before+2);
     console_hook=revoke;before=private_frames;
-    send_message(1,"{\"type\":\"terminal_input\",\"data\":\"help\"}");assert(private_frames==before);console_hook=NULL;
+    send_message(1,"{\"type\":\"terminal_input\",\"data\":\"help\"}");exec_task.fn(exec_task.arg);drive_all();assert(private_frames==before);console_hook=NULL;
     send_message(1,"{\"type\":\"terminal_stop\"}");assert(s_terminal_client_fd<0);
     session_live=true;
     /* New connection: expiry cleared the old binding and forbids rebinding it. */
     close_peer(1);current=(void*)3;reqs[1]=(httpd_req_t){.handle=(void*)11,.fd=1};assert(add_client(&reqs[1],WS_CLIENT_TYPE_EVENT)==ESP_OK);current=(void*)1;
     send_message(1,"{\"type\":\"terminal_start\",\"token\":\"root-token\"}");sent_hook=revoke_after_output;before=private_frames;
-    send_message(1,"{\"type\":\"terminal_input\",\"data\":\"help\"}");assert(private_frames==before+1); /* done rechecks after output */
+    send_message(1,"{\"type\":\"terminal_input\",\"data\":\"help\"}");exec_task.fn(exec_task.arg);drive_all();assert(private_frames==before+1); /* done rechecks after output */
     send_message(1,"{\"type\":\"terminal_stop\"}");session_live=true;
     tracked_free(s_terminal_output_buf);s_terminal_output_buf=NULL;vSemaphoreDelete(s_output_mutex);s_output_mutex=NULL;finish_all();
 

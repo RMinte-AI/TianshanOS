@@ -28,7 +28,7 @@ static ts_ws_operation_t s_ops[TS_WS_OP_KINDS];
 static uint64_t s_op_sequence, s_op_delivery;
 static bool s_op_accepting, s_op_tick;
 static ts_perm_level_t output_level(ts_ws_operation_t *op) {
-    return op->kind == TS_WS_OP_SHELL ? TS_PERM_ROOT : TS_PERM_READ;
+    return op->kind == TS_WS_OP_EXEC ? TS_PERM_READ : TS_PERM_ROOT;
 }
 #define OP_LOCK() portENTER_CRITICAL(&s_op_lock)
 #define OP_UNLOCK() portEXIT_CRITICAL(&s_op_lock)
@@ -49,7 +49,7 @@ ts_ws_operation_t *ts_ws_op_create(ts_ws_op_kind_t kind, ts_ws_peer_t peer, esp_
     *op=(ts_ws_operation_t){.kind=kind,.peer=peer,.initializing=true,
         .ledger={.phase=OP_STARTING,.identity=++s_op_sequence,.refs=1,.executors=1}};
     OP_UNLOCK();
-    esp_err_t ret=kind==TS_WS_OP_SHELL ? ts_ws_reserve(&peer,1,true,4096,&op->terminal) :
+    esp_err_t ret=kind!=TS_WS_OP_EXEC ? ts_ws_reserve(&peer,1,true,4096,&op->terminal) :
         ts_ws_result_reserve(TS_WS_LEGACY_BYTES,&op->terminal);
     if (ret == ESP_OK) ts_ws_message_require(op->terminal.message, output_level(op));
     OP_LOCK(); op->initializing=false; OP_UNLOCK();
@@ -98,7 +98,7 @@ static bool close_locked(ts_ws_operation_t *op) {
     op->ledger.phase=OP_CLOSING;op->builder=true;op->ledger.refs++;return true;
 }
 static void close_snapshot(ts_ws_operation_t *op) {
-    if(op->kind==TS_WS_OP_SHELL){op->terminal_peers[0]=op->peer;op->terminal_count=ts_ws_peer_authorized(op->peer,TS_PERM_ROOT)?1:0;}
+    if(op->kind!=TS_WS_OP_EXEC){op->terminal_peers[0]=op->peer;op->terminal_count=ts_ws_peer_authorized(op->peer,TS_PERM_ROOT)?1:0;}
     else op->terminal_count=ts_ws_peer_snapshot_for_level(op->terminal_peers,TS_WS_CONNECTIONS,TS_PERM_READ);
 }
 bool ts_ws_op_close_begin(ts_ws_operation_t *op) {
@@ -118,7 +118,7 @@ void ts_ws_op_close_finish(ts_ws_operation_t *op,const char *json) {
     OP_LOCK();assert(op->builder);op->builder=false;assert(op->ledger.refs);op->ledger.refs--;OP_UNLOCK();ts_ws_subscriptions_wake();
 }
 static void fail_locked(ts_ws_operation_t *op,bool *winner) {
-    op->ledger.failed=true;*winner=close_locked(op);
+    op->ledger.failed=true;*winner=op->kind==TS_WS_OP_SHELL ? close_locked(op) : false;
 }
 static void settle_target(uint64_t identity,uint64_t token,esp_err_t result) {
     ts_ws_operation_t *op=NULL;bool winner=false,terminal=false;
@@ -147,12 +147,12 @@ bool ts_ws_op_output_begin(ts_ws_operation_t *op,ts_ws_output_ticket_t *t) {
     OP_LOCK();bool ok=op->ledger.phase==OP_OPEN;
     if(ok){op->ledger.preparing++;t->sequence=++op->ledger.tickets;op->ledger.refs++;t->op=op;}OP_UNLOCK();
     if(!ok)return false;
-    if(op->kind==TS_WS_OP_SHELL){t->peers[0]=op->peer;t->count=ts_ws_peer_authorized(op->peer,TS_PERM_ROOT)?1:0;}
+    if(op->kind!=TS_WS_OP_EXEC){t->peers[0]=op->peer;t->count=ts_ws_peer_authorized(op->peer,TS_PERM_ROOT)?1:0;}
     else t->count=ts_ws_peer_snapshot_for_level(t->peers,TS_WS_CONNECTIONS,TS_PERM_READ);
     TS_WS_TEST_POINT("B02");return true;
 }
-void ts_ws_op_output_finish(ts_ws_output_ticket_t *t,const char *json) {
-    if(!t->op)return;
+static bool publish_output(ts_ws_output_ticket_t *t,const char *json,bool retryable) {
+    if(!t->op)return false;
     ts_ws_operation_t *op=t->op;ts_ws_message_t *m=NULL;
     if(t->count && json)m=ts_ws_message_text(json,strlen(json));
     ts_ws_message_require(m, output_level(op));
@@ -160,7 +160,7 @@ void ts_ws_op_output_finish(ts_ws_output_ticket_t *t,const char *json) {
     TS_WS_TEST_POINT("B03");
     OP_LOCK();
     unsigned available=0;for(unsigned i=0;i<OP_OUTPUT_TARGETS;i++)available+=!op->output[i].active;
-    if(t->count && (!m || available<t->count || s_op_delivery>UINT64_MAX-t->count))fail_locked(op,&winner);
+    if(t->count && (!m || available<t->count || s_op_delivery>UINT64_MAX-t->count)) { if(!retryable)fail_locked(op,&winner); }
     else {
         for(unsigned i=0,j=0;i<OP_OUTPUT_TARGETS && j<t->count;i++)if(!op->output[i].active){
             tokens[j++]=++s_op_delivery;op->output[i]=(op_target_t){s_op_delivery,true};
@@ -177,7 +177,10 @@ void ts_ws_op_output_finish(ts_ws_output_ticket_t *t,const char *json) {
     ts_ws_message_release(m);
     OP_LOCK();assert(op->ledger.preparing);op->ledger.preparing--;op->ledger.finished++;OP_UNLOCK();
     t->op=NULL;ts_ws_op_release(op); /* entire publication, including early done */
+    return registered;
 }
+void ts_ws_op_output_finish(ts_ws_output_ticket_t *t,const char *json) { (void)publish_output(t,json,false); }
+bool ts_ws_op_output_try(ts_ws_output_ticket_t *t,const char *json) { return publish_output(t,json,true); }
 void ts_ws_op_poll(void) {
     bool tick=false;
     for(unsigned k=0;k<TS_WS_OP_KINDS;k++) {
@@ -196,7 +199,7 @@ void ts_ws_op_poll(void) {
         OP_UNLOCK();
         if(finalize) {
             char text[256];
-            if(op->ledger.failed){fallback(op,text,sizeof(text),true);ts_ws_reserved_text(&r,text);}
+            if(op->ledger.failed && op->kind==TS_WS_OP_SHELL){fallback(op,text,sizeof(text),true);ts_ws_reserved_text(&r,text);}
             OP_LOCK();
             unsigned n=op->terminal_count;
             if(s_op_delivery>UINT64_MAX-n)n=0; /* lifetime exhaustion: no token reuse */

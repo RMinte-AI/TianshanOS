@@ -31,7 +31,7 @@ int main(void){
   if(scenario==5)queue_fail=true;
   if(accepted)ts_ws_op_output_finish(&ticket,"{\"type\":\"output\"}");
   queue_fail=false;
-  if(scenario!=5)close_op();
+  if(scenario!=5 || kind!=TS_WS_OP_SHELL)close_op();
   drive();inspect();
   if(scenario!=5){ /* B09: settled observation cannot release business context */
    assert(ts_ws_op_executing(op));try_replace();ts_ws_output_ticket_t denied;assert(!ts_ws_op_output_begin(op,&denied));

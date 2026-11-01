@@ -40,3 +40,9 @@ node --test tests/prompts/regression.test.cjs
 for file in app api router terminal lang/en-US lang/zh-CN; do
     node --check "components/ts_webui/web/js/$file.js"
 done
+
+python3 tests/http_admission/run_host.py
+python3 tests/terminal_jobs/run_host.py
+bash tests/terminal_jobs/run_ws.sh
+bash tests/exec_results/run_host.sh
+node --test tests/http_admission/reconnect.test.cjs

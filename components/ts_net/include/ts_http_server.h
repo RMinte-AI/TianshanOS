@@ -13,6 +13,16 @@
 extern "C" {
 #endif
 
+/* Seven accepted clients share the existing 16-socket system budget. Reserve
+ * two non-upgraded sessions for page/API traffic; the HTTPD build policy keeps
+ * upgraded WebSockets out of LRU selection. */
+#define TS_HTTP_MAX_CLIENTS 7
+#define TS_HTTP_RESERVED_CLIENTS 2
+#define TS_HTTP_MAX_WS_CLIENTS (TS_HTTP_MAX_CLIENTS - TS_HTTP_RESERVED_CLIENTS)
+
+/* HTTPD owner only; run immediately after upgrade, before registering a peer. */
+esp_err_t ts_http_server_admit_ws(httpd_req_t *req, unsigned client_limit);
+
 /** HTTP method */
 typedef enum {
     TS_HTTP_GET = HTTP_GET,

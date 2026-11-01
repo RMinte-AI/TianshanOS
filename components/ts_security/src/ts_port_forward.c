@@ -13,6 +13,7 @@
 #include "ts_core.h"  /* TS_CALLOC_PSRAM */
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
@@ -27,9 +28,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/select.h>
-#include <stdatomic.h>
 
 static const char *TAG = "ts_forward";
 #define FORWARD_TASK_STACK_SIZE 16384
@@ -56,6 +57,7 @@ struct ts_port_forward_s {
     ts_forward_config_t config;     /**< 转发配置 */
     _Atomic(ts_forward_state_t) state; /**< 当前状态 */
     
+    char *io_buffer; /* one bounded workspace, owned exclusively by forward_task */
     int listen_sock;                /**< 监听 socket */
     _Atomic(TaskHandle_t) task_handle; /**< 转发任务句柄，控制者完成交接后清除 */
     SemaphoreHandle_t mutex;        /**< 互斥锁 */
@@ -179,15 +181,17 @@ static void process_connection(ts_port_forward_t forward, forward_conn_t *conn)
     if (forward->stop_flag) return;
     LIBSSH2_SESSION *session = ts_ssh_get_libssh2_session(forward->ssh_session);
     int ssh_sock = ts_ssh_get_socket(forward->ssh_session);
-    char buffer[4096];
+    char *buffer = forward->io_buffer;
+    int64_t deadline=esp_timer_get_time()+(int64_t)forward->config.timeout_ms*1000;
     ssize_t n;
     int rc;
 
     /* 从客户端读取并写入 SSH 通道 */
-    n = recv(conn->client_sock, buffer, sizeof(buffer), MSG_DONTWAIT);
+    n = recv(conn->client_sock, buffer, forward->config.buffer_size, MSG_DONTWAIT);
     if (n > 0) {
         size_t written = 0;
-        while (written < (size_t)n && !forward->stop_flag) {
+        while (written < (size_t)n) {
+            if (forward->stop_flag || esp_timer_get_time()>=deadline) { conn->active=false;return; }
             rc = libssh2_channel_write(conn->channel, buffer + written, n - written);
             if (rc > 0) {
                 written += rc;
@@ -213,11 +217,12 @@ static void process_connection(ts_port_forward_t forward, forward_conn_t *conn)
 
     /* 从 SSH 通道读取并写入客户端 */
     do {
-        if (forward->stop_flag) return;
-        rc = libssh2_channel_read(conn->channel, buffer, sizeof(buffer));
+        if (forward->stop_flag) { conn->active=false;return; }
+        rc = libssh2_channel_read(conn->channel, buffer, forward->config.buffer_size);
         if (rc > 0) {
             ssize_t sent = 0;
-            while (sent < rc && !forward->stop_flag) {
+            while (sent < rc) {
+                if (forward->stop_flag || esp_timer_get_time()>=deadline) { conn->active=false;return; }
                 ssize_t s = send(conn->client_sock, buffer + sent, rc - sent, 0);
                 if (s > 0) {
                     sent += s;
@@ -277,10 +282,12 @@ static void accept_new_connection(ts_port_forward_t forward)
 
     /* 创建 SSH 通道到远程目标 */
     LIBSSH2_CHANNEL *channel = NULL;
+    int64_t deadline=esp_timer_get_time()+(int64_t)forward->config.timeout_ms*1000;
     
     while (!forward->stop_flag && (channel = libssh2_channel_direct_tcpip(session,
                                                     forward->remote_host_copy,
                                                     forward->config.remote_port)) == NULL) {
+        if (forward->stop_flag || esp_timer_get_time()>=deadline) { close(client_sock);return; }
         int err = libssh2_session_last_errno(session);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             wait_socket_ready(ssh_sock, session, 100);
@@ -474,6 +481,8 @@ esp_err_t ts_port_forward_create(ts_ssh_session_t session,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    if (config->buffer_size > 16384) return ESP_ERR_INVALID_SIZE;
+
     ts_port_forward_t forward = TS_CALLOC_PSRAM(1, sizeof(struct ts_port_forward_s));
     if (!forward) {
         return ESP_ERR_NO_MEM;
@@ -528,6 +537,8 @@ esp_err_t ts_port_forward_create(ts_ssh_session_t session,
         return ESP_ERR_NO_MEM;
     }
 
+    forward->io_buffer = TS_MALLOC_PSRAM(forward->config.buffer_size);
+    if (!forward->io_buffer) { ts_port_forward_destroy(forward); return ESP_ERR_NO_MEM; }
     *forward_out = forward;
     ESP_LOGD(TAG, "Port forward created: L%d -> %s:%d",
              config->local_port, config->remote_host, config->remote_port);
@@ -624,6 +635,7 @@ esp_err_t ts_port_forward_destroy(ts_port_forward_t forward)
         vSemaphoreDelete(forward->mutex);
     }
     vSemaphoreDelete(forward->exit_done);
+    free(forward->io_buffer);
     free(forward->local_host_copy);
     free(forward->remote_host_copy);
     free(forward);

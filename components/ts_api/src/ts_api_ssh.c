@@ -503,16 +503,24 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
         if (!instance) { ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "invalid_command_instance"); return ESP_ERR_INVALID_ARG; }
     }
     
-    /* 检查是否有任何可选参数 */
-    bool has_options = (expect_pattern || fail_pattern || extract_pattern || var_name ||
-                        timeout || collect_output || max_output_size || stop_on_match || command_id);
-    
+    /* Prepare the complete acknowledgement before any remote side effect. */
+    cJSON *data=cJSON_CreateObject();
+    cJSON *sid_field=cJSON_AddNumberToObject(data,"session_id",0);
+    cJSON *boot_field=cJSON_AddStringToObject(data,"boot_id","00000000000000000000000000000000");
+    cJSON *key_field=cJSON_AddStringToObject(data,"result_key","00000000000000000000000000000000");
+    bool prepared=data && sid_field && boot_field && key_field;
+    if(cJSON_IsString(expect_pattern))prepared=cJSON_AddStringToObject(data,"expect_pattern",expect_pattern->valuestring) && prepared;
+    if(cJSON_IsString(fail_pattern))prepared=cJSON_AddStringToObject(data,"fail_pattern",fail_pattern->valuestring) && prepared;
+    if(cJSON_IsString(extract_pattern))prepared=cJSON_AddStringToObject(data,"extract_pattern",extract_pattern->valuestring) && prepared;
+    if(!prepared){cJSON_Delete(data);ts_api_result_error(result,TS_API_ERR_INTERNAL,"ssh_start_failed");return ESP_ERR_NO_MEM;}
+
     esp_err_t ret;
     uint32_t session_id = 0;
     
-    if (has_options) {
-        /* 使用扩展 API */
-        ts_webui_ssh_options_t options = {0};
+    ts_webui_ssh_receipt_t receipt={0};
+    {
+        /* Use one admission path, including the private recovery receipt. */
+        ts_webui_ssh_options_t options = {.receipt=&receipt};
         options.expect_pattern = (expect_pattern && cJSON_IsString(expect_pattern)) ? 
                                   expect_pattern->valuestring : NULL;
         options.fail_pattern = (fail_pattern && cJSON_IsString(fail_pattern)) ? 
@@ -541,16 +549,10 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
             user->valuestring, auth_keyid, auth_password,
             cmd->valuestring, &options, &session_id
         );
-    } else {
-        /* 使用基本 API */
-        ret = ts_webui_ssh_exec_start(
-            host->valuestring, ssh_port,
-            user->valuestring, auth_keyid, auth_password,
-            cmd->valuestring, &session_id
-        );
     }
     
     if (ret != ESP_OK) {
+        cJSON_Delete(data);
         if (ret == ESP_ERR_NOT_FOUND && command_id) {
             ts_api_result_error(result, TS_API_ERR_BUSY, "configuration_changed");
         } else if (ret == ESP_ERR_INVALID_STATE) {
@@ -561,23 +563,28 @@ static esp_err_t api_ssh_exec_stream(const cJSON *params, ts_api_result_t *resul
         return ret;
     }
     
-    /* 返回 session_id 和配置信息 */
-    cJSON *data = cJSON_CreateObject();
-    cJSON_AddNumberToObject(data, "session_id", session_id);
-    if (has_options) {
-        if (expect_pattern && cJSON_IsString(expect_pattern)) {
-            cJSON_AddStringToObject(data, "expect_pattern", expect_pattern->valuestring);
-        }
-        if (fail_pattern && cJSON_IsString(fail_pattern)) {
-            cJSON_AddStringToObject(data, "fail_pattern", fail_pattern->valuestring);
-        }
-        if (extract_pattern && cJSON_IsString(extract_pattern)) {
-            cJSON_AddStringToObject(data, "extract_pattern", extract_pattern->valuestring);
-        }
-    }
+    cJSON_SetNumberValue(sid_field,session_id);
+    memcpy(boot_field->valuestring,receipt.boot_id,sizeof(receipt.boot_id));
+    memcpy(key_field->valuestring,receipt.result_key,sizeof(receipt.result_key));
     ts_api_result_ok(result, data);
     
     return ESP_OK;
+}
+
+/* Exact boot identity and the private initiation receipt, in addition to the
+ * same authentication gate as ssh.exec_stream. IDs alone reveal no results. */
+static esp_err_t api_ssh_exec_status(const cJSON *params,ts_api_result_t *result) {
+    const cJSON *id=cJSON_GetObjectItem(params,"session_id");
+    const cJSON *boot=cJSON_GetObjectItem(params,"boot_id"),*key=cJSON_GetObjectItem(params,"result_key");
+    char *json=NULL;esp_err_t lookup=ESP_ERR_NOT_FOUND;
+    if(cJSON_IsNumber(id) && id->valuedouble>=1 && id->valuedouble<=UINT32_MAX &&
+       id->valuedouble==(double)(uint32_t)id->valuedouble && cJSON_IsString(boot) && cJSON_IsString(key))
+        json=ts_webui_ssh_exec_status((uint32_t)id->valuedouble,boot->valuestring,key->valuestring,&lookup);
+    if(!json){ts_api_result_error(result,lookup==ESP_ERR_NO_MEM?TS_API_ERR_INTERNAL:TS_API_ERR_NOT_FOUND,
+        lookup==ESP_ERR_NO_MEM?"ssh_result_unknown":"ssh_result_unavailable");return lookup;}
+    cJSON *data=cJSON_Parse(json);free(json);
+    if(!data){ts_api_result_error(result,TS_API_ERR_INTERNAL,"ssh_result_unknown");return ESP_FAIL;}
+    ts_api_result_ok(result,data);return ESP_OK;
 }
 
 /**
@@ -1753,6 +1760,8 @@ static esp_err_t api_ssh_service_start(const cJSON *params, ts_api_result_t *res
 }
 
 static const ts_api_endpoint_t ssh_endpoints[] = {
+    {.name="ssh.exec_status",.description="Read owned current or latest SSH result",
+     .category=TS_API_CAT_SECURITY,.handler=api_ssh_exec_status,.requires_auth=true},
     {.name = "ssh.services.start", .description = "Start a stored managed service",
      .category = TS_API_CAT_SECURITY, .handler = api_ssh_service_start, .requires_auth = true},
     {

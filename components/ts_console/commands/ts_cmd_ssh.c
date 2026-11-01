@@ -167,6 +167,11 @@ static bool host_verify_prompt(const ts_known_host_t *host,
                                void *user_data)
 {
     (void)user_data;
+    const ts_console_exec_context_t *owner = ts_console_current_context();
+    if (owner && owner->remote) {
+        ts_console_printf("Host key requires verification. Confirm the fingerprint in Security before retrying.\n");
+        return false; /* A web command must never consume a serial user's input. */
+    }
     
     if (result == TS_HOST_VERIFY_NOT_FOUND) {
         ts_console_printf("\n");
@@ -559,6 +564,8 @@ static int do_ssh_forward(const char *host, int port, const char *user,
     config.port = port;
     config.username = user;
     config.timeout_ms = timeout_sec * 1000;
+    const ts_console_exec_context_t *owner = ts_console_current_context();
+    if (owner) { config.cancelled = owner->cancelled; config.cancel_context = owner->user_data; }
     
     /* 配置认证方式 */
     config_ssh_auth(&config, auth);
@@ -589,6 +596,10 @@ static int do_ssh_forward(const char *host, int port, const char *user,
         return 1;
     }
     
+    if (ts_console_interrupted()) {
+        ts_console_printf("Forward cancelled before listening.\n");
+        ts_ssh_disconnect(session); ts_ssh_session_destroy(session); return 1;
+    }
     /* 创建端口转发 */
     ts_forward_config_t fwd_config = TS_FORWARD_DEFAULT_CONFIG();
     fwd_config.direction = TS_FORWARD_LOCAL;
@@ -629,13 +640,14 @@ static int do_ssh_forward(const char *host, int port, const char *user,
     ts_console_printf("║  Press Ctrl+C to stop forwarding           ║\n");
     ts_console_printf("╚════════════════════════════════════════════╝\n\n");
     
-    ts_console_clear_interrupt();
-    
+    /* The owning command initialized cancellation before submission. */
     /* 等待用户中断 */
     while (!ts_console_interrupted()) {
         /* 检查 UART 输入 */
         uint8_t ch;
-        int len = uart_read_bytes(CONFIG_ESP_CONSOLE_UART_NUM, &ch, 1, pdMS_TO_TICKS(500));
+        int len = 0;
+        if (owner && owner->remote) vTaskDelay(pdMS_TO_TICKS(50));
+        else len = uart_read_bytes(CONFIG_ESP_CONSOLE_UART_NUM, &ch, 1, pdMS_TO_TICKS(500));
         if (len > 0 && (ch == 0x03 || ch == 0x1C)) {
             ts_console_printf("\n^C\n");
             break;
@@ -658,8 +670,9 @@ static int do_ssh_forward(const char *host, int port, const char *user,
     
     /* 停止转发 */
     ts_console_printf("Stopping port forward...\n");
-    ts_port_forward_stop(forward);
-    ts_port_forward_destroy(forward);
+    while ((ret = ts_port_forward_stop(forward)) == ESP_ERR_TIMEOUT)
+        ts_console_printf("Forward is still stopping; resources remain owned by its worker.\n");
+    if (ret != ESP_OK || ts_port_forward_destroy(forward) != ESP_OK) return 1;
     ts_ssh_disconnect(session);
     ts_ssh_session_destroy(session);
     ts_console_clear_interrupt();

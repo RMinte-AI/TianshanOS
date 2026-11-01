@@ -18,7 +18,7 @@ static void *body_malloc(size_t n) {body_allocations++;return malloc(n);}
 #define TS_MALLOC_PSRAM body_malloc
 static void esp_log_level_set(const char *tag,int level) {(void)tag;(void)level;}
 typedef struct {const char *uri;int method;esp_err_t(*handler)(httpd_req_t*);void *user_ctx;} httpd_uri_t;
-typedef struct {unsigned server_port,max_uri_handlers,recv_wait_timeout,send_wait_timeout,stack_size,task_caps;bool lru_purge_enable;void *uri_match_fn,*global_user_ctx,*global_user_ctx_free_fn,*global_transport_ctx,*global_transport_ctx_free_fn;esp_err_t(*open_fn)(httpd_handle_t,int);} httpd_config_t;
+typedef struct {unsigned server_port,max_uri_handlers,recv_wait_timeout,send_wait_timeout,stack_size,task_caps;int max_open_sockets,keep_alive_idle,keep_alive_interval,keep_alive_count;bool keep_alive_enable,lru_purge_enable;void *uri_match_fn,*global_user_ctx,*global_user_ctx_free_fn,*global_transport_ctx,*global_transport_ctx_free_fn;esp_err_t(*open_fn)(httpd_handle_t,int);} httpd_config_t;
 #define HTTPD_DEFAULT_CONFIG() ((httpd_config_t){.server_port=80})
 #define MALLOC_CAP_INTERNAL 4
 static void *httpd_uri_match_wildcard;
@@ -54,6 +54,10 @@ esp_err_t ts_auth_validate_request(const char *header,uint32_t *sid,ts_perm_leve
  if(!strcmp(header,"Bearer read")){*sid=9;*level=TS_PERM_READ;return ESP_OK;}
  return ESP_ERR_NOT_FOUND;
 }
+#define HTTPD_WS_TYPE_CLOSE 8
+int httpd_ws_get_fd_info(httpd_handle_t h,int fd){(void)h;(void)fd;return 0;}
+static int httpd_get_client_list(httpd_handle_t h,size_t *n,int *fds){(void)h;(void)fds;*n=0;return ESP_OK;}
+static int httpd_ws_send_frame(httpd_req_t *req,httpd_ws_frame_t *frame){(void)req;(void)frame;return ESP_OK;}
 #include "ts_http_server.c"
 static esp_err_t upload_handler(ts_http_request_t *req,void *user_data) {
  assert(user_data==NULL);assert(req->body_len==4&&!memcmp(req->body,"xxxx",4));handled++;return ts_http_send_json(req,200,"{\"status\":\"success\"}");

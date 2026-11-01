@@ -50,7 +50,7 @@ RTOS = r'''
 typedef int BaseType_t;
 typedef unsigned TickType_t;
 typedef struct task {pthread_t thread;void (*fn)(void *);void *arg;int held;} *TaskHandle_t;
-typedef struct semaphore {pthread_mutex_t mutex;pthread_cond_t changed;int value;bool binary;TaskHandle_t owner;} *SemaphoreHandle_t;
+typedef struct semaphore {pthread_mutex_t mutex;pthread_cond_t changed;int value;bool binary;TaskHandle_t owner;unsigned recursion;} *SemaphoreHandle_t;
 static _Thread_local TaskHandle_t current_task;
 static _Thread_local struct task main_task;
 static TaskHandle_t tasks[128];static int task_count;
@@ -65,6 +65,7 @@ static SemaphoreHandle_t semaphore(bool binary) {
     SemaphoreHandle_t s=calloc(1,sizeof(*s));assert(s);pthread_mutex_init(&s->mutex,NULL);pthread_cond_init(&s->changed,NULL);s->binary=binary;s->value=!binary;return s;
 }
 static SemaphoreHandle_t xSemaphoreCreateMutex(void) {return semaphore(false);}
+static SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) {return semaphore(false);}
 static SemaphoreHandle_t xSemaphoreCreateBinary(void) {return semaphore(true);}
 static int xSemaphoreTake(SemaphoreHandle_t s,unsigned timeout) {
     assert(s);pthread_mutex_lock(&s->mutex);struct timespec until=deadline(timeout==portMAX_DELAY?10000:timeout);
@@ -76,6 +77,13 @@ static int xSemaphoreGive(SemaphoreHandle_t s) {
     assert(s);pthread_mutex_lock(&s->mutex);if(!s->binary){assert(s->owner==xTaskGetCurrentTaskHandle());--s->owner->held;s->owner=NULL;}
     s->value=1;pthread_cond_broadcast(&s->changed);pthread_mutex_unlock(&s->mutex);
     if(s->binary&&after_binary_give)after_binary_give(s);return pdTRUE;
+}
+static int xSemaphoreTakeRecursive(SemaphoreHandle_t s,unsigned timeout) {
+ if(s->owner==xTaskGetCurrentTaskHandle()){s->recursion++;return pdTRUE;}
+ if(!xSemaphoreTake(s,timeout))return pdFALSE;s->recursion=1;return pdTRUE;
+}
+static int xSemaphoreGiveRecursive(SemaphoreHandle_t s) {
+ assert(s->owner==xTaskGetCurrentTaskHandle()&&s->recursion);if(--s->recursion)return pdTRUE;return xSemaphoreGive(s);
 }
 static void vSemaphoreDelete(SemaphoreHandle_t s) {assert(s&&!s->owner);pthread_mutex_destroy(&s->mutex);pthread_cond_destroy(&s->changed);free(s);}
 static void *task_entry(void *p) {current_task=p;current_task->fn(current_task->arg);assert(false);return NULL;}
@@ -166,7 +174,7 @@ static int esp_console_cmd_register(const esp_console_cmd_t *c) {(void)c;++regis
 static int esp_console_run(const char *line,int *result);
 '''
     console = Path('components/ts_console/src/ts_console.c').read_text()
-    console = console[:console.index('esp_err_t ts_console_exec(')]
+    console = console[:console.index('esp_err_t ts_console_exec(')] + body('components/ts_console/src/ts_console.c', 'ts_console_exec')
     code = prelude + re.sub(r'^#include[^\n]*\n', '', console, flags=re.M)
     code += '\n#undef TAG\n#include "ts_service.h"\n' + service_source()
     code += r'''

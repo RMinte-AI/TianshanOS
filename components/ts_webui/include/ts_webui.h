@@ -68,7 +68,9 @@ typedef enum {
 /**
  * @brief SSH Exec 选项配置（可选）
  */
+typedef struct { char boot_id[33], result_key[33]; } ts_webui_ssh_receipt_t;
 typedef struct {
+    ts_webui_ssh_receipt_t *receipt; /**< Private query capability, returned only to the initiating request. */
     const char *expect_pattern;    /**< 期望匹配的模式（简单字符串包含检查）*/
     const char *fail_pattern;      /**< 失败模式（匹配则视为失败）*/
     const char *extract_pattern;   /**< 提取模式，格式: "prefix(capture)suffix" */
@@ -143,6 +145,8 @@ esp_err_t ts_webui_ssh_exec_start_ex(const char *host, uint16_t port,
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t ts_webui_ssh_exec_cancel(uint32_t session_id);
+/* Authenticated API also requires the initiating request's unbroadcast capability. */
+char *ts_webui_ssh_exec_status(uint32_t id, const char *boot_id, const char *result_key, esp_err_t *error);
 
 /**
  * @brief Check if SSH exec session is running

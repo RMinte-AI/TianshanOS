@@ -249,6 +249,7 @@ esp_err_t ts_known_hosts_verify(ts_ssh_session_t session,
     
     /* 填充 host_info */
     if (host_info) {
+        memset(host_info,0,sizeof(*host_info));
         strncpy(host_info->host, host, sizeof(host_info->host) - 1);
         host_info->port = port;
         host_info->type = key_type;
@@ -468,7 +469,9 @@ esp_err_t ts_known_hosts_get(const char *host, uint16_t port,
     
     xSemaphoreGive(s_state.mutex);
     
+    if (ret == ESP_OK && len != sizeof(stored)) return ESP_ERR_INVALID_SIZE;
     if (ret == ESP_OK) {
+        memset(info,0,sizeof(*info));
         strncpy(info->host, host, sizeof(info->host) - 1);
         info->port = port;
         info->type = (ts_host_key_type_t)stored.type;

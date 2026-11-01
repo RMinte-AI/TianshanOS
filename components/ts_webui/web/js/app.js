@@ -739,6 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // =========================================================================
 
 window.addEventListener('authExpired', () => {
+    window.destroyWebTerminal?.();
     updateAuthUI();
     showLoginModal();
 });
@@ -820,6 +821,7 @@ document.getElementById('login-form')?.addEventListener('submit', async (e) => {
             }
 
             router.navigate();
+            if (ws) ws.connect();
             showToast(t('login.welcomeName', { name: username }), 'success');
         } else {
             // 显示错误信息
@@ -846,7 +848,10 @@ async function logout() {
         showToast(t(result.serverConfirmed ? 'promptRepair.logoutConfirmed' : 'promptRepair.logoutLocal'), result.serverConfirmed ? 'info' : 'warning', 7000);
     } finally {
         updateAuthUI();
-        if (!api.token) router.navigate('/');
+        if (!api.token) {
+            window.destroyWebTerminal?.();
+            router.navigate('/');
+        }
     }
 }
 
@@ -947,6 +952,18 @@ window.addEventListener('languageChanged', () => {
     updateModalWsStatus(webSocketConnected);
 });
 
+let resumeWsAfterPageShow = false;
+window.addEventListener('pagehide', () => {
+    resumeWsAfterPageShow = !!ws?.shouldReconnect;
+    if (ws) ws.disconnect();
+    if (typeof webTerminal !== 'undefined' && webTerminal) webTerminal.disconnect();
+});
+window.addEventListener('pageshow', (event) => {
+    if (!event.persisted || !resumeWsAfterPageShow) return;
+    if (ws) ws.connect();
+    if (typeof webTerminal !== 'undefined' && webTerminal && !webTerminal.destroyed) webTerminal.connect();
+});
+
 function setupWebSocket() {
     ws = new TianShanWS(
         (msg) => handleEvent(msg),
@@ -964,6 +981,10 @@ function setupWebSocket() {
 }
 
 function handleEvent(msg) {
+    if (msg.type === 'connection_busy') {
+        showToast(t('terminal.connectionBusy'), 'warning', 7000);
+        return;
+    }
     // console.log('Event:', msg);
 
     // 处理订阅管理器消息 (subscribed/unsubscribed/data)
@@ -8508,6 +8529,7 @@ async function loadCommandsPage() {
     // 加载主机列表
     await loadHostSelector();
     if (!pageCurrent()) return;
+    restoreExecResult();
     
 
 }
@@ -9338,6 +9360,7 @@ let execDisplayOwner = null;
 function releaseExecDisplay() {
     if (execDisplayOwner) {
         execDisplayOwner.identityWait?.abort();
+        clearTimeout(execDisplayOwner.statusTimer);
         execDisplayOwner.messages=[];
         delete execDisplayOwner.element.dataset.serviceRun;
         delete execDisplayOwner.element.dataset.operationId;
@@ -9347,7 +9370,7 @@ function releaseExecDisplay() {
 }
 function claimExecDisplay(kind, element) {
     releaseExecDisplay();
-    const owner = {kind, element, sessionId: null, finished: false, messages: [], bytes: 0};
+    const owner = {kind, element, sessionId: null, finished: false, messages: [], bytes: 0, outputOffset: 0, logGap: false, decoders: [new TextDecoder(),new TextDecoder()]};
     execDisplayOwner = owner;
     delete element.dataset.serviceRun;
     delete element.dataset.operationId;
@@ -9368,6 +9391,57 @@ function acknowledgeExecSession(owner, sessionId) {
     owner.bytes = 0;
     if (owner.overflow) owner.element.textContent += '\n' + runtimeText('outcomeUnknown') + '\n';
     for (const message of buffered) handleSshExecMessage(message);
+}
+
+// One initiation receipt per tab. It carries no command/password and is cleared
+// on logout/expiry. Reopening this page queries the same invocation; never runs it.
+const SSH_PENDING_RESULT = 'ts_ssh_pending_result';
+function rememberExecReceipt(owner, data) {
+    if (!/^[a-f0-9]{32}$/.test(data.boot_id || '') || !/^[a-f0-9]{32}$/.test(data.result_key || '')) return;
+    owner.receipt = {session_id:data.session_id,boot_id:data.boot_id,result_key:data.result_key};
+    try {sessionStorage.setItem(SSH_PENDING_RESULT,JSON.stringify(owner.receipt));} catch (_) {}
+}
+function pollExecResult(owner) {
+    if (!ownsExecDisplay(owner) || owner.finished || !owner.receipt) return;
+    clearTimeout(owner.statusTimer);
+    owner.statusTimer=setTimeout(async()=>{
+        if (!ownsExecDisplay(owner) || owner.finished) return;
+        if (document.hidden) {pollExecResult(owner);return;}
+        owner.statusAttempts=(owner.statusAttempts || 0)+1;
+        try {
+            const result=await api.call('ssh.exec_status',owner.receipt,'POST');
+            if (!ownsExecDisplay(owner) || owner.finished) return;
+            if (result.code===0 && result.data?.session_id===owner.sessionId) {
+                if (result.data.type!=='ssh_exec_running') {handleSshExecMessage(result.data);return;}
+            } else if (result.code===2 || result.code===11 || result.httpStatus===401) {
+                owner.element.textContent+='\n'+t('promptRepair.sshResultUnavailable')+'\n';
+                return;
+            }
+        } catch (_) { /* A failed observation does not finish or repeat the command. */ }
+        if (owner.statusAttempts<150) pollExecResult(owner);
+        else owner.element.textContent+='\n'+t('promptRepair.sshQueryPaused')+'\n';
+    },2000);
+}
+function restoreExecResult() {
+    let receipt;try {receipt=JSON.parse(sessionStorage.getItem(SSH_PENDING_RESULT));} catch (_) {return;}
+    const element=document.getElementById('exec-result');
+    if (!element || !Number.isInteger(receipt?.session_id) || !api.token) return;
+    const owner=claimExecDisplay('ssh',element);rememberExecReceipt(owner,receipt);
+    if (!owner.receipt) return;
+    document.getElementById('exec-result-section').style.display='';
+    document.getElementById('cancel-exec-btn').style.display='';
+    owner.sessionId=receipt.session_id;currentExecSessionId=receipt.session_id;
+    element.textContent=t('promptRepair.sshRecovering')+'\n';pollExecResult(owner);
+}
+function finishExecObservation(owner,msg) {
+    clearTimeout(owner.statusTimer);
+    for (const decoder of owner.decoders) owner.element.textContent+=decoder.decode();
+    if (Number.isFinite(msg.output_bytes) && msg.output_bytes!==owner.outputOffset) owner.logGap=true;
+    if (owner.logGap || owner.overflow || msg.output_incomplete) owner.element.textContent+='\n'+t('promptRepair.sshLogGap')+'\n';
+    if (msg.collection_truncated) owner.element.textContent+='\n'+t('promptRepair.sshCollectionTruncated')+'\n';
+    if (msg.execution_status==='success') owner.element.textContent+=t('promptRepair.sshExecutionConfirmed')+'\n';
+    else if (msg.execution_status==='unknown') owner.element.textContent+=t('promptRepair.sshExecutionUnknown')+'\n';
+    owner.finished=true;
 }
 
 /* nohup 相关状态（用于快捷按钮） */
@@ -9459,12 +9533,14 @@ async function executeCommand(idx) {
         if (!Number.isInteger(result.data?.session_id)) throw new ApiOperationError({},'ssh.exec_stream',{kind:'format',uncertain:true});
         if (!ownsExecDisplay(owner)) return;
         output.textContent+=t('promptRepair.sessionWaiting',{id:result.data.session_id});
+        rememberExecReceipt(owner,result.data);
         acknowledgeExecSession(owner,result.data.session_id);
         if (!outputReady) {
             const message = runtimeText('output_not_connected');
             output.textContent += '\n' + message;
             showToast(message, 'warning');
         }
+        pollExecResult(owner);
     } catch (error) {
         if (!ownsExecDisplay(owner)) return;
         owner.finished=true;owner.messages=[];cancel.style.display='none';currentExecSessionId=null;
@@ -9509,6 +9585,8 @@ async function cancelExecution() {
 
 /* 处理 SSH Exec WebSocket 消息 */
 function sshTerminalResult(msg) {
+    if (msg.conditions_complete === false) return {key:'sshConditionsUnknown',type:'warning'};
+    if (msg.execution_status === 'unknown') return {key:'sshExecutionUnknown',type:'warning'};
     const known = ['success', 'match_success', 'failed', 'match_failed', 'timeout', 'cancelled'];
     if (!known.includes(msg.status)) return {key: 'sshUnknown', type: 'warning'};
     const positive = msg.status === 'success' || msg.status === 'match_success';
@@ -9542,7 +9620,7 @@ function handleSshExecMessage(msg) {
         return;
     }
     if (msg.session_id !== owner.sessionId) return;
-    if (['ssh_exec_done', 'ssh_exec_error', 'ssh_exec_cancelled'].includes(msg.type)) owner.finished = true;
+    if (['ssh_exec_done', 'ssh_exec_error', 'ssh_exec_cancelled'].includes(msg.type)) finishExecObservation(owner,msg);
     
     switch (msg.type) {
         case 'ssh_exec_start':
@@ -9565,12 +9643,16 @@ function handleSshExecMessage(msg) {
                     currentExecSessionId = msg.session_id;
                     console.log('[SSH] Session ID from ssh_exec_output:', currentExecSessionId);
                 }
-                // 追加输出
-                if (msg.is_stderr) {
-                    resultPre.textContent += msg.data;
-                } else {
-                    resultPre.textContent += msg.data;
-                }
+                if (typeof msg.data_b64==='string') {
+                    try {
+                        const raw=Uint8Array.from(atob(msg.data_b64),c=>c.charCodeAt(0));
+                        if (msg.output_offset!==owner.outputOffset || msg.output_length!==raw.length) {
+                            owner.logGap=true;owner.decoders=[new TextDecoder(),new TextDecoder()];
+                        }
+                        owner.outputOffset=msg.output_offset+raw.length;
+                        resultPre.textContent+=owner.decoders[msg.is_stderr?1:0].decode(raw,{stream:true});
+                    } catch (_) {owner.logGap=true;}
+                } else resultPre.textContent+=msg.data || '';
                 // 自动滚动到底部
                 resultPre.scrollTop = resultPre.scrollHeight;
             }
@@ -9616,12 +9698,12 @@ function handleSshExecMessage(msg) {
                 }
                 
                 // 显示期望模式匹配结果
-                if (msg.expect_matched !== undefined) {
+                if (msg.conditions_complete !== false && msg.expect_matched !== undefined) {
                     resultPre.textContent += t('sshPage.expectMatch') + ': ' + t(msg.expect_matched ? 'common.yes' : 'common.no') + '\n';
                 }
                 
                 // 显示失败模式匹配结果
-                if (msg.fail_matched !== undefined) {
+                if (msg.conditions_complete !== false && msg.fail_matched !== undefined) {
                     resultPre.textContent += t('sshPage.failMatch') + ': ' + t(msg.fail_matched ? 'common.yes' : 'common.no') + '\n';
                 }
                 
@@ -9701,7 +9783,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
     // 更新成功匹配结果
     const expectResult = document.getElementById('match-expect-result');
     if (expectResult) {
-        if (msg.expect_matched !== undefined) {
+        if (msg.conditions_complete !== false && msg.expect_matched !== undefined) {
             expectResult.textContent = t(msg.expect_matched ? 'common.yes' : 'common.no');
             expectResult.className = `match-value ${msg.expect_matched ? 'true' : 'false'}`;
         } else {
@@ -9713,7 +9795,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
     // 更新失败匹配结果
     const failResult = document.getElementById('match-fail-result');
     if (failResult) {
-        if (msg.fail_matched !== undefined) {
+        if (msg.conditions_complete !== false && msg.fail_matched !== undefined) {
             failResult.textContent = msg.fail_matched ? (typeof t === 'function' ? t('sshPage.failMatchedTrue') : 'true (检测到错误)') : (typeof t === 'function' ? t('sshPage.failMatchedFalse') : 'false');
             failResult.className = `match-value ${msg.fail_matched ? 'false' : 'true'}`;
         } else {
@@ -9743,6 +9825,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
 }
 
 function clearExecResult() {
+    sessionStorage.removeItem(SSH_PENDING_RESULT);
     releaseExecDisplay();
     document.getElementById('exec-result-section').style.display = 'none';
     document.getElementById('exec-result').textContent = '';

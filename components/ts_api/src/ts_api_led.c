@@ -1071,6 +1071,7 @@ static esp_err_t api_led_qrcode(const cJSON *params, ts_api_result_t *result)
     ts_led_preset_clear_current_image(device_name);
     ts_led_preset_set_current_effect(device_name, NULL, 0);
     ts_led_preset_set_current_qrcode(device_name, text_param->valuestring);
+    ts_led_preset_set_current_color(device_name, config.fg_color);
     // 记录背景图路径（如果有）
     if (bg_image_param && cJSON_IsString(bg_image_param) && strlen(bg_image_param->valuestring) > 0) {
         ts_led_preset_set_current_qrcode_bg(device_name, bg_image_param->valuestring);

@@ -29,6 +29,14 @@
 
 /* 保存当前执行的原始命令行，用于需要原始 UTF-8 文本的命令 */
 static char s_raw_cmdline[512] = {0};
+static SemaphoreHandle_t s_exec_mutex;
+static _Atomic(TaskHandle_t) s_exec_owner;
+static const ts_console_exec_context_t *s_exec_context;
+const ts_console_exec_context_t *ts_console_current_context(void)
+{
+    return atomic_load(&s_exec_owner) == xTaskGetCurrentTaskHandle() ? s_exec_context : NULL;
+}
+
 
 /*===========================================================================*/
 /*                          Category Names                                    */
@@ -86,12 +94,13 @@ static struct {
 
 bool ts_console_interrupted(void)
 {
-    return s_console.interrupt_requested;
+    const ts_console_exec_context_t *ctx = ts_console_current_context();
+    return ctx && ctx->cancelled ? ctx->cancelled(ctx->user_data) : s_console.interrupt_requested;
 }
 
 void ts_console_clear_interrupt(void)
 {
-    s_console.interrupt_requested = false;
+    if (!ts_console_current_context()) s_console.interrupt_requested = false;
 }
 
 void ts_console_request_interrupt(void)
@@ -101,14 +110,14 @@ void ts_console_request_interrupt(void)
 
 void ts_console_begin_interruptible(void)
 {
-    s_console.interrupt_requested = false;
+    ts_console_clear_interrupt();
     s_console.interruptible_mode = true;
 }
 
 void ts_console_end_interruptible(void)
 {
     s_console.interruptible_mode = false;
-    s_console.interrupt_requested = false;
+    ts_console_clear_interrupt();
 }
 
 /**
@@ -194,17 +203,10 @@ static void console_task(void *arg)
             /* Add to history */
             linenoiseHistoryAdd(line);
             
-            /* 保存原始命令行，供命令处理函数使用 */
-            strncpy(s_raw_cmdline, line, sizeof(s_raw_cmdline) - 1);
-            s_raw_cmdline[sizeof(s_raw_cmdline) - 1] = '\0';
-            
-            /* Execute command */
-            int ret;
-            esp_err_t err = esp_console_run(line, &ret);
-            
-            /* 清除原始命令行 */
-            s_raw_cmdline[0] = '\0';
-            
+            ts_cmd_result_t result;
+            esp_err_t err = ts_console_exec(line, &result);
+            int ret = result.code;
+
             if (err == ESP_ERR_NOT_FOUND) {
                 ts_console_error("Unknown command: %s\n", line);
             } else if (err == ESP_ERR_INVALID_ARG) {
@@ -316,6 +318,8 @@ esp_err_t ts_console_init(const ts_console_config_t *config)
         vSemaphoreDelete(s_console.mutex);
         return ESP_ERR_NO_MEM;
     }
+    s_exec_mutex = xSemaphoreCreateRecursiveMutex();
+    if (!s_exec_mutex) { vSemaphoreDelete(s_console.exit_done); vSemaphoreDelete(s_console.mutex); s_console.mutex = NULL; return ESP_ERR_NO_MEM; }
 
     /* Set prompt */
     strncpy(s_console.prompt, s_console.config.prompt, TS_CONSOLE_MAX_PROMPT_LENGTH - 1);
@@ -333,6 +337,7 @@ esp_err_t ts_console_init(const ts_console_config_t *config)
     if (ret != ESP_OK) {
         vSemaphoreDelete(s_console.exit_done);
         vSemaphoreDelete(s_console.mutex);
+        vSemaphoreDelete(s_exec_mutex); s_exec_mutex = NULL;
         return ret;
     }
     
@@ -400,6 +405,7 @@ static esp_err_t stop_console(bool keep_control)
 esp_err_t ts_console_deinit(void)
 {
     if (!s_console.initialized) return ESP_ERR_INVALID_STATE;
+    if (atomic_load(&s_exec_owner)) return ESP_ERR_INVALID_STATE;
     esp_err_t ret = stop_console(true);
     if (ret != ESP_OK) return ret;
     free_cmd_registry();
@@ -413,6 +419,7 @@ esp_err_t ts_console_deinit(void)
     s_console.exit_done = NULL;
     vSemaphoreDelete(s_console.mutex);
     s_console.mutex = NULL;
+    if (s_exec_mutex) { vSemaphoreDelete(s_exec_mutex); s_exec_mutex = NULL; }
     s_console.initialized = false;
     s_console.control_owner = NULL;
     return ESP_OK;
@@ -566,23 +573,32 @@ size_t ts_console_get_cmds_by_category(ts_cmd_category_t category,
 /*                      Command Execution                                     */
 /*===========================================================================*/
 
+esp_err_t ts_console_exec_with_context(const char *cmdline, ts_cmd_result_t *result,
+                                     const ts_console_exec_context_t *context)
+{
+    if (result) *result = (ts_cmd_result_t){.code = -1};
+    if (!cmdline) return ESP_ERR_INVALID_ARG;
+    if (!s_exec_mutex || xSemaphoreTakeRecursive(s_exec_mutex, 0) != pdTRUE) return ESP_ERR_INVALID_STATE;
+    bool outer = atomic_load(&s_exec_owner) == NULL;
+    char previous[sizeof(s_raw_cmdline)];
+    memcpy(previous, s_raw_cmdline, sizeof(previous));
+    if (outer) {
+        s_exec_context = context;
+        s_console.interrupt_requested = false;
+        atomic_store(&s_exec_owner, xTaskGetCurrentTaskHandle());
+    }
+    snprintf(s_raw_cmdline, sizeof(s_raw_cmdline), "%s", cmdline);
+    int code = -1;
+    esp_err_t err = ts_console_interrupted() ? ESP_ERR_TIMEOUT : esp_console_run(cmdline, &code);
+    if (result) result->code = err == ESP_OK ? code : -1;
+    memcpy(s_raw_cmdline, previous, sizeof(previous));
+    if (outer) { atomic_store(&s_exec_owner, NULL); s_exec_context = NULL; }
+    xSemaphoreGiveRecursive(s_exec_mutex);
+    return err;
+}
 esp_err_t ts_console_exec(const char *cmdline, ts_cmd_result_t *result)
 {
-    if (cmdline == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    int ret;
-    esp_err_t err = esp_console_run(cmdline, &ret);
-    
-    if (result) {
-        result->code = (err == ESP_OK) ? ret : -1;
-        result->message = NULL;
-        result->data = NULL;
-        result->data_size = 0;
-    }
-    
-    return err;
+    return ts_console_exec_with_context(cmdline, result, NULL);
 }
 
 esp_err_t ts_console_exec_cmd(const char *cmd_name, int argc, char **argv,
@@ -621,9 +637,10 @@ static int do_printf(const char *prefix, const char *fmt, va_list args)
     len += vsnprintf(buf + len, sizeof(buf) - len, fmt, args);
     
     /* Custom output callback */
-    if (s_console.output_cb) {
-        s_console.output_cb(buf, len, s_console.output_user_data);
-    }
+    const ts_console_exec_context_t *ctx = ts_console_current_context();
+    size_t written = strnlen(buf, sizeof(buf));
+    if (ctx && ctx->output) ctx->output(buf, written, ctx->user_data);
+    else if (s_console.output_cb) s_console.output_cb(buf, written, s_console.output_user_data);
     
     /* Standard output */
     return printf("%s", buf);

@@ -88,7 +88,12 @@ esp_err_t ts_http_server_start(void)
     config.global_user_ctx_free_fn = NULL;
     config.global_transport_ctx = NULL;
     config.global_transport_ctx_free_fn = NULL;
-    config.lru_purge_enable = true;  // 启用 LRU 清理，处理连接重置
+    config.max_open_sockets = TS_HTTP_MAX_CLIENTS;
+    config.lru_purge_enable = true;  // Build policy evicts only ordinary HTTP sessions.
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 30;
+    config.keep_alive_interval = 10;
+    config.keep_alive_count = 3;
     config.recv_wait_timeout = 5;    // 接收超时 5 秒
     config.send_wait_timeout = 5;    // 发送超时 5 秒
     config.stack_size = 8192;        // 栈大小（处理大型 JSON 响应需要更多空间）
@@ -100,6 +105,28 @@ esp_err_t ts_http_server_start(void)
         TS_LOGI(TAG, "HTTP server started on port %d", config.server_port);
     }
     return ret;
+}
+
+esp_err_t ts_http_server_admit_ws(httpd_req_t *req, unsigned client_limit)
+{
+    int fds[TS_HTTP_MAX_CLIENTS];
+    size_t count = TS_HTTP_MAX_CLIENTS;
+    unsigned upgraded = 0;
+    unsigned limit = client_limit < TS_HTTP_MAX_WS_CLIENTS ? client_limit : TS_HTTP_MAX_WS_CLIENTS;
+    if (httpd_get_client_list(req->handle, &count, fds) != ESP_OK) return ESP_FAIL;
+    for (size_t i = 0; i < count; ++i)
+        upgraded += httpd_ws_get_fd_info(req->handle, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET;
+    /* The current request is already upgraded, but is not an admitted peer yet.
+     * Reject it synchronously before HTTPD processes another request. */
+    if (upgraded <= limit) return ESP_OK;
+    static const char busy[] = "{\"type\":\"connection_busy\",\"retry_after\":5}";
+    httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)busy, .len = sizeof(busy) - 1};
+    httpd_ws_send_frame(req, &frame);
+    uint8_t reason[] = {0x03, 0xf5}; /* RFC 6455: 1013, Try Again Later. */
+    frame = (httpd_ws_frame_t){.type = HTTPD_WS_TYPE_CLOSE, .payload = reason, .len = sizeof(reason)};
+    httpd_ws_send_frame(req, &frame);
+    return ESP_FAIL; /* SDK closes only this unregistered connection. */
 }
 
 esp_err_t ts_http_server_stop(void)

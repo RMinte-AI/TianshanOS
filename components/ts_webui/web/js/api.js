@@ -201,6 +201,7 @@ class TianShanAPI {
     }
 
     clearAuth() {
+        sessionStorage.removeItem('ts_ssh_pending_result');
         this.token = null;
         this.username = null;
         this.level = null;
@@ -840,19 +841,63 @@ class TianShanAPI {
 //                         WebSocket Client
 // =========================================================================
 
+// One pending retry, suspended while hidden. Brief successful handshakes do
+// not reset backoff: a capacity/reconnect loop must become less aggressive.
+class ConnectionRetry {
+    constructor(initialDelay) {
+        this.initialDelay = this.nextDelay = initialDelay;
+        this.timer = this.stableTimer = this.visibilityHandler = null;
+    }
+    cancel() {
+        clearTimeout(this.timer);
+        clearTimeout(this.stableTimer);
+        if (this.visibilityHandler) document.removeEventListener('visibilitychange', this.visibilityHandler);
+        this.timer = this.stableTimer = this.visibilityHandler = null;
+    }
+    opened() {
+        this.cancel();
+        this.stableTimer = setTimeout(() => {
+            this.stableTimer = null;
+            this.nextDelay = this.initialDelay;
+        }, 30000);
+    }
+    schedule(callback) {
+        this.cancel();
+        const delay = this.nextDelay;
+        this.nextDelay = Math.min(delay * 2, 30000);
+        const run = () => {
+            if (document.visibilityState !== 'visible') {
+                if (!this.visibilityHandler) {
+                    this.visibilityHandler = run;
+                    document.addEventListener('visibilitychange', run);
+                }
+                return;
+            }
+            if (this.visibilityHandler) document.removeEventListener('visibilitychange', this.visibilityHandler);
+            this.visibilityHandler = null;
+            callback();
+        };
+        this.timer = setTimeout(() => { this.timer = null; run(); }, delay);
+        return delay;
+    }
+    busy() { this.nextDelay = Math.max(this.nextDelay, 5000); }
+}
+
 class TianShanWS {
     constructor(onMessage, onConnect, onDisconnect) {
         this.ws = null;
         this.onMessage = onMessage;
         this.onConnect = onConnect;
         this.onDisconnect = onDisconnect;
-        this.reconnectDelay = 1000;
+        this.retry = new ConnectionRetry(1000);
         this.shouldReconnect = true;
         this.reconnectTimer = null;
+        this.busyNoticeShown = false;
         this.authenticated = false;
         this.authWaiters = new Set();
         this.authChanged = () => {
             if (!this.shouldReconnect) return;
+            this.closeCurrent();
             this.connect();
         };
         window.addEventListener('authChanged', this.authChanged);
@@ -886,6 +931,9 @@ class TianShanWS {
     }
 
     connect() {
+        this.shouldReconnect = true;
+        window.addEventListener('authChanged', this.authChanged);
+        if (this.ws && this.ws.readyState < WebSocket.CLOSING) return;
         this.closeCurrent();
         const host = getApiHost();
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -898,7 +946,7 @@ class TianShanWS {
             const current = () => this.ws === ws;
             ws.onopen = () => {
                 if (!current()) return;
-                this.reconnectDelay = 1000;
+                this.retry.opened();
                 ws.send(JSON.stringify({type: 'auth', token}));
                 this.send({type: 'subscribe', events: ['*']});
                 if (this.onConnect) this.onConnect();
@@ -917,6 +965,11 @@ class TianShanWS {
                         }
                         return;
                     }
+                    if (msg.type === 'connection_busy') {
+                        this.retry.busy();
+                        if (this.busyNoticeShown) return;
+                        this.busyNoticeShown = true;
+                    } else { this.busyNoticeShown = false; }
                     if (this.onMessage) this.onMessage(msg);
                 } catch (e) { console.error('WebSocket parse error:', e); }
             };
@@ -926,10 +979,7 @@ class TianShanWS {
                 this.settleAuth(ws, false);
                 if (this.onDisconnect) this.onDisconnect();
                 if (this.shouldReconnect) {
-                    this.reconnectTimer = setTimeout(() => {
-                        if (current() && this.shouldReconnect) this.connect();
-                    }, this.reconnectDelay);
-                    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+                    this.retry.schedule(() => { if (current() && this.shouldReconnect) this.connect(); });
                 }
             };
             ws.onerror = error => { if (current()) console.error('WebSocket error:', error); };
@@ -937,6 +987,7 @@ class TianShanWS {
     }
 
     closeCurrent() {
+        this.retry.cancel();
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
         const ws = this.ws;

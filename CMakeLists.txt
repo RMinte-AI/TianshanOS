@@ -116,6 +116,10 @@ endif()
 # 项目定义
 project(TianShanOS VERSION ${TIANSHAN_VERSION_MAJOR}.${TIANSHAN_VERSION_MINOR}.${TIANSHAN_VERSION_PATCH})
 
+if(NOT ROOT_PASSWORD_RESET)
+    include(cmake/httpd_admission.cmake)
+endif()
+
 # 添加编译定义 - 使用 idf_build_set_property 确保所有组件都能访问
 idf_build_set_property(COMPILE_DEFINITIONS
     "TIANSHAN_OS_VERSION_MAJOR=${TIANSHAN_VERSION_MAJOR}"

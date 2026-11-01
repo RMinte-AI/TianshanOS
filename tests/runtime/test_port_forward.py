@@ -33,6 +33,7 @@ code += '#include "' + str(root / 'components/ts_security/include/ts_port_forwar
 code += '#include "' + str(root / 'components/ch405labs_esp_libssh2/libssh2/include/libssh2.h') + '"\n'
 code += r'''
 #define TS_CALLOC_PSRAM calloc
+#define TS_MALLOC_PSRAM malloc
 #define TS_STRDUP_PSRAM strdup
 static unsigned caps_created,caps_deleted,last_stack;
 static struct {TaskHandle_t task;void *stack;} cap_records[256];
@@ -192,6 +193,7 @@ static void ts_console_clear_interrupt(void) {}
 esp_err_t ts_ssh_disconnect(ts_ssh_session_t session) {assert(forward_destroyed);session->destroyed=true;return ESP_OK;}
 esp_err_t ts_ssh_session_destroy(ts_ssh_session_t session) {assert(session->destroyed&&forward_destroyed);return ESP_OK;}
 static int cli_cleanup(ts_port_forward_t forward,ts_ssh_session_t session) {
+ esp_err_t ret;
 CLI_CLEANUP_BODY
 }
 static void blocked_transfer(int mode) {

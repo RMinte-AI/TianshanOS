@@ -45,6 +45,7 @@ class WebTerminal {
         this.fitAddon = null;
         this.ws = null;
         this.connected = false;
+        this.commandRunning = false;
         this.inputBuffer = '';
         this.history = [];
         this.historyIndex = -1;
@@ -62,6 +63,8 @@ class WebTerminal {
             if (!this.destroyed && this.ws) { this.disconnect(); this.connect(); }
         };
         window.addEventListener('authChanged', this.authChanged);
+        this.retry = new ConnectionRetry(5000);
+        this.busyNoticeShown = false;
     }
 
     /**
@@ -208,6 +211,7 @@ class WebTerminal {
     }
 
     handleEnter() {
+        if (this.commandRunning) { this.writeln(t('terminal.commandBusy')); return; }
         this.terminal.write('\r\n');
         const cmd = this.inputBuffer.trim();
         
@@ -249,7 +253,7 @@ class WebTerminal {
             this.ws.send(JSON.stringify({ type: 'terminal_interrupt' }));
         }
         
-        this.writePrompt();
+        if (!this.commandRunning) this.writePrompt();
     }
 
     handleHistoryUp() {
@@ -324,6 +328,7 @@ class WebTerminal {
         ws.onopen = () => {
             if (!current()) return;
             console.log('Terminal WebSocket connected');
+            this.retry.opened();
             // 发送终端启动请求
             ws.send(JSON.stringify({ type: 'terminal_start', token }));
             
@@ -346,6 +351,13 @@ class WebTerminal {
                     }
                     return;
                 }
+                if (msg.type === 'connection_busy' || msg.type === 'terminal_busy') {
+                    this.retry.busy();
+                    if (!this.busyNoticeShown) this.writeln('\r\n' + t(msg.type === 'terminal_busy' ? 'terminal.sessionBusy' : 'terminal.connectionBusy'));
+                    this.busyNoticeShown = true;
+                    return;
+                }
+                this.busyNoticeShown = false;
                 this.handleMessage(msg);
             } catch (e) {
                 console.error('Failed to parse message:', e);
@@ -367,22 +379,16 @@ class WebTerminal {
             
             this.writeln('\r\n\x1b[1;31m' + (typeof t === 'function' ? t('terminal.connectionDisconnected') : '连接已断开') + '\x1b[0m');
             
-            // 尝试重连（仅当标签页可见时发起，避免后台 tab 抢占前台会话）
-            if (event.code !== 1000) { // 非正常关闭
-                this.writeln('\x1b[33m' + (typeof t === 'function' ? t('terminal.reconnectIn') : '5秒后尝试重新连接...') + '\x1b[0m');
-                const tryReconnect = () => {
+            if (event.code !== 1000) {
+                const seconds = Math.ceil(this.retry.nextDelay / 1000);
+                this.writeln('\x1b[33m' + t('terminal.reconnectWait', { seconds }) + '\x1b[0m');
+                this.retry.schedule(() => {
                     if (!current() || this.connected) return;
-                    if (document.visibilityState !== 'visible') {
-                        document.addEventListener('visibilitychange', function handler() {
-                            document.removeEventListener('visibilitychange', handler);
-                            tryReconnect();
-                        }, { once: true });
-                        return;
-                    }
-                    this.writeln(typeof t === 'function' ? t('terminal.reconnecting') : '正在重新连接...');
+                    this.writeln(t('terminal.reconnecting'));
                     this.connect();
-                };
-                setTimeout(tryReconnect, 5000);
+                });
+            } else {
+                this.retry.cancel();
             }
         };
         
@@ -425,13 +431,22 @@ class WebTerminal {
                 }
                 break;
                 
+            case 'command_started':
+                this.commandRunning = true;
+                break;
+            case 'command_stopping':
+                this.writeln(t('terminal.commandStopping'));
+                break;
             case 'done':
+                this.commandRunning = false;
+                if (msg.output_incomplete) this.writeln(t('terminal.outputIncomplete'));
                 if (this.sshMode || this.sshConnecting || this.sshDisconnecting) return;
                 // 命令执行完成
                 this.writePrompt();
                 break;
                 
             case 'error': {
+                this.commandRunning = false;
                 const errMsg = msg.message || (typeof t === 'function' ? t('terminal.unknownError') : '未知错误');
                 if (this.sshMode || this.sshConnecting || this.sshDisconnecting) {
                     this.writeln('\x1b[1;31m' + this.sshMessageText(errMsg) + '\x1b[0m');
@@ -588,6 +603,7 @@ class WebTerminal {
                 return; // SSH 命令已处理
             }
             
+            this.commandRunning = true;
             this.ws.send(JSON.stringify({
                 type: 'terminal_input',
                 data: command
@@ -791,6 +807,7 @@ class WebTerminal {
      * 断开连接
      */
     disconnect() {
+        this.retry.cancel();
         clearTimeout(this.restoreTimer); this.restoring = false;
         // 清除心跳
         if (this.pingInterval) {
@@ -807,6 +824,7 @@ class WebTerminal {
             this.ws = null;
         }
         this.connected = false;
+        this.commandRunning = false;
         this.sshMode = this.sshConnecting = this.sshDisconnecting = false;
     }
 

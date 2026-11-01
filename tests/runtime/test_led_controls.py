@@ -129,7 +129,7 @@ void ts_api_result_ok(ts_api_result_t *r,cJSON *data) {r->code=TS_API_OK;r->data
 '''
 for name in ['resolve_device_name','do_led_on','do_led_off','do_led_effect','do_led_image','do_led_qrcode','parse_text_align','extract_param_from_cmdline','extract_text_from_cmdline','parse_escape_sequences','build_font_path','do_led_draw_text','do_led_clear']:
     code += body(CLI,name)
-for name in ['parse_color_param','api_led_fill','api_led_clear','api_led_effect_start','api_led_qrcode']:
+for name in ['parse_color_param','api_led_fill','api_led_clear','api_led_effect_start','api_led_qrcode','api_led_save']:
     code += body(API,name)
 action_header = Path('components/ts_automation/include/ts_action_manager.h').read_text()
 code += action_header[action_header.index('typedef enum {'):action_header.index('} ts_action_status_t;')+len('} ts_action_status_t;')]
@@ -191,6 +191,94 @@ static void check_b09_render(void) {
     strcpy(action.scroll,"left");strcpy(action.align,"center");action.loop=true;assert(ts_action_exec_led(&action,&result)==ESP_OK);xSemaphoreTake(s_led.mutex,portMAX_DELAY);assert(s_overlays[0].base_x==5&&s_overlays[0].base_y==7&&s_overlays[0].scroll_dir==TS_TEXT_SCROLL_LEFT&&!s_overlays[0].invert_on_overlap&&s_overlays[0].loop_scroll);int start=s_overlays[0].scroll_x;update_scroll(&s_overlays[0],s_overlays[0].last_scroll_time+1000);assert(s_overlays[0].scroll_x<start);xSemaphoreGive(s_led.mutex);
     assert(ts_led_text_overlay_stop("matrix")==ESP_OK);b09_cli_cases=false;puts("PASS B09 actual action/SDK split/CLI/QR pixels and image foreground sampling; text auto/manual zero and 5/7, old center/right and scroll");
 }
+static void assert_qr_color(ts_led_rgb_t expected, bool enabled) {
+    ts_led_boot_config_t state;
+    assert(ts_led_get_current_state("matrix", &state) == ESP_OK);
+    assert(!strcmp(state.qrcode_text, "Color") && !state.animation[0] && !state.image_path[0]);
+    assert(state.enabled == enabled);
+    assert(state.color.r == expected.r && state.color.g == expected.g && state.color.b == expected.b);
+}
+static void check_qr_color_restore(void) {
+    const char *colors[] = {NULL, "#ff0000", "#ffffff", "#000000"};
+    const ts_led_rgb_t expected[] = {TS_LED_WHITE, TS_LED_RED, TS_LED_WHITE, TS_LED_BLACK};
+    for (int entry = 0; entry < 3; ++entry) {
+        for (int color = 0; color < 4; ++color) {
+            for (int off = 0; off < 2; ++off) {
+                memset(nvs_values, 0, sizeof(nvs_values));
+                fresh();
+                assert(do_led_effect("matrix", "solid", 50, "blue") == 0);
+                if (entry == 0) {
+                    char json[160];
+                    snprintf(json, sizeof(json), "{\"device\":\"matrix\",\"text\":\"Color\"%s%s%s}",
+                             colors[color] ? ",\"color\":\"" : "",
+                             colors[color] ? colors[color] : "", colors[color] ? "\"" : "");
+                    api(api_led_qrcode, json);
+                } else if (entry == 1) {
+                    assert(do_led_qrcode("matrix", "Color", "M", colors[color], NULL) == 0);
+                } else {
+                    ts_auto_action_led_t action = {.ctrl_type = TS_LED_CTRL_QRCODE};
+                    strcpy(action.device, "matrix");strcpy(action.qr_text, "Color");
+                    action.qr_color_set = color != 0;
+                    if (color) { action.r = expected[color].r;action.g = expected[color].g;action.b = expected[color].b; }
+                    ts_action_result_t result = {0};
+                    b09_cli_cases = true;
+                    assert(ts_action_exec_led(&action, &result) == ESP_OK);
+                    b09_cli_cases = false;
+                }
+                ts_led_rgb_t pixels[1024];
+                memcpy(pixels, ((ts_led_layer_impl_t*)ts_led_layer_get(s_matrix, 0))->buffer, sizeof(pixels));
+                int lit = 0;
+                for (int i = 0; i < 1024; ++i) {
+                    if (pixels[i].r || pixels[i].g || pixels[i].b) {
+                        ++lit;
+                        assert(pixels[i].r == expected[color].r && pixels[i].g == expected[color].g && pixels[i].b == expected[color].b);
+                    }
+                }
+                assert(color == 3 ? lit == 0 : lit > 0);
+                if (off) assert(do_led_off("matrix") == 0);
+                assert(ts_led_device_set_brightness(s_matrix, 149) == ESP_OK);
+                assert_qr_color(expected[color], !off);
+                /* A second save after RAM loss must retain the restored color too. */
+                for (int round = 0; round < 2; ++round) {
+                    api(api_led_save, "{\"device\":\"matrix\"}");
+                    teardown();fresh();
+                    assert(ts_led_load_boot_config("matrix") == ESP_OK);
+                    assert_qr_color(expected[color], !off);
+                    assert(ts_led_device_get_brightness(s_matrix) == 149);
+                    assert(!memcmp(pixels, ((ts_led_layer_impl_t*)ts_led_layer_get(s_matrix, 0))->buffer, sizeof(pixels)));
+                    frames(s_matrix, 2, off || color == 3);
+                }
+                /* Returning to an animation keeps its own color, not the QR color. */
+                assert(do_led_effect("matrix", "solid", 50, "blue") == 0);
+                api(api_led_save, "{\"device\":\"matrix\"}");
+                teardown();fresh();
+                assert(ts_led_load_boot_config("matrix") == ESP_OK);
+                assert_choice("matrix", "solid", true);
+                ts_led_boot_config_t state;
+                assert(ts_led_get_current_state("matrix", &state) == ESP_OK && state.color.b == 255 && !state.color.r && !state.color.g);
+                teardown();
+            }
+        }
+    }
+    /* Legacy QR saves had no QR color; .clr could be an unrelated old animation. */
+    for (int stale_color = 0; stale_color < 2; ++stale_color) {
+        memset(nvs_values, 0, sizeof(nvs_values));
+        assert(nvs_set_u8(1, "led.mat.en", 1) == ESP_OK);
+        assert(nvs_set_u8(1, "led.mat.br", 149) == ESP_OK);
+        assert(nvs_set_str(1, "led.mat.qr", "Color") == ESP_OK);
+        if (stale_color) assert(nvs_set_u32(1, "led.mat.clr", 0x0000ff) == ESP_OK);
+        fresh();
+        assert(do_led_effect("matrix", "solid", 50, "red") == 0);
+        assert(ts_led_load_boot_config("matrix") == ESP_OK);
+        assert_qr_color(TS_LED_WHITE, true);
+        api(api_led_save, "{\"device\":\"matrix\"}");
+        teardown();fresh();
+        assert(ts_led_load_boot_config("matrix") == ESP_OK);
+        assert_qr_color(TS_LED_WHITE, true);
+        teardown();
+    }
+    puts("PASS QR API/CLI/automation color save/reset/load/resave: default, red, white, black; on/off, brightness, animation switch, legacy absent/stale animation color");
+}
 int main(void) {
     mkdir("images",0700);mkdir("fonts",0700);make_bmp();make_font();FILE *gif_file=fopen("images/normal.gif","wb");assert(gif_file);fwrite(gif_fixture,sizeof(gif_fixture),1,gif_file);fclose(gif_file);action_context.stats_mutex=xSemaphoreCreateMutex();assert(ts_led_cc_get_default_config(&g_config)==ESP_OK);g_config.enabled=true;g_config.white_point.enabled=true;g_config.white_point.red_scale=0.75f;g_config.gamma.enabled=true;g_config.gamma.gamma=1.4f;g_config.saturation.enabled=true;g_config.saturation.factor=0.7f;
     fresh();ts_led_layer_t layers[3]={ts_led_layer_get(s_touch,0),ts_led_layer_get(s_board,0),ts_led_layer_get(s_matrix,0)};
@@ -231,7 +319,7 @@ int main(void) {
     teardown();fresh();assert(ts_led_load_boot_config("matrix")==ESP_OK);frames(s_matrix,4,true);assert(ts_led_get_current_state("matrix",&state)==ESP_OK&&!state.enabled&&!strcmp(state.qrcode_text,"B07")&&!state.image_path[0]&&!state.animation[0]&&state.brightness==149&&state.filter_speed==29);
     assert(do_led_effect("matrix","solid",50,"red")==0);assert(ts_led_save_boot_config("matrix")==ESP_OK&&nvs_find("led.mat.clr")>=0);assert(do_led_effect("matrix","solid",50,NULL)==0);assert(ts_led_save_boot_config("matrix")==ESP_OK&&nvs_find("led.mat.clr")<0);
     teardown();fresh();assert(ts_led_load_boot_config("matrix")==ESP_OK);assert(!((ts_led_layer_impl_t*)ts_led_layer_get(s_matrix,0))->anim_data);
-    check_b09_render();teardown();free(s_delayed_image_timer);s_delayed_image_timer=NULL;vSemaphoreDelete(action_context.stats_mutex);free(s_anim_state);puts("PASS actual LED controls, independent RGB ownership, composition/CC/driver HAL output gate, QR layer handoff and NVS save/reset/rebuild/load");
+    check_b09_render();teardown();check_qr_color_restore();free(s_delayed_image_timer);s_delayed_image_timer=NULL;vSemaphoreDelete(action_context.stats_mutex);free(s_anim_state);puts("PASS actual LED controls, independent RGB ownership, composition/CC/driver HAL output gate, QR layer handoff and NVS save/reset/rebuild/load");
 }
 '''
 headers = {path.name: path.read_text() for path in Path('components/ts_led/include').glob('*.h')}

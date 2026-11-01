@@ -94,7 +94,7 @@ static esp_err_t api_hosts_info(const cJSON *params, ts_api_result_t *result)
         port = port_json->valueint;
     }
     
-    ts_known_host_t info;
+    ts_known_host_t info = {0};
     esp_err_t ret = ts_known_hosts_get(host->valuestring, port, &info);
     
     if (ret == ESP_ERR_NOT_FOUND) {

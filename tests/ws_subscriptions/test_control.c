@@ -117,13 +117,13 @@ static void intersecting_failures(void){
  setup();unsigned c=cancelled_frames;
  assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&target_id)==0);
  remote_hook=observe_then_cancel;exec_task.fn(exec_task.arg);remote_hook=NULL;
- finish_all();assert(cancelled_frames==c); /* sealed observation failure is not rewritten */
+ finish_all();assert(cancelled_frames==c+2); /* delivery failure cannot hide the real cancellation result */
  setup();unsigned t=timeout_frames;c=cancelled_frames;
  ts_webui_ssh_options_t opts={.timeout_ms=1000,.collect_output=true};
  assert(ts_webui_ssh_exec_start_ex("fake",22,"u",NULL,"p","cmd",&opts,&target_id)==0);
  remote_hook=timeout_then_cancel;exec_task.fn(exec_task.arg);remote_hook=NULL;finish_all();
  assert(timeout_frames==t+2 && cancelled_frames==c);
- puts("PASS output failure seals observation without cancelling business; later explicit cancel still reaches original executor without rewriting terminal; earlier timeout retains reason");
+ puts("PASS output failure leaves business/result open; later explicit cancel reaches executor and both observers receive its final result; earlier timeout retains reason");
 }
 static void api_controls(void){
  s_op_sequence=0x80000000u; /* valid public uint32 IDs must not pass through signed valueint */

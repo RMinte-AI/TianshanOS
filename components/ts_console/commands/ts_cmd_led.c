@@ -1809,6 +1809,7 @@ static int do_led_qrcode(const char *device_name, const char *text,
     
     ts_led_preset_set_current_qrcode(device_name, text);
     ts_led_preset_set_current_qrcode_bg(device_name, bg_image_path);
+    ts_led_preset_set_current_color(device_name, config.fg_color);
     ts_led_device_set_enabled(ts_led_device_get(internal_name), true);
 
     ts_console_success("QR code v%d (%dx%d) displayed, ECC=%s\n", 

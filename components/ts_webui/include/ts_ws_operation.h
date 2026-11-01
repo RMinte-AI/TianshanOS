@@ -1,7 +1,7 @@
 #pragma once
 /* Internal lifecycle; all returned operation pointers carry a reference. */
 #include "ts_ws_transport.h"
-typedef enum { TS_WS_OP_SHELL, TS_WS_OP_EXEC, TS_WS_OP_KINDS } ts_ws_op_kind_t;
+typedef enum { TS_WS_OP_SHELL, TS_WS_OP_EXEC, TS_WS_OP_TERMINAL, TS_WS_OP_KINDS } ts_ws_op_kind_t;
 typedef enum { OP_FREE, OP_STARTING, OP_OPEN, OP_CLOSING, OP_FINALIZING,
                OP_TERMINAL_PENDING, OP_TERMINAL_SETTLED, OP_RECLAIMING } ts_ws_op_phase_t;
 typedef struct ts_ws_operation ts_ws_operation_t;
@@ -37,6 +37,8 @@ ts_ws_peer_t ts_ws_op_peer(ts_ws_operation_t *op);
 void ts_ws_op_discard(ts_ws_operation_t *op); /* unaccepted creation */
 bool ts_ws_op_output_begin(ts_ws_operation_t *op, ts_ws_output_ticket_t *ticket);
 void ts_ws_op_output_finish(ts_ws_output_ticket_t *ticket, const char *json);
+/* No producer progress on transient pool exhaustion; caller retains its bytes. */
+bool ts_ws_op_output_try(ts_ws_output_ticket_t *ticket, const char *json);
 /* winner owns a close builder until close_finish, before any encoding */
 bool ts_ws_op_close_begin(ts_ws_operation_t *op);
 void ts_ws_op_close_finish(ts_ws_operation_t *op, const char *json);
