@@ -74,5 +74,5 @@ with tempfile.TemporaryDirectory(prefix='tianshan-condition-') as tmp:
     cfile=Path(tmp)/'condition.c';binary=Path(tmp)/'condition';fixtures=Path(tmp)/'pairs.json'
     cfile.write_text(code);fixtures.write_text(json.dumps(pairs,ensure_ascii=False))
     env=dict(os.environ,DEVELOPER_DIR=os.environ.get('DEVELOPER_DIR','/Library/Developer/CommandLineTools'))
-    args=['cc','-std=c11','-g','-fsanitize=address,undefined','-Wno-deprecated-declarations','-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include','-Icomponents/ts_security/include','-I'+str(idf/'components/json/cJSON'),str(cfile),'components/ts_automation/src/ts_rule_codec.c','components/ts_automation/src/ts_action_filter.c',str(idf/'components/json/cJSON/cJSON.c'),'-lm','-o',str(binary)]
+    args=['cc','-std=c11','-g','-fsanitize=address,undefined','-Wno-deprecated-declarations','-Itests/runtime/stubs','-Itests/certificate/stubs','-Icomponents/ts_automation/include','-Icomponents/ts_security/include','-I'+str(idf/'components/json/cJSON'),str(cfile),'components/ts_automation/src/ts_rule_codec.c','components/ts_automation/src/ts_action_codec.c','components/ts_automation/src/ts_action_filter.c',str(idf/'components/json/cJSON/cJSON.c'),'-lm','-o',str(binary)]
     subprocess.run(args,check=True,env=env);subprocess.run([str(binary),str(fixtures)],check=True,env=env)

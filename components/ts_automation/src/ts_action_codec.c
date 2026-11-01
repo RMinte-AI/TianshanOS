@@ -136,6 +136,210 @@ static ts_auto_action_type_t str_to_action_type(const char *str)
     return TS_AUTO_ACT_LOG;
 }
 
+bool ts_action_led_encode(cJSON *led, const ts_auto_action_led_t *value, bool inline_format)
+{
+    if (!cJSON_AddStringToObject(led, "device", value->device)) goto failed;
+    /* 控制类型 */
+    if (inline_format) {
+        if (!cJSON_AddNumberToObject(led, "ctrl_type", value->ctrl_type)) goto failed;
+    } else {
+        const char *ctrl_type_str = "fill";
+        switch (value->ctrl_type) {
+            case TS_LED_CTRL_EFFECT: ctrl_type_str = "effect"; break;
+            case TS_LED_CTRL_BRIGHTNESS: ctrl_type_str = "brightness"; break;
+            case TS_LED_CTRL_OFF: ctrl_type_str = "off"; break;
+            case TS_LED_CTRL_TEXT: ctrl_type_str = "text"; break;
+            case TS_LED_CTRL_IMAGE: ctrl_type_str = "image"; break;
+            case TS_LED_CTRL_QRCODE: ctrl_type_str = "qrcode"; break;
+            case TS_LED_CTRL_FILTER: ctrl_type_str = "filter"; break;
+            case TS_LED_CTRL_FILTER_STOP: ctrl_type_str = "filter_stop"; break;
+            case TS_LED_CTRL_TEXT_STOP: ctrl_type_str = "text_stop"; break;
+            default: ctrl_type_str = "fill"; break;
+        }
+        if (!cJSON_AddStringToObject(led, "ctrl_type", ctrl_type_str)) goto failed;
+    }
+    if (!cJSON_AddNumberToObject(led, "index", value->index)) goto failed;
+    if (inline_format) {
+        if (!cJSON_AddNumberToObject(led, "r", value->r) ||
+            !cJSON_AddNumberToObject(led, "g", value->g) ||
+            !cJSON_AddNumberToObject(led, "b", value->b)) goto failed;
+    } else {
+        /* 颜色输出为 hex */
+        char color_hex[8];
+        snprintf(color_hex, sizeof(color_hex), "#%02X%02X%02X",
+                 value->r, value->g, value->b);
+        if (!cJSON_AddStringToObject(led, "color", color_hex)) goto failed;
+    }
+    if (value->ctrl_type == TS_LED_CTRL_QRCODE &&
+        !cJSON_AddBoolToObject(led, "qr_color_set", value->qr_color_set)) goto failed;
+    if (!cJSON_AddNumberToObject(led, "brightness", value->brightness)) goto failed;
+    if (inline_format || value->effect[0]) {
+        if (!cJSON_AddStringToObject(led, "effect", value->effect)) goto failed;
+    }
+    if (!cJSON_AddNumberToObject(led, "speed", value->speed)) goto failed;
+    if (!cJSON_AddNumberToObject(led, "duration_ms", value->duration_ms)) goto failed;
+    /* Matrix 高级功能 */
+    if (inline_format || value->text[0]) {
+        if (!cJSON_AddStringToObject(led, "text", value->text)) goto failed;
+    }
+    if (inline_format || value->font[0]) {
+        if (!cJSON_AddStringToObject(led, "font", value->font)) goto failed;
+    }
+    if (inline_format || value->image_path[0]) {
+        if (!cJSON_AddStringToObject(led, "image_path", value->image_path)) goto failed;
+    }
+    if (inline_format || value->qr_text[0]) {
+        if (!cJSON_AddStringToObject(led, "qr_text", value->qr_text)) goto failed;
+    }
+    if (inline_format) {
+        if (!cJSON_AddNumberToObject(led, "qr_ecc", (uint8_t)value->qr_ecc)) goto failed;
+    } else {
+        if (value->qr_ecc) {
+            char ecc_str[2] = { value->qr_ecc, '\0' };
+            if (!cJSON_AddStringToObject(led, "qr_ecc", ecc_str)) goto failed;
+        }
+    }
+    if (inline_format || value->filter[0]) {
+        if (!cJSON_AddStringToObject(led, "filter", value->filter)) goto failed;
+    }
+    if (!ts_action_filter_encode(&value->filter_params, led)) goto failed;
+    if (!cJSON_AddBoolToObject(led, "center", value->center)) goto failed;
+    if (!cJSON_AddBoolToObject(led, "loop", value->loop)) goto failed;
+    if (inline_format || value->scroll[0]) {
+        if (!cJSON_AddStringToObject(led, "scroll", value->scroll)) goto failed;
+    }
+    if (inline_format || value->align[0]) {
+        if (!cJSON_AddStringToObject(led, "align", value->align)) goto failed;
+    }
+    if (!cJSON_AddNumberToObject(led, "x", value->x)) goto failed;
+    if (!cJSON_AddNumberToObject(led, "y", value->y)) goto failed;
+    if (value->ctrl_type == TS_LED_CTRL_TEXT &&
+        !cJSON_AddBoolToObject(led, "auto_pos", !value->manual_position)) goto failed;
+    return true;
+failed:
+    return false;
+}
+
+static const cJSON *led_item(const cJSON *led, const char *name, bool inline_format)
+{
+    return inline_format ? cJSON_GetObjectItemCaseSensitive(led, name) : cJSON_GetObjectItem(led, name);
+}
+
+static bool read_led_string(const cJSON *item, char *out, size_t capacity, bool inline_format)
+{
+    if (!item) return true;
+    if (!cJSON_IsString(item)) return !inline_format;
+    return copy_string(out, capacity, item->valuestring);
+}
+
+esp_err_t ts_action_led_decode(const cJSON *led, ts_auto_action_led_t *value, bool inline_format)
+{
+    const cJSON *item;
+    if (!read_led_string(led_item(led, "device", inline_format), value->device, sizeof(value->device), inline_format)) goto invalid;
+    if (inline_format) {
+        if ((item = led_item(led, "ctrl_type", true))) {
+            unsigned type;
+            READ_NUMBER(type, 0, TS_LED_CTRL_TEXT_STOP);
+            value->ctrl_type = type;
+        }
+    } else if ((item = led_item(led, "ctrl_type", inline_format)) && cJSON_IsString(item)) {
+        const char *ct = item->valuestring;
+        if (strcmp(ct, "fill") == 0) value->ctrl_type = TS_LED_CTRL_FILL;
+        else if (strcmp(ct, "effect") == 0) value->ctrl_type = TS_LED_CTRL_EFFECT;
+        else if (strcmp(ct, "brightness") == 0) value->ctrl_type = TS_LED_CTRL_BRIGHTNESS;
+        else if (strcmp(ct, "off") == 0) value->ctrl_type = TS_LED_CTRL_OFF;
+        else if (strcmp(ct, "text") == 0) value->ctrl_type = TS_LED_CTRL_TEXT;
+        else if (strcmp(ct, "image") == 0) value->ctrl_type = TS_LED_CTRL_IMAGE;
+        else if (strcmp(ct, "qrcode") == 0) value->ctrl_type = TS_LED_CTRL_QRCODE;
+        else if (strcmp(ct, "filter") == 0) value->ctrl_type = TS_LED_CTRL_FILTER;
+        else if (strcmp(ct, "filter_stop") == 0) value->ctrl_type = TS_LED_CTRL_FILTER_STOP;
+        else if (strcmp(ct, "text_stop") == 0) value->ctrl_type = TS_LED_CTRL_TEXT_STOP;
+        else goto invalid;
+    }
+    if ((item = led_item(led, "index", inline_format))) {
+        READ_NUMBER(value->index, 0, UINT8_MAX);
+    }
+    /* 解析颜色（支持 color 字符串或 r/g/b 数值） */
+    if ((item = led_item(led, "color", inline_format)) && cJSON_IsString(item)) {
+        if (ts_action_parse_color(item->valuestring, &value->r,
+                                  &value->g, &value->b) != ESP_OK) goto invalid;
+    } else {
+        if ((item = led_item(led, "r", inline_format))) {
+            READ_NUMBER(value->r, 0, UINT8_MAX);
+        }
+        if ((item = led_item(led, "g", inline_format))) {
+            READ_NUMBER(value->g, 0, UINT8_MAX);
+        }
+        if ((item = led_item(led, "b", inline_format))) {
+            READ_NUMBER(value->b, 0, UINT8_MAX);
+        }
+    }
+    if ((item = led_item(led, "brightness", inline_format))) {
+        READ_NUMBER(value->brightness, 0, UINT8_MAX);
+    }
+    if (!read_led_string(led_item(led, "effect", inline_format), value->effect, sizeof(value->effect), inline_format)) goto invalid;
+    if ((item = led_item(led, "speed", inline_format))) {
+        READ_NUMBER(value->speed, 0, UINT8_MAX);
+    }
+    if ((item = led_item(led, "duration_ms", inline_format))) {
+        READ_NUMBER(value->duration_ms, 0, UINT16_MAX);
+    }
+    /* Matrix 高级功能参数 */
+    if (!read_led_string(led_item(led, "text", inline_format), value->text, sizeof(value->text), inline_format)) goto invalid;
+    if (!read_led_string(led_item(led, "font", inline_format), value->font, sizeof(value->font), inline_format)) goto invalid;
+    if (!read_led_string(led_item(led, "image_path", inline_format), value->image_path, sizeof(value->image_path), inline_format)) goto invalid;
+    if (value->ctrl_type == TS_LED_CTRL_QRCODE) {
+        if ((item = led_item(led, "qr_fg", inline_format)) && cJSON_IsString(item)) {
+            if (ts_action_parse_color(item->valuestring, &value->r,
+                                      &value->g, &value->b) != ESP_OK) goto invalid;
+            value->qr_color_set = true;
+        } else if ((item = led_item(led, "qr_color_set", inline_format))) {
+            READ_BOOL(value->qr_color_set);
+        }
+        if ((item = led_item(led, "qr_bg_image", inline_format)) && cJSON_IsString(item)) {
+            if (!copy_string(value->image_path, sizeof(value->image_path), item->valuestring)) goto invalid;
+        }
+    }
+    if (!read_led_string(led_item(led, "qr_text", inline_format), value->qr_text, sizeof(value->qr_text), inline_format)) goto invalid;
+    if (inline_format) {
+        if ((item = led_item(led, "qr_ecc", true))) {
+            uint8_t ecc;
+            READ_NUMBER(ecc, 0, UINT8_MAX);
+            value->qr_ecc = (char)ecc;
+        }
+    } else if ((item = led_item(led, "qr_ecc", inline_format)) && cJSON_IsString(item)) {
+        value->qr_ecc = item->valuestring[0];  /* L/M/Q/H */
+    }
+    if (!read_led_string(led_item(led, "filter", inline_format), value->filter, sizeof(value->filter), inline_format)) goto invalid;
+    if (ts_action_filter_decode(cJSON_GetObjectItemCaseSensitive(led, "filter_params"),
+                                &value->filter_params) != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((item = led_item(led, "center", inline_format))) {
+        READ_BOOL(value->center);
+    }
+    if ((item = led_item(led, "loop", inline_format))) {
+        READ_BOOL(value->loop);
+    }
+    if (!read_led_string(led_item(led, "scroll", inline_format), value->scroll, sizeof(value->scroll), inline_format)) goto invalid;
+    if (!read_led_string(led_item(led, "align", inline_format), value->align, sizeof(value->align), inline_format)) goto invalid;
+    if ((item = led_item(led, "x", inline_format))) {
+        READ_NUMBER(value->x, INT16_MIN, INT16_MAX);
+    }
+    if ((item = led_item(led, "y", inline_format))) {
+        READ_NUMBER(value->y, INT16_MIN, INT16_MAX);
+    }
+    if (value->ctrl_type == TS_LED_CTRL_TEXT &&
+        (item = led_item(led, "auto_pos", inline_format))) {
+        bool automatic;
+        READ_BOOL(automatic);
+        value->manual_position = !automatic;
+    }
+    return ESP_OK;
+invalid:
+    return ESP_ERR_INVALID_ARG;
+}
+
 char *ts_action_template_encode(const ts_action_template_t *tpl)
 {
     cJSON *root = cJSON_CreateObject();
@@ -189,66 +393,7 @@ char *ts_action_template_encode(const ts_action_template_t *tpl)
         }
         case TS_AUTO_ACT_LED: {
             cJSON *led = cJSON_AddObjectToObject(root, "led");
-            if (!led) goto failed;
-            if (!cJSON_AddStringToObject(led, "device", tpl->action.led.device)) goto failed;
-            /* 控制类型 */
-            const char *ctrl_type_str = "fill";
-            switch (tpl->action.led.ctrl_type) {
-                case TS_LED_CTRL_EFFECT: ctrl_type_str = "effect"; break;
-                case TS_LED_CTRL_BRIGHTNESS: ctrl_type_str = "brightness"; break;
-                case TS_LED_CTRL_OFF: ctrl_type_str = "off"; break;
-                case TS_LED_CTRL_TEXT: ctrl_type_str = "text"; break;
-                case TS_LED_CTRL_IMAGE: ctrl_type_str = "image"; break;
-                case TS_LED_CTRL_QRCODE: ctrl_type_str = "qrcode"; break;
-                case TS_LED_CTRL_FILTER: ctrl_type_str = "filter"; break;
-                case TS_LED_CTRL_FILTER_STOP: ctrl_type_str = "filter_stop"; break;
-                case TS_LED_CTRL_TEXT_STOP: ctrl_type_str = "text_stop"; break;
-                default: ctrl_type_str = "fill"; break;
-            }
-            if (!cJSON_AddStringToObject(led, "ctrl_type", ctrl_type_str)) goto failed;
-            if (!cJSON_AddNumberToObject(led, "index", tpl->action.led.index)) goto failed;
-            /* 颜色输出为 hex */
-            char color_hex[8];
-            snprintf(color_hex, sizeof(color_hex), "#%02X%02X%02X",
-                     tpl->action.led.r, tpl->action.led.g, tpl->action.led.b);
-            if (!cJSON_AddStringToObject(led, "color", color_hex)) goto failed;
-            if (!cJSON_AddNumberToObject(led, "brightness", tpl->action.led.brightness)) goto failed;
-            if (tpl->action.led.effect[0]) {
-                if (!cJSON_AddStringToObject(led, "effect", tpl->action.led.effect)) goto failed;
-            }
-            if (!cJSON_AddNumberToObject(led, "speed", tpl->action.led.speed)) goto failed;
-            if (!cJSON_AddNumberToObject(led, "duration_ms", tpl->action.led.duration_ms)) goto failed;
-            /* Matrix 高级功能 */
-            if (tpl->action.led.text[0]) {
-                if (!cJSON_AddStringToObject(led, "text", tpl->action.led.text)) goto failed;
-            }
-            if (tpl->action.led.font[0]) {
-                if (!cJSON_AddStringToObject(led, "font", tpl->action.led.font)) goto failed;
-            }
-            if (tpl->action.led.image_path[0]) {
-                if (!cJSON_AddStringToObject(led, "image_path", tpl->action.led.image_path)) goto failed;
-            }
-            if (tpl->action.led.qr_text[0]) {
-                if (!cJSON_AddStringToObject(led, "qr_text", tpl->action.led.qr_text)) goto failed;
-            }
-            if (tpl->action.led.qr_ecc) {
-                char ecc_str[2] = { tpl->action.led.qr_ecc, '\0' };
-                if (!cJSON_AddStringToObject(led, "qr_ecc", ecc_str)) goto failed;
-            }
-            if (tpl->action.led.filter[0]) {
-                if (!cJSON_AddStringToObject(led, "filter", tpl->action.led.filter)) goto failed;
-            }
-            if (!ts_action_filter_encode(&tpl->action.led.filter_params, led)) goto failed;
-            if (!cJSON_AddBoolToObject(led, "center", tpl->action.led.center)) goto failed;
-            if (!cJSON_AddBoolToObject(led, "loop", tpl->action.led.loop)) goto failed;
-            if (tpl->action.led.scroll[0]) {
-                if (!cJSON_AddStringToObject(led, "scroll", tpl->action.led.scroll)) goto failed;
-            }
-            if (tpl->action.led.align[0]) {
-                if (!cJSON_AddStringToObject(led, "align", tpl->action.led.align)) goto failed;
-            }
-            if (!cJSON_AddNumberToObject(led, "x", tpl->action.led.x)) goto failed;
-            if (!cJSON_AddNumberToObject(led, "y", tpl->action.led.y)) goto failed;
+            if (!led || !ts_action_led_encode(led, &tpl->action.led, false)) goto failed;
             break;
         }
         case TS_AUTO_ACT_LOG: {
@@ -406,101 +551,9 @@ esp_err_t ts_action_template_decode(const char *json, ts_action_template_t *tpl)
             break;
         }
         case TS_AUTO_ACT_LED: {
-            cJSON *led = cJSON_GetObjectItem(root, "led");
-            if (led) {
-                if ((item = cJSON_GetObjectItem(led, "device")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.device, sizeof(tpl->action.led.device), item->valuestring)) goto invalid;
-                }
-                /* 解析控制类型 */
-                if ((item = cJSON_GetObjectItem(led, "ctrl_type")) && cJSON_IsString(item)) {
-                    const char *ct = item->valuestring;
-                    if (strcmp(ct, "fill") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_FILL;
-                    else if (strcmp(ct, "effect") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_EFFECT;
-                    else if (strcmp(ct, "brightness") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_BRIGHTNESS;
-                    else if (strcmp(ct, "off") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_OFF;
-                    else if (strcmp(ct, "text") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_TEXT;
-                    else if (strcmp(ct, "image") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_IMAGE;
-                    else if (strcmp(ct, "qrcode") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_QRCODE;
-                    else if (strcmp(ct, "filter") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_FILTER;
-                    else if (strcmp(ct, "filter_stop") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_FILTER_STOP;
-                    else if (strcmp(ct, "text_stop") == 0) tpl->action.led.ctrl_type = TS_LED_CTRL_TEXT_STOP;
-                    else goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "index"))) {
-                    READ_NUMBER(tpl->action.led.index, 0, UINT8_MAX);
-                } else {
-                    tpl->action.led.index = 0xFF;  /* Default: fill all */
-                }
-                /* 解析颜色（支持 color 字符串或 r/g/b 数值） */
-                if ((item = cJSON_GetObjectItem(led, "color")) && cJSON_IsString(item)) {
-                    if (ts_action_parse_color(item->valuestring, &tpl->action.led.r,
-                                              &tpl->action.led.g, &tpl->action.led.b) != ESP_OK) goto invalid;
-                } else {
-                    if ((item = cJSON_GetObjectItem(led, "r"))) {
-                        READ_NUMBER(tpl->action.led.r, 0, UINT8_MAX);
-                    }
-                    if ((item = cJSON_GetObjectItem(led, "g"))) {
-                        READ_NUMBER(tpl->action.led.g, 0, UINT8_MAX);
-                    }
-                    if ((item = cJSON_GetObjectItem(led, "b"))) {
-                        READ_NUMBER(tpl->action.led.b, 0, UINT8_MAX);
-                    }
-                }
-                if ((item = cJSON_GetObjectItem(led, "brightness"))) {
-                    READ_NUMBER(tpl->action.led.brightness, 0, UINT8_MAX);
-                }
-                if ((item = cJSON_GetObjectItem(led, "effect")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.effect, sizeof(tpl->action.led.effect), item->valuestring)) goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "speed"))) {
-                    READ_NUMBER(tpl->action.led.speed, 0, UINT8_MAX);
-                }
-                if ((item = cJSON_GetObjectItem(led, "duration_ms"))) {
-                    READ_NUMBER(tpl->action.led.duration_ms, 0, UINT16_MAX);
-                }
-                /* Matrix 高级功能参数 */
-                if ((item = cJSON_GetObjectItem(led, "text")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.text, sizeof(tpl->action.led.text), item->valuestring)) goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "font")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.font, sizeof(tpl->action.led.font), item->valuestring)) goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "image_path")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.image_path, sizeof(tpl->action.led.image_path), item->valuestring)) goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "qr_text")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.qr_text, sizeof(tpl->action.led.qr_text), item->valuestring)) goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "qr_ecc")) && cJSON_IsString(item)) {
-                    tpl->action.led.qr_ecc = item->valuestring[0];  /* L/M/Q/H */
-                }
-                if ((item = cJSON_GetObjectItem(led, "filter")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.filter, sizeof(tpl->action.led.filter), item->valuestring)) goto invalid;
-                }
-                if (ts_action_filter_decode(cJSON_GetObjectItemCaseSensitive(led, "filter_params"),
-                                            &tpl->action.led.filter_params) != ESP_OK) {
-                    cJSON_Delete(owner);
-                    return ESP_ERR_INVALID_ARG;
-                }
-                if ((item = cJSON_GetObjectItem(led, "center"))) {
-                    READ_BOOL(tpl->action.led.center);
-                }
-                if ((item = cJSON_GetObjectItem(led, "loop"))) {
-                    READ_BOOL(tpl->action.led.loop);
-                }
-                if ((item = cJSON_GetObjectItem(led, "scroll")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.scroll, sizeof(tpl->action.led.scroll), item->valuestring)) goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "align")) && cJSON_IsString(item)) {
-                    if (!copy_string(tpl->action.led.align, sizeof(tpl->action.led.align), item->valuestring)) goto invalid;
-                }
-                if ((item = cJSON_GetObjectItem(led, "x"))) {
-                    READ_NUMBER(tpl->action.led.x, INT16_MIN, INT16_MAX);
-                }
-                if ((item = cJSON_GetObjectItem(led, "y"))) {
-                    READ_NUMBER(tpl->action.led.y, INT16_MIN, INT16_MAX);
-                }
-            }
+            const cJSON *led = cJSON_GetObjectItem(root, "led");
+            tpl->action.led.index = 0xFF; /* Original template default: fill all. */
+            if (ts_action_led_decode(led, &tpl->action.led, false) != ESP_OK) goto invalid;
             break;
         }
         case TS_AUTO_ACT_LOG: {

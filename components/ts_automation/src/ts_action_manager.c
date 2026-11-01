@@ -829,6 +829,30 @@ static esp_err_t require_action_resource(const char *path,const char *reason,ts_
     return ESP_ERR_NOT_FOUND;
 }
 
+/* Quote only the new LED --bg/--align values for esp_console_split_argv. */
+static esp_err_t append_led_cli_argument(char *command, size_t capacity,
+                                         const char *option, const char *value)
+{
+    size_t used = strlen(command);
+    size_t needed = strlen(option) + 4; /* spaces and opening/closing quotes */
+    for (const char *p = value; *p; ++p) needed += (*p == '\\' || *p == '"') ? 2 : 1;
+    if (needed >= capacity - used) return ESP_ERR_INVALID_SIZE;
+
+    char *out = command + used;
+    *out++ = ' ';
+    memcpy(out, option, strlen(option));
+    out += strlen(option);
+    *out++ = ' ';
+    *out++ = '"';
+    for (const char *p = value; *p; ++p) {
+        if (*p == '\\' || *p == '"') *out++ = '\\';
+        *out++ = *p;
+    }
+    *out++ = '"';
+    *out = '\0';
+    return ESP_OK;
+}
+
 esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
                               ts_action_result_t *result)
 {
@@ -997,6 +1021,19 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
                     len += snprintf(cmd + len, sizeof(cmd) - len, " --speed %d", led_final->speed);
                 }
 
+                if (led_final->align[0]) {
+                    ret = append_led_cli_argument(cmd, sizeof(cmd), "--align", led_final->align);
+                    if (ret != ESP_OK) break;
+                }
+                if (led_final->manual_position) {
+                    len = strlen(cmd);
+                    int written = snprintf(cmd + len, sizeof(cmd) - len, " --x %d --y %d", led_final->x, led_final->y);
+                    if (written < 0 || (size_t)written >= sizeof(cmd) - len) {
+                        ret = ESP_ERR_INVALID_SIZE;
+                        break;
+                    }
+                }
+
                 ESP_LOGD(TAG, "Executing LED CLI (%u bytes)", (unsigned)strlen(cmd));
                 ret = ts_console_exec(cmd, NULL);
                 snprintf(result->output, sizeof(result->output), "LED text: %.200s%s", led_final->text, strlen(led_final->text) > 200 ? "..." : "");
@@ -1042,8 +1079,13 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
                 if (led_final->qr_ecc) {
                     len += snprintf(cmd + len, sizeof(cmd) - len, " --ecc %c", led_final->qr_ecc);
                 }
-                if (led_final->r || led_final->g || led_final->b) {
+                if (led_final->qr_color_set || led_final->r || led_final->g || led_final->b) {
                     len += snprintf(cmd + len, sizeof(cmd) - len, " --color #%02X%02X%02X", led_final->r, led_final->g, led_final->b);
+                }
+
+                if (led_final->image_path[0]) {
+                    ret = append_led_cli_argument(cmd, sizeof(cmd), "--bg", led_final->image_path);
+                    if (ret != ESP_OK) break;
                 }
 
                 ESP_LOGD(TAG, "Executing LED CLI (%u bytes)", (unsigned)strlen(cmd));

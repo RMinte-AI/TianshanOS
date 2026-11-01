@@ -5686,7 +5686,7 @@ async function generateQrCodeFromModal() {
     }
     
     try {
-        requireApiSuccess(await api.call('led.qrcode', { device: 'matrix', text, ecc, fg_color: fg, bg_image: bgImage || undefined }), 'call');
+        requireApiSuccess(await api.call('led.qrcode', { device: 'matrix', text, ecc, color: fg, bg_image: bgImage || undefined }), 'call');
         showToast((typeof t === 'function' ? t('toast.qrGenerated') : 'QR 码已生成'), 'success');
     } catch (e) {
         reportFailure({ op: 'led.qr', error: e, write: true });
@@ -5988,8 +5988,6 @@ async function applyColorCorrection() {
         // 先应用配置
         const result = await api.ledColorCorrectionSet(config);
         if (result.code === 0) {
-            // 导出到 NVS（通过 export 保存）
-            requireApiSuccess(await api.ledColorCorrectionExport(), 'ledColorCorrectionExport');
             // 更新初始配置为当前配置
             ccInitialConfig = JSON.parse(JSON.stringify(config));
             showToast(t('ledPage.ccApplySuccess'), 'success');
@@ -15190,8 +15188,9 @@ async function submitAction(originalId = null) {
                         return;
                     }
                     data.led.qr_ecc = document.getElementById('action-led-qr-ecc')?.value || 'M';
-                    data.led.qr_fg = document.getElementById('action-led-qr-fg')?.value || '#FFFFFF';
-                    data.led.qr_bg_image = document.getElementById('action-led-qr-bg')?.value || '';
+                    data.led.color = document.getElementById('action-led-qr-fg')?.value || '#FFFFFF';
+                    data.led.qr_color_set = true;
+                    data.led.image_path = document.getElementById('action-led-qr-bg')?.value || '';
                     break;
                 case 'filter':
                     data.led.filter = document.getElementById('action-led-filter')?.value;
@@ -16086,6 +16085,12 @@ async function editAction(id) {
                                     const alignEl = document.getElementById('action-led-align');
                                     if (alignEl) alignEl.value = tpl.led.align;
                                 }
+                                const autoPosEl = document.getElementById('action-led-auto-pos');
+                                if (autoPosEl) autoPosEl.checked = tpl.led.auto_pos !== false;
+                                const xEl = document.getElementById('action-led-x');
+                                const yEl = document.getElementById('action-led-y');
+                                if (xEl) xEl.value = tpl.led.x ?? 0;
+                                if (yEl) yEl.value = tpl.led.y ?? 0;
                                 break;
                             case 'image':
                                 if (tpl.led.image_path) {
@@ -16106,10 +16111,12 @@ async function editAction(id) {
                                     const eccEl = document.getElementById('action-led-qr-ecc');
                                     if (eccEl) eccEl.value = tpl.led.qr_ecc;
                                 }
-                                if (tpl.led.color) {
-                                    const fgEl = document.getElementById('action-led-qr-fg');
-                                    if (fgEl) fgEl.value = tpl.led.color;
-                                }
+                                const fgEl = document.getElementById('action-led-qr-fg');
+                                const qrColor = tpl.led.color || '#FFFFFF';
+                                if (fgEl) fgEl.value = tpl.led.qr_color_set || qrColor.toLowerCase() !== '#000000'
+                                    ? qrColor : '#FFFFFF';
+                                const bgEl = document.getElementById('action-led-qr-bg');
+                                if (bgEl) bgEl.value = tpl.led.image_path || '';
                                 break;
                             case 'filter':
                                 if (tpl.led.filter) {

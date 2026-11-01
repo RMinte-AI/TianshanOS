@@ -485,3 +485,101 @@ for(const language of ['zh-CN','en-US']){
   }finally{await f.context.close();}
  });
 }
+
+for(const language of ['zh-CN','en-US']) {
+ test(`${language}: B09 QR effective colors and one image path survive actual edit/save/reopen`,async()=>{
+  const f=await fixture(language);try {
+   const cases=[{color:undefined,expected:'#ffffff'},{color:'#000000',expected:'#ffffff'},
+    {color:'#a01234',expected:'#a01234'},{color:'#000000',qr_color_set:true,expected:'#000000'},
+    {color:'#ffffff',qr_color_set:true,expected:'#ffffff'},{color:'#ff0000',qr_color_set:true,expected:'#ff0000'}];
+   for(const entry of cases) {
+    await f.page.evaluate(async entry=>{
+     document.getElementById('action-modal')?.remove();
+     stored={id:'fixture',name:'QR fields',type:'led',enabled:true,led:{device:'matrix',ctrl_type:'qrcode',qr_text:'B09',qr_ecc:'M',image_path:'/sdcard/images/normal picture.bmp',...(entry.color?{color:entry.color}:{}),...(entry.qr_color_set?{qr_color_set:true}:{})}};
+     await editAction('fixture');
+    },entry);
+    assert.equal(await f.page.locator('#action-led-qr-fg').inputValue(),entry.expected);
+    assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'/sdcard/images/normal picture.bmp');
+    const before=await f.page.evaluate(()=>writes.length);
+    await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+    await f.page.waitForFunction(before=>writes.length===before+1,before);
+    const led=await f.page.evaluate(()=>stored.led);
+    assert.equal(led.color.toLowerCase(),entry.expected);assert.equal(led.qr_color_set,true);
+    assert.equal(led.image_path,'/sdcard/images/normal picture.bmp');assert(!('qr_fg' in led)&&!('qr_bg_image' in led));
+    await f.page.evaluate(async()=>{document.getElementById('action-modal')?.remove();await editAction('fixture');});
+    assert.equal(await f.page.locator('#action-led-qr-fg').inputValue(),entry.expected);
+   }
+   await f.page.evaluate(()=>{api.storageList=async()=>({code:0,data:{entries:[{name:'chosen picture.bmp',type:'file',size:70}]}});});
+   await f.page.locator('#action-modal [onclick="browseActionQrBg()"]').click();
+   await f.page.locator('#image-select-list .image-select-item').click();
+   assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'/sdcard/images/chosen picture.bmp');
+   await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+   await f.page.evaluate(async()=>{document.getElementById('action-modal')?.remove();await editAction('fixture');});
+   assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'/sdcard/images/chosen picture.bmp');
+   await f.page.locator("#action-modal button[onclick^=\"document.getElementById('action-led-qr-bg')\"]").click();
+   assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'');
+   await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+   assert.equal(await f.page.evaluate(()=>stored.led.image_path),'');assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(`${language}: B09 auto position defaults and manual zero/nonzero survive actual save/reopen`,async()=>{
+  const f=await fixture(language);try {
+   const cases=[{x:5,y:7},{auto_pos:true,x:5,y:7},{auto_pos:false,x:0,y:0},{auto_pos:false,x:5,y:7},
+    {auto_pos:false,x:5,y:7,align:'center'},{auto_pos:false,x:5,y:7,align:'right',scroll:'left'}];
+   for(const position of cases) {
+    await f.page.evaluate(async position=>{
+     document.getElementById('action-modal')?.remove();stored={id:'fixture',name:'Text fields',type:'led',enabled:true,led:{device:'matrix',ctrl_type:'text',text:'A',font:'pixel9x9',color:'#00ff00',align:'left',scroll:'none',speed:50,...position}};await editAction('fixture');
+    },position);
+    assert.equal(await f.page.locator('#action-led-auto-pos').isChecked(),position.auto_pos!==false);
+    assert.equal(await f.page.locator('#action-led-x').inputValue(),String(position.x));
+    assert.equal(await f.page.locator('#action-led-y').inputValue(),String(position.y));
+    assert.equal(await f.page.locator('#action-led-align').inputValue(),position.align||'left');
+    await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+    const led=await f.page.evaluate(()=>stored.led);assert.equal(led.auto_pos,position.auto_pos!==false);assert.equal(led.x,position.x);assert.equal(led.y,position.y);
+    await f.page.evaluate(async()=>{document.getElementById('action-modal')?.remove();await editAction('fixture');});
+    assert.equal(await f.page.locator('#action-led-auto-pos').isChecked(),position.auto_pos!==false);
+    assert.equal(await f.page.locator('#action-led-x').inputValue(),String(position.x));
+    assert.equal(await f.page.locator('#action-led-y').inputValue(),String(position.y));
+   }
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(`${language}: B09 direct QR uses color; CC apply and explicit SD export report separately`,async()=>{
+  const f=await fixture(language);try {
+   await f.page.evaluate(()=>{
+    window.qrRequests=[];const original=api.call;
+    api.call=async function(endpoint,params){if(endpoint==='led.qrcode'){qrRequests.push(JSON.parse(JSON.stringify(params)));return {code:0,data:{}};}return original.call(this,endpoint,params);};
+    window.ledDevicesCache=[{name:'matrix',layout:'matrix'}];openLedModal('matrix','content');
+   });
+   await f.page.locator('#led-modal [onclick*="modal-tab-qr"]').click();
+   await f.page.locator('#modal-qr-text').fill('B09');await f.page.locator('#modal-qr-fg').fill('#ff0000');
+   await f.page.locator('#led-foot-qr').click();
+   assert.deepEqual(await f.page.evaluate(()=>qrRequests),[{device:'matrix',text:'B09',ecc:'M',color:'#ff0000'}]);
+   await f.page.evaluate(()=>{
+    closeLedModal();window.ccSaved={enabled:true,white_point:{r:1,g:1,b:1,enabled:true},gamma:{value:1,enabled:true},brightness:{factor:1,enabled:true},saturation:{factor:1,enabled:true}};window.ccSets=[];window.ccExports=0;window.ccSetFails=false;
+    api.ledColorCorrectionGet=async()=>({code:0,data:structuredClone(ccSaved)});
+    api.ledColorCorrectionSet=async config=>{ccSets.push(structuredClone(config));if(ccSetFails)return {code:7,message:'fixture_nvs_failed'};ccSaved=structuredClone(config);return {code:0,data:{success:true}};};
+    api.ledColorCorrectionExport=async()=>{++ccExports;return {code:7,message:'fixture_sd_unavailable'};};
+    openLedModal('matrix','colorcorrection');
+   });
+   await f.page.waitForFunction(()=>ccInitialConfig?.enabled===true);
+   await f.page.locator('#cc-wp-r').fill('130');
+   await f.page.evaluate(()=>clearTimeout(ccPreviewDebounce));
+   await f.page.locator('#led-modal [onclick="applyColorCorrection()"]').click();
+   await f.page.waitForFunction(()=>ccInitialConfig?.white_point?.r===1.3);
+   assert.equal(await f.page.evaluate(()=>ccExports),0);
+   assert.equal(await f.page.locator('#toast').innerText(),await f.page.evaluate(()=>t('ledPage.ccApplySuccess')));
+   await f.page.evaluate(()=>{closeLedModal();openLedModal('matrix','colorcorrection');});
+   await f.page.waitForFunction(()=>document.getElementById('cc-wp-r')?.value==='130');
+   await f.page.locator('#led-modal [onclick="ccExport()"]').click();
+   await f.page.waitForFunction(()=>ccExports===1);
+   assert.equal(await f.page.evaluate(()=>ccSaved.white_point.r),1.3);
+   assert.notEqual(await f.page.locator('#toast').innerText(),await f.page.evaluate(()=>t('ledPage.ccApplySuccess')));
+   await f.page.locator('#toast .toast-close').click();
+   await f.page.evaluate(()=>{ccSetFails=true;document.getElementById('cc-wp-r').value='140';});
+   await f.page.locator('#led-modal [onclick="applyColorCorrection()"]').click();
+   assert.equal(await f.page.evaluate(()=>ccInitialConfig.white_point.r),1.3);assert.equal(await f.page.evaluate(()=>ccExports),1);
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+}

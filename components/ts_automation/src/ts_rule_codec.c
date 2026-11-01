@@ -1,4 +1,5 @@
 #include "ts_rule_codec.h"
+#include "ts_action_codec.h"
 #include "ts_action_filter.h"
 #include "esp_heap_caps.h"
 #include <limits.h>
@@ -30,30 +31,6 @@ static const field rule_fields[] = {R(id, "id", STRING, 0),
                                     R(allow_manual_trigger, "allow_manual_trigger", BOOL, 1),
                                     R(cooldown_ms, "cooldown_ms", U32, 0),
                                     R(revision, "revision", U32, 0)};
-static const field led_fields[] = {
-    A(led.device, "device", STRING, 0),
-    A(led.ctrl_type, "ctrl_type", ENUM, 9),
-    A(led.index, "index", U8, 255),
-    A(led.r, "r", U8, 255),
-    A(led.g, "g", U8, 255),
-    A(led.b, "b", U8, 255),
-    A(led.brightness, "brightness", U8, 255),
-    A(led.effect, "effect", STRING, 0),
-    A(led.duration_ms, "duration_ms", U16, 65535),
-    A(led.speed, "speed", U8, 255),
-    A(led.text, "text", STRING, 0),
-    A(led.font, "font", STRING, 0),
-    A(led.image_path, "image_path", STRING, 0),
-    A(led.qr_text, "qr_text", STRING, 0),
-    A(led.qr_ecc, "qr_ecc", U8, 255),
-    A(led.filter, "filter", STRING, 0),
-    A(led.center, "center", BOOL, 1),
-    A(led.loop, "loop", BOOL, 1),
-    A(led.scroll, "scroll", STRING, 0),
-    A(led.align, "align", STRING, 0),
-    A(led.x, "x", I16, 32767),
-    A(led.y, "y", I16, 32767),
-};
 static const field ssh_fields[] = {
     A(ssh.host_ref, "host_ref", STRING, 0),
     A(ssh.command, "command", STRING, 0),
@@ -93,7 +70,7 @@ static const struct {
     const field *fields;
     size_t count;
 } by_type[] = {
-    {led_fields, sizeof(led_fields) / sizeof(field)},
+    {NULL, 0},
     {ssh_fields, sizeof(ssh_fields) / sizeof(field)},
     {gpio_fields, sizeof(gpio_fields) / sizeof(field)},
     {webhook_fields, sizeof(webhook_fields) / sizeof(field)},
@@ -397,8 +374,7 @@ esp_err_t ts_rule_decode(const cJSON *j, ts_auto_rule_t *r) {
             goto invalid;
         out->repeat_mode = rep;
         if (out->type == TS_AUTO_ACT_LED && !out->template_id[0] &&
-            ts_action_filter_decode(cJSON_GetObjectItemCaseSensitive(a, "filter_params"),
-                                    &out->led.filter_params) != ESP_OK)
+            ts_action_led_decode(a, &out->led, true) != ESP_OK)
             goto invalid;
         if (cJSON_HasObjectItem(a, "condition")) {
             const cJSON *ac = cJSON_GetObjectItemCaseSensitive(a, "condition");
@@ -472,7 +448,7 @@ cJSON *ts_rule_encode(const ts_auto_rule_t *r) {
              !fields_write(aj, a, by_type[a->type].fields, by_type[a->type].count)) ||
             !cJSON_AddStringToObject(aj, "repeat_mode", repeats[a->repeat_mode]))
             goto fail;
-        if (a->type == TS_AUTO_ACT_LED && !ts_action_filter_encode(&a->led.filter_params, aj))
+        if (a->type == TS_AUTO_ACT_LED && !ts_action_led_encode(aj, &a->led, true))
             goto fail;
         if (a->condition.has_condition) {
             cJSON *cj =

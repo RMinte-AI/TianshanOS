@@ -18,7 +18,7 @@ for encryption in plain encrypted; do
 done
 cc "${common[@]}" -Itests/runtime/rule_pack/stubs -Icomponents/ts_automation/include \
   -I"$IDF_PATH/components/json/cJSON" tests/runtime/test_rule_codec.c \
-  components/ts_automation/src/ts_rule_codec.c components/ts_automation/src/ts_action_filter.c \
+  components/ts_automation/src/ts_rule_codec.c components/ts_automation/src/ts_action_codec.c components/ts_automation/src/ts_action_filter.c \
   "$IDF_PATH/components/json/cJSON/cJSON.c" -lm -o "$CONFIG_TEST_BUILD/codec"
 "$CONFIG_TEST_BUILD/codec"
 migration_includes=(-Itests/runtime/led_persist_stubs -Itests/runtime/storage_stubs

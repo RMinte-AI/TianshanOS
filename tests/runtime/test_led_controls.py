@@ -141,11 +141,21 @@ static int ts_action_expand_variables(const char *in,char *out,size_t n) {assert
 static bool ts_action_filter_api_params(const ts_auto_filter_params_t *p,cJSON *out) {(void)p;(void)out;assert(false);return false;}
 esp_err_t ts_api_call(const char *method,const cJSON *params,ts_api_result_t *result) {(void)method;(void)params;(void)result;assert(false);return ESP_FAIL;}
 void ts_api_result_free(ts_api_result_t *result) {cJSON_Delete(result->data);}
+size_t esp_console_split_argv(char *,char **,size_t);
+static bool b09_cli_cases;
+static const char *cli_parameter(char **argv,size_t argc,const char *name) {for(size_t i=0;i+1<argc;i++)if(!strcmp(argv[i],name))return argv[i+1];return NULL;}
 int ts_console_exec(const char *command,int *exit_code) {
-    (void)exit_code;assert(strstr(command,"led --qrcode --device matrix --text \"B07\""));return do_led_qrcode("matrix","B07",NULL,NULL,NULL);
+    if(!b09_cli_cases) {
+        (void)exit_code;assert(strstr(command,"led --qrcode --device matrix --text \"B07\""));return do_led_qrcode("matrix","B07",NULL,NULL,NULL);
+    }
+    char split[512];assert(strlen(command)<sizeof(split));strcpy(split,command);char *argv[32];size_t argc=esp_console_split_argv(split,argv,32);
+    const char *text=cli_parameter(argv,argc,"--text"),*color=cli_parameter(argv,argc,"--color"),*device=cli_parameter(argv,argc,"--device");assert(text&&device&&!strcmp(device,"matrix"));
+    if(argc>1&&!strcmp(argv[1],"--qrcode"))return do_led_qrcode(device,text,cli_parameter(argv,argc,"--ecc"),color,cli_parameter(argv,argc,"--bg"));
+    assert(argc>1&&!strcmp(argv[1],"--draw-text"));const char *x=cli_parameter(argv,argc,"--x"),*y=cli_parameter(argv,argc,"--y"),*speed=cli_parameter(argv,argc,"--speed");bool loop=false;for(size_t i=0;i<argc;i++)if(!strcmp(argv[i],"--loop"))loop=true;
+    return do_led_draw_text(device,text,cli_parameter(argv,argc,"--font"),color,cli_parameter(argv,argc,"--align"),NULL,cli_parameter(argv,argc,"--scroll"),x?atoi(x):0,y?atoi(y):0,loop,false,speed?atoi(speed):30);
 }
 '''
-for name in ['action_resolve_led_device_name','require_action_resource','ts_action_exec_led']:
+for name in ['action_resolve_led_device_name','require_action_resource','append_led_cli_argument','ts_action_exec_led']:
     code += body('components/ts_automation/src/ts_action_manager.c',name)
 code += r'''
 static void frames(ts_led_device_t device,unsigned count,bool black) {
@@ -168,6 +178,19 @@ static const uint8_t gif_fixture[]={71,73,70,56,57,97,2,0,2,0,128,0,0,255,0,0,0,
 static void make_font(void) {FILE *f=fopen("fonts/normal.fnt","wb");assert(f);ts_font_header_t h={.magic={'T','F','N','T'},.version=1,.width=3,.height=5,.glyph_count=1,.index_offset=sizeof(h)};ts_font_index_entry_t index={.codepoint='A',.offset=sizeof(h)+sizeof(index)};uint8_t pixels[2]={0xff,0xff};fwrite(&h,sizeof(h),1,f);fwrite(&index,sizeof(index),1,f);fwrite(pixels,sizeof(pixels),1,f);fclose(f);}
 static void make_bmp(void) {uint8_t bmp[70]={0};bmp[0]='B';bmp[1]='M';bmp[2]=70;bmp[10]=54;bmp[14]=40;bmp[18]=2;bmp[22]=2;bmp[26]=1;bmp[28]=24;for(int i=54;i<70;i++)bmp[i]=i%3==0?255:0;FILE *f=fopen("/sdcard/images/normal.bmp","wb");assert(f);assert(fwrite(bmp,1,sizeof(bmp),f)==sizeof(bmp));fclose(f);}
 static void custom_animation(ts_led_layer_t layer,uint32_t time,void *data) {(void)time;assert(data);ts_led_fill(layer,TS_LED_GREEN);}
+static void check_b09_render(void) {
+    b09_cli_cases=true;ts_led_layer_t layer=ts_led_layer_get(s_matrix,0);ts_auto_action_led_t action={.ctrl_type=TS_LED_CTRL_QRCODE};strcpy(action.device,"matrix");strcpy(action.qr_text,"B09");ts_action_result_t result={0};
+    assert(ts_led_layer_clear_effect(layer)==ESP_OK);assert(ts_led_text_overlay_stop("matrix")==ESP_OK);
+    for(int which=0;which<5;which++){action.qr_color_set=which>0&&which<4;action.r=which>=2?255:0;action.g=action.b=which==2?255:0;assert(ts_action_exec_led(&action,&result)==ESP_OK);ts_led_layer_impl_t *l=layer;int foreground=0;for(int i=0;i<1024;i++){ts_led_rgb_t p=l->buffer[i];if(which==1)assert(!p.r&&!p.g&&!p.b);else if(p.r||p.g||p.b){++foreground;assert(p.r==255&&p.g==(which>=3?0:255)&&p.b==(which>=3?0:255));}}assert(which==1||foreground>0);}
+    const char *paths[]={"/sdcard/images/normal picture.bmp","/sdcard/images/quoted\" \\picture.bmp"};
+    for(int i=0;i<2;i++){char local[128];snprintf(local,sizeof(local),"%s",paths[i]+8);assert(!rename("images/normal.bmp",local));strcpy(action.image_path,paths[i]);assert(ts_action_exec_led(&action,&result)==ESP_OK);ts_led_rgb_t actual[1024];memcpy(actual,((ts_led_layer_impl_t*)layer)->buffer,sizeof(actual));ts_led_image_t image=NULL;assert(ts_led_image_load(paths[i],TS_LED_IMG_FMT_AUTO,&image)==ESP_OK);ts_led_qr_config_t cfg=TS_LED_QR_DEFAULT_CONFIG();cfg.text="B09";cfg.bg_image=image;cfg.fg_color=TS_LED_RED;cfg.bg_color=TS_LED_BLACK;cfg.version_min=1;cfg.version_max=4;assert(ts_led_qrcode_show(layer,&cfg,NULL)==ESP_OK&&!memcmp(actual,((ts_led_layer_impl_t*)layer)->buffer,sizeof(actual)));assert(ts_led_image_free(image)==ESP_OK);assert(!rename(local,"images/normal.bmp"));}
+    action.image_path[0]=0;assert(ts_action_exec_led(&action,&result)==ESP_OK);strcpy(action.image_path,"/sdcard/images/missing.bmp");assert(ts_action_exec_led(&action,&result)!=ESP_OK);action.image_path[0]=0;
+    memset(&action,0,sizeof(action));action.ctrl_type=TS_LED_CTRL_TEXT;strcpy(action.device,"matrix");strcpy(action.text,"A");strcpy(action.font,"normal");strcpy(action.align,"left");action.x=5;action.y=7;
+    for(int manual=0;manual<2;manual++)for(int xy=0;xy<2;xy++){action.manual_position=manual;action.x=xy?5:0;action.y=xy?7:0;assert(ts_action_exec_led(&action,&result)==ESP_OK);xSemaphoreTake(s_led.mutex,portMAX_DELAY);ts_text_overlay_state_t *text=&s_overlays[0];assert(text->active&&text->base_x==(manual?action.x:0)&&text->base_y==(manual?action.y:0));render_overlay_text(text);int expected_x=manual?action.x:0,expected_y=manual?action.y:0;ts_led_layer_impl_t *overlay=text->overlay_layer;assert(overlay->buffer[expected_y*32+expected_x].r==255);xSemaphoreGive(s_led.mutex);}
+    action.manual_position=true;action.x=5;action.y=7;for(int right=0;right<2;right++){strcpy(action.align,right?"right":"center");assert(ts_action_exec_led(&action,&result)==ESP_OK);xSemaphoreTake(s_led.mutex,portMAX_DELAY);ts_text_overlay_state_t *text=&s_overlays[0];render_overlay_text(text);int x=right?32-text->text_width:(32-text->text_width)/2;assert(((ts_led_layer_impl_t*)text->overlay_layer)->buffer[7*32+x].r==255);xSemaphoreGive(s_led.mutex);}
+    strcpy(action.scroll,"left");strcpy(action.align,"center");action.loop=true;assert(ts_action_exec_led(&action,&result)==ESP_OK);xSemaphoreTake(s_led.mutex,portMAX_DELAY);assert(s_overlays[0].base_x==5&&s_overlays[0].base_y==7&&s_overlays[0].scroll_dir==TS_TEXT_SCROLL_LEFT);int start=s_overlays[0].scroll_x;update_scroll(&s_overlays[0],s_overlays[0].last_scroll_time+1000);assert(s_overlays[0].scroll_x<start);xSemaphoreGive(s_led.mutex);
+    assert(ts_led_text_overlay_stop("matrix")==ESP_OK);b09_cli_cases=false;puts("PASS B09 actual action/SDK split/CLI/QR pixels and image foreground sampling; text auto/manual zero and 5/7, old center/right and scroll");
+}
 int main(void) {
     mkdir("images",0700);mkdir("fonts",0700);make_bmp();make_font();FILE *gif_file=fopen("images/normal.gif","wb");assert(gif_file);fwrite(gif_fixture,sizeof(gif_fixture),1,gif_file);fclose(gif_file);action_context.stats_mutex=xSemaphoreCreateMutex();assert(ts_led_cc_get_default_config(&g_config)==ESP_OK);g_config.enabled=true;g_config.white_point.enabled=true;g_config.white_point.red_scale=0.75f;g_config.gamma.enabled=true;g_config.gamma.gamma=1.4f;g_config.saturation.enabled=true;g_config.saturation.factor=0.7f;
     fresh();ts_led_layer_t layers[3]={ts_led_layer_get(s_touch,0),ts_led_layer_get(s_board,0),ts_led_layer_get(s_matrix,0)};
@@ -208,7 +231,7 @@ int main(void) {
     teardown();fresh();assert(ts_led_load_boot_config("matrix")==ESP_OK);frames(s_matrix,4,true);assert(ts_led_get_current_state("matrix",&state)==ESP_OK&&!state.enabled&&!strcmp(state.qrcode_text,"B07")&&!state.image_path[0]&&!state.animation[0]&&state.brightness==149&&state.filter_speed==29);
     assert(do_led_effect("matrix","solid",50,"red")==0);assert(ts_led_save_boot_config("matrix")==ESP_OK&&nvs_find("led.mat.clr")>=0);assert(do_led_effect("matrix","solid",50,NULL)==0);assert(ts_led_save_boot_config("matrix")==ESP_OK&&nvs_find("led.mat.clr")<0);
     teardown();fresh();assert(ts_led_load_boot_config("matrix")==ESP_OK);assert(!((ts_led_layer_impl_t*)ts_led_layer_get(s_matrix,0))->anim_data);
-    teardown();free(s_delayed_image_timer);s_delayed_image_timer=NULL;vSemaphoreDelete(action_context.stats_mutex);free(s_anim_state);puts("PASS actual LED controls, independent RGB ownership, composition/CC/driver HAL output gate, QR layer handoff and NVS save/reset/rebuild/load");
+    check_b09_render();teardown();free(s_delayed_image_timer);s_delayed_image_timer=NULL;vSemaphoreDelete(action_context.stats_mutex);free(s_anim_state);puts("PASS actual LED controls, independent RGB ownership, composition/CC/driver HAL output gate, QR layer handoff and NVS save/reset/rebuild/load");
 }
 '''
 headers = {path.name: path.read_text() for path in Path('components/ts_led/include').glob('*.h')}
@@ -216,4 +239,4 @@ headers['ts_led_private.h'] = (LED / 'ts_led_private.h').read_text()
 headers['ts_automation_types.h'] = Path('components/ts_automation/include/ts_automation_types.h').read_text()
 headers['qrcodegen.h'] = (LED / 'qrcodegen/qrcodegen.h').read_text()
 headers.update({'led_strip.h':'#pragma once\ntypedef void *led_strip_handle_t;\n','freertos/FreeRTOS.h':'#pragma once\n','freertos/semphr.h':'#pragma once\n'})
-run_native(code,[IDF/'components/json/cJSON/cJSON.c',LED/'qrcodegen/qrcodegen.c'],headers)
+run_native(code,[IDF/'components/json/cJSON/cJSON.c',LED/'qrcodegen/qrcodegen.c',IDF/'components/console/split_argv.c'],headers)
