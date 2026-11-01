@@ -2044,7 +2044,7 @@ function showFanAutoHelpModal() {
     };
     modal.innerHTML = sheet(560, t('fanPage.smartHelpTitle'),
         `<p class="t-body" style="color:var(--ink-2);line-height:22px;margin:0">${escapeHtml(t('fanPage.smartHelpBody'))}</p>`,
-        `<button class="btn lg primary" onclick="closeFanAutoHelpModal()">${t('fanPage.autoHelpGotIt')}</button>`, 'closeFanAutoHelpModal()');
+        `<button class="btn lg primary" onclick="closeFanAutoHelpModal()">${t('fanPage.autoHelpGotIt')}</button>`);
     document.body.appendChild(modal);
 }
 
@@ -4006,7 +4006,7 @@ function showWidgetManager(editWidgetId = null) {
         ${gt(t('dataWidget.addedWidgets'))}
         <div class="grp" id="dw-manager-list"></div>
         <div style="margin-top:12px"><button class="btn sm" onclick="showAddWidgetPanel()"><svg class="i"><use href="#ri-add-line"/></svg>${t('dataWidget.addWidget')}</button></div>`,
-        `<button class="btn lg primary" onclick="closeModal('widget-manager-modal')">${t('common.close')}</button>`, "closeModal('widget-manager-modal')");
+        `<button class="btn lg primary" onclick="closeModal('widget-manager-modal')">${t('common.close')}</button>`);
     document.body.appendChild(modal);
     
     // 渲染组件列表
@@ -4089,7 +4089,7 @@ function showAddWidgetPanel() {
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">${presetsHtml}</div>
         ${gt(t('dataWidget.customWidgetType'))}
         <div class="grp">${typesHtml}</div>`,
-        `<button class="btn lg primary" onclick="closeModal('widget-add-modal')">${t('common.close')}</button>`, "closeModal('widget-add-modal')");
+        `<button class="btn lg primary" onclick="closeModal('widget-add-modal')">${t('common.close')}</button>`);
     document.body.appendChild(modal);
 }
 
