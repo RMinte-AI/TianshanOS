@@ -27,7 +27,7 @@ static const char *TAG = "ts_known_hosts";
 
 #define NVS_NAMESPACE       "ts_ssh_hosts"
 #define MAX_KNOWN_HOSTS     32
-#define HOST_KEY_PREFIX     "host_"
+#define HOST_KEY_PREFIX     "h_"
 
 #define MAX_HOST_LEN        64
 #define MAX_FINGERPRINT_LEN 65  /* SHA256 hex = 64 chars + null terminator */

@@ -416,9 +416,7 @@ static int do_deployed_remove(const char *id)
  */
 static int do_deployed_clear(bool confirmed)
 {
-    ts_ssh_host_config_t hosts[1];
-    size_t count = 0;
-    ts_ssh_hosts_config_list(hosts, 0, &count);  /* 只获取数量 */
+    size_t count = ts_ssh_hosts_config_count();
     
     if (count == 0) {
         ts_console_printf("No deployed hosts to clear.\n");

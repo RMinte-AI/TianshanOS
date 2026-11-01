@@ -25,6 +25,7 @@ python3 tests/runtime/test_scp_recv.py
 python3 tests/runtime/test_condition_roundtrip.py
 python3 tests/runtime/test_expansion.py
 python3 tests/runtime/test_ssh_copyid.py
+python3 tests/runtime/test_ssh_cli_controls.py
 python3 tests/runtime/test_ssh_fingerprint_wire.py
 python3 tests/runtime/test_failure_wire.py
 python3 tests/runtime/test_copyid_quote.py

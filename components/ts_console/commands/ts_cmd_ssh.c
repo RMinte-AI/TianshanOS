@@ -81,6 +81,7 @@ static struct {
 typedef struct {
     const char *password;       /**< 密码（密码认证） */
     const char *key_path;       /**< 私钥文件路径（文件认证） */
+    const char *key_id;         /**< 已解析的安全存储密钥 ID（API 认证） */
     const uint8_t *key_data;    /**< 私钥数据（内存认证，安全存储） */
     size_t key_len;             /**< 私钥数据长度 */
     const char *passphrase;     /**< 私钥密码（可选） */
@@ -322,8 +323,9 @@ static int do_ssh_exec(const char *host, int port, const char *user,
         cJSON_AddStringToObject(params, "password", auth->password);
     } else if (auth->key_path) {
         cJSON_AddStringToObject(params, "keypath", auth->key_path);
+    } else if (auth->key_id) {
+        cJSON_AddStringToObject(params, "keyid", auth->key_id);
     }
-    /* 注意：keyid 认证需要 CLI 先加载密钥，API 不直接支持 keyid */
     
     if (verbose) {
         ts_console_printf("Connecting to %s@%s:%d...\n", user, host, port);
@@ -700,6 +702,8 @@ static int do_ssh_test(const char *host, int port, const char *user,
         cJSON_AddStringToObject(params, "password", auth->password);
     } else if (auth->key_path) {
         cJSON_AddStringToObject(params, "keypath", auth->key_path);
+    } else if (auth->key_id) {
+        cJSON_AddStringToObject(params, "keyid", auth->key_id);
     }
     
     ts_console_printf("[1/2] Testing connection... ");
@@ -1283,7 +1287,8 @@ static int do_ssh_revoke(const char *host, int port, const char *user,
     
     snprintf(cmd, sizeof(cmd),
         "cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak 2>/dev/null; "
-        "grep -vF '%s' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp 2>/dev/null && "
+        "{ grep -vF '%s' ~/.ssh/authorized_keys; rc=$?; [ \"$rc\" -le 1 ]; } "
+        "> ~/.ssh/authorized_keys.tmp 2>/dev/null && "
         "mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys && "
         "chmod 600 ~/.ssh/authorized_keys && "
         "echo 'OK'",
@@ -1720,6 +1725,7 @@ static int ssh_cmd_handler(int argc, char **argv)
         /* 使用内存中的密钥（不暴露到文件系统） */
         auth.key_data = (const uint8_t *)loaded_key_data;
         auth.key_len = loaded_key_len;
+        auth.key_id = keyid;
         auth.passphrase = NULL;  /* TODO: 支持加密密钥 */
         
         if (verbose) {

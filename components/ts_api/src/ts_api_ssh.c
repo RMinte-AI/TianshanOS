@@ -1158,7 +1158,8 @@ static esp_err_t api_ssh_revoke(const cJSON *params, ts_api_result_t *result)
     
     snprintf(revoke_cmd, 512,
         "cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak 2>/dev/null; "
-        "grep -vF '%s' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp 2>/dev/null && "
+        "{ grep -vF '%s' ~/.ssh/authorized_keys; rc=$?; [ \"$rc\" -le 1 ]; } "
+        "> ~/.ssh/authorized_keys.tmp 2>/dev/null && "
         "mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys && "
         "chmod 600 ~/.ssh/authorized_keys && "
         "echo 'REVOKE_OK'",
