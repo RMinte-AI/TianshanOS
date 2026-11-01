@@ -16,6 +16,7 @@ python3 tests/runtime/test_system_memory.py
 python3 tests/runtime/test_registry_tables.py
 python3 tests/runtime/test_console_lifecycle.py
 python3 tests/runtime/test_power_lifecycle.py
+python3 tests/runtime/test_ota_lifecycle.py
 python3 tests/runtime/test_led_lifetimes.py
 python3 tests/runtime/test_led_controls.py
 python3 tests/runtime/test_led_image_bounds.py

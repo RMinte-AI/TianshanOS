@@ -71,6 +71,7 @@ esp_err_t ts_ota_start_sdcard(const ts_ota_config_t *config)
     s_ota_config.url = s_ota_url;
     
     // Create OTA task
+    s_ota_running = true;
     BaseType_t ret = xTaskCreate(
         sdcard_ota_task,
         "ota_sdcard",
@@ -81,6 +82,7 @@ esp_err_t ts_ota_start_sdcard(const ts_ota_config_t *config)
     );
 
     if (ret != pdPASS) {
+        s_ota_running = false;
         ESP_LOGE(TAG, "Failed to create OTA task");
         free(s_ota_url);
         s_ota_url = NULL;
@@ -88,7 +90,6 @@ esp_err_t ts_ota_start_sdcard(const ts_ota_config_t *config)
         return ESP_ERR_NO_MEM;
     }
 
-    s_ota_running = true;
     return ESP_OK;
 }
 

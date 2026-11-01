@@ -199,6 +199,13 @@ esp_err_t ts_ota_get_progress(ts_ota_progress_t *progress)
 esp_err_t ts_ota_abort(void)
 {
     xSemaphoreTake(s_ota_mutex, portMAX_DELAY);
+
+    /* SD has no cancellation handshake; a committed boot choice cannot be
+     * undone by clearing this status either. Keep the real worker/result. */
+    if (ts_ota_sdcard_is_running() || s_state == TS_OTA_STATE_PENDING_REBOOT) {
+        xSemaphoreGive(s_ota_mutex);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     
     if (s_state == TS_OTA_STATE_IDLE) {
         xSemaphoreGive(s_ota_mutex);

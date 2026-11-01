@@ -13128,8 +13128,6 @@ async function refreshOtaInfo() {
 // OTA 两步升级状态
 let otaStep = 'idle'; // 'idle' | 'app' | 'www'
 let wwwOtaEnabled = true;  // 是否启用 WebUI 升级
-let sdcardOtaSource = '';  // SD卡升级时的文件路径，用于推导 www.bin 路径
-let sdcardWwwSource = '';  // SD卡升级时实际匹配到的 www.bin 路径
 // Keep the last attempt until a new one starts, so late replies cannot belong to
 // a later upgrade (or overwrite a finished upgrade's outcome).
 let otaUpgrade = null;
@@ -13145,8 +13143,6 @@ function beginOtaUpgrade(mode) {
     clearInterval(rebootCheckInterval);
     rebootCheckInterval = null;
     otaStep = 'idle';
-    sdcardOtaSource = '';
-    sdcardWwwSource = '';
     otaUpgrade = { mode, phase: 'app', firmwareWritten: false, target: null };
     return otaUpgrade;
 }
@@ -13174,6 +13170,15 @@ function showOtaUpgradeFailure(upgrade, spec, title = '') {
     const abortBtn = document.getElementById('ota-abort-btn');
     if (abortBtn) abortBtn.style.display = 'none';
     finishOtaUpgrade(upgrade);
+}
+
+function inferUrlWwwSource(serverUrl) {
+    if (!serverUrl) return '';
+    if (serverUrl.includes('firmware.bin') || serverUrl.includes('TianshanOS.bin')) {
+        return serverUrl.replace(/firmware\.bin|TianshanOS\.bin/gi, 'www.bin');
+    }
+    if (serverUrl.match(/\.bin$/i)) return serverUrl.replace(/[^\/]+\.bin$/i, 'www.bin');
+    return serverUrl.endsWith('/') ? serverUrl + 'www.bin' : serverUrl + '/www.bin';
 }
 
 function inferSdcardWwwPath(source) {
@@ -13349,53 +13354,28 @@ async function refreshOtaProgress() {
 
 // 启动 WWW OTA（第二步）
 async function startWwwOta() {
-    let upgrade = otaUpgrade?.phase !== 'done' ? otaUpgrade : null;
+    const sourceAttempt = otaUpgrade;
+    let upgrade = sourceAttempt?.phase !== 'done' ? sourceAttempt : null;
     if (upgrade && (upgrade.mode !== 'device' || upgrade.phase !== 'app')) return;
     try {
-        let wwwSource = '';
-        let isFromSdcard = false;
-        
-        // 判断来源：SD卡 或 HTTP URL
-        if (sdcardOtaSource) {
-            // SD卡升级：推导 www.bin 路径
-            isFromSdcard = true;
-            wwwSource = sdcardWwwSource || inferSdcardWwwPath(sdcardOtaSource);
-        } else {
-            // HTTP 升级：从服务器 URL 推导
-            const serverUrl = document.getElementById('ota-server-input').value.trim() ||
-                              document.getElementById('ota-url-input').value.trim();
-            
-            if (serverUrl) {
-                // 尝试多种方式推导 www.bin URL
-                if (serverUrl.includes('firmware.bin') || serverUrl.includes('TianshanOS.bin')) {
-                    wwwSource = serverUrl.replace(/firmware\.bin|TianshanOS\.bin/gi, 'www.bin');
-                } else if (serverUrl.match(/\.bin$/i)) {
-                    wwwSource = serverUrl.replace(/[^\/]+\.bin$/i, 'www.bin');
-                } else if (serverUrl.endsWith('/')) {
-                    wwwSource = serverUrl + 'www.bin';
-                } else {
-                    wwwSource = serverUrl + '/www.bin';
-                }
-            }
-        }
-        
+        const wwwSource = sourceAttempt?.wwwSource || '';
+        const isFromSdcard = !!sourceAttempt?.fromSdcard;
         if (!wwwSource) {
             console.log('No www source configured, skipping WebUI upgrade');
             wwwOtaEnabled = false;
-            sdcardOtaSource = '';  // 重置
-            sdcardWwwSource = '';
             return;
         }
 
-        // A retry keeps the previously selected source, but owns a new attempt.
+        // An explicit retry gets a new owner with the same selected sources.
         if (!upgrade) {
-            const firmwareSource = sdcardOtaSource;
             upgrade = beginOtaUpgrade('device');
             if (!upgrade) return;
-            if (isFromSdcard) {
-                sdcardOtaSource = firmwareSource;
-                sdcardWwwSource = wwwSource;
-            }
+            Object.assign(upgrade, {
+                firmwareSource: sourceAttempt.firmwareSource,
+                wwwSource,
+                fromSdcard: isFromSdcard,
+                skipVerify: sourceAttempt.skipVerify
+            });
         }
         upgrade.firmwareWritten = true;
         upgrade.phase = 'www';
@@ -13415,10 +13395,9 @@ async function startWwwOta() {
             });
         } else {
             // HTTP 方式
-            const skipVerify = document.getElementById('ota-url-skip-verify')?.checked || false;
             result = await api.call('ota.www.start', {
                 url: wwwSource,
-                skip_verify: skipVerify
+                skip_verify: upgrade.skipVerify
             });
         }
         if (otaUpgrade !== upgrade || upgrade.phase !== 'www') return;
@@ -13436,8 +13415,6 @@ async function startWwwOta() {
             return;
         }
 
-        sdcardOtaSource = '';  // 重置
-        sdcardWwwSource = '';
         if (!refreshInterval) {
             refreshInterval = setInterval(refreshOtaProgress, 1000);
         }
@@ -13587,6 +13564,12 @@ async function otaFromUrl() {
     };
     const upgrade = beginOtaUpgrade('device');
     if (!upgrade) return;
+    Object.assign(upgrade, {
+        firmwareSource: url,
+        wwwSource: inferUrlWwwSource(url),
+        fromSdcard: false,
+        skipVerify
+    });
     
     // 设置 OTA 步骤
     otaStep = 'app';
@@ -13655,8 +13638,12 @@ async function otaFromFile() {
     // 设置 OTA 步骤
     otaStep = 'app';
     wwwOtaEnabled = includeWww;  // 根据用户选择决定是否升级 www
-    sdcardOtaSource = paths.firmware;  // 保存 SD 卡路径用于推导 www.bin 路径
-    sdcardWwwSource = paths.www;
+    Object.assign(upgrade, {
+        firmwareSource: paths.firmware,
+        wwwSource: paths.www,
+        fromSdcard: true,
+        skipVerify: false
+    });
     
     // 立即显示进度区域
     const progressSection = document.getElementById('ota-progress-section');
