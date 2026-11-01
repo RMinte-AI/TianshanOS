@@ -704,7 +704,7 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 }
 .row .rl{min-width:0;flex:0 1 auto}
 .row .rc:has(>input.num){flex:none}
-.modal:has(~ .modal:not(.hidden)) .sheet{-webkit-backdrop-filter:none;backdrop-filter:none;background:rgba(250,251,253,.94)}
+.modal:has(~ .modal:not(.hidden):not([style*="display:none"]):not([style*="display: none"])) .sheet{-webkit-backdrop-filter:none;backdrop-filter:none;background:rgba(250,251,253,.94)}
 #automation-config-summary{display:flex;align-items:flex-start;gap:8px;margin:-2px 4px 0;font-size:12px;line-height:18px;color:var(--ink-2)}
 #automation-config-summary .dot{margin-top:5px}
 #automation-config-summary:empty{display:none}

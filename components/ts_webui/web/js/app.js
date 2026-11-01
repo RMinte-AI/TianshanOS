@@ -4903,10 +4903,11 @@ function hexToHs(hex) {
 function ledHsControls(prefix, device, hex, fixedWidth = 0) {
     const { h, s } = hexToHs(hex), cur = hsvToHex(h, s);
     const sl = fixedWidth ? `width:${fixedWidth}px;flex:none;` : '';
+    const valStyle = fixedWidth ? ' style="width:40px"' : '';
     const input = (kind, max, val, name) => `<input type="range" id="${prefix}-${kind}" min="0" max="${max}" value="${val}" title="${name}" aria-label="${name}" oninput="ledHsInput('${prefix}')" onchange="ledHsCommit('${prefix}', '${device}')">`;
     return {
-        hue: `<div class="sl hue" style="${sl}--p:${h / 359 * 100}%;--c:${cur}"><i></i><b></b>${input('hue', 359, h, t('ledPage.hue'))}</div><span class="t-value" id="${prefix}-hue-val">${h}°</span>`,
-        sat: `<div class="led-track"${fixedWidth ? ` style="width:${fixedWidth}px;flex:none"` : ''}><div class="sl sat" style="--p:${s}%;--c:${cur};--end:${hsvToHex(h, 100)}"><i></i><b></b>${input('sat', 100, s, t('ledPage.saturation'))}</div><div class="led-ends"><span>${t('promptRepair.colorWhite')}</span><span>${t('ledPage.colorful')}</span></div></div><span class="t-value" id="${prefix}-sat-val">${s}%</span>`
+        hue: `<div class="sl hue" style="${sl}--p:${h / 359 * 100}%;--c:${cur}"><i></i><b></b>${input('hue', 359, h, t('ledPage.hue'))}</div><span class="t-value" id="${prefix}-hue-val"${valStyle}>${h}°</span>`,
+        sat: `<div class="led-track"${fixedWidth ? ` style="width:${fixedWidth + 12}px;flex:none"` : ''}><div class="sl sat" style="--p:${s}%;--c:${cur};--end:${hsvToHex(h, 100)}"><i></i><b></b>${input('sat', 100, s, t('ledPage.saturation'))}</div><div class="led-ends"><span>${t('promptRepair.colorWhite')}</span><span>${t('ledPage.colorful')}</span></div></div><span class="t-value" id="${prefix}-sat-val"${valStyle}>${s}%</span>`
     };
 }
 // 只更新显示（数值、滑条里的颜色），不发请求
@@ -15144,8 +15145,8 @@ function updateActionLedTypeFields() {
         case 'fill': {
             const hs = ledHsControls('action-led', '', '#ff0000', 200);
             html = `<input type="hidden" id="action-led-color" value="#ff0000">` +
-                row(t('ledPage.hue'), `<span class="led-br">${hs.hue}</span>`) +
-                row(t('ledPage.saturation'), `<span class="led-br has-ends">${hs.sat}</span>`) +
+                row(t('ledPage.hue'), `<span class="led-br" style="gap:8px">${hs.hue}</span>`) +
+                row(t('ledPage.saturation'), `<span class="led-br has-ends" style="gap:8px">${hs.sat}</span>`) +
                 row(t('ledPage.ccBrightness'), slider('action-led-brightness', 0, 255, 128)) +
                 row(t('automationPage.indexPlaceholder'), inp('action-led-index', 80, t('automationPage.ledIndexPlaceholder'), 'num', 'type="number" value="255" min="0" max="255"'));
             break;
