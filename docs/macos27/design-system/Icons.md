@@ -16,6 +16,15 @@
 - 体积【估算，未实测】：每个图标约 150–300 B，合计约 20–30 KB 未压缩；删除 woff2 + remixicon.css 后净减约 160–170 KB。SPIFFS 与 HTTP 请求数各少 2 个（字体 + css）。
 - `<i class="ri-…">` 共出现约 560 处，动态拼接的 2 处要单独改。
 
+## 新增图标（2026-11-01）
+
+| 图标 | Phosphor | 用途 |
+|---|---|---|
+| `ri-drop-line` | `drop` | LED 色相条 |
+| `ri-drop-half-line` | `drop-half` | LED 饱和度条 |
+
+不要手写 SVG：先在 `index.html` 精灵里按字母序补空 symbol，再在 `tests/macos27-r2/phosphor-map.json` 登记，最后运行 `icons_from_phosphor.py` 生成（该脚本要求对应表与精灵 id 完全一致；下载 SVG 需联网，使用者已同意）。`ri-contrast-line`、`ri-color-filter-line` 已分别用于「色彩校正」「滤镜效果」，不得复用。
+
 ## 清单（按使用次数）
 
 | 图标 | 次数 |
