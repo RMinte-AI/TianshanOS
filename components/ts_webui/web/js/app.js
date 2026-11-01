@@ -5986,7 +5986,7 @@ async function loadFilePickerDirectory(path) {
         listContainer.innerHTML = filtered.map(f => {
             const isDir = f.type === 'dir' || f.type === 'directory';
             const fullPath = path + (path.endsWith('/') ? '' : '/') + f.name;
-            return `<div class="tr" style="--cols:24px 1fr 90px;cursor:pointer" data-path="${escapeHtml(fullPath)}" data-directory="${isDir}" onclick="filePickerItemClick(this, this.dataset.path, this.dataset.directory === 'true')"><div><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg></div><div>${escapeHtml(f.name)}</div><div>${isDir ? '-' : formatFileSize(f.size)}</div></div>`;
+            return `<div class="tr" style="--cols:24px 1fr 90px;cursor:pointer" data-path="${escapeHtml(fullPath)}" data-directory="${isDir}" onclick="filePickerItemClick(this, this.dataset.path, this.dataset.directory === 'true')"><div style="display:flex;align-items:center"><svg class="i"><use href="#${isDir ? 'ri-folder-line' : 'ri-file-text-line'}"/></svg></div><div>${escapeHtml(f.name)}</div><div>${isDir ? '-' : formatFileSize(f.size)}</div></div>`;
         }).join('');
     } catch (e) {
         listContainer.innerHTML = `<div class="tr table-message"><span class="state bad">${failureNote({ op: 'file.list', error: e, write: false })}</span></div>`;
