@@ -3266,6 +3266,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
 
     // LED 控制
     ledPage: {
+        hue: '色相',
+        saturation: '饱和度',
+        colorful: '彩色',
         filterGroup: '滤镜',
         autoPosNote: '打开自动位置时不可用',
         animationGroup: '动画',

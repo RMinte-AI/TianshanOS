@@ -3305,6 +3305,9 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
 
     // LED Control
     ledPage: {
+        hue: 'Hue',
+        saturation: 'Saturation',
+        colorful: 'Color',
         filterGroup: 'Filter',
         autoPosNote: 'Unavailable while auto position is on',
         animationGroup: 'Animations',
@@ -3516,7 +3519,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         "synced": "Synchronized",
         "unsynced": "Not synchronized",
         "timeUnknown": "Device time unavailable; retry refresh",
-        "syncBrowser": "Set device time from this computer (browser source)",
+        "syncBrowser": "Set device time from this browser",
         "empty": "Provide PEM text",
         "saved": "Saved. Check validity and actual HTTPS status.",
         "unconfirmed": "Installation result unconfirmed. Refresh status to check before retrying.",

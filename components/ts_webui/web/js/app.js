@@ -64,10 +64,15 @@ function renderConfigurationSummary() {
     const summary = document.getElementById('automation-config-summary');
     if (!summary || !automationConfigStatus) return;
     const d = automationConfigStatus;
-    summary.textContent = configText(!d.loaded ? 'notLoaded' : d.source === 'sd' ? 'usingSd' : 'usingInternal') +
-        (d.paused ? ' · ' + configText('paused') : '') +
-        (d.awaiting_sd_choice ? ' · ' + configText('cardChoice') : '') +
-        (d.source==='internal'&&d.sd_available===false ? ' · '+configText('resourcesUnavailable') : '');
+    const sd = d.source === 'sd';
+    const noCard = d.source === 'internal' && d.sd_available === false;
+    const problem = d.awaiting_sd_choice || noCard;
+    const dot = problem ? 'warn' : (d.loaded && sd ? 'ok' : '');
+    const parts = [[configText(!d.loaded ? 'notLoaded' : sd ? 'usingSd' : 'usingInternal'), false]];
+    if (d.paused) parts.push([configText('paused'), false]);
+    if (d.awaiting_sd_choice) parts.push([configText('cardChoice'), true]);
+    if (noCard) parts.push([configText('resourcesUnavailable'), true]);
+    summary.innerHTML = `<i class="dot ${dot}"></i>` + parts.map(([text, warn]) => `<span${warn ? ' class="cfg-warn"' : ''}>${escapeHtml(text)}</span>`).join('<span class="cfg-sep">·</span>');
 }
 async function refreshConfigurationStatus(check = false) {
     const current = configurationRead('config-status');
@@ -173,7 +178,7 @@ async function showAutomationConfig() {
     if (typeof router !== 'undefined') router.navigation?.onDispose(() => modal.remove());
     modal.onkeydown = event => {if (event.key === 'Escape') {event.stopPropagation();if(modal.dataset.busy !== 'true')closeModal(modal.id);}};
     modal.innerHTML = sheet(760, configText('title'), '<div id="automation-config-body" class="config-layout"><p class="t-note">' + t('common.loading') + '</p></div>',
-        `<button type="button" class="btn lg" onclick="closeModal('automation-config-modal')">${t('common.close')}</button>`);
+        `<button type="button" class="btn lg primary" onclick="closeModal('automation-config-modal')">${t('common.close')}</button>`);
     modal.querySelector('.sf button').focus();
     try {const status = await refreshConfigurationStatus(); if (modal.isConnected && modal.dataset.configurationClosed !== 'true' && status) renderAutomationConfig(modal, status);}
     catch (error) {if (modal.isConnected) modal.querySelector('#automation-config-body').innerHTML = failureNote({error, write: false});}
@@ -416,7 +421,7 @@ async function showUserVariables() {
     document.getElementById('user-variables-modal')?.remove();
     const modal = document.createElement('div');modal.id = 'user-variables-modal';modal.className = 'modal show';
     modal.innerHTML = sheet(660, configText('userVariables'), `<p class="t-note">${configText('userVariablesHint')}</p><div class="grp" id="user-variables-body" style="margin-top:20px">${t('common.loading')}</div>`,
-        `<button type="button" class="btn lg" onclick="document.getElementById('user-variables-modal').remove()">${t('common.close')}</button>`);
+        `<button type="button" class="btn lg primary" onclick="document.getElementById('user-variables-modal').remove()">${t('common.close')}</button>`);
     document.body.appendChild(modal);router.navigation?.onDispose(() => modal.remove());
     await refreshUserVariables();
 }
@@ -4172,6 +4177,8 @@ function showWidgetEditPanel(widgetId) {
     document.getElementById('widget-edit-modal')?.remove();
     const typeConfig = WIDGET_TYPES[widget.type] || {};
     const num = (id, w, val, attrs = '') => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
+    // 图标字段只显示图标名；保存时 widgetIconValue 按原格式写回
+    const iconName = (widget.icon || '').match(/^<i class="(ri-[\w-]+)"><\/i>$/)?.[1] || widget.icon || '';
     
     // 额外配置（根据组件类型）
     let extraRows = '';
@@ -4200,7 +4207,7 @@ function showWidgetEditPanel(widgetId) {
     modal.innerHTML = sheet(600, `${t('dataWidget.editWidget')} · ${escapeHtml(typeConfig.name || widget.type)}`, `
         ${grp(
             row(t('dataWidget.labelName'), inp('edit-label', 220, t('dataWidget.labelPlaceholder'), '', `value="${escapeHtml(widget.label)}"`)) +
-            row(t('dataWidget.icon'), inp('edit-icon', 120, t('dataWidget.iconPlaceholder') || 'emoji', '', `value="${escapeHtml(widget.icon || '')}"`)) +
+            row(t('dataWidget.icon'), inp('edit-icon', 120, t('dataWidget.iconPlaceholder') || 'emoji', '', `value="${escapeHtml(iconName)}"`)) +
             row(t('dataWidget.color'), `<input type="color" class="field" id="edit-color" value="${widget.color || '#4dabf7'}" style="width:44px;padding:2px">`))}
         ${gt(t('dataWidget.layoutWidth'))}
         ${grp(layoutRows)}
@@ -4235,6 +4242,10 @@ async function selectVariableForWidget() {
 /**
  * 保存组件编辑
  */
+function widgetIconValue(input) {
+    if (/^ri-[\w-]+$/.test(input)) return `<i class="${input}"></i>`;
+    return input;
+}
 async function saveWidgetEdit(widgetId) {
     clearFieldErrors();
     const modal = document.getElementById('widget-edit-modal');
@@ -4244,7 +4255,7 @@ async function saveWidgetEdit(widgetId) {
     
     const next = { ...widget };
     next.label = document.getElementById('edit-label')?.value?.trim() || widget.label;
-    next.icon = document.getElementById('edit-icon')?.value?.trim() || '';
+    next.icon = widgetIconValue(document.getElementById('edit-icon')?.value?.trim() || '');
     next.color = document.getElementById('edit-color')?.value || '#4dabf7';
     next.layout = document.querySelector('input[name="edit-layout"]:checked')?.value || 'auto';
     try {
@@ -4515,9 +4526,9 @@ function renderServiceRuns() {
             const button=(action,label,icon)=>`<button type="button" class="btn sm" data-run-action="${action}"><svg class="i"><use href="#${icon}"/></svg>${label}</button>`;
             row.innerHTML=`<div class="t-body" style="font-weight:600;overflow-wrap:anywhere">${escapeHtml(run.name || run.command_id)}</div>` +
                 `<div class="t-note mono" style="overflow-wrap:anywhere">${escapeHtml(run.username)}@${escapeHtml(run.host)}:${run.port}</div>` +
-                `<div class="t-body" data-run-status style="margin-top:8px"></div><div class="t-note" data-run-time></div><div class="t-note" data-run-error></div>` +
+                `<div class="state" data-run-status style="margin-top:8px"></div><div class="t-note" data-run-time></div><div class="t-note" data-run-error></div>` +
                 `<div class="acts wrap" style="margin-top:8px">${button('verify',runtimeText('verifyState'),'ri-refresh-line')}${button('log',t('sshPage.viewLog'),'ri-file-list-line')}${button('stop',t('common.stop'),'ri-stop-line')}</div>` +
-                `<details style="margin-top:8px"><summary class="t-note">${serviceRunText('details')}</summary><div class="t-note mono" style="overflow-wrap:anywhere">${escapeHtml(run.run_id)} · ${escapeHtml(run.command_id)}${run.rule_id ? ' · '+escapeHtml(run.rule_id) : ''}</div></details>`;
+                `<details class="run-details" style="margin-top:8px"><summary class="t-note"><svg class="i"><use href="#ri-arrow-down-line"/></svg>${serviceRunText('details')}</summary><div class="t-note mono" style="overflow-wrap:anywhere">${escapeHtml(run.run_id)} · ${escapeHtml(run.command_id)}${run.rule_id ? ' · '+escapeHtml(run.rule_id) : ''}</div></details>`;
             row.dataset.run=run.run_id;
             row.querySelectorAll('[data-run-action]').forEach(button=>button.onclick=()=>{
                 if (button.dataset.runAction==='verify') verifyServiceState(run.run_id);
@@ -4559,7 +4570,7 @@ async function showServiceRuns(filter = null) {
     document.getElementById('service-runs-modal')?.remove();
     const modal = document.createElement('div');modal.id = 'service-runs-modal';modal.className = 'modal show';
     modal.innerHTML = sheet(640, serviceRunText('title'), `<div id="service-runs-body" aria-live="polite">${t('common.loading')}</div>`,
-        `<button type="button" class="btn lg" data-service-close>${t('common.close')}</button><button type="button" class="btn lg" data-service-refresh>${t('common.refresh')}</button>`);
+        `<button type="button" class="btn lg" data-service-close>${t('common.close')}</button><button type="button" class="btn lg primary" data-service-refresh>${t('common.refresh')}</button>`);
     document.body.appendChild(modal);
     modal.querySelector('#service-runs-body')._filter=filter;
     modal.querySelector('[data-service-close]').onclick = () => modal.remove();
@@ -4662,7 +4673,7 @@ async function showServiceRunLog(runId, follow = false) {
     const parent = document.getElementById('service-runs-modal');parent?.classList.add('hidden');
     const modal = document.createElement('div');modal.id='service-run-log-modal';modal.className='modal show';
     modal.innerHTML = sheet(720,escapeHtml(run.name || run.command_id),`<p class="t-note">${escapeHtml(run.username)}@${escapeHtml(run.host)}:${run.port} · ${serviceRunText('logHint')}</p><pre class="term" data-run-log style="height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre><div data-run-log-error class="t-note" role="status"></div>`,
-        `<button type="button" class="btn lg" data-log-close>${t('common.close')}</button><button type="button" class="btn lg" data-log-refresh>${t('common.refresh')}</button><button type="button" class="btn lg" data-log-follow>${serviceRunText('follow')}</button>`);
+        `<button type="button" class="btn lg" data-log-close>${t('common.close')}</button><button type="button" class="btn lg" data-log-refresh>${t('common.refresh')}</button><button type="button" class="btn lg primary" data-log-follow>${serviceRunText('follow')}</button>`);
     document.body.appendChild(modal);
     let timer=null, fetching=false;
     const current = () => modal.isConnected && document.getElementById(modal.id)===modal;
@@ -4876,8 +4887,57 @@ async function applyTimezone() {
 let ledDevices = {};
 let ledEffects = [];
 
-// 色块：[显示色, 下发给灯的颜色, 名称 key 后缀]
-const LED_PRESETS = [['#ff3b30', '#ff0000', 'Red'], ['#ff6b00', '#ff6600', 'Orange'], ['#ffd60a', '#ffd700', 'Yellow'], ['#00c766', '#00d26a', 'Green'], ['#00e5ff', '#00ffff', 'Cyan'], ['#2d7dff', '#2d7dff', 'Blue'], ['#d630ff', '#d630ff', 'Purple'], ['#ffffff', '#ffffff', 'White'], ['#ffcccc', '#ffcccc', 'Pink'], ['#e0e0e0', '#e0e0e0', 'Gray']];
+// LED 取色：h 0–359，s 0–100，V 固定 100%（亮度由亮度条单独控制）
+function hsvToHex(h, s) {
+    const S = s / 100, f = n => { const k = (n + h / 60) % 6; return 1 - S * Math.max(0, Math.min(k, 4 - k, 1)); };
+    return '#' + [f(5), f(3), f(1)].map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+}
+function hexToHs(hex) {
+    const n = parseInt(hex.slice(1), 16), r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 0;
+    if (d) h = max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return { h: Math.round(h * 60) % 360, s: max ? Math.round(d / max * 100) : 0 };
+}
+// 色相 / 饱和度两条滑条：prefix 是 id 前缀（卡片 led-<设备>，自动化弹窗 action-led）；fixedWidth 给弹窗行用
+function ledHsControls(prefix, device, hex, fixedWidth = 0) {
+    const { h, s } = hexToHs(hex), cur = hsvToHex(h, s);
+    const sl = fixedWidth ? `width:${fixedWidth}px;flex:none;` : '';
+    const input = (kind, max, val, name) => `<input type="range" id="${prefix}-${kind}" min="0" max="${max}" value="${val}" title="${name}" aria-label="${name}" oninput="ledHsInput('${prefix}')" onchange="ledHsCommit('${prefix}', '${device}')">`;
+    return {
+        hue: `<div class="sl hue" style="${sl}--p:${h / 359 * 100}%;--c:${cur}"><i></i><b></b>${input('hue', 359, h, t('ledPage.hue'))}</div><span class="t-value" id="${prefix}-hue-val">${h}°</span>`,
+        sat: `<div class="led-track"${fixedWidth ? ` style="width:${fixedWidth}px;flex:none"` : ''}><div class="sl sat" style="--p:${s}%;--c:${cur};--end:${hsvToHex(h, 100)}"><i></i><b></b>${input('sat', 100, s, t('ledPage.saturation'))}</div><div class="led-ends"><span>${t('promptRepair.colorWhite')}</span><span>${t('ledPage.colorful')}</span></div></div><span class="t-value" id="${prefix}-sat-val">${s}%</span>`
+    };
+}
+// 只更新显示（数值、滑条里的颜色），不发请求
+function ledHsInput(prefix) {
+    const hue = document.getElementById(`${prefix}-hue`), sat = document.getElementById(`${prefix}-sat`);
+    if (!hue || !sat) return;
+    const h = +hue.value, s = +sat.value;
+    hue.parentElement.style.setProperty('--c', hsvToHex(h, s));
+    sat.parentElement.style.setProperty('--c', hsvToHex(h, s));
+    sat.parentElement.style.setProperty('--end', hsvToHex(h, 100));
+    document.getElementById(`${prefix}-hue-val`).textContent = h + '°';
+    document.getElementById(`${prefix}-sat-val`).textContent = s + '%';
+    syncSliders();
+}
+// 用颜色设置滑条位置，只更新显示（编辑已有动作时用）；不是 #rrggbb 就保持原样
+function ledHsSet(prefix, hex) {
+    const hue = document.getElementById(`${prefix}-hue`), sat = document.getElementById(`${prefix}-sat`);
+    if (!hue || !sat || !/^#[0-9a-f]{6}$/i.test(hex)) return;
+    const { h, s } = hexToHs(hex);
+    hue.value = h; sat.value = s;
+    ledHsInput(prefix);
+}
+// 松手：饱和度靠近 0 吸附到白光，再按滑条所示颜色发送（卡片）或写入隐藏域（自动化弹窗）
+function ledHsCommit(prefix, device) {
+    const hue = document.getElementById(`${prefix}-hue`), sat = document.getElementById(`${prefix}-sat`);
+    if (!hue || !sat) return;
+    if (+sat.value > 0 && +sat.value <= 3) { sat.value = 0; ledHsInput(prefix); }
+    const hex = hsvToHex(+hue.value, +sat.value);
+    if (device) quickFillColor(device, hex);
+    else document.getElementById(`${prefix}-color`).value = hex;
+}
 
 function generateLedDeviceCard(dev) {
     const description = t({ board: 'ledPage.descBoard', touch: 'ledPage.descTouch', matrix: 'ledPage.descMatrix' }[dev.name.toLowerCase()] || 'ledPage.deviceDefault');
@@ -4887,6 +4947,7 @@ function generateLedDeviceCard(dev) {
     const colorHex = rgbToHex(current.color || {r: 255, g: 255, b: 255});
     const isMatrix = dev.name === 'matrix' || dev.layout === 'matrix';
     const brightness = dev.brightness ?? 0;
+    const hs = ledHsControls(`led-${dev.name}`, dev.name, colorHex);
 
     let statusText = t('ledPage.statusOff');
     if (isOn) statusText = currentAnimation ? `▶ ${effectDisplayName(currentAnimation)}` : t('ledPage.statusOn');
@@ -4916,9 +4977,13 @@ function generateLedDeviceCard(dev) {
                     <div class="sl" style="--p:${brightness / 2.55}%"><i></i><b></b><input type="range" min="0" max="255" value="${brightness}" class="led-brightness-slider" oninput="updateBrightnessDisplay('${dev.name}', this.value)" onchange="setBrightness('${dev.name}', this.value)" id="brightness-${dev.name}"></div>
                     <span class="t-value" id="brightness-val-${dev.name}">${brightness}</span>
                 </div>
-                <div class="led-dots">
-                    <label class="dotc pick" title="${t('promptRepair.customColor')}"><input type="color" value="${colorHex}" id="color-picker-${dev.name}" onchange="fillColorFromPicker('${dev.name}', this.value)" aria-label="${t('promptRepair.customColor')}"></label>
-                    ${LED_PRESETS.map(([shown, sent, name]) => `<button class="dotc" style="background:${shown}" onclick="quickFillColor('${dev.name}', '${sent}')" title="${t('promptRepair.color' + name)}" aria-label="${t('promptRepair.color' + name)}"></button>`).join('')}
+                <div class="led-br">
+                    <svg class="i"><use href="#ri-drop-line"/></svg>
+                    ${hs.hue}
+                </div>
+                <div class="led-br has-ends">
+                    <svg class="i"><use href="#ri-drop-half-line"/></svg>
+                    ${hs.sat}
                 </div>
             </div>
             <hr class="sep">
@@ -4947,20 +5012,7 @@ function updateBrightnessDisplay(device, value) {
     document.getElementById(`brightness-${device}`)?.parentElement.style.setProperty('--p', (value / 2.55) + '%');
 }
 
-async function fillColorFromPicker(device, color) {
-    try {
-        requireApiSuccess(await api.ledFill(device, color), 'ledFill');
-        ledStates[device] = true;
-        updateLedCardState(device, true);
-        showToast(typeof t === 'function' ? t('toast.ledFilled', { device: getDeviceDescription(device), color }) : `${device} 已填充 ${color}`, 'success');
-    } catch (e) {
-        reportFailure({ op: 'led.fill', error: e, write: true });
-    }
-}
-
 async function quickFillColor(device, color) {
-    const picker = document.getElementById(`color-picker-${device}`);
-    if (picker) picker.value = color;
     try {
         requireApiSuccess(await api.ledFill(device, color), 'ledFill');
         ledStates[device] = true;
@@ -7132,7 +7184,7 @@ async function loadFilesPage() {
         <div id="upload-modal" class="modal hidden">${sheet(520, t('files.uploadTitle'), `
             <div class="dz" id="upload-area"><div><svg class="i"><use href="#ri-upload-line"/></svg><div class="t-label" style="margin-top:6px">${t('files.pickOrDrop')}</div></div><input type="file" id="file-input" multiple style="display:none" onchange="handleFileSelect(event)"></div>
             <div class="grp" id="upload-list" style="margin-top:12px"></div>`,
-            `<button class="btn lg" onclick="closeUploadDialog()">${t('common.cancel')}</button><button class="btn lg primary" onclick="uploadFiles()">${t('common.upload')}</button>`)}</div>
+            `<button class="btn lg" onclick="closeUploadDialog()">${t('common.cancel')}</button><button class="btn lg primary" id="upload-btn" onclick="uploadFiles()" disabled>${t('common.upload')}</button>`)}</div>
 
         <!-- 新建文件夹对话框 -->
         <div id="newfolder-modal" class="modal hidden">${sheet(460, t('files.newFolderTitle'),
@@ -7545,6 +7597,7 @@ function showUploadDialog() {
     uploadGeneration++;
     filesToUpload = [];
     document.getElementById('upload-list').innerHTML = '';
+    document.getElementById('upload-btn').disabled = true;
     document.getElementById('upload-modal').classList.remove('hidden');
 }
 
@@ -7577,6 +7630,7 @@ function setupDragAndDrop() {
 function handleFileSelect(event) {
     const files = Array.from(event.target.files);
     filesToUpload = filesToUpload.concat(files);
+    document.getElementById('upload-btn').disabled = !filesToUpload.length;
     
     const listContainer = document.getElementById('upload-list');
     listContainer.replaceChildren();
@@ -8379,8 +8433,7 @@ function openSourceVarsSheet(title) {
     if (modal.classList.contains('hidden')) router.navigation.onDispose(closeSourceVariablesModal);
     modal.innerHTML = sheet(660, title,
         `<div class="card" id="source-variables-body" style="padding:0;background:var(--fill)"><div class="tr table-message" style="border-top:0;color:var(--ink-3)">${t('common.loading')}</div></div>`,
-        `<button class="btn lg primary" onclick="closeSourceVariablesModal()">${t('common.close')}</button>`,
-        'closeSourceVariablesModal()');
+        `<button class="btn lg primary" onclick="closeSourceVariablesModal()">${t('common.close')}</button>`);
     modal.classList.remove('hidden');
     return document.getElementById('source-variables-body');
 }
@@ -14025,7 +14078,7 @@ async function showMemoryDetailModal() {
     const modal = document.getElementById('memory-detail-modal');
     modal.innerHTML = sheet(720, t('system.memoryDetailTitle'), `<div id="memory-detail-body"></div>`,
         `<span id="memory-detail-timestamp" class="t-note num" style="margin-right:auto">-</span><button class="btn lg" onclick="hideMemoryDetailModal()">${t('common.close')}</button><button class="btn lg primary" onclick="refreshMemoryDetail()"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.refresh')}</button>`,
-        'hideMemoryDetailModal()', 'mem hl');
+        '', 'mem hl');
     modal.classList.remove('hidden');
     await refreshMemoryDetail();
 }
@@ -14207,15 +14260,20 @@ async function loadAutomationPage() {
     const content = document.getElementById('page-content');
     content.innerHTML = `
         <div class="page page-automation">
-            <div class="acts wrap">
-                <button class="btn sm pw ok" onclick="automationControl('start')"><svg class="i"><use href="#ri-play-line"/></svg>${t('common.start')}</button>
-                <button class="btn sm pw" onclick="automationControl('stop')"><svg class="i"><use href="#ri-stop-line"/></svg>${t('common.stop')}</button>
-                <button class="btn sm" onclick="automationControl('pause')"><svg class="i"><use href="#ri-pause-line"/></svg>${t('common.pause')}</button>
-                <button class="btn sm" onclick="automationControl('reload')"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.reload')}</button>
-                <button type="button" class="btn sm" onclick="showUserVariables()"><svg class="i"><use href="#ri-bar-chart-line"/></svg>${configText('userVariables')}</button>
+            <div class="between wrap">
+                <div class="acts">
+                    <button class="btn sm pw ok" onclick="automationControl('start')"><svg class="i"><use href="#ri-play-line"/></svg>${t('common.start')}</button>
+                    <button class="btn sm pw" onclick="automationControl('stop')"><svg class="i"><use href="#ri-stop-line"/></svg>${t('common.stop')}</button>
+                    <button class="btn sm" onclick="automationControl('pause')"><svg class="i"><use href="#ri-pause-line"/></svg>${t('common.pause')}</button>
+                    <button class="btn sm" onclick="automationControl('reload')"><svg class="i"><use href="#ri-refresh-line"/></svg>${t('common.reload')}</button>
+                </div>
+                <div class="acts">
+                    <button type="button" class="btn sm" onclick="showUserVariables()"><svg class="i"><use href="#ri-bar-chart-line"/></svg>${configText('userVariables')}</button>
+                    <button type="button" class="btn sm" onclick="showServiceRuns()"><svg class="i"><use href="#ri-server-line"/></svg>${serviceRunText('title')}</button>
+                    <button type="button" class="btn sm" onclick="showAutomationConfig()"><svg class="i"><use href="#ri-save-line"/></svg>${configText('title')}</button>
+                </div>
             </div>
-            
-            <div class="between wrap"><button type="button" class="btn sm" onclick="showServiceRuns()"><svg class="i"><use href="#ri-server-line"/></svg>${serviceRunText('title')}</button><span id="automation-config-summary" class="t-note"></span><button type="button" class="btn sm" onclick="showAutomationConfig()"><svg class="i"><use href="#ri-save-line"/></svg>${configText('title')}</button></div>
+            <div id="automation-config-summary"></div>
             <!-- 状态 -->
             <div class="card stat" id="automation-status" style="padding:16px 20px">
                 <div class="t-note" style="grid-column:1/-1">${t('common.loading')}</div>
@@ -15086,8 +15144,10 @@ function updateActionLedTypeFields() {
     
     switch (ledType) {
         case 'fill': {
-            const dots = ['#ff0000', '#ff6600', '#ffff00', '#00ff00', '#00ffff', '#0066ff', '#ffffff'].map(c => `<button type="button" class="dotc" style="background:${c}" onclick="setActionLedColor('${c}')" aria-label="${c}"></button>`).join('');
-            html = row(t('dataWidget.color'), `<span class="inl">${swatch('action-led-color', '#ff0000')}${dots}</span>`) +
+            const hs = ledHsControls('action-led', '', '#ff0000', 200);
+            html = `<input type="hidden" id="action-led-color" value="#ff0000">` +
+                row(t('ledPage.hue'), `<span class="led-br">${hs.hue}</span>`) +
+                row(t('ledPage.saturation'), `<span class="led-br has-ends">${hs.sat}</span>`) +
                 row(t('ledPage.ccBrightness'), slider('action-led-brightness', 0, 255, 128)) +
                 row(t('automationPage.indexPlaceholder'), inp('action-led-index', 80, t('automationPage.ledIndexPlaceholder'), 'num', 'type="number" value="255" min="0" max="255"'));
             break;
@@ -15183,14 +15243,6 @@ async function loadActionLedFonts() {
     } catch (e) {
         console.error('加载字体失败:', e);
     }
-}
-
-/**
- * 设置动作 LED 颜色
- */
-function setActionLedColor(color) {
-    const picker = document.getElementById('action-led-color');
-    if (picker) picker.value = color;
 }
 
 /**
@@ -15659,7 +15711,7 @@ async function editAction(id) {
                             case 'fill':
                                 if (tpl.led.color) {
                                     const colorEl = document.getElementById('action-led-color');
-                                    if (colorEl) colorEl.value = tpl.led.color;
+                                    if (colorEl) { colorEl.value = tpl.led.color; ledHsSet('action-led', tpl.led.color); }
                                 }
                                 if (tpl.led.brightness !== undefined) {
                                     const brEl = document.getElementById('action-led-brightness');
