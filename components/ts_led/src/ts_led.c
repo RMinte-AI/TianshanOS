@@ -157,6 +157,7 @@ esp_err_t ts_led_device_create(const ts_led_config_t *config, ts_led_device_t *d
     dev->config = *config;
     strncpy(dev->name, config->name ? config->name : "led", TS_LED_MAX_NAME - 1);
     dev->brightness = config->brightness;
+    dev->enabled = true;
     
     /* 优先使用 PSRAM，如果没有则退回 DMA 内存 */
     dev->framebuffer = heap_caps_calloc(config->led_count, sizeof(ts_led_rgb_t),
@@ -222,6 +223,25 @@ uint8_t ts_led_device_get_brightness(ts_led_device_t device)
 {
     return device ? ((ts_led_device_impl_t *)device)->brightness : 0;
 }
+
+esp_err_t ts_led_device_set_enabled(ts_led_device_t device, bool enabled)
+{
+    if (!device) return ESP_ERR_INVALID_ARG;
+    ts_led_device_impl_t *dev = (ts_led_device_impl_t *)device;
+    xSemaphoreTake(dev->mutex, portMAX_DELAY);
+    dev->enabled = enabled;
+    /* Off is immediate. On lets the next normal render send the newly selected
+     * content, rather than replaying the previous framebuffer. */
+    esp_err_t ret = enabled ? ESP_OK : ts_led_driver_send(dev);
+    xSemaphoreGive(dev->mutex);
+    return ret;
+}
+
+bool ts_led_device_is_enabled(ts_led_device_t device)
+{
+    return device && ((ts_led_device_impl_t *)device)->enabled;
+}
+
 
 uint16_t ts_led_device_get_count(ts_led_device_t device)
 {

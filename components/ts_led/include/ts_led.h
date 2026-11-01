@@ -308,6 +308,10 @@ esp_err_t ts_led_device_set_brightness(ts_led_device_t device, uint8_t brightnes
  */
 uint8_t ts_led_device_get_brightness(ts_led_device_t device);
 
+/** Enable visible output without discarding brightness, layers or content selection. */
+esp_err_t ts_led_device_set_enabled(ts_led_device_t device, bool enabled);
+bool ts_led_device_is_enabled(ts_led_device_t device);
+
 /**
  * @brief Get LED count
  * 

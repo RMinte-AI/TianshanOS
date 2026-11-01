@@ -5304,7 +5304,7 @@ async function allLedsOff() {
     let success = 0; const failures = [];
     for (const dev of devices) {
         try {
-            requireApiSuccess(await api.ledClear(dev.name), 'ledClear');
+            requireApiSuccess(await api.call('led.clear', {device: dev.name, off: true}), 'ledClear');
             success++;
             ledStates[dev.name] = false;
             updateLedCardState(dev.name, false);
@@ -6116,7 +6116,7 @@ async function toggleLed(device) {
     try {
         if (isOn) {
             // 当前是开启状态，关闭它
-            requireApiSuccess(await api.ledClear(device), 'ledClear');
+            requireApiSuccess(await api.call('led.clear', {device, off: true}), 'ledClear');
             ledStates[device] = false;
             updateLedCardState(device, false);
             showToast(typeof t === 'function' ? t('toast.ledTurnedOff', { device: getDeviceDescription(device) }) : `${device} 已关闭`, 'success');

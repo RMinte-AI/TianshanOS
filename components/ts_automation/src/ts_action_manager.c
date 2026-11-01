@@ -895,8 +895,7 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
     switch (led_final->ctrl_type) {
         case TS_LED_CTRL_OFF:
             /* 关闭 LED */
-            ts_led_animation_stop(layer);
-            ret = ts_led_fill(layer, TS_LED_RGB(0, 0, 0));
+            ret = ts_led_device_set_enabled(device, false);
             snprintf(result->output, sizeof(result->output), "LED %s turned off", led->device);
             break;
             
@@ -913,6 +912,11 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
                 if (anim) {
                     ESP_LOGI(TAG, "Starting effect '%s' on device '%s'", led_final->effect, device_name);
                     ret = ts_led_animation_start(layer, anim);
+                    if (ret == ESP_OK) {
+                        ts_led_preset_set_current_animation(device_name, led_final->effect, 0);
+                        ts_led_preset_clear_current_color(device_name);
+                        ts_led_device_set_enabled(device, true);
+                    }
                     snprintf(result->output, sizeof(result->output), "LED %s effect=%.32s started", led->device, led_final->effect);
                 } else {
                     ESP_LOGW(TAG, "Effect '%s' not found", led_final->effect);
@@ -933,17 +937,28 @@ esp_err_t ts_action_exec_led(const ts_auto_action_led_t *led,
                 const ts_led_animation_def_t *anim = ts_led_animation_get_builtin(led_final->effect);
                 if (anim) {
                     ret = ts_led_animation_start(layer, anim);
+                    if (ret == ESP_OK) {
+                        ts_led_preset_set_current_animation(device_name, led_final->effect, 0);
+                        ts_led_preset_clear_current_color(device_name);
+                        ts_led_device_set_enabled(device, true);
+                    }
                     snprintf(result->output, sizeof(result->output), "LED %s effect=%.32s started", led->device, led_final->effect);
                     break;
                 }
             }
             
+            ts_led_animation_stop(layer);
             ts_led_rgb_t color = TS_LED_RGB(led_final->r, led_final->g, led_final->b);
             if (led_final->index == 0xFF) {
                 ret = ts_led_fill(layer, color);
+                if (ret == ESP_OK) {
+                    ts_led_preset_set_current_animation(device_name, "solid", 50);
+                    ts_led_preset_set_current_color(device_name, color);
+                }
             } else {
-                ret = ts_led_device_set_pixel(device, (uint16_t)led_final->index, color);
+                ret = ts_led_set_pixel(layer, (uint16_t)led_final->index, color);
             }
+            if (ret == ESP_OK) ts_led_device_set_enabled(device, true);
             snprintf(result->output, sizeof(result->output), "LED %s filled with color", led->device);
             break;
             

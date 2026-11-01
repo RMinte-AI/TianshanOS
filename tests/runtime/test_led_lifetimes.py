@@ -117,8 +117,9 @@ esp_err_t ts_led_image_display_frame(ts_led_layer_t layer,ts_led_image_t image,u
 for name in ['gif_animation_effect', 'ts_led_image_animate_start', 'ts_led_image_release_animation',
              'ts_led_image_animate_stop', 'ts_led_image_is_playing']:
     code += body(LED / 'ts_led_image.c', name)
-for name in ['ts_led_animation_start', 'ts_led_animation_stop', 'ts_led_animation_is_running',
-             'ts_led_animation_get_state', 'anim_solid', 'anim_breathing']:
+code += 'static void anim_rain(ts_led_layer_t layer,uint32_t time,void *data) {(void)layer;(void)time;(void)data;}\n'
+for name in ['anim_solid', 'anim_breathing', 'ts_led_animation_start', 'ts_led_animation_stop',
+             'ts_led_animation_is_running', 'ts_led_animation_get_state']:
     code += body(LED / 'ts_led_animation.c', name)
 code += r'''
 static ts_led_image_t s_current_image,s_api_current_image;

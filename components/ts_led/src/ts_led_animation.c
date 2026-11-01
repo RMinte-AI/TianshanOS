@@ -620,6 +620,11 @@ esp_err_t ts_led_animation_start(ts_led_layer_t layer, const ts_led_animation_de
     ts_led_image_release_animation(layer);
     l->anim_fn = animation->func;
     l->anim_data = animation->user_data;
+    if (animation->user_data && (animation->func == anim_breathing ||
+        animation->func == anim_solid || animation->func == anim_rain)) {
+        l->anim_color = *(const ts_led_rgb_t *)animation->user_data;
+        l->anim_data = &l->anim_color;
+    }
     l->anim_interval = animation->frame_interval_ms;
     l->anim_last_time = 0;
     xSemaphoreGive(l->device->mutex);

@@ -34,6 +34,7 @@ typedef struct ts_led_device {
     ts_led_layer_t layers[TS_LED_MAX_LAYERS];
     uint8_t layer_count;
     uint8_t brightness;
+    bool enabled;
     led_strip_handle_t strip_handle;
     bool used;
     SemaphoreHandle_t mutex;
@@ -55,6 +56,7 @@ typedef struct ts_led_layer {
     /* Animation state (procedural animations, formerly "effects") */
     ts_led_animation_fn_t anim_fn;
     void *anim_data;
+    ts_led_rgb_t anim_color;             /**< Owned colour for the three RGB built-ins. */
     uint32_t anim_interval;
     uint32_t anim_last_time;
     

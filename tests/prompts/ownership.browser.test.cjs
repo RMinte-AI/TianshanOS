@@ -578,3 +578,36 @@ for(const language of ['zh-CN','en-US']) {
   }finally{await f.context.close();}
  });
 }
+
+for (const language of ['zh-CN','en-US']) {
+ test(`B07 LED buttons: explicit device off, all off and existing on policy ${language}`,async()=>{
+  const {page,context,errors}=await pageFor(language),writes=[];
+  try {
+   await page.route('**/api/v1/led/**',async route=>{
+    const request=route.request(),endpoint=new URL(request.url()).pathname;
+    if(request.method()==='POST')writes.push({endpoint,params:request.postDataJSON()});
+    const devices=['touch','board','matrix'].map(name=>({name,layout:name==='matrix'?'matrix':'strip',brightness:80,effects:['solid','breathing'],current:{on:true,animation:'breathing',speed:73,color:{r:0,g:0,b:255}}}));
+    await route.fulfill({json:{code:0,data:endpoint.endsWith('/list')?{devices}:{}}});
+   });
+   await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+   await page.evaluate(async()=>{
+    closeLoginModal();api.token='local-fixture';
+    await loadSystemPage();
+   });
+   await page.locator('#toggle-matrix').click();
+   await page.waitForFunction(()=>ledStates.matrix===false);
+   assert.deepEqual(writes.at(-1),{endpoint:'/api/v1/led/clear',params:{device:'matrix',off:true}});
+   await page.locator('#toggle-matrix').click();
+   await page.waitForFunction(()=>ledStates.matrix===true);
+   assert.deepEqual(writes.at(-1),{endpoint:'/api/v1/led/fill',params:{device:'matrix',color:'#ffffff'}});
+   const before=writes.length;await page.locator('[onclick="allLedsOff()"]').click();
+   await page.waitForFunction(()=>['touch','board','matrix'].every(device=>ledStates[device]===false));
+   assert.deepEqual(writes.slice(before),['touch','board','matrix'].map(device=>({endpoint:'/api/v1/led/clear',params:{device,off:true}})));
+   await page.evaluate(()=>openLedModal('matrix','effect'));
+   await page.locator('#modal-device-enabled-matrix').check();
+   await page.waitForFunction(()=>ledStates.matrix===true);
+   assert.deepEqual(writes.at(-1),{endpoint:'/api/v1/led/effect/start',params:{device:'matrix',effect:'breathing',speed:73,color:'#0000ff'}});
+   assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+}
