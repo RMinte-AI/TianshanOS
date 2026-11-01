@@ -495,7 +495,7 @@ textarea.field{height:auto;padding:8px 12px;width:100%;resize:vertical}textarea.
 .sheet.mem>.sb{margin:0 -28px;padding:0 28px}
 .sheet.mem .sh{margin-bottom:20px}
 .sheet.mem .xbtn{width:28px;height:28px;font-size:13px}
-.sheet.hl>.sf{margin-top:20px;padding-top:16px;border-top:1px solid var(--hair);align-items:center}
+.sheet.hl>.sf{margin-top:20px;align-items:center}
 .mgrid{display:grid;gap:12px}
 .mgrid.t-note{padding-bottom:8px}
 .mgrid.t-body{padding:10px 0;border-top:1px solid var(--hair)}
@@ -662,7 +662,7 @@ input[type=color].swi::-webkit-color-swatch{border:0;border-radius:50%}
 #automation-config-modal>.sheet::before,#configuration-delete-modal>.sheet::before{display:none}
 #automation-config-modal .sh,#configuration-delete-modal .sh{margin-bottom:22px}
 #configuration-delete-modal .st{min-width:0;overflow-wrap:anywhere}
-#automation-config-modal .sf,#configuration-delete-modal .sf{margin-top:24px;padding-top:16px;border-top:1px solid var(--hair);flex-direction:row}
+#automation-config-modal .sf,#configuration-delete-modal .sf{margin-top:24px;flex-direction:row}
 #automation-config-modal .sf .btn,#configuration-delete-modal .sf .btn{width:auto}
 .config-layout{display:grid;gap:24px}
 .config-layout .config-intro{color:var(--ink-2);line-height:22px}
