@@ -499,6 +499,7 @@ textarea.field{height:auto;padding:8px 12px;width:100%;resize:vertical}textarea.
 .mgrid{display:grid;gap:12px}
 .mgrid.t-note{padding-bottom:8px}
 .mgrid.t-body{padding:10px 0;border-top:1px solid var(--hair)}
+.mtable-wrap{overflow-x:auto}
 .mtable{width:100%;border-collapse:collapse;font-size:14px}
 .mtable th{font-size:12px;line-height:16px;font-weight:400;color:var(--ink-3);text-align:left;padding:0 12px 8px 0;white-space:nowrap}
 .mtable td{padding:10px 12px 10px 0;border-top:1px solid var(--hair);font-variant-numeric:tabular-nums}

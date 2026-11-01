@@ -14189,7 +14189,7 @@ async function refreshMemoryDetail() {
                 [t('memoryPage.namespaceCount'), nvs.namespace_count], [t('memoryPage.usagePercent'), nvs.used_percent + '%']])}`) : ''}
             ${tipsHtml}
             ${data.tasks && data.tasks.length > 0 ? sect(t('memoryPage.taskStackUsage') + ' (' + t('memoryPage.taskCountLabel', { count: data.tasks.length }) + ')', `
-                <table class="mtable" id="task-memory-table">
+                <div class="mtable-wrap"><table class="mtable" id="task-memory-table">
                     <thead><tr>
                         <th>${t('memoryPage.taskName')}</th>
                         <th data-sort="stack_alloc" class="sortable">${t('memoryPage.allocStack')} ⇅</th>
@@ -14201,7 +14201,7 @@ async function refreshMemoryDetail() {
                         ${data.tasks[0]?.cpu_percent !== undefined ? '<th data-sort="cpu_percent" class="sortable">' + t('memoryPage.cpu') + ' ⇅</th>' : ''}
                     </tr></thead>
                     <tbody id="task-table-body">${renderTaskRows(data.tasks, formatBytes)}</tbody>
-                </table>
+                </table></div>
                 ${data.total_stack_allocated ? `<div class="t-note" style="margin-top:8px">${t('memoryPage.taskStackTotal')}: ${formatBytes(data.total_stack_allocated)} · ${t('memoryPage.totalTaskCount')}: ${data.task_count}</div>` : ''}
                 <div class="t-note" style="margin-top:4px">${t('memoryPage.stackHint')} · ${t('memoryPage.clickToSort')}</div>`) : ''}
             ${sect(t('memoryPage.runtimeStats'), kvs([
