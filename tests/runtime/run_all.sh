@@ -23,6 +23,7 @@ python3 tests/runtime/test_led_lifetimes.py
 python3 tests/runtime/test_led_controls.py
 python3 tests/runtime/test_led_image_bounds.py
 python3 tests/runtime/test_power_settings.py
+python3 tests/runtime/test_power_chip_crc.py
 python3 tests/runtime/test_ui_widgets.py
 python3 tests/runtime/test_scp_recv.py
 python3 tests/runtime/test_condition_roundtrip.py
