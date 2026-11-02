@@ -546,6 +546,7 @@ static int do_system_tasks(bool json)
 
 static int do_system_reboot(int delay_sec)
 {
+    if (delay_sec > 10) delay_sec = 10;
     if (delay_sec > 0) {
         ts_console_printf("System will reboot in %d seconds...\n", delay_sec);
     } else {
@@ -555,8 +556,8 @@ static int do_system_reboot(int delay_sec)
     
     /* 使用 API 执行重启 */
     cJSON *params = cJSON_CreateObject();
-    if (params) {
-        cJSON_AddNumberToObject(params, "delay_ms", delay_sec * 1000);
+    if (params && delay_sec > 0) {
+        cJSON_AddNumberToObject(params, "delay", delay_sec * 1000);
     }
     
     ts_api_result_t result;
@@ -609,7 +610,7 @@ static int cmd_system(int argc, char **argv)
         ts_console_printf("  -t, --tasks         Show task list\n");
         ts_console_printf("  -r, --reboot        Reboot system\n");
         ts_console_printf("      --save          Save system config to NVS/SD\n");
-        ts_console_printf("      --delay <sec>   Delay before reboot\n");
+        ts_console_printf("      --delay <sec>   Delay before reboot (max 10 sec)\n");
         ts_console_printf("  -j, --json          JSON output\n");
         ts_console_printf("  -h, --help          Show this help\n\n");
         ts_console_printf("Examples:\n");
@@ -681,7 +682,7 @@ esp_err_t ts_cmd_system_register(void)
     s_system_args.tasks   = arg_lit0("t", "tasks", "Show tasks");
     s_system_args.reboot  = arg_lit0("r", "reboot", "Reboot system");
     s_system_args.save    = arg_lit0(NULL, "save", "Save system config");
-    s_system_args.delay   = arg_int0(NULL, "delay", "<sec>", "Delay before reboot");
+    s_system_args.delay   = arg_int0(NULL, "delay", "<sec>", "Delay before reboot (max 10 sec)");
     s_system_args.json    = arg_lit0("j", "json", "JSON output");
     s_system_args.help    = arg_lit0("h", "help", "Show help");
     s_system_args.end     = arg_end(10);

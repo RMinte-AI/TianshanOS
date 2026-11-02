@@ -752,7 +752,7 @@ system [options]
 | `--memory` | `-m` | 显示内存使用情况 |
 | `--tasks` | `-t` | 显示任务/线程列表 |
 | `--reboot` | | 重启系统 |
-| `--delay <ms>` | | 重启延时（毫秒） |
+| `--delay <sec>` | | 重启延时（秒）；正数最多10秒，超过按10秒 |
 | `--json` | `-j` | JSON 格式输出 |
 | `--help` | `-h` | 显示帮助 |
 
@@ -775,7 +775,7 @@ system --memory --json
 system --tasks
 
 # 延时 1 秒后重启
-system --reboot --delay 1000
+system --reboot --delay 1
 ```
 
 ---

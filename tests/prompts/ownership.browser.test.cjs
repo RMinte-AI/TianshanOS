@@ -44,6 +44,140 @@ async function pageFor(language='en-US',handler){
  return {page,context,errors};
 }
 
+// F09 uses the production login form and api.js. Only HTTP responses are controlled.
+async function sessionPage(language) {
+ const fixture=await pageFor(language),{page}=fixture,requests=[];
+ page.setDefaultTimeout(5000);
+ let sequence=0;
+ await page.route('**/api/**',async route=>{
+  const request=route.request(),url=new URL(request.url()),params=request.postDataJSON();
+  if(url.pathname.endsWith('/auth/login')) {
+   requests.push({endpoint:'login',params});
+   await route.fulfill({json:{code:0,data:{token:`${params.username}-session-${++sequence}`,username:params.username,level:params.username,expires_in:3600,password_changed:true}}});
+  } else if(url.pathname.endsWith('/auth/status')) {
+   requests.push({endpoint:'status',params,authorization:request.headers().authorization});
+   await route.fulfill({json:{code:0,data:{valid:true}}});
+  } else if(url.pathname.endsWith('/auth/logout')) {
+   requests.push({endpoint:'logout',params});await route.fulfill({json:{success:true}});
+  } else if(url.pathname.endsWith('/system/reboot')) {
+   requests.push({endpoint:'reboot',params});await route.fulfill({json:{code:0,data:{status:'rebooting',delay_ms:500}}});
+  } else await route.fulfill({json:{code:0,data:{}}});
+ });
+ await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&router.appReady);
+ return {...fixture,requests};
+}
+async function formLogin(page,username) {
+ await page.evaluate(()=>showLoginModal());
+ await page.waitForTimeout(150); // showLoginModal focuses the username after 100ms.
+ assert.equal(await page.locator('#username').evaluate(input=>document.activeElement===input),true);
+ await page.locator('#username').fill(username);await page.locator('#password').fill('local-test-password');
+ await page.locator('#login-form button[type="submit"]').click();
+ try {await page.waitForFunction(username=>api.username===username&&document.getElementById('login-modal').classList.contains('hidden'),username);}
+ catch(error){console.log('F09 login fixture failure',await page.evaluate(()=>({token:api.token,username:api.username,error:document.getElementById('login-error').textContent,field:document.getElementById('username').value,invalid:[...document.querySelectorAll('#login-form :invalid')].map(e=>e.id)})));throw error;}
+}
+async function sessionView(page) {
+ return page.evaluate(()=>({token:api.token,username:api.username,level:api.level,loggedIn:api.isLoggedIn(),
+  stored:['ts_token','ts_username','ts_level','ts_expires'].map(k=>localStorage.getItem(k)),
+  name:document.getElementById('user-name').textContent,title:document.getElementById('user-name').title,
+  loginHidden:document.getElementById('login-modal').classList.contains('hidden'),
+  navigation:[...document.querySelectorAll('.nav-link')].map(e=>[e.getAttribute('href'),e.style.display])}));
+}
+async function holdSessionStatus(page) {
+ let held,arrive;const arrived=new Promise(resolve=>arrive=resolve);
+ await page.route('**/api/v1/auth/status',route=>{held=route;arrive();});
+ await page.evaluate(()=>{window.f09ValidationDone=false;void validateStoredSession().then(()=>f09ValidationDone=true);});
+ await arrived;
+ return {request:held.request().postDataJSON(),release:async valid=>{
+  if(valid==='network')await held.abort('failed');else await held.fulfill({json:{code:0,data:{valid}}});
+  await page.waitForFunction(()=>f09ValidationDone);
+ }};
+}
+for(const language of ['zh-CN','en-US']) {
+ test(`F09 normal: login refresh logout and relogin ${language}`,async()=>{
+  const {page,context,errors,requests}=await sessionPage(language);try{
+   await formLogin(page,'admin');const first=await sessionView(page);
+   await page.reload();await page.waitForFunction(()=>i18n.isReady()&&document.getElementById('user-name').textContent==='admin');
+   await page.evaluate(()=>validateStoredSession());assert.deepEqual(await sessionView(page),first);
+   assert(requests.some(r=>r.endpoint==='status'&&r.params.token===first.token&&r.authorization===`Bearer ${first.token}`));
+   await page.locator('#login-btn').click();await page.waitForFunction(()=>api.token===null);
+   await formLogin(page,'root');const next=await sessionView(page);
+   assert.equal(next.username,'root');assert.equal(next.level,'root');assert.equal(next.stored[0],next.token);
+   assert.equal(next.stored[2],'root');assert(next.loggedIn&&next.loginHidden);assert.notEqual(next.token,first.token);
+   console.log(JSON.stringify({case:'F09 login-refresh-logout-relogin',language,first,next}));assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+ test(`F09 defect: old invalid status preserves newer login ${language}`,async()=>{
+  const {page,context,errors}=await sessionPage(language);try{
+   await formLogin(page,'admin');const old=await sessionView(page),pending=await holdSessionStatus(page);
+   assert.equal(pending.request.token,old.token);
+   const signOut=page.waitForResponse('**/api/v1/auth/logout');
+   await page.locator('#login-btn').click();const response=await signOut;
+   assert.deepEqual(response.request().postDataJSON(),{token:old.token});assert.deepEqual(await response.json(),{success:true});
+   await page.waitForFunction(()=>api.token===null&&document.getElementById('login-btn').onclick===showLoginModal);
+   const loggedOut=await sessionView(page);
+   assert.equal(loggedOut.username,null);assert.equal(loggedOut.level,null);assert.equal(loggedOut.loggedIn,false);
+   assert.deepEqual(loggedOut.stored,[null,null,null,null]);assert.equal(loggedOut.loginHidden,false);
+   assert.equal(await page.evaluate(()=>f09ValidationDone),false);
+   await formLogin(page,'root');const before=await sessionView(page);assert.notEqual(before.token,old.token);
+   await pending.release(false);const after=await sessionView(page);
+   console.log(JSON.stringify({case:'F09 stale-invalid',language,old,loggedOut,before,after}));
+   assert.deepEqual(after,before);assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+ test(`F09 normal: late logout preserves form-based newer login ${language}`,async()=>{
+  const {page,context,errors}=await sessionPage(language);try{
+   await formLogin(page,'admin');let held,arrive;const arrived=new Promise(resolve=>arrive=resolve);
+   await page.route('**/api/v1/auth/logout',route=>{held=route;arrive();});
+   await page.evaluate(()=>{window.f09LogoutDone=false;void logout().then(()=>f09LogoutDone=true);});await arrived;
+   assert.equal(await page.evaluate(()=>api.token),null);
+   await formLogin(page,'root');const before=await sessionView(page);
+   await held.fulfill({json:{success:true}});await page.waitForFunction(()=>f09LogoutDone);
+   assert.deepEqual(await sessionView(page),before);assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+ for(const mode of ['current-invalid','logout-old-valid','network'])test(`F09 normal: ${mode} ${language}`,async()=>{
+  const {page,context,errors}=await sessionPage(language);try{
+   await formLogin(page,'admin');const before=await sessionView(page),pending=await holdSessionStatus(page);
+   if(mode==='logout-old-valid') {await page.locator('#login-btn').click();await page.waitForFunction(()=>api.token===null);}
+   await pending.release(mode==='current-invalid'?false:mode==='network'?'network':true);
+   const after=await sessionView(page);console.log(JSON.stringify({case:`F09 ${mode}`,language,before,after}));
+   if(mode==='network')assert.deepEqual(after,before);
+   else {assert.equal(after.token,null);assert.equal(after.loggedIn,false);assert.deepEqual(after.stored,[null,null,null,null]);}
+   if(mode==='current-invalid')assert.equal(after.loginHidden,false);
+   assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+}
+test('F60 normal: real webpage confirmation retains its 500ms API request',async()=>{
+ const {page,context,errors,requests}=await sessionPage('en-US');try{
+  await formLogin(page,'admin');await page.evaluate(()=>{void confirmReboot();});
+  const response=page.waitForResponse('**/api/v1/system/reboot');
+  await page.locator('.confirm-sheet button[data-r="1"]').click();await response;
+  assert.deepEqual(requests.filter(r=>r.endpoint==='reboot'),[{endpoint:'reboot',params:{delay:500}}]);assert.deepEqual(errors,[]);
+ }finally{await context.close();}
+});
+for(const language of ['zh-CN','en-US'])test(`F71 normal: settings form saves nondefault values and reads them back ${language}`,async()=>{
+ const {page,context,errors}=await sessionPage(language);let config={low_voltage_threshold:12.6,recovery_voltage_threshold:18,shutdown_delay_sec:60,recovery_hold_sec:5,fan_stop_delay_sec:60};const writes=[];
+ try{
+  await formLogin(page,'admin');
+  await page.route('**/api/v1/power/protection/config',route=>route.fulfill({json:{code:0,data:config}}));
+  await page.route('**/api/v1/power/protection/set',route=>{
+   const params=route.request().postDataJSON();writes.push(params);
+   config={low_voltage_threshold:params.low_threshold,recovery_voltage_threshold:params.recovery_threshold,shutdown_delay_sec:params.shutdown_delay,recovery_hold_sec:params.recovery_hold,fan_stop_delay_sec:params.fan_stop_delay};
+   return route.fulfill({json:{code:0,data:{persisted:true}}});
+  });
+  await page.evaluate(()=>showShutdownSettingsModal());
+  const fields={'ss-low-voltage':'13.25','ss-recovery-voltage':'19.5','ss-shutdown-delay':'120','ss-recovery-hold':'17','ss-fan-stop-delay':'23'};
+  for(const [id,value] of Object.entries(fields))await page.locator('#'+id).fill(value);
+  await page.locator('#shutdown-settings-modal button[onclick="saveShutdownSettings()"]').click();
+  await page.waitForFunction(()=>document.getElementById('shutdown-settings-modal').classList.contains('hidden'));
+  assert.deepEqual(writes,[{low_threshold:13.25,recovery_threshold:19.5,shutdown_delay:120,recovery_hold:17,fan_stop_delay:23,persist:true}]);
+  await page.evaluate(()=>showShutdownSettingsModal());
+  for(const [id,value] of Object.entries(fields))assert.equal(await page.locator('#'+id).inputValue(),value);
+  assert.equal(writes.length,1);console.log(JSON.stringify({case:'F71 real form request and config read',language,request:writes[0],config}));assert.deepEqual(errors,[]);
+ }finally{await context.close();}
+});
+
 
 for(const language of ['zh-CN','en-US']) {
  test('review2: successful retry retains old failure '+language,async()=>{
