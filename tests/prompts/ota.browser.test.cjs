@@ -407,12 +407,24 @@ for (const language of ['zh-CN', 'en-US']) {
                 state.www = 'completed'; state.wwwBusy = false;
                 await page.evaluate(() => refreshOtaProgress());
                 await page.waitForFunction(() => otaUpgrade?.phase === 'done');
-                await page.locator(`[onclick="${action}"]`).click();
-                await page.waitForFunction(() => otaUpgrade?.phase === 'app');
-                const apps = calls.filter(call => call.endpoint === appEndpoint);
-                assert.equal(apps.length, 2); assert.equal(apps[1].params[field], next);
-                state.app = 'pending_reboot';
-                await page.evaluate(() => refreshOtaProgress());
+                // Keep C's first progress request in flight: a second refresh
+                // coalesces rather than promising the companion has started.
+                const progressStarted = page.waitForRequest('**/api/v1/ota/progress');
+                const progressRelease = deferred();
+                await page.route('**/api/v1/ota/progress', async route => {
+                    await progressRelease.promise;
+                    await route.fallback();
+                }, {times: 1});
+                try {
+                    await page.locator(`[onclick="${action}"]`).click();
+                    await page.waitForFunction(() => otaUpgrade?.phase === 'app');
+                    const apps = calls.filter(call => call.endpoint === appEndpoint);
+                    assert.equal(apps.length, 2); assert.equal(apps[1].params[field], next);
+                    await progressStarted;
+                    state.app = 'pending_reboot';
+                    await page.evaluate(() => refreshOtaProgress());
+                } finally { progressRelease.resolve(); }
+                await page.waitForFunction(() => otaUpgrade?.phase === 'www');
                 const last = calls.filter(call => call.endpoint === wwwEndpoint).at(-1);
                 assert.equal(last.params[field], url ? 'https://ota.fixture.invalid/C/www.bin' : '/sdcard/C/www.bin');
                 if (url) assert.equal(last.params.skip_verify, false);

@@ -14,7 +14,7 @@ def whole(path):
     return '\n#undef TAG\n#define TAG "fixture"\n' + source
 
 
-code = RTOS + r'''
+code = '#define _DEFAULT_SOURCE\n' + RTOS + r'''
 #include <math.h>
 #include <ctype.h>
 #include <strings.h>
