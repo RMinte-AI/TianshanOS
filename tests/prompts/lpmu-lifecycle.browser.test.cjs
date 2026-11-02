@@ -72,6 +72,110 @@ async function navigate(page, target) {
 }
 
 for (const language of ['zh-CN', 'en-US']) {
+    test(`${language}: a completed result stays reachable after reload, dismissal and returning to Network`, async () => {
+        const {page,context,errors}=await open(language);
+        try {
+            const transcript='LPMU diagnostic <script>literal</script>\nAGX unknown failure\n';
+            const failure={run_id:501,stage:'failed',running:false,reason:'access_script_failed',
+                failure_stage:'running_script',last_error:'setup-smart-route failed (exit=1): remote script failed',output_tail:transcript};
+            const logRequests=[];
+            let status=failure;
+            await page.route('**/api/v1/network/lpmu_access/status',route=>route.fulfill({json:{code:0,data:status}}));
+            await page.route('**/api/v1/network/lpmu_access/log?*',route=>{
+                const params=new URL(route.request().url()).searchParams;
+                logRequests.push({run:params.get('run_id'),offset:params.get('offset')});
+                return route.fulfill({json:{code:0,data:{run_id:status.run_id,output:transcript,next_offset:Buffer.byteLength(transcript),done:true}}});
+            });
+            await page.route('**/api/v1/auth/status',route=>route.fulfill({json:{code:0,data:{valid:true}}}));
+            await context.addInitScript(()=>{
+                localStorage.setItem('ts_token','fixture');localStorage.setItem('ts_username','root');
+                localStorage.setItem('ts_level','root');localStorage.setItem('ts_expires',String(Date.now()+3600000));
+            });
+            // A fresh document has no in-memory completion transition from running to failed.
+            await page.reload();
+            await page.locator('#network-lpmu-result-btn').waitFor({timeout:5000});
+            await page.evaluate(()=>{
+                const navigate=router.navigate.bind(router);
+                router.navigate=(...args)=>window.navigationWork=navigate(...args);
+            });
+            assert.equal(await page.locator('#network-lpmu-result-modal').count(),0);
+            assert(!/LPMU|AGX|remote script failed/.test(await page.locator('#network-lpmu-access-summary').textContent()));
+            const readResult=async()=>{
+                await page.locator('#network-lpmu-result-btn').click();
+                await page.locator('#network-lpmu-result-modal summary').click();
+                await page.waitForFunction(text=>document.querySelector('#network-lpmu-result-modal pre')?.textContent.endsWith(text),transcript);
+                const text=await page.locator('#network-lpmu-result-modal pre').textContent();
+                assert(text.includes(failure.last_error));
+                assert.equal(await page.locator('#network-lpmu-result-modal pre script').count(),0);
+            };
+            await page.setViewportSize({width:390,height:844});
+            await readResult();
+            assert.equal(await page.locator('#network-lpmu-result-btn').evaluate(e=>{
+                const r=e.getBoundingClientRect(),c=e.closest('.card').getBoundingClientRect();
+                return r.left>=c.left && r.right<=c.right && document.documentElement.scrollWidth<=innerWidth;
+            }),true);
+            if(process.env.LPMU_RESULT_SCREENSHOTS){
+                fs.mkdirSync(process.env.LPMU_RESULT_SCREENSHOTS,{recursive:true});
+                await page.screenshot({path:path.join(process.env.LPMU_RESULT_SCREENSHOTS,`${language}-persistent-result.png`)});
+            }
+            await page.keyboard.press('Escape');
+            await readResult(); // Dismissing the notification does not lose the result.
+            await page.keyboard.press('Escape');
+            status={run_id:505,stage:'running_script',running:true};
+            await page.evaluate(()=>refreshNetworkLpmuAccessStatus(false));
+            await navigate(page,'files');
+            status={...failure,run_id:505}; // The task finishes while Network is not mounted.
+            await navigate(page,'network');
+            assert.equal(await page.locator('#network-lpmu-result-modal').count(),0);
+            await readResult();
+            assert.deepEqual(logRequests,[{run:'501',offset:'0'},{run:'501',offset:'0'},{run:'505',offset:'0'}]);
+            assert.deepEqual(errors,[]);
+        } finally {await context.close();}
+    });
+
+    test(`${language}: result entry follows confirmed terminal state and retains diagnostics if its log is unavailable`, async () => {
+        const {page,context,errors}=await open(language);
+        try {
+            const entry=page.locator('#network-lpmu-result-btn');
+            assert.equal(await entry.isHidden(),true); // No result for idle.
+            let status={run_id:502,stage:'failed',running:false,reason:'access_unpack_failed',failure_stage:'extracting',
+                last_error:'AGX remote extraction failed',output_tail:'LPMU retained tail <literal>'};
+            let statusCode=0;
+            await page.route('**/api/v1/network/lpmu_access/status',route=>route.fulfill({json:{code:statusCode,data:status}}));
+            await page.route('**/api/v1/network/lpmu_access/log?*',route=>route.fulfill({json:{code:2,error:'Execution log for this run is no longer available'}}));
+            const refresh=()=>page.evaluate(()=>refreshNetworkLpmuAccessStatus(false));
+            await refresh();
+            await entry.click();await page.locator('#network-lpmu-result-modal summary').click();
+            await page.waitForFunction(()=>document.querySelector('#network-lpmu-result-modal pre')?.textContent.includes('LPMU retained tail <literal>'));
+            const raw=await page.locator('#network-lpmu-result-modal pre').textContent();
+            assert(raw.includes(status.last_error));
+            assert(raw.includes(await page.evaluate(()=>getNetworkLpmuAccessStageLabel('extracting'))));
+            await page.keyboard.press('Escape');
+            statusCode=7;await refresh();
+            assert.equal(await entry.isHidden(),true); // Unknown current status must not offer the old failure.
+            statusCode=0;status={run_id:503,stage:'running_script',running:true};await refresh();
+            assert.equal(await entry.isHidden(),true);
+            status={run_id:503,stage:'failed',running:true,last_error:'still finalizing'};await refresh();
+            assert.equal(await entry.isHidden(),true);
+            status={run_id:503,stage:'success',running:false};await refresh();
+            await entry.click();
+            assert.equal(await page.locator('#network-lpmu-result-modal .state').first().textContent(),await page.evaluate(()=>t('networkPage.lpmuAccessSuccess')));
+            assert(!(await page.locator('#network-lpmu-result-modal').textContent()).includes('AGX remote extraction failed'));
+            await page.keyboard.press('Escape');
+            // Replacing a finished task binds the entry and requested log to its new run ID.
+            status={run_id:504,stage:'failed',running:false,reason:'access_script_failed',last_error:'new run failure',output_tail:'new run tail'};
+            await refresh();
+            await page.route('**/api/v1/network/lpmu_access/log?*',route=>{
+                assert.equal(new URL(route.request().url()).searchParams.get('run_id'),'504');
+                return route.fulfill({json:{code:0,data:{run_id:503,output:'stale run transcript',next_offset:20,done:true}}});
+            });
+            await entry.click();await page.locator('#network-lpmu-result-modal summary').click();
+            await page.waitForFunction(()=>document.querySelector('#network-lpmu-result-modal pre')?.textContent.includes('new run tail'));
+            assert(!(await page.locator('#network-lpmu-result-modal pre').textContent()).includes('stale run transcript'));
+            assert.deepEqual(errors,[]);
+        } finally {await context.close();}
+    });
+
     test(`${language}: keyboard trap and Escape clear the password without submission`, async () => {
         const {page,context,errors}=await open(language);
         try {

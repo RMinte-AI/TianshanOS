@@ -1875,6 +1875,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         lpmuAccessInternetConfirmed: 'Connected',
         lpmuAccessConfiguration: 'Network configuration',
         lpmuAccessConfigurationDone: 'Complete',
+        lpmuAccessViewResult: 'View Result',
         lpmuAccessResultDone: 'Done',
         lpmuAccessLog: 'Execution log',
         lpmuAccessLogEmpty: 'No output was recorded for this attempt.',

@@ -174,8 +174,32 @@ test('force deletion stays available while impact preview is still pending', asy
 });
 test('an old save response cannot close or fill a newly opened editor', async () => {
     const d=fixture();
-    await kit.withPage('en-US',d.respond,async({page})=>{
-        await automation(page);await page.evaluate(()=>editAction('act'));
+    const respond=call=>call.endpoint==='auth/status' ? {code:0,data:{valid:true}} : d.respond(call);
+    await kit.withPage('en-US',respond,async({page})=>{
+        // Start with a valid session before bootstrap. An unauthenticated navigate() opens
+        // Login and schedules focus there, which can steal the next editor's input.
+        await page.addInitScript(()=>{
+            localStorage.setItem('ts_token','fixture');
+            localStorage.setItem('ts_username','root');
+            localStorage.setItem('ts_level','root');
+            localStorage.setItem('ts_expires',String(Date.now()+3600000));
+        });
+        await page.reload();
+        await page.waitForFunction(()=>i18n.isReady() && router.appReady && api.isRoot());
+        await page.evaluate(()=>{
+            const navigate=router.navigate.bind(router);
+            router.navigate=(...args)=>window.configurationNavigation=navigate(...args);
+            const submit=submitAction;
+            submitAction=(...args)=>window.oldActionSave=submit(...args);
+        });
+        const navigate=async path=>{
+            await page.evaluate(path=>router.navigate(path),path);
+            await page.waitForFunction(path=>router.currentPage===router.routes[path] &&
+                (location.hash.slice(1)||'/')===path,path);
+            await page.evaluate(()=>configurationNavigation);
+        };
+        await navigate('/automation');
+        await page.evaluate(()=>editAction('act'));
         let pending,reply,signal;const seen=new Promise(resolve=>signal=resolve);
         await page.route('**/api/v1/automation/actions/update',async route=>{
             reply=d.respond({endpoint:'automation/actions/update',params:route.request().postDataJSON()});pending=route;signal();
@@ -183,14 +207,20 @@ test('an old save response cannot close or fill a newly opened editor', async ()
         await page.locator('#action-name').fill('First draft');
         await page.locator('#action-modal .sf .primary').click();
         await seen;
-        await page.evaluate(async()=>{await router.navigate('/');await loadAutomationPage();});
-        await page.waitForFunction(()=>configurationList('actions')?.version);
-        await page.evaluate(()=>showAddActionModal());
+        await navigate('/');
+        await navigate('/automation');
+        await page.evaluate(()=>{showAddActionModal();window.newActionEditor=document.getElementById('action-modal');});
         await page.locator('#action-name').fill('New editor input');
+        assert.equal(await page.locator('#login-modal').isHidden(),true);
+        assert.equal(await page.locator('#action-name').inputValue(),'New editor input');
         await pending.fulfill({json:reply});
-        await page.waitForFunction(()=>!document.querySelector('#action-modal .sf .primary').disabled);
+        // Wait for the old operation itself, not a button in the already enabled new editor.
+        await page.evaluate(()=>oldActionSave);
+        assert.equal(await page.evaluate(()=>newActionEditor===document.getElementById('action-modal')),true);
+        assert.equal(await page.evaluate(()=>newActionEditor._configuration.current()),true);
         assert.equal(await page.locator('#action-name').inputValue(),'New editor input');
         assert.equal(await page.locator('#action-modal').isVisible(),true);
+        assert.equal(await page.locator('#action-modal .sf .primary').isEnabled(),true);
     });
 });
 test('deletion shows long reference lists, escapes names and requires an explicit click', async () => {

@@ -6638,6 +6638,7 @@ async function loadNetworkPage() {
                     <div class="t-section">${t('networkPage.lpmuAccessTitle')}</div>
                     <div id="network-lpmu-access-current" style="margin-top:4px"><span class="state">${t('networkPage.lpmuAccessIdle')}</span></div>
                     <div id="network-lpmu-access-summary" class="t-note" style="word-break:break-word"></div>
+                    <button type="button" class="btn sm" id="network-lpmu-result-btn" style="margin-top:8px" hidden onclick="showNetworkLpmuAccessResult(networkLpmuAccessLastInfo)">${t('networkPage.lpmuAccessViewResult')}</button>
                 </div>
                 <button class="btn sm lpmu-access-btn" id="network-lpmu-access-btn" onclick="startNetworkLpmuAccess()">${t('networkPage.lpmuAccessBtn')}</button>
             </div>
@@ -7062,6 +7063,8 @@ async function refreshNetworkLpmuAccessStatus(notifyResult = true) {
 
 function showNetworkLpmuAccessStatusUnknown(message) {
     networkLpmuAccessUncertain = true;
+    const resultBtn = document.getElementById('network-lpmu-result-btn');
+    if (resultBtn) resultBtn.hidden = true;
     const btn = document.getElementById('network-lpmu-access-btn');
     if (btn) {
         btn.disabled = !!networkLpmuAccessSubmitting;
@@ -7077,6 +7080,9 @@ function renderNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '') {
     const info = normalizeNetworkLpmuAccessStatus(statusData, fallbackMessage);
     networkLpmuAccessLastInfo = info;
     networkLpmuAccessUncertain = false;
+    // Results belong to the confirmed task, independently of its one-time completion notification.
+    const resultBtn = document.getElementById('network-lpmu-result-btn');
+    if (resultBtn) resultBtn.hidden = !(info.success || info.failed) || !!networkLpmuAccessSubmitting;
 
     const btn = document.getElementById('network-lpmu-access-btn');
     if (btn) {

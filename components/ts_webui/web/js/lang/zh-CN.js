@@ -1834,6 +1834,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         lpmuAccessInternetConfirmed: '连接正常',
         lpmuAccessConfiguration: '网络配置',
         lpmuAccessConfigurationDone: '已完成',
+        lpmuAccessViewResult: '查看结果',
         lpmuAccessResultDone: '完成',
         lpmuAccessLog: '执行日志',
         lpmuAccessLogEmpty: '本次执行没有输出日志。',
