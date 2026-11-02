@@ -68,7 +68,7 @@ for(const language of ['zh-CN','en-US'])test(`${language}: user names and comman
   assert.match(await page.locator('.toast-detail').innerText(),/AGX reset complete\nuser LPMU <script>literal<\/script>/);
   assert.equal(await page.locator('#toast script').count(),0);
   await page.evaluate(()=>{document.getElementById('toast').classList.remove('show');showAddActionModal();});
-  const quick=page.locator('#action-type-fields button').filter({hasText:language==='zh-CN'?'推理计算机 开机':'Inference Computer Power On'});
+  const quick=page.locator('#action-type-fields button').filter({hasText:language==='zh-CN'?'推理计算机开机':'Inference Computer Power On'});
   await quick.click();assert.equal(await page.locator('#action-cli-command').inputValue(),'device --power-on agx0');
  });
 });
@@ -97,5 +97,23 @@ for(const language of ['zh-CN','en-US'])test(`${language}: unavailable log prese
   const raw=await page.locator('#network-lpmu-result-modal pre').textContent();
   assert(raw.includes('setup-smart-route failed (exit=1): remote script failed'));
   assert(raw.includes('LPMU diagnostic <literal>\nAGX context'));
+ });
+});
+
+for(const language of ['zh-CN','en-US'])test(`${language}: disconnected USB is explicit and the failure stage stays in details`,async()=>{
+ const respond=device();
+ await kit.withPage(language,call=>call.endpoint==='device/usb/status'?{code:0,data:{configured:true,target:'disconnected'}}:respond(call),async({page})=>{
+  await login(page);
+  await page.waitForFunction(expected=>document.querySelector('#usb-mux-target')?.textContent===expected,language==='zh-CN'?'已断开':'Disconnected');
+  await page.evaluate(()=>{
+   api.lpmuAccessLog=async()=>({code:2,error:'Execution log for this run is no longer available'});
+   showNetworkLpmuAccessResult(normalizeNetworkLpmuAccessStatus({run_id:39,stage:'failed',running:false,reason:'access_unpack_failed',failure_stage:'extracting',last_error:'remote extract failed (exit=1): tar command failed'}));
+  });
+  assert(!/失败阶段|Failed stage/.test(await page.locator('#network-lpmu-result-modal .t-body').innerText()));
+  await page.locator('#network-lpmu-result-modal summary').click();
+  const phase=language==='zh-CN'?'失败阶段：解包项目':'Failed stage: Extracting project';
+  await page.waitForFunction(text=>document.querySelector('#network-lpmu-result-modal pre').textContent.includes(text),phase);
+  assert((await page.locator('#network-lpmu-result-modal pre').textContent()).includes(phase));
+  assert(!/extracting/.test(await page.locator('#network-lpmu-result-modal pre').textContent()));
  });
 });

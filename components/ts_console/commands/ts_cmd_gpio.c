@@ -88,14 +88,14 @@ typedef struct {
 
 // 允许通过 GPIO 命令控制的引脚（仅限设备控制相关）
 static const controllable_pin_t s_controllable_pins[] = {
-    {1,  "AGX_RESET",         "推理计算机 复位 (HIGH=复位, LOW=正常)",           0},
-    {2,  "LPMU_RESET",        "应用计算机 复位 (HIGH=复位, LOW=正常)",          0},
-    {3,  "AGX_FORCE_SHUTDOWN", "推理计算机 强制关机 (LOW=开机, HIGH=关机)",       0},
+    {1,  "AGX_RESET",         "推理计算机复位 (HIGH=复位, LOW=正常)",           0},
+    {2,  "LPMU_RESET",        "应用计算机复位 (HIGH=复位, LOW=正常)",          0},
+    {3,  "AGX_FORCE_SHUTDOWN", "推理计算机强制关机 (LOW=开机, HIGH=关机)",       0},
     {8,  "USB_MUX_0",         "USB MUX 选择位0",                          0},
     {17, "RTL8367_RST",       "网络交换机复位 (HIGH=复位, LOW=正常)",     0},
     {39, "ETH_RST",           "W5500 以太网复位 (LOW=复位, HIGH=正常)",   1},
-    {40, "AGX_RECOVERY",      "推理计算机 恢复模式 (HIGH=恢复, LOW=正常)",       0},
-    {46, "LPMU_POWER",        "应用计算机 电源键 (HIGH=按下, LOW=释放)",        0},
+    {40, "AGX_RECOVERY",      "推理计算机恢复模式 (HIGH=恢复, LOW=正常)",       0},
+    {46, "LPMU_POWER",        "应用计算机电源键 (HIGH=按下, LOW=释放)",        0},
     {48, "USB_MUX_1",         "USB MUX 选择位1",                          0},
 };
 
@@ -341,8 +341,8 @@ static void print_gpio_usage(void)
     ts_console_printf("示例:\n");
     ts_console_printf("  gpio 1 pulse 1000           # AGX_RESET: 1秒正脉冲（复位推理计算机）\n");
     ts_console_printf("  gpio AGX_RESET pulse 1000   # 同上，使用名称\n");
-    ts_console_printf("  gpio 3 high 8000            # 推理计算机 强制关机 8 秒\n");
-    ts_console_printf("  gpio 46 high 300            # 应用计算机 电源键脉冲 300ms\n");
+    ts_console_printf("  gpio 3 high 8000            # 推理计算机强制关机 8 秒\n");
+    ts_console_printf("  gpio 46 high 300            # 应用计算机电源键脉冲 300ms\n");
     ts_console_printf("  gpio --list                 # 查看所有引脚状态\n");
     ts_console_printf("\n");
     ts_console_printf("⚠️  警告: 此命令直接操作硬件，优先级高于其他驱动！\n");

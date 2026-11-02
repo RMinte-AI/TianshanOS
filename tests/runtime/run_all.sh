@@ -33,6 +33,7 @@ python3 tests/runtime/test_ssh_fingerprint_wire.py
 python3 tests/runtime/test_failure_wire.py
 python3 tests/runtime/test_copyid_quote.py
 python3 tests/runtime/test_lpmu_access.py
+python3 tests/runtime/test_device_names.py
 python3 tests/runtime/test_input_repair.py
 python3 tests/runtime/test_csr_input.py
 python3 tests/runtime/test_keystore.py

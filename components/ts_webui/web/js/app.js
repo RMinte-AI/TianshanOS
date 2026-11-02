@@ -1520,7 +1520,9 @@ function computerDisplayName(device) {
 }
 
 function usbMuxDisplayName(target) {
-    return target === 'esp32' ? 'ESP' : computerDisplayName(target);
+    if (target === 'esp32') return 'ESP';
+    if (target === 'disconnected') return t('system.usbDisconnected');
+    return computerDisplayName(target);
 }
 
 async function refreshUsbMuxStatus() {
@@ -6900,14 +6902,18 @@ function showNetworkLpmuAccessResult(info) {
         `<button type="button" class="btn lg primary">${t('networkPage.lpmuAccessResultDone')}</button>`);
     const details = modal.querySelector('details');
     let finished = false, loading = false, offset = 0, text = '';
-    const technicalDetail = info.technicalError ? t('networkPage.lpmuAccessTechnicalDetail', {error: info.technicalError}) + '\n\n' : '';
+    const technicalLines = [
+        info.failureStage ? t('networkPage.lpmuAccessFailureStage', {stage: getNetworkLpmuAccessStageLabel(info.failureStage)}) : '',
+        info.technicalError ? t('networkPage.lpmuAccessTechnicalDetail', {error: info.technicalError}) : ''
+    ].filter(Boolean);
+    const technicalDetail = technicalLines.length ? technicalLines.join('\n') + '\n\n' : '';
     details.ontoggle = async () => {
         if (!modal.isConnected) return;
         modal.querySelector('.sheet').style.width = details.open ? '720px' : '480px';
         if (!details.open || finished || loading) return;
         loading = true;
         const output = modal.querySelector('pre');
-        output.textContent = t('common.loading');
+        output.textContent = technicalDetail + t('common.loading');
         try {
             for (;;) {
                 const result = requireApiSuccess(await api.lpmuAccessLog(info.runId, offset), 'network.lpmu_access.log');
@@ -7133,19 +7139,20 @@ function normalizeNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '')
             result: {code: 7, error: String(errorText || ''), data: {reason}}, write: false}).message : '';
 
     return { stage, phase: finishing ? stage : (raw || stage), running, success, failed, summary,
+        failureStage: failed && typeof data.failure_stage === 'string' ? data.failure_stage : '',
         technicalError: failed ? String(errorText || '') : '', outputTail: failed ? String(outputText || '') : '', runId: data.run_id };
 }
 
 function extractNetworkLpmuAccessScriptError(value) {
     const lines = String(value || '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/);
-    // The script explicitly labels its error; route tables printed afterward
-    // are diagnostic context, not the reason for failure.
+    // Only the latest explicit failure marker can explain this execution.
+    // An unfamiliar final error must not revive an earlier known diagnosis.
     for (let i = lines.length - 1; i >= 0; i--) {
-        const match = lines[i].trim().match(/^✗\s*错误[：:]\s*(.+)$/);
-        if (match && match[1] === '没有找到可用的互联网连接') return t('networkPage.lpmuAccessNoInternet');
-    }
-    if (lines.some(line => /^sudo: \d+ incorrect password attempts?$/.test(line.trim()))) {
-        return t('networkPage.lpmuAccessPasswordIncorrect');
+        const line = lines[i].trim();
+        const match = line.match(/^✗\s*错误[：:]\s*(.+)$/);
+        if (match) return match[1] === '没有找到可用的互联网连接' ? t('networkPage.lpmuAccessNoInternet') : '';
+        if (/^sudo:/.test(line)) return /^sudo: \d+ incorrect password attempts?$/.test(line) ?
+            t('networkPage.lpmuAccessPasswordIncorrect') : '';
     }
     return '';
 }

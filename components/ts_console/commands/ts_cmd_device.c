@@ -262,6 +262,7 @@ static const char *usb_target_display_name(ts_usb_mux_target_t target)
         case TS_USB_MUX_ESP32: return "ESP32";
         case TS_USB_MUX_AGX: return "Inference Computer";
         case TS_USB_MUX_LPMU: return "Application Computer";
+        case TS_USB_MUX_DISCONNECT: return "Disconnected";
         default: return "Unknown";
     }
 }
