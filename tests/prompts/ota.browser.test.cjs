@@ -410,6 +410,8 @@ for (const language of ['zh-CN', 'en-US']) {
                 // Keep C's first progress request in flight: a second refresh
                 // coalesces rather than promising the companion has started.
                 const progressStarted = page.waitForRequest('**/api/v1/ota/progress');
+                const companionCompleted = page.waitForResponse(response =>
+                    new URL(response.url()).pathname === `/api/v1/${wwwEndpoint}`);
                 const progressRelease = deferred();
                 await page.route('**/api/v1/ota/progress', async route => {
                     await progressRelease.promise;
@@ -424,8 +426,11 @@ for (const language of ['zh-CN', 'en-US']) {
                     state.app = 'pending_reboot';
                     await page.evaluate(() => refreshOtaProgress());
                 } finally { progressRelease.resolve(); }
+                await companionCompleted;
                 await page.waitForFunction(() => otaUpgrade?.phase === 'www');
-                const last = calls.filter(call => call.endpoint === wwwEndpoint).at(-1);
+                const completedStarts = calls.filter(call => call.endpoint === wwwEndpoint);
+                assert.equal(completedStarts.length, 4);
+                const last = completedStarts.at(-1);
                 assert.equal(last.params[field], url ? 'https://ota.fixture.invalid/C/www.bin' : '/sdcard/C/www.bin');
                 if (url) assert.equal(last.params.skip_verify, false);
             });
