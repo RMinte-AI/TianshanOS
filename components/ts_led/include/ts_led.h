@@ -259,6 +259,9 @@ esp_err_t ts_led_init(void);
  */
 esp_err_t ts_led_deinit(void);
 
+/** Whether the retained LED subsystem resources are initialized. */
+bool ts_led_is_initialized(void);
+
 /*===========================================================================*/
 /*                           Device Management                                */
 /*===========================================================================*/
@@ -304,6 +307,10 @@ esp_err_t ts_led_device_set_brightness(ts_led_device_t device, uint8_t brightnes
  * @return Brightness value
  */
 uint8_t ts_led_device_get_brightness(ts_led_device_t device);
+
+/** Enable visible output without discarding brightness, layers or content selection. */
+esp_err_t ts_led_device_set_enabled(ts_led_device_t device, bool enabled);
+bool ts_led_device_is_enabled(ts_led_device_t device);
 
 /**
  * @brief Get LED count

@@ -13,6 +13,7 @@
 #include "ts_core.h"  /* TS_CALLOC_PSRAM */
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
@@ -27,10 +28,12 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/select.h>
 
 static const char *TAG = "ts_forward";
+#define FORWARD_TASK_STACK_SIZE 16384
 
 /* ============================================================================
  * 内部数据结构
@@ -52,12 +55,14 @@ typedef struct forward_conn_s {
 struct ts_port_forward_s {
     ts_ssh_session_t ssh_session;   /**< SSH 会话 */
     ts_forward_config_t config;     /**< 转发配置 */
-    ts_forward_state_t state;       /**< 当前状态 */
+    _Atomic(ts_forward_state_t) state; /**< 当前状态 */
     
+    char *io_buffer; /* one bounded workspace, owned exclusively by forward_task */
     int listen_sock;                /**< 监听 socket */
-    TaskHandle_t task_handle;       /**< 转发任务句柄 */
+    _Atomic(TaskHandle_t) task_handle; /**< 转发任务句柄，控制者完成交接后清除 */
     SemaphoreHandle_t mutex;        /**< 互斥锁 */
-    volatile bool stop_flag;        /**< 停止标志 */
+    SemaphoreHandle_t exit_done;    /**< 最后一次对象访问的交接信号 */
+    atomic_bool stop_flag;          /**< 停止标志 */
     
     /* 连接管理 */
     forward_conn_t *connections;    /**< 连接链表 */
@@ -173,21 +178,26 @@ static int create_listen_socket(const char *host, uint16_t port)
  */
 static void process_connection(ts_port_forward_t forward, forward_conn_t *conn)
 {
+    if (forward->stop_flag) return;
     LIBSSH2_SESSION *session = ts_ssh_get_libssh2_session(forward->ssh_session);
     int ssh_sock = ts_ssh_get_socket(forward->ssh_session);
-    char buffer[4096];
+    char *buffer = forward->io_buffer;
+    int64_t deadline=esp_timer_get_time()+(int64_t)forward->config.timeout_ms*1000;
     ssize_t n;
     int rc;
 
     /* 从客户端读取并写入 SSH 通道 */
-    n = recv(conn->client_sock, buffer, sizeof(buffer), MSG_DONTWAIT);
+    n = recv(conn->client_sock, buffer, forward->config.buffer_size, MSG_DONTWAIT);
     if (n > 0) {
         size_t written = 0;
         while (written < (size_t)n) {
+            if (forward->stop_flag || esp_timer_get_time()>=deadline) { conn->active=false;return; }
             rc = libssh2_channel_write(conn->channel, buffer + written, n - written);
             if (rc > 0) {
                 written += rc;
+                xSemaphoreTake(forward->mutex, portMAX_DELAY);
                 conn->bytes_sent += rc;
+                xSemaphoreGive(forward->mutex);
             } else if (rc == LIBSSH2_ERROR_EAGAIN) {
                 wait_socket_ready(ssh_sock, session, 100);
             } else {
@@ -207,14 +217,18 @@ static void process_connection(ts_port_forward_t forward, forward_conn_t *conn)
 
     /* 从 SSH 通道读取并写入客户端 */
     do {
-        rc = libssh2_channel_read(conn->channel, buffer, sizeof(buffer));
+        if (forward->stop_flag) { conn->active=false;return; }
+        rc = libssh2_channel_read(conn->channel, buffer, forward->config.buffer_size);
         if (rc > 0) {
             ssize_t sent = 0;
             while (sent < rc) {
+                if (forward->stop_flag || esp_timer_get_time()>=deadline) { conn->active=false;return; }
                 ssize_t s = send(conn->client_sock, buffer + sent, rc - sent, 0);
                 if (s > 0) {
                     sent += s;
+                    xSemaphoreTake(forward->mutex, portMAX_DELAY);
                     conn->bytes_received += s;
+                    xSemaphoreGive(forward->mutex);
                 } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     vTaskDelay(pdMS_TO_TICKS(10));
                 } else {
@@ -223,7 +237,9 @@ static void process_connection(ts_port_forward_t forward, forward_conn_t *conn)
                 }
             }
         }
-    } while (rc > 0);
+    } while (rc > 0 && !forward->stop_flag);
+
+    if (forward->stop_flag) return;
 
     if (rc < 0 && rc != LIBSSH2_ERROR_EAGAIN) {
         conn->active = false;
@@ -240,6 +256,7 @@ static void process_connection(ts_port_forward_t forward, forward_conn_t *conn)
  */
 static void accept_new_connection(ts_port_forward_t forward)
 {
+    if (forward->stop_flag) return;
     LIBSSH2_SESSION *session = ts_ssh_get_libssh2_session(forward->ssh_session);
     int ssh_sock = ts_ssh_get_socket(forward->ssh_session);
 
@@ -265,10 +282,12 @@ static void accept_new_connection(ts_port_forward_t forward)
 
     /* 创建 SSH 通道到远程目标 */
     LIBSSH2_CHANNEL *channel = NULL;
+    int64_t deadline=esp_timer_get_time()+(int64_t)forward->config.timeout_ms*1000;
     
-    while ((channel = libssh2_channel_direct_tcpip(session, 
+    while (!forward->stop_flag && (channel = libssh2_channel_direct_tcpip(session,
                                                     forward->remote_host_copy,
                                                     forward->config.remote_port)) == NULL) {
+        if (forward->stop_flag || esp_timer_get_time()>=deadline) { close(client_sock);return; }
         int err = libssh2_session_last_errno(session);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             wait_socket_ready(ssh_sock, session, 100);
@@ -279,6 +298,15 @@ static void accept_new_connection(ts_port_forward_t forward)
             close(client_sock);
             return;
         }
+    }
+
+    if (!channel || forward->stop_flag) {
+        if (channel) {
+            libssh2_channel_close(channel);
+            libssh2_channel_free(channel);
+        }
+        close(client_sock);
+        return;
     }
 
     /* 创建连接记录 */
@@ -364,25 +392,29 @@ static void cleanup_connections(ts_port_forward_t forward)
 static void forward_task(void *arg)
 {
     ts_port_forward_t forward = (ts_port_forward_t)arg;
+
+    /* Creation can schedule this task before it returns to the controller. */
+    xSemaphoreTake(forward->mutex, portMAX_DELAY);
+    xSemaphoreGive(forward->mutex);
     
     ESP_LOGI(TAG, "Port forwarding started: %s:%d -> %s:%d",
              forward->config.local_host, forward->config.local_port,
              forward->remote_host_copy, forward->config.remote_port);
     
-    forward->state = TS_FORWARD_STATE_RUNNING;
-    
     while (!forward->stop_flag) {
         /* 接受新连接 */
         accept_new_connection(forward);
+        if (forward->stop_flag) break;
         
         /* 处理现有连接 */
-        xSemaphoreTake(forward->mutex, portMAX_DELAY);
+        /* Only this worker mutates the connection list. I/O must not hold the
+         * stats mutex: the CLI must be able to read stats and then read Ctrl+C. */
         for (forward_conn_t *conn = forward->connections; conn; conn = conn->next) {
             if (conn->active) {
                 process_connection(forward, conn);
             }
         }
-        xSemaphoreGive(forward->mutex);
+        if (forward->stop_flag) break;
         
         /* 清理已关闭的连接 */
         cleanup_connections(forward);
@@ -405,13 +437,15 @@ static void forward_task(void *arg)
         free(conn);
     }
     forward->active_count = 0;
-    xSemaphoreGive(forward->mutex);
-    
+    if (forward->listen_sock >= 0) {
+        close(forward->listen_sock);
+        forward->listen_sock = -1;
+    }
     forward->state = TS_FORWARD_STATE_STOPPED;
     ESP_LOGI(TAG, "Port forwarding stopped");
-    
-    forward->task_handle = NULL;
-    vTaskDelete(NULL);
+    xSemaphoreGive(forward->exit_done);
+    xSemaphoreGive(forward->mutex); /* final access; stop crosses this mutex */
+    vTaskDeleteWithCaps(NULL);
 }
 
 /* ============================================================================
@@ -447,6 +481,8 @@ esp_err_t ts_port_forward_create(ts_ssh_session_t session,
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    if (config->buffer_size > 16384) return ESP_ERR_INVALID_SIZE;
+
     ts_port_forward_t forward = TS_CALLOC_PSRAM(1, sizeof(struct ts_port_forward_s));
     if (!forward) {
         return ESP_ERR_NO_MEM;
@@ -454,7 +490,9 @@ esp_err_t ts_port_forward_create(ts_ssh_session_t session,
 
     forward->ssh_session = session;
     forward->config = *config;
-    forward->state = TS_FORWARD_STATE_IDLE;
+    atomic_init(&forward->state, TS_FORWARD_STATE_IDLE);
+    atomic_init(&forward->task_handle, NULL);
+    atomic_init(&forward->stop_flag, false);
     forward->listen_sock = -1;
     
     /* 设置默认值 */
@@ -490,7 +528,17 @@ esp_err_t ts_port_forward_create(ts_ssh_session_t session,
         free(forward);
         return ESP_ERR_NO_MEM;
     }
+    forward->exit_done = xSemaphoreCreateBinary();
+    if (!forward->exit_done) {
+        vSemaphoreDelete(forward->mutex);
+        free(forward->local_host_copy);
+        free(forward->remote_host_copy);
+        free(forward);
+        return ESP_ERR_NO_MEM;
+    }
 
+    forward->io_buffer = TS_MALLOC_PSRAM(forward->config.buffer_size);
+    if (!forward->io_buffer) { ts_port_forward_destroy(forward); return ESP_ERR_NO_MEM; }
     *forward_out = forward;
     ESP_LOGD(TAG, "Port forward created: L%d -> %s:%d",
              config->local_port, config->remote_host, config->remote_port);
@@ -502,9 +550,13 @@ esp_err_t ts_port_forward_start(ts_port_forward_t forward)
     if (!forward) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (forward->stop_flag && forward->task_handle) return ESP_ERR_INVALID_STATE;
 
-    if (forward->state == TS_FORWARD_STATE_RUNNING) {
-        return ESP_OK;  /* 已运行 */
+    xSemaphoreTake(forward->mutex, portMAX_DELAY);
+    if (forward->task_handle) {
+        esp_err_t ret = forward->stop_flag ? ESP_ERR_INVALID_STATE : ESP_OK;
+        xSemaphoreGive(forward->mutex);
+        return ret;
     }
 
     /* 创建监听 socket */
@@ -512,22 +564,28 @@ esp_err_t ts_port_forward_start(ts_port_forward_t forward)
                                                  forward->config.local_port);
     if (forward->listen_sock < 0) {
         forward->state = TS_FORWARD_STATE_ERROR;
+        xSemaphoreGive(forward->mutex);
         return ESP_FAIL;
     }
 
     /* 创建转发任务
      * 使用 PSRAM 栈以减少 DRAM 压力（纯 libssh2 网络操作，不涉及 NVS/Flash）*/
     forward->stop_flag = false;
-    BaseType_t ret = xTaskCreateWithCaps(forward_task, "ssh_forward", 4096,
-                                          forward, 5, &forward->task_handle,
+    xSemaphoreTake(forward->exit_done, 0);
+    TaskHandle_t created = NULL;
+    BaseType_t ret = xTaskCreateWithCaps(forward_task, "ssh_forward", FORWARD_TASK_STACK_SIZE,
+                                          forward, 5, &created,
                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (ret != pdPASS) {
         close(forward->listen_sock);
         forward->listen_sock = -1;
         forward->state = TS_FORWARD_STATE_ERROR;
+        xSemaphoreGive(forward->mutex);
         return ESP_ERR_NO_MEM;
     }
-
+    forward->task_handle = created;
+    forward->state = TS_FORWARD_STATE_RUNNING;
+    xSemaphoreGive(forward->mutex);
     return ESP_OK;
 }
 
@@ -537,24 +595,27 @@ esp_err_t ts_port_forward_stop(ts_port_forward_t forward)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (forward->state != TS_FORWARD_STATE_RUNNING) {
+    if (forward->task_handle == xTaskGetCurrentTaskHandle()) return ESP_ERR_INVALID_STATE;
+    if (forward->stop_flag && forward->task_handle) return ESP_ERR_NOT_FINISHED;
+    xSemaphoreTake(forward->mutex, portMAX_DELAY);
+    if (!forward->task_handle) {
+        xSemaphoreGive(forward->mutex);
         return ESP_OK;
+    }
+    if (forward->stop_flag) {
+        xSemaphoreGive(forward->mutex);
+        return ESP_ERR_NOT_FINISHED;
     }
 
     /* 设置停止标志 */
     forward->stop_flag = true;
-
-    /* 等待任务结束 */
-    int timeout = 50;  /* 5 秒超时 */
-    while (forward->task_handle && timeout-- > 0) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    /* 关闭监听 socket */
-    if (forward->listen_sock >= 0) {
-        close(forward->listen_sock);
-        forward->listen_sock = -1;
-    }
+    xSemaphoreGive(forward->mutex);
+    /* The CLI releases SSH immediately after success, so this is a real join,
+     * never a timed success while the old worker still owns that session. */
+    while (xSemaphoreTake(forward->exit_done, portMAX_DELAY) != pdTRUE) {}
+    xSemaphoreTake(forward->mutex, portMAX_DELAY);
+    forward->task_handle = NULL;
+    xSemaphoreGive(forward->mutex);
 
     return ESP_OK;
 }
@@ -566,12 +627,15 @@ esp_err_t ts_port_forward_destroy(ts_port_forward_t forward)
     }
 
     /* 先停止 */
-    ts_port_forward_stop(forward);
+    esp_err_t ret = ts_port_forward_stop(forward);
+    if (ret != ESP_OK) return ret;
 
     /* 释放资源 */
     if (forward->mutex) {
         vSemaphoreDelete(forward->mutex);
     }
+    vSemaphoreDelete(forward->exit_done);
+    free(forward->io_buffer);
     free(forward->local_host_copy);
     free(forward->remote_host_copy);
     free(forward);

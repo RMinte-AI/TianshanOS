@@ -34,6 +34,7 @@
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -55,7 +56,9 @@
 
 typedef struct {
     bool initialized;
-    bool running;
+    atomic_bool running;
+    atomic_bool control_busy;
+    SemaphoreHandle_t exit_done;
     bool enabled_on_boot;   /* 保存的启用状态，用于重启后恢复 */
     ts_power_policy_config_t config;
     ts_power_policy_state_t state;
@@ -370,6 +373,13 @@ esp_err_t ts_power_policy_init(const ts_power_policy_config_t *config)
         return ESP_ERR_NO_MEM;
     }
     
+    s_pp.exit_done = xSemaphoreCreateBinary();
+    if (!s_pp.exit_done) {
+        vSemaphoreDelete(s_pp.state_mutex);
+        s_pp.state_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     /* 初始化状态 */
     s_pp.state = TS_POWER_POLICY_STATE_NORMAL;
     s_pp.start_time_us = esp_timer_get_time();
@@ -387,6 +397,8 @@ esp_err_t ts_power_policy_init(const ts_power_policy_config_t *config)
     return ESP_OK;
 }
 
+static esp_err_t stop_pp_task(void);
+
 esp_err_t ts_power_policy_deinit(void)
 {
     if (!s_pp.initialized) {
@@ -395,8 +407,14 @@ esp_err_t ts_power_policy_deinit(void)
     
     TS_LOGI(TAG, "Deinitializing power policy");
     
-    /* 停止监控 */
-    ts_power_policy_stop();
+    if (atomic_exchange(&s_pp.control_busy, true)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = stop_pp_task();
+    if (ret != ESP_OK) {
+        atomic_store(&s_pp.control_busy, false);
+        return ret;
+    }
+    vSemaphoreDelete(s_pp.exit_done);
+    s_pp.exit_done = NULL;
     
     /* 清理互斥锁 */
     if (s_pp.state_mutex) {
@@ -405,6 +423,8 @@ esp_err_t ts_power_policy_deinit(void)
     }
     
     memset(&s_pp, 0, sizeof(power_policy_state_t));
+    atomic_init(&s_pp.running, false);
+    atomic_init(&s_pp.control_busy, false);
     
     return ESP_OK;
 }
@@ -415,8 +435,11 @@ esp_err_t ts_power_policy_start(void)
         return ESP_ERR_INVALID_STATE;
     }
     
+    if (atomic_exchange(&s_pp.control_busy, true)) return ESP_ERR_NOT_FINISHED;
+
     if (s_pp.running) {
         TS_LOGW(TAG, "Power policy already running");
+        atomic_store(&s_pp.control_busy, false);
         return ESP_OK;
     }
     
@@ -428,6 +451,7 @@ esp_err_t ts_power_policy_start(void)
     ts_power_policy_register_variables();
     
     /* 先设置 running 标志，避免竞态条件 */
+    xSemaphoreTake(s_pp.exit_done, 0);
     s_pp.running = true;
     
     /* 创建监控任务 */
@@ -443,31 +467,34 @@ esp_err_t ts_power_policy_start(void)
     if (ret != pdPASS) {
         TS_LOGE(TAG, "Failed to create power policy task");
         s_pp.running = false;
+        s_pp.monitor_task_handle = NULL;
+        atomic_store(&s_pp.control_busy, false);
         return ESP_FAIL;
     }
     
     TS_LOGI(TAG, "Power policy monitoring started");
+    atomic_store(&s_pp.control_busy, false);
+    return ESP_OK;
+}
+
+static esp_err_t stop_pp_task(void)
+{
+    if (s_pp.monitor_task_handle == xTaskGetCurrentTaskHandle()) return ESP_ERR_NOT_FINISHED;
+    s_pp.running = false;
+    if (s_pp.monitor_task_handle) {
+        xSemaphoreTake(s_pp.exit_done, portMAX_DELAY);
+        s_pp.monitor_task_handle = NULL;
+    }
     return ESP_OK;
 }
 
 esp_err_t ts_power_policy_stop(void)
 {
-    if (!s_pp.initialized || !s_pp.running) {
-        return ESP_OK;
-    }
-    
-    TS_LOGI(TAG, "Stopping power policy monitoring");
-    
-    s_pp.running = false;
-    
-    /* 删除监控任务 */
-    if (s_pp.monitor_task_handle) {
-        vTaskDelete(s_pp.monitor_task_handle);
-        s_pp.monitor_task_handle = NULL;
-    }
-    
-    TS_LOGI(TAG, "Power policy monitoring stopped");
-    return ESP_OK;
+    if (!s_pp.initialized) return ESP_OK;
+    if (atomic_exchange(&s_pp.control_busy, true)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = stop_pp_task();
+    atomic_store(&s_pp.control_busy, false);
+    return ret;
 }
 
 esp_err_t ts_power_policy_get_status(ts_power_policy_status_t *status)
@@ -750,6 +777,8 @@ static void power_policy_task(void *pvParameters)
             }
         }
         
+        if (!s_pp.running) break;
+
         /* 电压有效时进行状态检查 */
         if (voltage_valid) {
             check_voltage(voltage_to_check);
@@ -758,8 +787,14 @@ static void power_policy_task(void *pvParameters)
         /* 检查设备状态 */
         check_device_status();
         
+        if (!s_pp.running) break;
+
         /* 状态机处理 */
         if (xSemaphoreTake(s_pp.state_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (!s_pp.running) {
+                xSemaphoreGive(s_pp.state_mutex);
+                break;
+            }
             switch (s_pp.state) {
                 case TS_POWER_POLICY_STATE_LOW_VOLTAGE:
                     if (s_pp.countdown_remaining_sec > 0) {
@@ -800,6 +835,7 @@ static void power_policy_task(void *pvParameters)
                 case TS_POWER_POLICY_STATE_SHUTDOWN:
                     xSemaphoreGive(s_pp.state_mutex);
                     execute_shutdown();
+                    if (!s_pp.running) goto task_exit;
                     if (xSemaphoreTake(s_pp.state_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                         s_pp.state = TS_POWER_POLICY_STATE_PROTECTED;
                         trigger_event(TS_POWER_POLICY_EVENT_PROTECTED);
@@ -820,6 +856,10 @@ static void power_policy_task(void *pvParameters)
                         
                         if (s_pp.shutdown_timer_sec == 0) {
                             TS_LOGW(TAG, "Fan timer expired, stopping all fans now");
+                            if (!s_pp.running) {
+                                xSemaphoreGive(s_pp.state_mutex);
+                                goto task_exit;
+                            }
                             stop_all_fans();
                             s_pp.fans_stopped = true;
                         }
@@ -866,7 +906,9 @@ static void power_policy_task(void *pvParameters)
         vTaskDelayUntil(&last_wake_time, check_period);
     }
     
+task_exit:
     TS_LOGI(TAG, "Power policy task ended");
+    xSemaphoreGive(s_pp.exit_done);
     vTaskDelete(NULL);
 }
 
@@ -966,6 +1008,7 @@ static void check_device_status(void)
 
 static void execute_shutdown(void)
 {
+    if (!s_pp.running) return;
     TS_LOGW(TAG, "Executing protective shutdown");
     
     if (!s_pp.config.enable_device_shutdown) {
@@ -982,11 +1025,14 @@ static void execute_shutdown(void)
         }
     }
     
+    if (!s_pp.running) return;
+
     /* LPMU: 先检查是否在线（ping），如果在线才执行关机 */
     if (s_pp.lpmu_powered) {
         if (s_pp.config.lpmu_ping_before_shutdown) {
             TS_LOGI(TAG, "Pinging LPMU at %s before shutdown...", LPMU_IP);
             bool lpmu_reachable = ping_host(LPMU_IP, 2000);
+            if (!s_pp.running) return;
             
             if (lpmu_reachable) {
                 TS_LOGI(TAG, "LPMU is reachable, sending power toggle");
@@ -1000,6 +1046,8 @@ static void execute_shutdown(void)
         }
     }
     
+    if (!s_pp.running) return;
+
     /* 启动风扇关闭定时器 */
     if (s_pp.config.enable_fan_control) {
         s_pp.shutdown_timer_sec = s_pp.config.fan_stop_delay_sec;
@@ -1016,8 +1064,8 @@ static void execute_recovery(void)
     /* 等待日志刷新 */
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    /* 重启 ESP32 */
-    esp_restart();
+    /* 停用后不再发起恢复重启。 */
+    if (s_pp.running) esp_restart();
 }
 
 static void update_led_status(void)

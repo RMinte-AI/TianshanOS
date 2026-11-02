@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include "ts_storage.h"
 #include "ts_api.h"
+#include "ts_security.h"
 #include "ts_config_pack.h"
 #include "freertos/semphr.h"
 
@@ -76,12 +77,25 @@ void ts_api_result_error(ts_api_result_t *result, ts_api_result_code_t code, con
 esp_err_t ts_api_register_multiple(const ts_api_endpoint_t *endpoints, size_t count)
 { (void)endpoints;(void)count;return ESP_OK; }
 
-typedef struct {const void *body;size_t body_len;} ts_http_request_t;
+typedef struct {const char *query;} httpd_req_t;
+typedef struct {httpd_req_t *req;const void *body;size_t body_len;bool root;} ts_http_request_t;
 static const char *upload_path;
 static int upload_status;
 static char upload_reply[512];
-static esp_err_t ts_http_get_query_param(ts_http_request_t *req,const char *key,char *out,size_t length)
-{ (void)req;assert(!strcmp(key,"path"));return snprintf(out,length,"%s",upload_path)<(int)length?ESP_OK:ESP_ERR_INVALID_SIZE; }
+static char downloaded_path[256],downloaded_body[256];
+static ssize_t downloaded_size;
+#define TS_MALLOC_PSRAM malloc
+/* These requests have only path: the SDK boundary returns raw encoded bytes,
+ * and the production query helper below decodes them. */
+static size_t httpd_req_get_url_query_len(httpd_req_t *req) {return strlen(req->query);}
+static esp_err_t httpd_req_get_url_query_str(httpd_req_t *req,char *out,size_t length)
+{ assert(strlen(req->query)<length);strcpy(out,req->query);return ESP_OK; }
+static esp_err_t httpd_query_key_value(const char *query,const char *key,char *out,size_t length)
+{ assert(!strcmp(key,"path")&&!strncmp(query,"path=",5));assert(strlen(query+5)<length);strcpy(out,query+5);return ESP_OK; }
+static esp_err_t check_auth(ts_http_request_t *req,uint32_t *session,ts_perm_level_t permission)
+{ assert(permission==TS_PERM_ROOT);*session=0;return req->root?ESP_OK:ESP_ERR_NOT_ALLOWED; }
+static esp_err_t ts_http_send_file(ts_http_request_t *req,const char *path)
+{ (void)req;snprintf(downloaded_path,sizeof(downloaded_path),"%s",path);downloaded_size=ts_storage_read_file(path,downloaded_body,sizeof(downloaded_body));return downloaded_size<0?ESP_FAIL:ESP_OK; }
 static esp_err_t ts_http_send_json(ts_http_request_t *req,int status,const char *body)
 { (void)req;upload_status=status;snprintf(upload_reply,sizeof(upload_reply),"%s",body);return ESP_OK; }
 static esp_err_t ts_http_send_error(ts_http_request_t *req,int status,const char *reason)
@@ -97,7 +111,8 @@ static esp_err_t ts_ws_broadcast_to_topic(const char *topic,const cJSON *data)
 static void upload(const char *path,int expected_status,const char *reason)
 {
     upload_path=path;upload_status=0;upload_reply[0]=0;
-    ts_http_request_t req={.body="uploaded",.body_len=8};
+    char query[1024];snprintf(query,sizeof(query),"path=%s",upload_path);httpd_req_t http={.query=query};
+    ts_http_request_t req={.req=&http,.body="uploaded",.body_len=8};
     assert(file_upload_handler(&req,NULL)==ESP_OK&&upload_status==expected_status);
     assert(strstr(upload_reply,reason));
 }
@@ -112,6 +127,42 @@ static void has_text(const char *path,const char *expected)
     char text[64];ssize_t size=ts_storage_read_file(path,text,sizeof(text));
     assert(size==(ssize_t)strlen(expected)&&!memcmp(text,expected,(size_t)size));
 }
+
+static void ordinary_names(void)
+{
+    static const struct {const char *name,*query;} files[]={
+        {"report.txt","report.txt"},
+        {"report+v1.txt","report%2Bv1.txt"},
+        {"report v1.txt","report%20v1.txt"},
+        {"report%20v1.txt","report%2520v1.txt"},
+        {"report%25v1.txt","report%2525v1.txt"},
+        {"进度100%.txt","%E8%BF%9B%E5%BA%A6100%25.txt"},
+        {"记录.txt","%E8%AE%B0%E5%BD%95.txt"}
+    };
+    for(size_t i=0;i<sizeof(files)/sizeof(files[0]);i++){
+        char query[256],path[256],body[64];
+        snprintf(query,sizeof(query),"path=%%2Fsdcard%%2Fb02%%2F%s",files[i].query);
+        snprintf(path,sizeof(path),"/sdcard/b02/%s",files[i].name);
+        snprintf(body,sizeof(body),"independent file contents %zu",i);
+        httpd_req_t http={.query=query};ts_http_request_t req={.req=&http,.body=body,.body_len=strlen(body)};
+        upload_status=0;assert(file_upload_handler(&req,NULL)==ESP_OK&&upload_status==200);
+        cJSON *reply=cJSON_Parse(upload_reply);assert(reply&&!strcmp(cJSON_GetObjectItem(reply,"path")->valuestring,path));cJSON_Delete(reply);
+        has_text(path,body);
+    }
+    /* Read every name only after all uploads: similar names must coexist. */
+    for(size_t i=0;i<sizeof(files)/sizeof(files[0]);i++){
+        char query[256],path[256],body[64];
+        snprintf(query,sizeof(query),"path=%%2Fsdcard%%2Fb02%%2F%s",files[i].query);
+        snprintf(path,sizeof(path),"/sdcard/b02/%s",files[i].name);
+        snprintf(body,sizeof(body),"independent file contents %zu",i);
+        httpd_req_t http={.query=query};ts_http_request_t req={.req=&http};
+        assert(file_download_handler(&req,NULL)==ESP_OK);
+        assert(!strcmp(downloaded_path,path)&&downloaded_size==(ssize_t)strlen(body)&&!memcmp(downloaded_body,body,strlen(body)));
+    }
+    assert(ts_storage_rmdir_r("/sdcard/b02")==ESP_OK);
+    puts("PASS seven ordinary names: actual query decode, upload storage and download bytes remain independent");
+}
+
 static void api_denied(ts_api_handler_t handler,const char *json)
 {
     cJSON *params=cJSON_Parse(json);assert(params);ts_api_result_t result={0};
@@ -195,6 +246,15 @@ int main(void)
     upload("/sdcard/upload.txt",200,"uploaded");
     has_text("/sdcard/upload.txt","uploaded");
     assert(ts_storage_delete("/sdcard/upload.txt")==ESP_OK);
+
+    httpd_req_t managed_http={.query="path=%2Fsdcard%2Fconfig%2Fautomation%2Fstate.json"};
+    ts_http_request_t managed_read={.req=&managed_http};
+    before=mutations;upload_status=0;
+    assert(file_download_handler(&managed_read,NULL)==ESP_OK&&upload_status==401&&mutations==before);
+    managed_read.root=true;
+    assert(file_download_handler(&managed_read,NULL)==ESP_OK&&mutations==before);
+    assert(!strcmp(downloaded_path,"/sdcard/config/automation/state.json")&&downloaded_size==7&&!memcmp(downloaded_body,"current",7));
+    ordinary_names();
 
     /* Cleanup through the raw test VFS, since the configuration owner is private. */
     assert(!test_unlink("/sdcard/config/ordinary.json"));assert(!test_unlink("/sdcard/config/automation/state.json"));

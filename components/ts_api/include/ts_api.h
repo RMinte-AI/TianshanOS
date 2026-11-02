@@ -144,6 +144,9 @@ esp_err_t ts_api_register_multiple(const ts_api_endpoint_t *endpoints, size_t co
  */
 esp_err_t ts_api_unregister(const char *name);
 
+/** Parse the existing HTTP query grammar into params; query is modified in place. */
+void ts_api_parse_query(cJSON *params, char *query);
+
 /**
  * @brief Call an API endpoint
  * 
@@ -153,6 +156,12 @@ esp_err_t ts_api_unregister(const char *name);
  * @return ESP_OK on success
  */
 esp_err_t ts_api_call(const char *name, const cJSON *params, ts_api_result_t *result);
+
+/* Browser/session boundary. Trusted internal callers continue to use ts_api_call. */
+esp_err_t ts_api_call_for_session(const char *name, const cJSON *params,
+                                  uint32_t session_id, ts_api_result_t *result);
+esp_err_t ts_api_automation_proxy_fetch_for_session(const cJSON *params,
+                                  uint32_t session_id, ts_api_result_t *result);
 
 /**
  * @brief Call an API endpoint with string parameters

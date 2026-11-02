@@ -25,6 +25,8 @@
 typedef struct {
     bool active;
     ts_session_t session;
+    bool token_issued;
+    uint8_t token_data[16];
 } session_slot_t;
 
 static nvs_handle_t s_nvs;
@@ -230,6 +232,7 @@ esp_err_t ts_security_create_session(const char *client_id, ts_perm_level_t leve
     
     uint32_t now = esp_timer_get_time() / 1000000;
     
+    memset(&s_sessions[slot], 0, sizeof(s_sessions[slot]));
     s_sessions[slot].active = true;
     s_sessions[slot].session.session_id = sid;
     s_sessions[slot].session.level = level;
@@ -246,7 +249,7 @@ esp_err_t ts_security_create_session(const char *client_id, ts_perm_level_t leve
     }
     
     *session_id = sid;
-    TS_LOGI(TAG, "Session created: %08lx", (unsigned long)sid);
+    TS_LOGI(TAG, "Session created");
     return ESP_OK;
 }
 
@@ -275,7 +278,7 @@ esp_err_t ts_security_destroy_session(uint32_t session_id)
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (s_sessions[i].active && s_sessions[i].session.session_id == session_id) {
             s_sessions[i].active = false;
-            TS_LOGI(TAG, "Session destroyed: %08lx", (unsigned long)session_id);
+            TS_LOGI(TAG, "Session destroyed");
             return ESP_OK;
         }
     }
@@ -295,19 +298,28 @@ esp_err_t ts_security_generate_token(uint32_t session_id, char *token, size_t ma
 {
     if (!token || max_len < 64) return ESP_ERR_INVALID_ARG;
     
-    ts_session_t session;
-    esp_err_t ret = ts_security_validate_session(session_id, &session);
+    esp_err_t ret = ts_security_validate_session(session_id, NULL);
     if (ret != ESP_OK) return ret;
-    
-    // Simple token: base64(session_id + random + timestamp)
-    uint8_t data[16];
-    memcpy(data, &session_id, 4);
-    ts_security_random(data + 4, 8);
-    uint32_t ts = esp_timer_get_time() / 1000;
-    memcpy(data + 12, &ts, 4);
-    
-    size_t out_len = max_len;
-    return ts_crypto_base64_encode(data, sizeof(data), token, &out_len);
+
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sessions[i].active && s_sessions[i].session.session_id == session_id) {
+            // Keep the existing wire format and bind it to the issued credential.
+            uint8_t data[16];
+            memcpy(data, &session_id, 4);
+            ts_security_random(data + 4, 8);
+            uint32_t ts = esp_timer_get_time() / 1000;
+            memcpy(data + 12, &ts, 4);
+
+            size_t out_len = max_len;
+            ret = ts_crypto_base64_encode(data, sizeof(data), token, &out_len);
+            if (ret == ESP_OK) {
+                memcpy(s_sessions[i].token_data, data, sizeof(data));
+                s_sessions[i].token_issued = true;
+            }
+            return ret;
+        }
+    }
+    return ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t ts_security_validate_token(const char *token, uint32_t *session_id)
@@ -318,14 +330,25 @@ esp_err_t ts_security_validate_token(const char *token, uint32_t *session_id)
     size_t data_len = sizeof(data);
     
     esp_err_t ret = ts_crypto_base64_decode(token, strlen(token), data, &data_len);
-    if (ret != ESP_OK || data_len < 4) return ESP_ERR_INVALID_ARG;
+    if (ret != ESP_OK || data_len != sizeof(data)) return ESP_ERR_INVALID_ARG;
     
     uint32_t sid;
     memcpy(&sid, data, 4);
     
     ret = ts_security_validate_session(sid, NULL);
-    if (ret == ESP_OK) {
-        *session_id = sid;
+    if (ret != ESP_OK) return ret;
+
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+        if (s_sessions[i].active && s_sessions[i].session.session_id == sid &&
+            s_sessions[i].token_issued) {
+            uint8_t diff = 0;
+            for (size_t j = 0; j < sizeof(data); j++) {
+                diff |= data[j] ^ s_sessions[i].token_data[j];
+            }
+            if (diff != 0) return ESP_ERR_INVALID_ARG;
+            *session_id = sid;
+            return ESP_OK;
+        }
     }
-    return ret;
+    return ESP_ERR_NOT_FOUND;
 }

@@ -9,6 +9,7 @@
  */
 
 #include "ts_led_font.h"
+#include "ts_led_text.h"
 #include "ts_core.h"  /* TS_MALLOC_PSRAM, TS_CALLOC_PSRAM */
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -249,6 +250,7 @@ ts_font_t *ts_font_load(const char *path, const ts_font_config_t *config)
 void ts_font_unload(ts_font_t *font)
 {
     if (!font) return;
+    ts_led_text_overlay_release_font(font);
     
     if (font->fp) {
         fclose(font->fp);

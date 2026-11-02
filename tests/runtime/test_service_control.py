@@ -49,13 +49,18 @@ esp_err_t ts_variable_get(const char *name,ts_auto_value_t *out){if(strcmp(name,
 static esp_err_t exec_cli_bound(const ts_auto_action_cli_t *cli,ts_action_result_t *result,const ts_auto_action_t *origin){(void)cli;(void)result;(void)origin;return ESP_ERR_NOT_SUPPORTED;}
 static esp_err_t execute_webhook(const ts_auto_action_t *action){(void)action;return ESP_ERR_NOT_SUPPORTED;}
 static esp_err_t control(const char *id,ts_service_operation_t kind){(void)id;(void)kind;assert(false);return ESP_FAIL;}
-static const char *stream_parts[4];static int stream_exit;static esp_err_t stream_result;
+static const char *stream_parts[6];static int stream_exit;static esp_err_t stream_result;
 static bool stream_aborted,replace_stream_variables;static unsigned stream_calls;
 void ts_ssh_abort(ts_ssh_session_t session){(void)session;stream_aborted=true;}
 esp_err_t ts_ssh_exec_stream(ts_ssh_session_t session,const char *text,ts_ssh_output_cb_t callback,void *arg,int *exit_code){
     (void)session;strcpy(last_command,text);++stream_calls;stream_aborted=false;*exit_code=-1;
-    for(unsigned i=0;i<4 && stream_parts[i];++i){
-        callback(stream_parts[i],strlen(stream_parts[i]),false,arg);
+    for(unsigned i=0;i<6 && stream_parts[i];++i){
+        size_t length=strlen(stream_parts[i]);
+        for(size_t offset=0;offset<length;offset+=512){
+            size_t count=length-offset<512?length-offset:512;
+            callback(stream_parts[i]+offset,count,false,arg);
+            if(stream_aborted)return ESP_ERR_TIMEOUT;
+        }
         if(replace_stream_variables){++variable_instance;replace_stream_variables=false;}
         if(stream_aborted)return ESP_ERR_TIMEOUT;
     }
@@ -279,6 +284,34 @@ int main(void)
     assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
     assert(execute_bound_ref(&action,&result)==ESP_OK&&result.status==TS_ACTION_STATUS_SUCCESS&&variable_writes==before);
     ts_action_snapshot_release(&action);
+
+    /* Long output must not freeze matching at the collection limit. */
+    char *long_output=malloc(65536+1);memset(long_output,'x',65536);long_output[65536]=0;
+    for(unsigned scenario=0;scenario<9;scenario++){
+        command.expect_pattern[0]=command.fail_pattern[0]=0;
+        strcpy(command.extract_pattern,"value=(.*);");command.stop_on_match=scenario==4;
+        long_output[65533]='x';
+        memset(stream_parts,0,sizeof(stream_parts));stream_parts[0]=long_output;
+        if(scenario==0){strcpy(command.expect_pattern,"READY");stream_parts[1]="READY";}
+        if(scenario==1){strcpy(command.fail_pattern,"ERROR");stream_parts[1]="ERROR";}
+        if(scenario==2)stream_parts[1]="value=42;";
+        if(scenario==3){strcpy(command.expect_pattern,"READY");stream_parts[1]="REA";stream_parts[2]="DY";}
+        if(scenario>=4&&scenario<=5){stream_parts[1]="value=";stream_parts[2]="42";stream_parts[3]=";";}
+        if(scenario==6){strcpy(command.fail_pattern,"ERROR");stream_parts[1]="ERR";stream_parts[2]="OR";}
+        if(scenario==7){long_output[65533]=0;strcpy(command.expect_pattern,"READY");stream_parts[1]="REA";stream_parts[2]="DY";}
+        if(scenario==8){stream_parts[1]="value=42;";stream_parts[2]=long_output;}
+        assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
+        assert(execute_bound_ref(&action,&result)==ESP_OK);
+        assert(result.status==(scenario==1||scenario==6?TS_ACTION_STATUS_FAILED:TS_ACTION_STATUS_SUCCESS));
+        if(scenario==0||scenario==3||scenario==7)assert(expect_value&&!strcmp(status_value,"match_success"));
+        if(scenario==1||scenario==6)assert(fail_value&&!strcmp(status_value,"match_failed"));
+        if(scenario==2||scenario==4||scenario==5||scenario==8)assert(!strcmp(extracted_value,"42"));
+        assert(result.output[0]=='x');
+        assert(stream_aborted==(scenario==4));ts_action_snapshot_release(&action);
+    }
+    free(long_output);
+    puts("PASS long ordinary SSH: late success/failure/extraction and split patterns with stop enabled/disabled");
+
     command.expect_pattern[0]=command.fail_pattern[0]=command.extract_pattern[0]=0;
     unsigned streams_before=stream_calls;assert(snapshot_command(&action,true,NULL)==ESP_OK);result=(ts_action_result_t){0};
     assert(execute_bound_ref(&action,&result)==ESP_OK&&stream_calls==streams_before&&result.status==TS_ACTION_STATUS_SUCCESS);

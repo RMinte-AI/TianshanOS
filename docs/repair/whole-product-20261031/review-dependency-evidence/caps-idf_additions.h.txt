@@ -1,0 +1,55 @@
+source=/Users/massif/esp/v5.5.2/esp-idf/components/freertos/esp_additions/include/freertos/idf_additions.h
+sha256=a89df54c936b87c3d77a380516e32fc8aadbb354b1982259e5afd0aef0cafbf2
+297: /**
+298:  * @brief Creates a task where its stack has specific memory capabilities
+299:  *
+300:  * This function is similar to xTaskCreate(), except that it allows the memory
+301:  * allocated for the task's stack to have specific capabilities (e.g.,
+302:  * MALLOC_CAP_SPIRAM).
+303:  *
+304:  * However, the specified capabilities will NOT apply to the task's TCB as a TCB
+305:  * must always be in internal RAM.
+306:  *
+307:  * @note A task created using this function must only be deleted using
+308:  * vTaskDeleteWithCaps()
+309:  * @param pvTaskCode Pointer to the task entry function
+310:  * @param pcName A descriptive name for the task
+311:  * @param usStackDepth The size of the task stack specified as the number of
+312:  * bytes
+313:  * @param pvParameters Pointer that will be used as the parameter for the task
+314:  * being created.
+315:  * @param uxPriority The priority at which the task should run.
+316:  * @param pvCreatedTask Used to pass back a handle by which the created task can
+317:  * be referenced.
+318:  * @param uxMemoryCaps Memory capabilities of the task stack's memory (see
+319:  * esp_heap_caps.h)
+320:  * @return pdPASS if the task was successfully created and added to a ready
+321:  * list, otherwise an error code defined in the file projdefs.h
+322:  */
+323:     static inline BaseType_t xTaskCreateWithCaps( TaskFunction_t pvTaskCode,
+324:                                                   const char * const pcName,
+325:                                                   configSTACK_DEPTH_TYPE usStackDepth,
+326:                                                   void * const pvParameters,
+327:                                                   UBaseType_t uxPriority,
+328:                                                   TaskHandle_t * pvCreatedTask,
+329:                                                   UBaseType_t uxMemoryCaps )
+330:     {
+331:         return xTaskCreatePinnedToCoreWithCaps( pvTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pvCreatedTask, tskNO_AFFINITY, uxMemoryCaps );
+332:     }
+333:
+334: #endif /* configSUPPORT_STATIC_ALLOCATION == 1 */
+335:
+336: #if ( configSUPPORT_STATIC_ALLOCATION == 1 )
+337:
+338: /**
+339:  * @brief Deletes a task previously created using xTaskCreateWithCaps() or
+340:  * xTaskCreatePinnedToCoreWithCaps()
+341:  *
+342:  * @note It is recommended to use this API to delete tasks from another task's
+343:  * context, rather than self-deletion. When the task is being deleted, it is vital
+344:  * to ensure that it is not running on another core. This API must not be called
+345:  * from an interrupt context.
+346:  *
+347:  * @param xTaskToDelete A handle to the task to be deleted
+348:  */
+349:     void vTaskDeleteWithCaps( TaskHandle_t xTaskToDelete );

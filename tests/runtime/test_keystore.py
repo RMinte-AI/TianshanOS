@@ -7,6 +7,8 @@ idf=Path(os.environ.get('IDF_PATH','/Users/massif/esp/v5.5.2/esp-idf'))
 source=Path(os.environ.get('TS_KEYSTORE_TEST_SOURCE', root/'components/ts_security/src/ts_keystore.c')).read_text()
 api_source=(root/'components/ts_api/src/ts_api_key.c').read_text()
 a=api_source.index('static esp_err_t api_key_generate(');api_handler=api_source[a:api_source.index('\n}',a)+2]
+core_api=(root/'components/ts_api/src/ts_api.c').read_text()
+a=core_api.index('void ts_api_parse_query(');query_parser=core_api[a:core_api.index('\n}',a)+2]
 web_source=(root/'components/ts_webui/src/ts_webui_api.c').read_text()
 a=web_source.index('static esp_err_t send_key_generate_result(');web_handler=web_source[a:web_source.index('\nstatic esp_err_t',a+1)]
 a=web_source.index('static esp_err_t api_handler(');web_handler+=web_source[a:web_source.index('\nstatic esp_err_t login_handler',a)]
@@ -37,7 +39,7 @@ prefix=r'''
 typedef struct {size_t content_len,query_len;} test_http_req_t;
 typedef struct {const char *uri;const char *body;size_t body_len;int method;test_http_req_t *req;} ts_http_request_t;
 /* This suite uses an authenticated caller; role boundaries have their own suite. */
-enum { TS_PERM_READ=1, TS_PERM_ROOT=4 };
+enum { TS_PERM_NONE=0, TS_PERM_READ=1, TS_PERM_ROOT=4 };
 static esp_err_t check_auth(ts_http_request_t *req,uint32_t *session,int required) {(void)req;(void)required;*session=1;return ESP_OK;}
 cJSON *ts_api_get_info(const char *name) {
  (void)name;cJSON *info=cJSON_CreateObject();cJSON_AddBoolToObject(info,"requires_auth",true);return info;
@@ -116,6 +118,13 @@ esp_err_t ts_api_call(const char *name,const cJSON *p,ts_api_result_t *r){
  if(!strcmp(name,"key.generate"))return api_key_generate(p,r);
  if(!strcmp(name,"automation.rules.import")){++rule_dispatch_calls;r->code=0;return ESP_OK;}
  r->code=TS_API_ERR_INTERNAL;r->message=strdup("fixture");r->data=cJSON_CreateObject();cJSON_AddBoolToObject(r->data,"failure_details",true);return ESP_FAIL;
+}
+/* Authenticated keystore business boundary only; real role policy has its own suite. */
+esp_err_t ts_api_call_for_session(const char *name,const cJSON *params,uint32_t session_id,ts_api_result_t *result){
+ assert(session_id==1);return ts_api_call(name,params,result);
+}
+esp_err_t ts_api_automation_proxy_fetch_for_session(const cJSON *params,uint32_t session_id,ts_api_result_t *result){
+ (void)params;(void)session_id;(void)result;assert(!"unexpected proxy call in keystore test");return ESP_FAIL;
 }
 void ts_api_result_error(ts_api_result_t *r,ts_api_result_code_t c,const char *s){r->code=c;r->message=strdup(s);}
 void ts_api_result_ok(ts_api_result_t *r,cJSON *data){r->code=0;r->data=data;}
@@ -207,8 +216,8 @@ int main(int argc,char **argv){
   fail_key="new_meta";fail_write_at=1;assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(cJSON_GetObjectItem(response,"data")&&cJSON_GetObjectItem(response,"code")->valueint!=0);cJSON_Delete(response);absent("new");
   reset();assert(api_handler(&req,NULL)==ESP_OK);assert(find("new_priv"));response=cJSON_Parse(sent_json);assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"generated")));cJSON_Delete(response);
   req.uri="/api/v1/other/endpoint";assert(api_handler(&req,NULL)==ESP_OK);response=cJSON_Parse(sent_json);assert(send_status==200&&cJSON_GetObjectItem(response,"code")->valueint==TS_API_ERR_INTERNAL);assert(!strcmp(cJSON_GetObjectItem(response,"error")->valuestring,"fixture")&&!cJSON_GetObjectItem(response,"message"));/* generic failures carry the handler's details (e.g. the host-key fingerprint of ssh.exec) */assert(cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(response,"data"),"failure_details")));cJSON_Delete(response);
-  /* Policy metadata uses three allocations before the request object. */
-  req.uri="/api/v1/key/generate";json_alloc_count=0;json_fail_at=4;cJSON_Hooks fail_request={fail_one_json_alloc,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
+  /* The request object is allocated before the shared session-policy boundary. */
+  req.uri="/api/v1/key/generate";json_alloc_count=0;json_fail_at=1;cJSON_Hooks fail_request={fail_one_json_alloc,free};cJSON_InitHooks(&fail_request);assert(api_handler(&req,NULL)==ESP_OK);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   r=(ts_api_result_t){.code=0,.data=cJSON_CreateObject()};cJSON_AddBoolToObject(r.data,"generated",true);cJSON_Hooks hooks={always_fail,free};cJSON_InitHooks(&hooks);send_key_generate_result(NULL,&r,"test",0);cJSON_InitHooks(NULL);assert(send_status==500&&find("new_priv"));
   const char *invalid[]={"{\"tscfg\":\"{}\\u0000tail\"}","{\"preview\":true,\"preview\":false}","{} {}","[]"};
   test_http_req_t native={0};req=(ts_http_request_t){.uri="/api/v1/automation/rules/import",.req=&native};
@@ -223,7 +232,7 @@ int main(int argc,char **argv){
 '''
 
 with tempfile.TemporaryDirectory(prefix='ts-keystore-') as tmp:
- p=Path(tmp);(p/'platform.h').write_text(platform);(p/'esp_err.h').write_text('#include "platform.h"\n');(p/'test.c').write_text(prefix+strict_json+body_complete+source+api_handler+web_handler+boundaries)
+ p=Path(tmp);(p/'platform.h').write_text(platform);(p/'esp_err.h').write_text('#include "platform.h"\n');(p/'test.c').write_text(prefix+query_parser+strict_json+body_complete+source+api_handler+web_handler+boundaries)
  env={**os.environ,'DEVELOPER_DIR':'/Library/Developer/CommandLineTools'}
  subprocess.run(['cc','-std=c11','-g','-Wno-deprecated-declarations','-fsanitize=address,undefined','-I'+tmp,'-I'+str(root/'components/ts_security/include'),'-I'+str(root/'components/ts_api/include'),'-I'+str(root/'components/ts_core/ts_config/include'),'-I'+str(root/'components/ts_storage/include'),'-I'+str(idf/'components/json/cJSON'),str(p/'test.c'),str(idf/'components/json/cJSON/cJSON.c'),'-lm','-lpthread','-o',str(p/'test')],check=True,env=env)
  failures=[]

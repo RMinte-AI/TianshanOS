@@ -39,12 +39,23 @@ int main(int argc,char**argv){
   assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",&id)==0);ssh_exec_task_params_t *params=exec_task.arg;
   if(!partial)queue_fail=true;
   ssh_exec_output_callback("part",4,false,params);
+  /* Exec output is staged by the callback and published by worker maintenance. */
+  ts_ws_op_poll();
+  if(!partial)worker_step();
   if(partial){if(ts_ws_op_close_begin(params->op))ts_ws_op_close_finish(params->op,"{\"type\":\"ssh_exec_done\"}");sdk_one();queue_fail=true;worker_step();}
-  queue_fail=false;test_now+=100000;drive_all();assert(terminals[1]==1);if(partial)assert(outputs[1]==1 && outputs[2]==0 && terminals[2]==1);
+  queue_fail=false;test_now+=100000;drive_all();
+  if(partial)assert(terminals[1]==1 && outputs[1]==1 && outputs[2]==0 && terminals[2]==1);
+  else assert(terminals[1]==0 && outputs[1]==0 && ts_ws_op_is_open(params->op));
   unsigned before=frames[1];size_t collected=params->output_len;
-  ssh_exec_output_callback("later",5,false,params);drive_all();assert(frames[1]==before && params->output_len==collected+5 && !aborts);
+  ssh_exec_output_callback("later",5,false,params);drive_all();
+  assert(params->output_len==collected+5 && !aborts);
+  if(partial)assert(frames[1]==before);
+  else assert(outputs[1]==1 && terminals[1]==0);
   assert(ts_webui_ssh_exec_start("fake",22,"u",NULL,"p","cmd",NULL)==ESP_ERR_INVALID_STATE);
-  exec_task.fn(exec_task.arg);finish_ws();assert(frames[1]==before);puts("PASS actual Exec callback: partial failure settles each target; observation closes while business collection continues without remote abort or replay");return 0;
+  exec_task.fn(exec_task.arg);finish_ws();
+  if(partial)assert(frames[1]==before);
+  else assert(outputs[1]==2 && terminals[1]==1); /* executor also emits value=42 */
+  puts("PASS actual Exec callback: closed observation is not replayed; output delivery failure preserves collection, later output and a single final result without remote abort");return 0;
  }
  if(!strcmp(argv[1],"class") || !strcmp(argv[1],"stop") || !strcmp(argv[1],"timeout")){
   connect_shell();ssh_shell_context_t *ctx=shell_task.arg;ssh_send_output(ctx,"last",4);

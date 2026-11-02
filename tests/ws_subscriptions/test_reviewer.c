@@ -19,6 +19,9 @@ int main(void){
  a=frames[1];assert(ts_ws_transport_log(&log,3)==0);
  current=(void*)3;start_terminal_session(&reqs[1],NULL);current=(void*)1;
  assert(s_clients[0].type==WS_CLIENT_TYPE_TERMINAL);pump();assert(frames[1]==a+1); /* welcome only */
+ current=(void*)3;assert(start_terminal_session(&reqs[2],NULL)==ESP_FAIL);current=(void*)1;
+ assert(s_terminal_client_fd==1 && s_clients[0].type==WS_CLIENT_TYPE_TERMINAL && s_clients[1].type==WS_CLIENT_TYPE_EVENT);
+ puts("PASS live terminal cannot be taken over by another terminal retry");
  set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
  assert(ts_ws_transport_log(&log,3)==0);set_client_role(peer,WS_CLIENT_TYPE_EVENT,0);set_client_role(peer,WS_CLIENT_TYPE_LOG,5);
  a=frames[1];pump();assert(frames[1]==a); /* old generation cannot revive */

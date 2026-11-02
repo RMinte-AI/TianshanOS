@@ -18,7 +18,7 @@ for encryption in plain encrypted; do
 done
 cc "${common[@]}" -Itests/runtime/rule_pack/stubs -Icomponents/ts_automation/include \
   -I"$IDF_PATH/components/json/cJSON" tests/runtime/test_rule_codec.c \
-  components/ts_automation/src/ts_rule_codec.c components/ts_automation/src/ts_action_filter.c \
+  components/ts_automation/src/ts_rule_codec.c components/ts_automation/src/ts_action_codec.c components/ts_automation/src/ts_action_filter.c \
   "$IDF_PATH/components/json/cJSON/cJSON.c" -lm -o "$CONFIG_TEST_BUILD/codec"
 "$CONFIG_TEST_BUILD/codec"
 migration_includes=(-Itests/runtime/led_persist_stubs -Itests/runtime/storage_stubs
@@ -159,13 +159,17 @@ assert match
 Path(sys.argv[1],'rule_sequence.inc').write_text(engine[match.start():engine.index('\n}',match.start())+2].replace('execute_actions_with_stats','execute_auto_sequence',1))
 api_result=Path('components/ts_api/src/ts_api.c').read_text()
 results=[]
-for name in ['ts_api_result_free','ts_api_result_ok','ts_api_result_error','ts_api_result_reason']:
+for name in ['ts_api_parse_query','ts_api_result_free','ts_api_result_ok','ts_api_result_error','ts_api_result_reason']:
     match=re.search(r'^void '+name+r'\([^;]+?\)\s*\{',api_result,re.M);assert match,name
     results.append(api_result[match.start():api_result.index('\n}',match.start())+2])
 Path(sys.argv[1],'api_result.inc').write_text('\n'.join(results))
-api=Path('components/ts_api/src/ts_api_automation.c').read_text()
+import os
+api=Path(os.environ.get('EXPORT_API_TEST_SOURCE','components/ts_api/src/ts_api_automation.c')).read_text()
 parts=[]
-for name in ['api_config_status','api_config_refresh','api_config_backup','config_operation',
+if os.environ.get('EXPORT_API_TEST_SOURCE'):
+    match=re.search(r'^static const char \*action_type_to_string\([^;]+?\)\s*\{',api,re.M);assert match
+    parts.append(api[match.start():api.index('\n}',match.start())+2])
+for name in ['source_to_export_json','action_template_to_export_json','api_automation_sources_export','api_automation_actions_export','api_config_status','api_config_refresh','api_config_backup','config_operation',
              'api_config_preview','api_config_apply','api_config_enable','api_automation_reload',
              'trigger_reject_token','trigger_reject_code','api_automation_rules_list','api_automation_rules_trigger','action_execute_failure','api_automation_actions_execute']:
     match=re.search(r'^(?:static )?[^\n;]+\b'+name+r'\([^;]+?\)\s*\{',api,re.M)
@@ -204,7 +208,8 @@ cc "${common[@]}" -DCONFIG_TS_AUTOMATION_MAX_RULES=64 -Itests/runtime/storage_st
   components/ts_security/src/ts_ssh_config_codec.c components/ts_security/src/ts_ssh_commands_config.c \
   components/ts_security/src/ts_ssh_hosts_config.c "$IDF_PATH/components/json/cJSON/cJSON.c" \
   "${crypto_link[@]}" -lpthread -lm -o "$CONFIG_TEST_BUILD/owner"
-"$CONFIG_TEST_BUILD/owner"
+CONFIG_EXPORT_PAYLOADS="$CONFIG_TEST_BUILD/export-payloads.json" "$CONFIG_TEST_BUILD/owner"
+python3 tests/runtime/test_rule_pack_crypto.py --export-payloads "$CONFIG_TEST_BUILD/export-payloads.json"
 
 cc "${common[@]}" -Itests/runtime/storage_stubs -I"$IDF_PATH/components/nvs_flash/include" \
   -Itests/runtime/rule_pack/stubs -Icomponents/ts_automation/src \

@@ -160,9 +160,22 @@ esp_err_t ts_ssh_exec(ts_ssh_session_t session, const char *command,
                        ts_ssh_exec_result_t *result);
 
 /** Match command output using the same pattern rules as interactive SSH.
- * The caller owns *extracted when a capture is produced.
+ * With extracted != NULL, true means a capture was produced; the caller owns it.
  */
 bool ts_ssh_pattern_match(const char *text, const char *pattern, char **extracted);
+
+/** Bounded matching context, separate from the retained command output.
+ * Initialize to zero with caller-provided storage and capacity >= 1.
+ * The caller frees storage with the execution context.
+ */
+typedef struct {
+    char *data;
+    size_t length, capacity;
+    bool partial_line; /**< The start of the window is inside an evicted line. */
+} ts_ssh_match_window_t;
+void ts_ssh_match_window_append(ts_ssh_match_window_t *window, const char *data, size_t length);
+bool ts_ssh_match_window_match(const ts_ssh_match_window_t *window, const char *pattern,
+                               char **extracted);
 
 /**
  * @brief Execute command with streaming output

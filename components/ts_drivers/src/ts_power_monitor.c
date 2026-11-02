@@ -22,6 +22,7 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include <string.h>
+#include <stdatomic.h>
 #include <math.h>
 
 static const char *TAG = "ts_power_monitor";
@@ -47,7 +48,9 @@ static const char *TAG = "ts_power_monitor";
 
 typedef struct {
     bool initialized;
-    bool running;
+    atomic_bool running;
+    atomic_bool control_busy;
+    SemaphoreHandle_t exit_done;
     ts_power_monitor_config_t config;
     
     /* ADC */
@@ -153,6 +156,13 @@ esp_err_t ts_power_monitor_init(const ts_power_monitor_config_t *config)
         return ESP_ERR_NO_MEM;
     }
     
+    s_pm.exit_done = xSemaphoreCreateBinary();
+    if (!s_pm.exit_done) {
+        vSemaphoreDelete(s_pm.data_mutex);
+        s_pm.data_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     /* 初始化电压监控 (ADC) */
     esp_err_t ret = voltage_monitor_init();
     if (ret != ESP_OK) {
@@ -186,12 +196,18 @@ esp_err_t ts_power_monitor_init(const ts_power_monitor_config_t *config)
     return ESP_OK;
     
 cleanup:
+    if (s_pm.exit_done) {
+        vSemaphoreDelete(s_pm.exit_done);
+        s_pm.exit_done = NULL;
+    }
     if (s_pm.data_mutex) {
         vSemaphoreDelete(s_pm.data_mutex);
         s_pm.data_mutex = NULL;
     }
     return ret;
 }
+
+static esp_err_t stop_pm_task(void);
 
 esp_err_t ts_power_monitor_deinit(void)
 {
@@ -201,8 +217,14 @@ esp_err_t ts_power_monitor_deinit(void)
     
     ESP_LOGI(TAG, "Deinitializing power monitor");
     
-    /* 停止监控 */
-    ts_power_monitor_stop();
+    if (atomic_exchange(&s_pm.control_busy, true)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = stop_pm_task();
+    if (ret != ESP_OK) {
+        atomic_store(&s_pm.control_busy, false);
+        return ret;
+    }
+    vSemaphoreDelete(s_pm.exit_done);
+    s_pm.exit_done = NULL;
     
     /* 清理 ADC 校准 */
     if (s_pm.adc_cali_handle) {
@@ -237,6 +259,7 @@ esp_err_t ts_power_monitor_deinit(void)
     
     s_pm.initialized = false;
     s_pm.running = false;
+    atomic_store(&s_pm.control_busy, false);
     
     ESP_LOGI(TAG, "Power monitor deinitialized");
     return ESP_OK;
@@ -496,13 +519,17 @@ esp_err_t ts_power_monitor_start(void)
         return ESP_ERR_INVALID_STATE;
     }
     
+    if (atomic_exchange(&s_pm.control_busy, true)) return ESP_ERR_NOT_FINISHED;
+
     if (s_pm.running) {
         ESP_LOGW(TAG, "Power monitor already running");
+        atomic_store(&s_pm.control_busy, false);
         return ESP_OK;
     }
     
     ESP_LOGI(TAG, "Starting power monitor");
     
+    xSemaphoreTake(s_pm.exit_done, 0);
     s_pm.running = true;
     
     /* 创建监控任务 */
@@ -514,35 +541,39 @@ esp_err_t ts_power_monitor_start(void)
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create monitoring task");
         s_pm.running = false;
+        s_pm.monitor_task_handle = NULL;
+        atomic_store(&s_pm.control_busy, false);
         return ESP_ERR_NO_MEM;
     }
     
     ESP_LOGI(TAG, "Power monitor started");
+    atomic_store(&s_pm.control_busy, false);
+    return ESP_OK;
+}
+
+static esp_err_t stop_pm_task(void)
+{
+    if (s_pm.monitor_task_handle == xTaskGetCurrentTaskHandle()) return ESP_ERR_NOT_FINISHED;
+    s_pm.running = false;
+    if (s_pm.monitor_task_handle) {
+        xSemaphoreTake(s_pm.exit_done, portMAX_DELAY);
+        s_pm.monitor_task_handle = NULL;
+    }
     return ESP_OK;
 }
 
 esp_err_t ts_power_monitor_stop(void)
 {
-    if (!s_pm.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    if (!s_pm.running) {
-        return ESP_OK;
-    }
-    
-    ESP_LOGI(TAG, "Stopping power monitor");
-    
-    s_pm.running = false;
-    
-    /* 删除监控任务 */
-    if (s_pm.monitor_task_handle) {
-        vTaskDelete(s_pm.monitor_task_handle);
-        s_pm.monitor_task_handle = NULL;
-    }
-    
-    ESP_LOGI(TAG, "Power monitor stopped");
-    return ESP_OK;
+    if (!s_pm.initialized) return ESP_ERR_INVALID_STATE;
+    if (atomic_exchange(&s_pm.control_busy, true)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = stop_pm_task();
+    atomic_store(&s_pm.control_busy, false);
+    return ret;
+}
+
+bool ts_power_monitor_is_initialized(void)
+{
+    return s_pm.initialized;
 }
 
 bool ts_power_monitor_is_running(void)
@@ -631,6 +662,7 @@ static void power_monitor_task(void *pvParameters)
     }
     
     ESP_LOGI(TAG, "Power monitor task ended");
+    xSemaphoreGive(s_pm.exit_done);
     vTaskDelete(NULL);
 }
 

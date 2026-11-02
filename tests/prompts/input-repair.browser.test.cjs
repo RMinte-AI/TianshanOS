@@ -16,7 +16,7 @@ before(async()=>{
 after(async()=>{await browser?.close();await new Promise(resolve=>server?.close(resolve));});
 async function fixture(language='zh-CN'){
  const context=await browser.newContext({viewport:{width:1280,height:900}});
- await context.addInitScript(language=>{localStorage.setItem('ts_language',language);class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}window.WebSocket=Socket;},language);
+ await context.addInitScript(language=>{localStorage.setItem('ts_language',language);const random=Math.random;Math.random=()=>{window.formulaRandomCalls=(window.formulaRandomCalls||0)+1;return window.formulaRandomValue??random();};class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}window.WebSocket=Socket;},language);
  const page=await context.newPage(),errors=[];page.setDefaultTimeout(5000);page.on('pageerror',e=>errors.push(e.message));
  await page.route('**/*',async route=>{
   const u=new URL(route.request().url());if(u.origin!==base){await route.abort();return;}
@@ -45,6 +45,30 @@ async function fixture(language='zh-CN'){
  return {page,context,errors};
 }
 for(const language of ['zh-CN','en-US']){
+ test(`${language}: stopped initialized protection displays disabled and can enable again`,async()=>{
+  const f=await fixture(language);try{
+   await f.page.evaluate(async()=>{
+    window.protectionRunning=false;window.protectionWrites=[];
+    api.powerProtectionStatus=async()=>({code:0,data:{initialized:true,running:protectionRunning}});
+    api.powerProtectionSet=async params=>{protectionWrites.push(params.enable);protectionRunning=params.enable;return {code:0,data:{initialized:true,running:protectionRunning}};};
+    await loadSystemPage();await refreshSystemPageOnce();
+   });
+   const toggle=f.page.locator('#protection-toggle');
+   assert.equal(new URL(f.page.url()).origin,base);assert.match(await f.page.title(),/TianShanOS/i);
+   assert.equal(await f.page.locator('.page-system').count(),1);
+   assert.equal(await toggle.getAttribute('aria-checked'),'false');
+   assert.equal(await f.page.locator('#protection-status').innerText(),language==='zh-CN'?'已禁用':'Disabled');
+   if(process.env.TS_TEST_EVIDENCE_DIR){await toggle.scrollIntoViewIfNeeded();await f.page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a06-${language}-disabled.png`)});}
+   await toggle.click();await f.page.waitForFunction(()=>protectionWrites.length===1);
+   assert.equal(await toggle.getAttribute('aria-checked'),'true');
+   await toggle.click();await f.page.waitForFunction(()=>protectionWrites.length===2);
+   assert.equal(await toggle.getAttribute('aria-checked'),'false');
+   await toggle.click();await f.page.waitForFunction(()=>protectionWrites.length===3);
+   assert.deepEqual(await f.page.evaluate(()=>protectionWrites),[true,false,true]);
+   if(process.env.TS_TEST_EVIDENCE_DIR)await f.page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a06-${language}-enabled.png`)});
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
  test(`${language}: widget zero, negative bound, expressions and thresholds survive save/reopen`,async()=>{
   const f=await fixture(language);try{
    await f.page.evaluate(()=>{
@@ -224,3 +248,338 @@ for(const language of ['zh-CN','en-US'])test(`${language}: late font metadata pr
   assert.deepEqual(f.errors,[]);
  }finally{await f.context.close();}
 });
+
+for (const lang of ['zh-CN', 'en-US']) {
+    test(`${lang}: power telemetry valid UART, zero readings, invalid UART and independent ADC`, async () => {
+        const f=await fixture(lang);
+        try { const {page}=f;
+            await page.evaluate(() => loadSystemPage());
+            const readings = await page.evaluate(() => {
+                const snapshot = data => {
+                    updatePowerInfo(data);
+                    return ['voltage', 'current', 'power-watts', 'internal-voltage'].map(id => document.getElementById(id).textContent);
+                };
+                return {
+                    valid: snapshot({power_chip:{valid:true,crc_valid:true,voltage_v:24,current_a:2,power_w:48},voltage:{supply_v:13.6}}),
+                    zero: snapshot({power_chip:{valid:true,crc_valid:true,voltage_v:24,current_a:0,power_w:0},current:{value_a:99},power:{value_w:99},voltage:{supply_v:13.6}}),
+                    crcBad: snapshot({power_chip:{valid:false,crc_valid:false,voltage_v:75,current_a:19,power_w:1425},current:{value_a:99},power:{value_w:99},voltage:{supply_v:13.6}}),
+                    crcOnly: snapshot({power_chip:{valid:true,crc_valid:false,voltage_v:75,current_a:19,power_w:1425},voltage:{supply_v:13.6}}),
+                    invalid: snapshot({power_chip:{valid:false,crc_valid:true,voltage_v:75,current_a:19,power_w:1425},voltage:{supply_v:13.6}}),
+                    noChip: snapshot({current:{value_a:2},power:{value_w:48},voltage:{supply_v:13.6}})
+                };
+            });
+            // Assert the validity defect first; keep zero/fallback expectations alongside it.
+            assert.deepEqual(readings.crcBad, ['-', '-', '-', '12.60 V']);
+            assert.deepEqual(readings.crcOnly, ['-', '-', '-', '12.60 V']);
+            assert.deepEqual(readings.invalid, ['-', '-', '-', '12.60 V']);
+            assert.deepEqual(readings.valid, ['24.0 V', '2.00 A', '48.0 W', '12.60 V']);
+            assert.deepEqual(readings.zero, ['24.0 V', '0.00 A', '0.0 W', '12.60 V']);
+            assert.deepEqual(readings.noChip, ['-', '2.00 A', '48.0 W', '12.60 V']);
+            assert.deepEqual(f.errors, []);
+        } finally { await f.context.close(); }
+    });
+}
+
+async function prepareFanCurveFixture(page, failedEndpoint = null) {
+    await page.evaluate(async failed => {
+        window.fanWrites = []; window.fanMode = 'auto';
+        window.savedFan = {curve:[{temp:30,duty:30},{temp:50,duty:60},{temp:70,duty:100}],hysteresis:3,min_interval:2000,min_duty:20,max_duty:100};
+        const original = api.call;
+        api.call = async (endpoint, params) => {
+            if (endpoint === 'fan.config') return {code:0,data:structuredClone(savedFan)};
+            if (['fan.limits','fan.curve','fan.mode'].includes(endpoint)) {
+                fanWrites.push({endpoint,params:structuredClone(params)});
+                if (endpoint === 'fan.mode') fanMode = params.mode;
+                else Object.assign(savedFan, structuredClone(params));
+                if (endpoint === failed) return {code:9,message:'fan_config_save_failed',data:{applied:true,persisted:false}};
+                return {code:0,data:{...params,applied:true,persisted:true}};
+            }
+            return original(endpoint, params);
+        };
+        await showFanCurveModal(0);
+    }, failedEndpoint);
+}
+for (const language of ['zh-CN', 'en-US']) {
+    test(`${language}: fan curve row identity, deletion and successful mode switch`, async () => {
+        const f = await fixture(language);
+        try {
+            const {page} = f; await prepareFanCurveFixture(page);
+            const rows = page.locator('#fan-curve-points .row');
+            await rows.nth(0).locator('input').nth(0).fill('35');
+            await rows.nth(0).locator('input').nth(0).press('Tab');
+            await page.evaluate(() => closeFanCurveModal());
+            assert.deepEqual(await page.evaluate(() => [fanWrites.length,fanMode]), [0,'auto']);
+            await page.evaluate(() => showFanCurveModal(0));
+            await rows.nth(0).locator('input').nth(0).fill('60');
+            await rows.nth(0).locator('input').nth(0).press('Tab');
+            await rows.nth(0).locator('input').nth(1).fill('80');
+            await rows.nth(0).locator('input').nth(1).press('Tab');
+            assert.deepEqual(await page.evaluate(() => fanCurveConfig.curve), [{temp:60,duty:80},{temp:50,duty:60},{temp:70,duty:100}]);
+            await page.evaluate(() => applyFanCurve());
+            assert.equal(await page.locator('#fan-curve-modal').count(), 0);
+            assert.equal(await page.evaluate(() => fanMode), 'curve');
+            const first = await page.evaluate(() => fanWrites);
+            assert.deepEqual(first.map(write => write.endpoint), ['fan.limits','fan.curve','fan.mode']);
+            assert.deepEqual(first[1].params.curve, [{temp:50,duty:60},{temp:60,duty:80},{temp:70,duty:100}]);
+            await page.evaluate(() => showFanCurveModal(0));
+            await rows.nth(1).locator('button').click();
+            assert.equal(await rows.count(), 2);
+            await rows.nth(0).locator('input').nth(1).fill('65');
+            await rows.nth(0).locator('input').nth(1).press('Tab');
+            assert.deepEqual(await page.evaluate(() => fanCurveConfig.curve), [{temp:50,duty:65},{temp:70,duty:100}]);
+            await page.evaluate(() => applyFanCurve());
+            assert.deepEqual(await page.evaluate(() => savedFan.curve), [{temp:50,duty:65},{temp:70,duty:100}]);
+            assert.equal(await page.evaluate(() => fanMode), 'curve');
+            assert.deepEqual(f.errors, []);
+        } finally { await f.context.close(); }
+    });
+    for (const failed of ['fan.limits','fan.curve','fan.mode']) {
+        test(`${language}: fan curve ${failed} persistence failure remains applied and reports failure`, async () => {
+            const f = await fixture(language);
+            try {
+                await prepareFanCurveFixture(f.page, failed);
+                await f.page.evaluate(() => applyFanCurve());
+                assert.equal(await f.page.locator('#fan-curve-modal').count(), 1);
+                assert.equal(await f.page.locator('#toast.toast-error.show').count(), 1);
+                const why = await f.page.evaluate(() => t('failure.reasons.fan_config_save_failed.why'));
+                assert((await f.page.locator('#toast .toast-msg').innerText()).includes(why));
+                const writes = await f.page.evaluate(() => fanWrites.map(write => write.endpoint));
+                assert.equal(writes.at(-1), failed);
+                assert.equal(await f.page.evaluate(() => fanMode), failed === 'fan.mode' ? 'curve' : 'auto');
+                assert.deepEqual(f.errors, []);
+            } finally { await f.context.close(); }
+        });
+    }
+}
+
+const formulaContract=JSON.parse(fs.readFileSync(path.join(__dirname,'../../docs/repair/whole-product-20261031/review-evidence/v3-formula-contract-cases.json'),'utf8'));
+test('A03: actual formula evaluator retains all 24 approved math/text cases and the fixed native function contract',async()=>{
+ const f=await fixture();try{
+  for(const c of formulaContract.positive_cases){
+   assert.deepEqual(await f.page.evaluate(c=>evaluateExpression(c.expression,c.variables),c),c.expected,c.id);
+  }
+  const cases=[
+   ['1 + 2 * 3 ** 2',19],['(1 + 2) * 3',9],['false ? 1 : true ? 2 : 3',2],
+   ['1 | 2 ^ 3 & 1',3],['128 >>> 2',32],['1 << 3 + 1',16],['~1',-2],
+   ['1 == "1"',true],['1 !== "1"',true],['2 <= 2 && 3 > 2',true],
+   ['0x10 + 0b10 + 0o10 + .5e1',31],['0.5 + 2.5e-1',.75],
+   ['null ?? 4',4],['(null ?? false) || 3',3],['null ?? (false || 3)',3],
+   ['!false && +2 + -3 === -1',true],
+   ['"中文\\n\\t\\x41\\u4e2d\\u{1f600}"','中文\n\tA中😀'],
+   ["'a\\'b\\\\c'", "a'b\\c"],
+   [String.fromCharCode(96)+'中文\n$'+'{temp}'+String.fromCharCode(96),'中文\n42.36'],
+   [String.fromCharCode(96)+'a\r\nb'+String.fromCharCode(96),'a\nb'],
+   ['parseInt("ff", 16)',255],['Boolean(0)',false],['String(12) + Number("3")','123'],
+   ['isNaN("no")',true],['isFinite("3")',true],
+   ['(123.45).toPrecision(4)','123.5'],['(2).toFixed(100)',(2).toFixed(100)],
+   ['(2).toExponential(100)',(2).toExponential(100)],['(2).toPrecision(100)',(2).toPrecision(100)],
+   ['(2).toFixed()','2'],['Math.max(1, 3,)',3],
+   ['Math.max()',-Infinity],['Infinity / 2',Infinity]
+  ];
+  for(const [expression,expected]of cases){
+   assert.deepEqual(await f.page.evaluate(expression=>evaluateExpression(expression,{temp:42.36}),expression),expected,expression);
+  }
+  const mathArgs={abs:[-2],acos:[.5],acosh:[2],asin:[.5],asinh:[2],atan:[2],atan2:[2,3],atanh:[.5],cbrt:[-8],
+   ceil:[1.2],clz32:[1],cos:[1],cosh:[1],exp:[1],expm1:[1],floor:[1.8],fround:[1.2345],hypot:[3,4],imul:[3,4],
+   log:[2],log10:[100],log1p:[1],log2:[8],max:[-1,2,3],min:[-1,2,3],pow:[2,3],round:[1.8],sign:[-2],
+   sin:[1],sinh:[1],sqrt:[4],tan:[1],tanh:[1],trunc:[-1.8]};
+  for(const [name,args]of Object.entries(mathArgs)){
+   const expression='Math.'+name+'('+args.join(',')+')';
+   const pair=await f.page.evaluate(({expression,name,args})=>[evaluateExpression(expression,{}),Math[name](...args)],{expression,name,args});
+   assert.equal(pair[0],pair[1],name);
+  }
+  for(const name of 'E LN10 LN2 LOG10E LOG2E PI SQRT1_2 SQRT2'.split(' ')){
+   assert.equal(await f.page.evaluate(name=>evaluateExpression('Math.'+name,{}),name),Math[name],name);
+  }
+  assert.equal(await f.page.evaluate(()=>Number.isNaN(evaluateExpression('0 / 0',{}))),true);
+  assert.equal(await f.page.evaluate(()=>Number.isNaN(evaluateExpression('NaN',{}))),true);
+  assert.deepEqual(f.errors,[]);
+ }finally{await f.context.close();}
+});
+
+test('A03: data bindings stay values, all structure is checked before native calls, and selected branches alone execute',async()=>{
+ const f=await fixture();try{
+  const result=await f.page.evaluate(blocked=>{
+   const ref=name=>'$'+'{'+name+'}';
+   const text='中文 "quote" \\ slash\n<em>plain</em> $'+'{nested} null';
+   const variables={name:text,temp:12,nil:null};
+   const own=Object.assign(Object.create({inherited:9}),{constructor:7,'a.b 中文':8});
+   const data=[evaluateExpression(ref('name'),variables),evaluateExpression('"'+ref('name')+'"',variables),
+    evaluateExpression(ref('name')+' + " end"',variables),evaluateExpression('"'+ref('name')+' '+ref('temp')+'"',variables),
+    evaluateExpression(ref(' a.b 中文 '),own),evaluateExpression(ref('constructor')+' + 1',own),
+    evaluateExpression(ref('inherited'),own),evaluateExpression(ref('nil'),variables),
+    evaluateExpression(ref('missing')+' + 1',variables),evaluateExpression('true ? 1 : '+ref('nil'),variables),
+    evaluateExpression('"null '+ref('temp')+'"',variables)];
+   window.formulaRandomValue=.25;window.formulaRandomCalls=0;
+   const lazy=['true ? 4 : Math.random()','false && Math.random()','true || Math.random()','1 ?? Math.random()',
+    'true ? 4 : (0).toFixed(101)'].map(expression=>evaluateExpression(expression,{}));
+   const before=formulaRandomCalls;
+   const invalid=blocked.concat(['-2 ** 2','null ?? true || false','true && null ?? 1','++2','--2',
+    'Math.random() +','true ? 1 : Math.noSuch(2)','Math.random() + true.noSuch()',
+    'Math.random() + 1 2','"unfinished','1e','0x','1;','(1,2)','[1]','"a".toFixed(1)'])
+    .map(expression=>evaluateExpression(expression,{}));
+   const after=formulaRandomCalls;
+   const called=evaluateExpression('Math.random() + (false ? Math.random() : 1)',{});
+   return {text,data,lazy,before,invalid,after,called,calls:formulaRandomCalls};
+  },formulaContract.blocked_expressions_not_executed_on_baseline);
+  assert.deepEqual(result.data,[result.text,result.text,result.text+' end',result.text+' 12',8,8,undefined,null,null,null,'null 12']);
+  assert.deepEqual(result.lazy,[4,false,true,1,4]);assert.equal(result.before,0);
+  assert(result.invalid.every(value=>value===null));assert.equal(result.after,0);
+  assert.equal(result.called,1.25);assert.equal(result.calls,1);assert.deepEqual(f.errors,[]);
+ }finally{await f.context.close();}
+});
+
+for(const language of ['zh-CN','en-US']){
+ test(language+': A03 Admin widget edit preserves the existing preview, then saves and refreshes each original formula',async()=>{
+  const f=await fixture(language);try{
+   await f.page.evaluate(async()=>{
+    api.token='a03-local-admin-fixture';api.username='admin';api.level='admin';window.widgetSaved={widgets:[],source:'nvs'};
+    const original=api.call;
+    api.call=async(endpoint,params)=>{
+     if(endpoint==='ui.widgets.set'){widgetSaved=structuredClone(params);writes.push({endpoint,params:structuredClone(params)});return {code:0,data:{nvs_saved:true}};}
+     if(endpoint==='ui.widgets.get')return {code:0,data:{...structuredClone(widgetSaved),source:'nvs'}};
+     if(endpoint==='automation.variables.list')return {code:0,data:{variables:[
+      {name:'temp',value:42.36},{name:'used',value:0},{name:'name',value:'GPU'},{name:'enabled',value:true}]}};
+     return original(endpoint,params);
+    };
+    await loadSystemPage();
+   });
+   assert.deepEqual(await f.page.evaluate(()=>[api.isLoggedIn(),api.isAdmin(),api.isRoot(),api.getLevel()]),[true,true,false,'admin']);
+   for(const c of formulaContract.positive_cases.slice(0,11)){
+    await f.page.evaluate(()=>{
+     stopDataWidgetsAutoRefresh();
+     dataWidgets=[{id:'formula',type:'text',label:'Formula',icon:'ri-dashboard-line',layout:'large',unit:'°C',decimals:1,expression:'$'+'{temp}'}];
+     renderDataWidgets();
+    });
+    await f.page.locator('#data-widgets-grid [data-widget-id="formula"]').click();
+    assert.equal(await f.page.locator('#dw-preview-card .dw-card').count(),1);
+    assert.equal(await f.page.locator('#dw-preview-card svg.i').count()>0,true);
+    await f.page.locator('#edit-expression').fill(c.expression);
+    await f.page.locator('#widget-edit-modal .sf .primary').click();
+    await f.page.waitForFunction(()=>!document.getElementById('widget-edit-modal'));
+    await f.page.waitForFunction(expected=>document.getElementById('dw-formula-value')?.textContent===String(expected),c.expected);
+    assert.equal(await f.page.evaluate(()=>widgetSaved.widgets[0].expression),c.expression,c.id);
+    await f.page.evaluate(async()=>{dataWidgets=[];await loadDataWidgets();renderDataWidgets();await refreshDataWidgets();});
+    assert.equal(await f.page.locator('#dw-formula-value').textContent(),String(c.expected),c.id);
+    assert.equal(await f.page.locator('#data-widgets-grid [data-widget-id="formula"]').getAttribute('data-layout'),'large');
+    assert.equal(await f.page.evaluate(()=>dataWidgets[0].unit),'°C');
+   }
+   assert.equal(await f.page.evaluate(()=>writes.filter(w=>w.endpoint==='ui.widgets.set').length),11);
+   await f.page.evaluate(async()=>{
+    const original=api.call;
+    api.call=async(endpoint,params)=>endpoint==='automation.variables.list'?{code:0,data:{variables:[
+     {name:'__proto__',value:2},{name:'constructor',value:3},{name:'a.b 中文',value:4},{name:'external',value:'中文 "quote" \\ slash\n<em>plain</em> & null'}]}}:original(endpoint,params);
+    dataWidgets[0].expression='$'+'{__proto__} + $'+'{constructor} + $'+'{a.b 中文}';
+    await refreshDataWidgets();
+   });
+   assert.equal(await f.page.locator('#dw-formula-value').textContent(),'9');
+   await f.page.evaluate(async()=>{
+    dataWidgets[0].expression='"$'+'{external}"';await refreshDataWidgets();
+   });
+   assert.equal(await f.page.locator('#dw-formula-value').textContent(),'中文 "quote" \\ slash\n<em>plain</em> & null');
+   assert.equal(await f.page.locator('#dw-formula-value em').count(),0);
+   await f.page.evaluate(async()=>{dataWidgets[0].expression='$'+'{missing} + 1';await refreshDataWidgets();});
+   assert.equal(await f.page.locator('#dw-formula-value').textContent(),'-');
+
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+}
+
+for(const language of ['zh-CN','en-US']) {
+ test(`${language}: B09 QR effective colors and one image path survive actual edit/save/reopen`,async()=>{
+  const f=await fixture(language);try {
+   const cases=[{color:undefined,expected:'#ffffff'},{color:'#000000',expected:'#ffffff'},
+    {color:'#a01234',expected:'#a01234'},{color:'#000000',qr_color_set:true,expected:'#000000'},
+    {color:'#ffffff',qr_color_set:true,expected:'#ffffff'},{color:'#ff0000',qr_color_set:true,expected:'#ff0000'}];
+   for(const entry of cases) {
+    await f.page.evaluate(async entry=>{
+     document.getElementById('action-modal')?.remove();
+     stored={id:'fixture',name:'QR fields',type:'led',enabled:true,led:{device:'matrix',ctrl_type:'qrcode',qr_text:'B09',qr_ecc:'M',image_path:'/sdcard/images/normal picture.bmp',...(entry.color?{color:entry.color}:{}),...(entry.qr_color_set?{qr_color_set:true}:{})}};
+     await editAction('fixture');
+    },entry);
+    assert.equal(await f.page.locator('#action-led-qr-fg').inputValue(),entry.expected);
+    assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'/sdcard/images/normal picture.bmp');
+    const before=await f.page.evaluate(()=>writes.length);
+    await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+    await f.page.waitForFunction(before=>writes.length===before+1,before);
+    const led=await f.page.evaluate(()=>stored.led);
+    assert.equal(led.color.toLowerCase(),entry.expected);assert.equal(led.qr_color_set,true);
+    assert.equal(led.image_path,'/sdcard/images/normal picture.bmp');assert(!('qr_fg' in led)&&!('qr_bg_image' in led));
+    await f.page.evaluate(async()=>{document.getElementById('action-modal')?.remove();await editAction('fixture');});
+    assert.equal(await f.page.locator('#action-led-qr-fg').inputValue(),entry.expected);
+   }
+   await f.page.evaluate(()=>{api.storageList=async()=>({code:0,data:{entries:[{name:'chosen picture.bmp',type:'file',size:70}]}});});
+   await f.page.locator('#action-modal [onclick="browseActionQrBg()"]').click();
+   await f.page.locator('#image-select-list .image-select-item').click();
+   assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'/sdcard/images/chosen picture.bmp');
+   await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+   await f.page.evaluate(async()=>{document.getElementById('action-modal')?.remove();await editAction('fixture');});
+   assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'/sdcard/images/chosen picture.bmp');
+   await f.page.locator("#action-modal button[onclick^=\"document.getElementById('action-led-qr-bg')\"]").click();
+   assert.equal(await f.page.locator('#action-led-qr-bg').inputValue(),'');
+   await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+   assert.equal(await f.page.evaluate(()=>stored.led.image_path),'');assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(`${language}: B09 auto position defaults and manual zero/nonzero survive actual save/reopen`,async()=>{
+  const f=await fixture(language);try {
+   const cases=[{x:5,y:7},{auto_pos:true,x:5,y:7},{auto_pos:false,x:0,y:0},{auto_pos:false,x:5,y:7},
+    {auto_pos:false,x:5,y:7,align:'center'},{auto_pos:false,x:5,y:7,align:'right',scroll:'left'}];
+   for(const position of cases) {
+    await f.page.evaluate(async position=>{
+     document.getElementById('action-modal')?.remove();stored={id:'fixture',name:'Text fields',type:'led',enabled:true,led:{device:'matrix',ctrl_type:'text',text:'A',font:'pixel9x9',color:'#00ff00',align:'left',scroll:'none',speed:50,...position}};await editAction('fixture');
+    },position);
+    assert.equal(await f.page.locator('#action-led-auto-pos').isChecked(),position.auto_pos!==false);
+    assert.equal(await f.page.locator('#action-led-x').inputValue(),String(position.x));
+    assert.equal(await f.page.locator('#action-led-y').inputValue(),String(position.y));
+    assert.equal(await f.page.locator('#action-led-align').inputValue(),position.align||'left');
+    await f.page.locator('#action-modal button[onclick^="updateAction("]').click();
+    const led=await f.page.evaluate(()=>stored.led);assert.equal(led.auto_pos,position.auto_pos!==false);assert.equal(led.x,position.x);assert.equal(led.y,position.y);
+    await f.page.evaluate(async()=>{document.getElementById('action-modal')?.remove();await editAction('fixture');});
+    assert.equal(await f.page.locator('#action-led-auto-pos').isChecked(),position.auto_pos!==false);
+    assert.equal(await f.page.locator('#action-led-x').inputValue(),String(position.x));
+    assert.equal(await f.page.locator('#action-led-y').inputValue(),String(position.y));
+   }
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(`${language}: B09 direct QR uses color; CC apply and explicit SD export report separately`,async()=>{
+  const f=await fixture(language);try {
+   await f.page.evaluate(()=>{
+    window.qrRequests=[];const original=api.call;
+    api.call=async function(endpoint,params){if(endpoint==='led.qrcode'){qrRequests.push(JSON.parse(JSON.stringify(params)));return {code:0,data:{}};}return original.call(this,endpoint,params);};
+    window.ledDevicesCache=[{name:'matrix',layout:'matrix'}];openLedModal('matrix','content');
+   });
+   await f.page.locator('#led-modal [onclick*="modal-tab-qr"]').click();
+   await f.page.locator('#modal-qr-text').fill('B09');await f.page.locator('#modal-qr-fg').fill('#ff0000');
+   await f.page.locator('#led-foot-qr').click();
+   assert.deepEqual(await f.page.evaluate(()=>qrRequests),[{device:'matrix',text:'B09',ecc:'M',color:'#ff0000'}]);
+   await f.page.evaluate(()=>{
+    closeLedModal();window.ccSaved={enabled:true,white_point:{r:1,g:1,b:1,enabled:true},gamma:{value:1,enabled:true},brightness:{factor:1,enabled:true},saturation:{factor:1,enabled:true}};window.ccSets=[];window.ccExports=0;window.ccSetFails=false;
+    api.ledColorCorrectionGet=async()=>({code:0,data:structuredClone(ccSaved)});
+    api.ledColorCorrectionSet=async config=>{ccSets.push(structuredClone(config));if(ccSetFails)return {code:7,message:'fixture_nvs_failed'};ccSaved=structuredClone(config);return {code:0,data:{success:true}};};
+    api.ledColorCorrectionExport=async()=>{++ccExports;return {code:7,message:'fixture_sd_unavailable'};};
+    openLedModal('matrix','colorcorrection');
+   });
+   await f.page.waitForFunction(()=>ccInitialConfig?.enabled===true);
+   await f.page.locator('#cc-wp-r').fill('130');
+   await f.page.evaluate(()=>clearTimeout(ccPreviewDebounce));
+   await f.page.locator('#led-modal [onclick="applyColorCorrection()"]').click();
+   await f.page.waitForFunction(()=>ccInitialConfig?.white_point?.r===1.3);
+   assert.equal(await f.page.evaluate(()=>ccExports),0);
+   assert.equal(await f.page.locator('#toast').innerText(),await f.page.evaluate(()=>t('ledPage.ccApplySuccess')));
+   await f.page.evaluate(()=>{closeLedModal();openLedModal('matrix','colorcorrection');});
+   await f.page.waitForFunction(()=>document.getElementById('cc-wp-r')?.value==='130');
+   await f.page.locator('#led-modal [onclick="ccExport()"]').click();
+   await f.page.waitForFunction(()=>ccExports===1);
+   assert.equal(await f.page.evaluate(()=>ccSaved.white_point.r),1.3);
+   assert.notEqual(await f.page.locator('#toast').innerText(),await f.page.evaluate(()=>t('ledPage.ccApplySuccess')));
+   await f.page.locator('#toast .toast-close').click();
+   await f.page.evaluate(()=>{ccSetFails=true;document.getElementById('cc-wp-r').value='140';});
+   await f.page.locator('#led-modal [onclick="applyColorCorrection()"]').click();
+   assert.equal(await f.page.evaluate(()=>ccInitialConfig.white_point.r),1.3);assert.equal(await f.page.evaluate(()=>ccExports),1);
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+}

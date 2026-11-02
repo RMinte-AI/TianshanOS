@@ -504,3 +504,50 @@ test('a late WWW start error cannot overwrite an acknowledged manual abort', asy
     assert.equal(d.h.el('ota-state-text').textContent, title);
     assert.equal(d.count('system.reboot'), 0);
 });
+
+
+for (const language of ['zh-CN', 'en-US']) for (const source of ['URL', 'SD card']) {
+    test(`${language}: ${source} companion retries keep source B and options until a new attempt C`, async () => {
+        const d = await device(language);
+        const url = source === 'URL';
+        const input = d.h.el(url ? 'ota-url-input' : 'ota-file-input');
+        const selected = url ? 'https://ota.fixture.invalid/B/firmware.bin' : '/sdcard/B/TianShanOS.bin';
+        const next = url ? 'https://ota.fixture.invalid/C/firmware.bin' : '/sdcard/C/TianShanOS.bin';
+        const endpoint = url ? 'ota.www.start' : 'ota.www.start_sdcard';
+        const field = url ? 'url' : 'file';
+        input.value = selected;
+        d.h.el('ota-url-skip-verify').checked = true;
+        await d.h.run(url ? 'otaFromUrl()' : 'otaFromFile()');
+        const app = d.calls.find(call => call.endpoint === (url ? 'ota.upgrade_url' : 'ota.upgrade_file'));
+        assert.equal(app.params[field], selected);
+        assert.equal(app.params.no_reboot, true);
+        input.value = next;
+        d.h.el('ota-server-input').value = 'https://ota.fixture.invalid/C';
+        d.h.el('ota-url-skip-verify').checked = false;
+        d.state.wwwStart = 7;
+        d.state.app = 'pending_reboot';
+        await d.h.run('refreshOtaProgress()');
+        await d.h.run('startWwwOta()');
+        d.state.wwwStart = 0;
+        await d.h.run('startWwwOta()');
+        const starts = d.calls.filter(call => call.endpoint === endpoint);
+        assert.equal(starts.length, 3);
+        for (const call of starts) {
+            assert.equal(call.params[field], url ? 'https://ota.fixture.invalid/B/www.bin' : '/sdcard/B/www.bin');
+            if (url) assert.equal(call.params.skip_verify, true);
+        }
+        assert.equal(d.count('system.reboot'), 0);
+        d.state.www = 'completed'; d.state.wwwBusy = false;
+        await d.h.run('refreshOtaProgress()');
+        d.boot(); await d.h.advance(2000);
+        await d.h.run(url ? 'otaFromUrl()' : 'otaFromFile()');
+        const apps = d.calls.filter(call => call.endpoint === (url ? 'ota.upgrade_url' : 'ota.upgrade_file'));
+        assert.equal(apps.length, 2);
+        assert.equal(apps[1].params[field], next);
+        d.state.app = 'pending_reboot';
+        await d.h.run('refreshOtaProgress()');
+        const last = d.calls.filter(call => call.endpoint === endpoint).at(-1);
+        assert.equal(last.params[field], url ? 'https://ota.fixture.invalid/C/www.bin' : '/sdcard/C/www.bin');
+        if (url) assert.equal(last.params.skip_verify, false);
+    });
+}

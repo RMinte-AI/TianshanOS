@@ -512,3 +512,499 @@ for(const lang of ['zh-CN','en-US'])test(lang+': long names and emergency contro
   }
  });
 });
+
+// Controlled promises exercise the real modal entry points without device access.
+async function prepareSettingsModalFixture(page, options={}) {
+    await page.evaluate(options=>{
+        window.b06={options,power:[],fan:[],binding:[],writes:[],pendingWrites:[],
+            db:{low_voltage_threshold:12.3,recovery_voltage_threshold:18.4,shutdown_delay_sec:123,recovery_hold_sec:7,fan_stop_delay_sec:99}};
+        b06.config=id=>({curve:[{temp:30,duty:30},{temp:50,duty:60},{temp:70,duty:100}],min_duty:id?35:20,max_duty:95,hysteresis:4,min_interval:2500});
+        b06.defer=list=>{const request={};request.promise=new Promise((resolve,reject)=>Object.assign(request,{resolve,reject}));list.push(request);return request.promise;};
+        b06.apply=values=>{b06.db={low_voltage_threshold:values.low_threshold,recovery_voltage_threshold:values.recovery_threshold,shutdown_delay_sec:values.shutdown_delay,recovery_hold_sec:values.recovery_hold,fan_stop_delay_sec:values.fan_stop_delay};};
+        api.call=(endpoint,params)=>{
+            if(endpoint==='power.protection.config')return options.delayPower?b06.defer(b06.power):Promise.resolve({code:0,data:structuredClone(b06.db)});
+            if(endpoint==='power.protection.set'){
+                b06.writes.push(structuredClone(params));
+                if(options.delayWrite){const promise=b06.defer(b06.pendingWrites),request=b06.pendingWrites.at(-1),done=request.resolve;request.resolve=()=>{b06.apply(params);done({code:0,data:{persisted:true}});};return promise;}
+                b06.apply(params);return Promise.resolve({code:0,data:{persisted:true}});
+            }
+            if(endpoint==='fan.config')return options.delayFan?b06.defer(b06.fan):Promise.resolve({code:0,data:b06.config(params.id)});
+            if(endpoint==='temp.status')return options.delayBinding?b06.defer(b06.binding):Promise.resolve({code:0,data:{temperature_c:42,valid:true}});
+            if(endpoint==='automation.variables.list')return Promise.resolve({code:0,data:{variables:[]}});
+            if(endpoint==='temp.bind')return Promise.resolve({code:0,data:{bound_variables:[]}});
+            if(['fan.limits','fan.curve','fan.mode'].includes(endpoint)){b06.writes.push({endpoint,params:structuredClone(params)});return Promise.resolve({code:0,data:{applied:true,persisted:true}});}
+            if(endpoint==='fan.status')return Promise.resolve({code:0,data:{fans:[]}});
+            return Promise.resolve({code:0,data:{}});
+        };
+    },options);
+}
+for(const language of ['zh-CN','en-US']) {
+    test(`${language}: settings modal baseline normal power read/cancel/save/reopen/default confirmation`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(()=>showShutdownSettingsModal());
+            assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'123');
+            await page.locator('#ss-shutdown-delay').fill('124');await page.evaluate(()=>closeShutdownSettingsModal());
+            await page.evaluate(()=>showShutdownSettingsModal());assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'123');
+            await page.locator('#ss-shutdown-delay').fill('124');await page.evaluate(()=>saveShutdownSettings());
+            await page.evaluate(()=>showShutdownSettingsModal());assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'124');
+            assert.deepEqual(await page.evaluate(()=>[b06.db.low_voltage_threshold,b06.db.recovery_voltage_threshold,b06.db.recovery_hold_sec,b06.db.fan_stop_delay_sec]),[12.3,18.4,7,99]);
+            await page.evaluate(()=>{b06.resetting=resetShutdownSettings();});await kit.confirmSheet(page,false);await page.evaluate(()=>b06.resetting);
+            assert.equal(await page.evaluate(()=>b06.writes.length),1);
+            await page.evaluate(()=>{b06.resetting=resetShutdownSettings();});await kit.confirmSheet(page,true);await page.evaluate(()=>b06.resetting);
+            assert.equal(await page.evaluate(()=>b06.writes.length),2);assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'60');
+        });
+    });
+    for(const failOld of [false,true])test(`${language}: settings modal old power ${failOld?'failure':'success'} cannot overwrite reopened same DOM`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayPower:true});
+            await page.evaluate(()=>{b06.first=showShutdownSettingsModal();closeShutdownSettingsModal();b06.second=showShutdownSettingsModal();});
+            await page.evaluate(async()=>{b06.power[1].resolve({code:0,data:{...b06.db,shutdown_delay_sec:222}});await b06.second;});
+            await page.locator('#ss-shutdown-delay').fill('223');
+            await page.evaluate(async fail=>{if(fail)b06.power[0].reject(new Error('old read failed'));else b06.power[0].resolve({code:0,data:{...b06.db,shutdown_delay_sec:333}});await b06.first;},failOld);
+            assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'223');
+        });
+    });
+    test(`${language}: settings modal old fan read cannot replace new fan window draft`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayFan:true});
+            await page.evaluate(async()=>{await showFanCurveModal(0);closeFanCurveModal();await showFanCurveModal(1);});
+            await page.evaluate(async()=>{b06.fan[1].resolve({code:0,data:b06.config(1)});await b06.fan[1].promise;});
+            await page.locator('#fan-curve-min-duty').fill('36');
+            await page.evaluate(async()=>{b06.fan[0].resolve({code:0,data:b06.config(0)});await b06.fan[0].promise;});
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'36');
+        });
+    });
+    test(`${language}: settings modal initial curve group waits independently of binding group`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayFan:true,delayBinding:true});await page.evaluate(()=>showFanCurveModal(0));
+            const before=await page.locator('#fan-curve-min-duty').isDisabled();
+            const cancel=await page.locator('#fan-curve-modal [onclick="closeFanCurveModal()"]').isEnabled();
+            await page.evaluate(async()=>{b06.fan[0].resolve({code:0,data:b06.config(0)});await b06.fan[0].promise;});
+            const apply=await page.locator('#fan-curve-modal [onclick="applyFanCurve()"]').isEnabled();
+            const binding=await page.locator('#fan-curve-modal [onclick="bindTempVariable()"]').isDisabled();
+            assert.deepEqual({before,cancel,apply,binding},{before:true,cancel:true,apply:true,binding:true});
+            await page.evaluate(()=>applyFanCurve());
+            assert.deepEqual(await page.evaluate(()=>b06.writes.map(w=>w.endpoint)),['fan.limits','fan.curve','fan.mode']);
+            assert.equal(await page.locator('#fan-curve-modal').count(),0);
+            await page.evaluate(async()=>{b06.binding[0].resolve({code:0,data:{temperature_c:88,valid:true}});await b06.binding[0].promise;});
+        });
+    });
+    test(`${language}: settings modal old accepted save cannot close newly opened power window`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayWrite:true});await page.evaluate(()=>showShutdownSettingsModal());
+            await page.locator('#ss-shutdown-delay').fill('124');await page.evaluate(()=>{b06.saving=saveShutdownSettings();});
+            assert.equal(await page.locator('#ss-shutdown-delay').isDisabled(),true);
+            assert.equal(await page.locator('#shutdown-settings-modal [onclick="closeShutdownSettingsModal()"]').isEnabled(),true);
+            await page.evaluate(()=>saveShutdownSettings());assert.equal(await page.evaluate(()=>b06.pendingWrites.length),1);
+            await page.evaluate(()=>closeShutdownSettingsModal());
+            await page.evaluate(()=>showShutdownSettingsModal());await page.locator('#ss-shutdown-delay').fill('222');
+            await page.evaluate(async()=>{b06.pendingWrites[0].resolve();await b06.saving;});
+            assert.equal(await page.locator('#shutdown-settings-modal').evaluate(el=>el.classList.contains('hidden')),false);
+            assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'222');assert.equal(await page.evaluate(()=>b06.db.shutdown_delay_sec),124);
+        });
+    });
+    test(`${language}: settings modal old file.text result cannot import into new fan window`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(()=>showFanCurveModal(0));
+            await page.evaluate(()=>{
+                const click=HTMLInputElement.prototype.click;let chooser;
+                HTMLInputElement.prototype.click=function(){if(this.type==='file')chooser=this;else return click.call(this);};
+                importFanCurveConfig();HTMLInputElement.prototype.click=click;
+                const file=new File(['{}'],'late.json',{type:'application/json'});file.text=()=>new Promise(resolve=>b06.fileDone=resolve);
+                const transfer=new DataTransfer();transfer.items.add(file);chooser.files=transfer.files;
+                const handler=chooser.onchange;chooser.onchange=e=>b06.importing=handler(e);chooser.dispatchEvent(new Event('change'));
+                closeFanCurveModal();
+            });
+            await page.evaluate(()=>showFanCurveModal(1));
+            await page.evaluate(async()=>{b06.fileDone(JSON.stringify({type:'fan_curve_config',curve:[{temp:20,duty:10},{temp:80,duty:90}],min_duty:11}));await b06.importing;});
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'35');
+            assert.equal(await page.evaluate(()=>b06.writes.length),0);
+        });
+    });
+}
+
+for(const language of ['zh-CN','en-US']) {
+    for(const rejectOld of [false,true])test(`${language}: settings modal same-window latest file wins over old ${rejectOld?'failure':'success'}`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(()=>showFanCurveModal(0));
+            await page.evaluate(()=>{
+                b06.files=[];b06.failures=0;const report=reportFailure;reportFailure=(...args)=>{++b06.failures;return report(...args);};
+                b06.choose=()=>{
+                    const click=HTMLInputElement.prototype.click;let chooser;
+                    HTMLInputElement.prototype.click=function(){if(this.type==='file')chooser=this;else return click.call(this);};
+                    importFanCurveConfig();HTMLInputElement.prototype.click=click;
+                    const request={};b06.files.push(request);
+                    const file=new File(['{}'],`draft${b06.files.length}.json`,{type:'application/json'});
+                    file.text=()=>new Promise((resolve,reject)=>Object.assign(request,{resolve,reject}));
+                    const transfer=new DataTransfer();transfer.items.add(file);chooser.files=transfer.files;
+                    request.finished=chooser.onchange({target:chooser});
+                };
+                b06.choose();b06.choose();
+                b06.imported=min=>JSON.stringify({type:'fan_curve_config',curve:[{temp:20,duty:10},{temp:80,duty:90}],min_duty:min});
+            });
+            await page.evaluate(async()=>{b06.files[1].resolve(b06.imported(36));await b06.files[1].finished;});
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'36');
+            await page.evaluate(async rejectOld=>{if(rejectOld)b06.files[0].reject(new Error('old file failure'));else b06.files[0].resolve(b06.imported(11));await b06.files[0].finished;},rejectOld);
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'36');
+            assert.equal(await page.evaluate(()=>b06.failures),0,'stale file error does not report failure for current draft');
+            assert.equal(await page.evaluate(()=>b06.writes.length),0);
+        });
+    });
+}
+for(const language of ['zh-CN','en-US']) {
+    test(`${language}: settings modal normal import is draft-only and cancel/reopen restores current fan config`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(()=>showFanCurveModal(0));
+            await page.evaluate(async()=>{
+                const click=HTMLInputElement.prototype.click;let chooser;
+                HTMLInputElement.prototype.click=function(){if(this.type==='file')chooser=this;else return click.call(this);};
+                importFanCurveConfig();HTMLInputElement.prototype.click=click;
+                const transfer=new DataTransfer();transfer.items.add(new File([JSON.stringify({type:'fan_curve_config',curve:[{temp:25,duty:30},{temp:75,duty:90}],min_duty:55})],'ordinary.json',{type:'application/json'}));
+                chooser.files=transfer.files;await chooser.onchange({target:chooser});
+            });
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'55');
+            assert.equal(await page.evaluate(()=>b06.writes.length),0);
+            await page.evaluate(()=>{closeFanCurveModal();return showFanCurveModal(0);});
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'20');
+        });
+    });
+    test(`${language}: settings modal normal binding writes immediately and curve cancel preserves accepted binding`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(async()=>{
+                b06.bound=[];b06.selected=null;const call=api.call;
+                api.call=(endpoint,params)=>{
+                    if(endpoint==='automation.variables.list')return Promise.resolve({code:0,data:{variables:[{name:'cpu_temp',type:'float',value:45}]}});
+                    if(endpoint==='temp.bind'){
+                        if(params?.variables){b06.bound=structuredClone(params.variables);b06.writes.push({endpoint,params:structuredClone(params)});}
+                        return Promise.resolve({code:0,data:{bound_variables:b06.bound.map(b=>({...b,valid:true,value:45})),weighted_temp_c:45}});
+                    }
+                    if(endpoint==='temp.select'){b06.selected=params.source;b06.writes.push({endpoint,params:structuredClone(params)});return Promise.resolve({code:0,data:{}});}
+                    return call(endpoint,params);
+                };
+                await showFanCurveModal(0);await loadTempSourceStatus();
+                tempVarBindings=[{name:'cpu_temp',weight:0.75}];renderTempVarBindings();await bindTempVariable();
+            });
+            assert.deepEqual(await page.evaluate(()=>b06.writes.map(w=>w.endpoint)),['temp.bind','temp.select']);
+            await page.evaluate(()=>{closeFanCurveModal();return showFanCurveModal(0);});
+            await page.evaluate(()=>loadTempSourceStatus());
+            assert.deepEqual(await page.evaluate(()=>[b06.bound,b06.selected,tempVarBindings]),[[{name:'cpu_temp',weight:0.75}],'variable',[{name:'cpu_temp',weight:0.75}]]);
+            assert.equal(await page.locator('#temp-var-bindings-container select').inputValue(),'cpu_temp');
+        });
+    });
+}
+for(const language of ['zh-CN','en-US']) {
+    test(`${language}: settings modal stale reset confirmation does not write into a new power window`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(()=>showShutdownSettingsModal());
+            await page.evaluate(()=>{b06.resetting=resetShutdownSettings();});
+            await page.locator('.confirm-sheet').waitFor();
+            await page.evaluate(()=>{closeShutdownSettingsModal();return showShutdownSettingsModal();});
+            await page.locator('#ss-shutdown-delay').fill('222');
+            await kit.confirmSheet(page,true);await page.evaluate(()=>b06.resetting);
+            assert.equal(await page.evaluate(()=>b06.writes.length),0);
+            assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'222');
+        });
+    });
+    test(`${language}: settings modal accepted fan apply keeps submitted snapshot and cannot close new window`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(async()=>{
+                const call=api.call;api.call=(endpoint,params)=>{
+                    if(endpoint==='fan.limits'){b06.writes.push({endpoint,params:structuredClone(params)});return new Promise(resolve=>b06.limitsDone=resolve);}
+                    return call(endpoint,params);
+                };
+                await showFanCurveModal(0);b06.applying=applyFanCurve();
+            });
+            assert.equal(await page.locator('#fan-curve-modal [onclick="applyFanCurve()"]').isDisabled(),true);
+            await page.evaluate(()=>applyFanCurve());assert.equal(await page.evaluate(()=>b06.writes.length),1);
+            assert.equal(await page.locator('#fan-curve-points input').first().isDisabled(),true);
+            assert.equal(await page.locator('#fan-curve-modal [onclick="closeFanCurveModal()"]').isEnabled(),true);
+            await page.evaluate(()=>{closeFanCurveModal();return showFanCurveModal(1);});
+            await page.locator('#fan-curve-min-duty').fill('36');
+            await page.evaluate(async()=>{b06.limitsDone({code:0,data:{applied:true,persisted:true}});await b06.applying;});
+            assert.equal(await page.locator('#fan-curve-modal').count(),1);
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'36');
+            assert.deepEqual(await page.evaluate(()=>b06.writes.map(w=>[w.endpoint,w.params.id])),[['fan.limits',0],['fan.curve',0],['fan.mode',0]]);
+            assert.deepEqual(await page.evaluate(()=>b06.writes[0].params),{id:0,min_duty:20,max_duty:95});
+            assert.deepEqual(await page.evaluate(()=>b06.writes[1].params),{id:0,curve:[{temp:30,duty:30},{temp:50,duty:60},{temp:70,duty:100}],hysteresis:4,min_interval:2500});
+            assert.deepEqual(await page.evaluate(()=>b06.writes[2].params),{id:0,mode:'curve'});
+        });
+    });
+}
+for (const language of ['zh-CN','en-US']) {
+    for (const rejected of [false,true]) test(`${language}: settings modal failed initial reads allow manual settings (${rejected?'exception':'response'})`, async () => {
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayPower:true,delayFan:true});
+            await page.evaluate(()=>{b06.opening=showShutdownSettingsModal();});
+            assert.equal(await page.locator('#ss-shutdown-delay').isDisabled(),true);
+            assert.equal(await page.locator('#shutdown-settings-modal [onclick="closeShutdownSettingsModal()"]').isEnabled(),true);
+            await page.evaluate(()=>saveShutdownSettings());
+            assert.equal(await page.evaluate(()=>b06.writes.length),0);
+            await page.evaluate(async rejected=>{if(rejected)b06.power[0].reject(new Error('read failed'));else b06.power[0].resolve({code:9});await b06.opening;},rejected);
+            assert.equal(await page.locator('#shutdown-settings-load-status').innerText(),await page.evaluate(()=>t('modalSettings.defaults')));
+            await page.locator('#ss-shutdown-delay').fill('64');await page.evaluate(()=>saveShutdownSettings());
+            assert.deepEqual(await page.evaluate(()=>[b06.db.shutdown_delay_sec,b06.writes[0].persist]),[64,true]);
+            await page.evaluate(()=>showFanCurveModal(0));
+            await page.evaluate(async rejected=>{if(rejected)b06.fan[0].reject(new Error('read failed'));else b06.fan[0].resolve({code:9});await b06.fan[0].promise.catch(()=>{});},rejected);
+            assert.equal(await page.locator('#fan-curve-load-status').innerText(),await page.evaluate(()=>t('modalSettings.defaults')));
+            await page.locator('#fan-curve-min-duty').fill('21');await page.evaluate(()=>applyFanCurve());
+            assert.deepEqual(await page.evaluate(()=>b06.writes.slice(1).map(w=>[w.endpoint,w.params.id])),[['fan.limits',0],['fan.curve',0],['fan.mode',0]]);
+        });
+    });
+    test(`${language}: settings modal fan selection owns latest read and failed new fan identifies prior draft`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayFan:true});await page.evaluate(()=>showFanCurveModal(0));
+            assert.equal(await page.locator('#fan-curve-fan-select').isEnabled(),true);
+            await page.evaluate(async()=>{b06.fan[0].resolve({code:0,data:b06.config(0)});await b06.fan[0].promise;});
+            await page.locator('#fan-curve-min-duty').fill('31');
+            await page.evaluate(()=>{document.getElementById('fan-curve-fan-select').value='1';b06.switching=updateFanCurvePreview();});
+            await page.evaluate(async()=>{b06.fan[1].resolve({code:9});await b06.switching;});
+            assert.equal(await page.locator('#fan-curve-load-status').innerText(),await page.evaluate(()=>t('modalSettings.fanDraft',{id:0})));
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'31');
+            await page.evaluate(()=>{document.getElementById('fan-curve-fan-select').value='2';b06.secondSwitch=updateFanCurvePreview();document.getElementById('fan-curve-fan-select').value='3';b06.thirdSwitch=updateFanCurvePreview();});
+            await page.evaluate(async()=>{b06.fan[3].resolve({code:0,data:{...b06.config(3),min_duty:43}});await b06.thirdSwitch;});
+            await page.locator('#fan-curve-min-duty').fill('44');
+            await page.evaluate(async()=>{b06.fan[2].reject(new Error('old fan read failed'));await b06.secondSwitch;});
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'44');
+            assert.equal(await page.evaluate(()=>fanCurveConfig.fanId),3);
+            assert.equal(await page.locator('#fan-curve-load-status').innerText(),'');
+            await page.evaluate(()=>applyFanCurve());
+            assert.deepEqual(await page.evaluate(()=>b06.writes.map(w=>[w.endpoint,w.params.id])),[['fan.limits',3],['fan.curve',3],['fan.mode',3]]);
+        });
+    });
+    for(const endpoint of ['temp.status','automation.variables.list','temp.bind']) for(const rejected of [false,true]) {
+        test(`${language}: settings modal latest binding group rejects old ${endpoint} ${rejected?'failure':'success'}`,async()=>{
+            await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+                await prepareSettingsModalFixture(page);await page.evaluate(()=>showFanCurveModal(0));await page.evaluate(()=>loadTempSourceStatus());
+                await page.evaluate(endpoint=>{
+                    b06.bindingReads=[];const call=api.call;
+                    b06.bindingResponse=(name)=>endpoint==='temp.status'?{code:0,data:{temperature_c:name==='current'?77:44,valid:true}}:
+                        endpoint==='automation.variables.list'?{code:0,data:{variables:[{name,type:'float',value:77}]}}:
+                        {code:0,data:{bound_variables:[{name,weight:1,value:77,valid:true}],weighted_temp_c:77}};
+                    api.call=(name,params)=>{
+                        if(name===endpoint)return b06.defer(b06.bindingReads);
+                        if(name==='automation.variables.list')return Promise.resolve({code:0,data:{variables:[{name:'current',type:'float',value:77}]}});
+                        if(name==='temp.bind')return Promise.resolve({code:0,data:{bound_variables:[{name:'current',weight:1,value:77,valid:true}],weighted_temp_c:77}});
+                        return call(name,params);
+                    };
+                    b06.oldBinding=loadTempSourceStatus();
+                },endpoint);
+                await page.waitForFunction(()=>b06.bindingReads.length===1);
+                await page.evaluate(()=>{b06.newBinding=loadTempSourceStatus();});
+                await page.waitForFunction(()=>b06.bindingReads.length===2);
+                await page.evaluate(async()=>{b06.bindingReads[1].resolve(b06.bindingResponse('current'));await b06.newBinding;});
+                await page.evaluate(async rejected=>{if(rejected)b06.bindingReads[0].reject(new Error('old binding query'));else b06.bindingReads[0].resolve(b06.bindingResponse('old'));await b06.oldBinding;},rejected);
+                assert.deepEqual(await page.evaluate(()=>tempVarBindings),[{name:'current',weight:1}]);
+                assert.deepEqual(await page.evaluate(()=>availableTempVars.map(v=>v.name)),['current']);
+                assert.equal(await page.locator('#fan-curve-temp-current').innerText(),'77.0°C');
+                assert.equal(await page.locator('#temp-source-hint').innerText(),await page.evaluate(()=>t('fanPage.selectVariableWeightHint')));
+                assert.equal(await page.locator('#fan-curve-modal [onclick="bindTempVariable()"]').isEnabled(),true);
+            });
+        });
+    }
+    test(`${language}: settings modal navigation disposal closes both owners before late reads and draw`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayPower:true,delayFan:true,delayBinding:true});
+            await page.evaluate(()=>{
+                const timeout=window.setTimeout;b06.draws=[];
+                window.setTimeout=(fn,delay,...args)=>delay===50?(b06.draws.push(fn),0):timeout(fn,delay,...args);
+                b06.opening=showShutdownSettingsModal();showFanCurveModal(0);window.setTimeout=timeout;
+                b06.oldCurve=structuredClone(fanCurveConfig);b06.oldBinding=structuredClone(tempVarBindings);
+                router.navigation.dispose();b06.draws.forEach(fn=>fn());
+            });
+            assert.equal(await page.locator('#fan-curve-modal').count(),0);
+            assert.equal(await page.locator('#shutdown-settings-modal').evaluate(el=>el.classList.contains('hidden')),true);
+            await page.evaluate(async()=>{b06.fan[0].resolve({code:0,data:{...b06.config(0),min_duty:11}});b06.binding[0].reject(new Error('late status'));b06.power[0].reject(new Error('late power'));await b06.opening;await b06.fan[0].promise;});
+            assert.deepEqual(await page.evaluate(()=>[fanCurveConfig,tempVarBindings]),await page.evaluate(()=>[b06.oldCurve,b06.oldBinding]));
+        });
+    });
+}
+for (const language of ['zh-CN','en-US']) {
+    for (const rejected of [false,true]) test(`${language}: settings modal accepted default write ${rejected?'unconfirmed result':'success'} cannot refill reopened window`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page,{delayWrite:true});await page.evaluate(()=>showShutdownSettingsModal());
+            await page.evaluate(()=>{b06.resetting=resetShutdownSettings();});await kit.confirmSheet(page,true);
+            await page.waitForFunction(()=>b06.pendingWrites.length===1);
+            await page.evaluate(()=>{closeShutdownSettingsModal();return showShutdownSettingsModal();});await page.locator('#ss-shutdown-delay').fill('222');
+            await page.evaluate(async rejected=>{if(rejected)b06.pendingWrites[0].reject(new Error('default write failed'));else b06.pendingWrites[0].resolve();await b06.resetting;},rejected);
+            assert.equal(await page.locator('#ss-shutdown-delay').inputValue(),'222');
+            assert.equal(await page.locator('#shutdown-settings-modal').evaluate(el=>el.classList.contains('hidden')),false);
+            assert.equal(await page.evaluate(()=>b06.db.shutdown_delay_sec),rejected?123:60);
+            await kit.toastIs(page,rejected?'warning':'success');
+        });
+    });
+    test(`${language}: settings modal accepted binding finishes without reading into new owner`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(async()=>{
+                b06.bound=[];b06.bindGets=0;const call=api.call;
+                api.call=(endpoint,params)=>{
+                    if(endpoint==='automation.variables.list')return Promise.resolve({code:0,data:{variables:['cpu_temp','gpu_temp'].map(name=>({name,type:'float',value:45}))}});
+                    if(endpoint==='temp.bind'){
+                        if(params?.variables){b06.writes.push({endpoint,params:structuredClone(params)});return new Promise(resolve=>b06.bindDone=()=>{b06.bound=structuredClone(params.variables);resolve({code:0,data:{}});});}
+                        ++b06.bindGets;return Promise.resolve({code:0,data:{bound_variables:b06.bound}});
+                    }
+                    if(endpoint==='temp.select'){b06.writes.push({endpoint,params:structuredClone(params)});return Promise.resolve({code:0,data:{}});}
+                    return call(endpoint,params);
+                };
+                await showFanCurveModal(0);await loadTempSourceStatus();
+            });
+            await page.locator('#fan-curve-modal [onclick="addTempVarBinding()"]').click();
+            await page.locator('#temp-var-bindings-container select').selectOption('cpu_temp');
+            await page.evaluate(()=>{b06.bindingSaving=bindTempVariable();});
+            assert.equal(await page.locator('#fan-curve-modal [onclick="bindTempVariable()"]').isDisabled(),true);
+            await page.evaluate(()=>{closeFanCurveModal();return showFanCurveModal(1);});await page.evaluate(()=>loadTempSourceStatus());
+            await page.locator('#fan-curve-modal [onclick="addTempVarBinding()"]').click();
+            await page.locator('#temp-var-bindings-container select').selectOption('gpu_temp');
+            const reads=await page.evaluate(()=>b06.bindGets);
+            await page.evaluate(async()=>{b06.bindDone();await b06.bindingSaving;});
+            assert.equal(await page.evaluate(()=>b06.bindGets),reads);
+            assert.equal(await page.locator('#temp-var-bindings-container select').inputValue(),'gpu_temp');
+            assert.equal(await page.evaluate(()=>tempVarBindings[0].name),'gpu_temp');
+            assert.equal(await page.evaluate(()=>b06.bound[0].name),'cpu_temp');
+            assert.deepEqual(await page.evaluate(()=>b06.writes.map(w=>w.endpoint)),['temp.bind','temp.select']);
+        });
+    });
+    test(`${language}: settings modal export keeps submitted local and SD snapshot after close`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(()=>showFanCurveModal(0));
+            await page.locator('#fan-curve-min-duty').fill('21');
+            await page.evaluate(()=>{api.fileUpload=(path,blob)=>{b06.exported={path,blob};return new Promise(resolve=>b06.exportDone=resolve);};});
+            const downloaded=page.waitForEvent('download');
+            await page.evaluate(()=>{b06.exporting=exportFanCurveConfig();});
+            assert.equal((await downloaded).suggestedFilename(),'fan_curve_config_0.json');
+            await page.evaluate(()=>{closeFanCurveModal();return showFanCurveModal(1);});await page.locator('#fan-curve-min-duty').fill('36');
+            await page.evaluate(async()=>{b06.exportDone({code:0});await b06.exporting;});
+            const exported=await page.evaluate(async()=>({path:b06.exported.path,config:JSON.parse(await b06.exported.blob.text())}));
+            assert.equal(exported.path,'/sdcard/config/fan_curve_config_0.json');
+            assert.deepEqual([exported.config.fan_id,exported.config.min_duty,exported.config.hysteresis,exported.config.min_interval],[0,21,4,2500]);
+            assert.equal(await page.locator('#fan-curve-min-duty').inputValue(),'36');assert.equal(await page.evaluate(()=>b06.writes.length),0);
+        });
+    });
+}
+for(const language of ['zh-CN','en-US']) for(const rejected of [false,true]) {
+    test(`${language}: settings modal failed current binding reads allow manual binding (${rejected?'exception':'response'})`,async()=>{
+        await kit.withPage(language,()=>({code:0,data:{}}),async({page})=>{
+            await prepareSettingsModalFixture(page);await page.evaluate(async rejected=>{
+                availableTempVars=[{name:'cpu_temp',type:'float',value:45}];tempVarBindings=[{name:'cpu_temp',weight:0.75}];
+                const call=api.call;api.call=(endpoint,params)=>{
+                    if(endpoint==='temp.bind'&&params?.variables){b06.writes.push({endpoint,params:structuredClone(params)});return Promise.resolve({code:0,data:{}});}
+                    if(endpoint==='temp.select'){b06.writes.push({endpoint,params:structuredClone(params)});return Promise.resolve({code:0,data:{}});}
+                    if(['temp.status','automation.variables.list','temp.bind'].includes(endpoint))return rejected?Promise.reject(new Error('current binding read failed')):Promise.resolve({code:9});
+                    return call(endpoint,params);
+                };
+                await showFanCurveModal(0);await loadTempSourceStatus();
+            },rejected);
+            assert.equal(await page.locator('#temp-source-hint').innerText(),await page.evaluate(()=>t('modalSettings.bindingDraft')));
+            assert.equal(await page.locator('#fan-curve-modal [onclick="bindTempVariable()"]').isEnabled(),true);
+            assert.equal(await page.locator('#fan-curve-modal [onclick="applyFanCurve()"]').isEnabled(),true);
+            assert.equal(await page.locator('#temp-var-bindings-container select').inputValue(),'cpu_temp');
+            await page.evaluate(()=>bindTempVariable());
+            assert.deepEqual(await page.evaluate(()=>b06.writes),[
+                {endpoint:'temp.bind',params:{variables:[{name:'cpu_temp',weight:0.75}]}},
+                {endpoint:'temp.select',params:{source:'variable'}}
+            ]);
+        });
+    });
+}
+
+function ruleBatchFixture() {
+ const d=fixture(),templates=['late_A1','late_A2','late_A3','current_B'].map(id=>({id,name:id,type:'log',enabled:true}));
+ const inline={type:'cli',command:'synthetic --inline',delay_ms:17,repeat_mode:'count',repeat_count:2,repeat_interval_ms:500,condition:{variable:'ready',operator:'eq',value:false}};
+ const actions=[{template_id:'late_A1',delay_ms:123,repeat_mode:'count',repeat_count:3,repeat_interval_ms:0,condition:{variable:'ready',operator:'eq',value:false}},inline,
+  {template_id:'late_A2',delay_ms:456,repeat_mode:'while_true',repeat_count:1,repeat_interval_ms:2345},{template_id:'late_A3',delay_ms:0}];
+ const rules={A:{id:'A',name:'Old multi-action rule',enabled:false,manual_trigger:true,conditions:[],actions,revision:1},
+  B:{id:'B',name:'Current rule',enabled:false,manual_trigger:true,conditions:[],actions:[{template_id:'current_B'}],revision:1}};
+ const writes=[];
+ const respond=call=>{
+  const {endpoint,params}=call;
+  if(endpoint==='automation/rules/list')return {code:0,data:{...d.status(),rules:Object.values(rules)}};
+  if(endpoint==='automation/rules/get')return {code:0,data:{...rules[params.id],active_version:version(1)}};
+  if(endpoint==='automation/actions/list')return {code:0,data:{...d.status(),templates}};
+  if(endpoint==='automation/rules/update'||endpoint==='automation/rules/add'){writes.push(call);rules[params.id]={...params,revision:1};return {code:0,data:d.status({saved:true})};}
+  return d.respond(call);
+ };
+ return {d,templates,rules,writes,respond,inline};
+}
+async function ruleBatchPage(page) {
+ if(process.env.RULE_MODAL_BASELINE_APP){
+  let served=0;await page.route(url=>new URL(url).pathname==='/js/app.js',route=>{served++;return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(process.env.RULE_MODAL_BASELINE_APP,'utf8')});});
+  await page.reload();await page.waitForFunction(()=>i18n.isReady());await page.evaluate(()=>closeLoginModal());assert.equal(served,1,'archived app source was actually served for this trigger');
+ }
+ await automation(page);
+}
+for(const language of ['zh-CN','en-US']) {
+ for(const outcome of ['success','failure'])for(const target of ['edit','new'])test(`${language}: F51 old multi-action ${outcome} batch cannot enter ${target} rule`,async()=>{
+  const f=ruleBatchFixture();
+  await kit.withPage(language,f.respond,async({page})=>{
+   await ruleBatchPage(page);
+   let release,reached;const gate=new Promise(resolve=>release=resolve),paused=new Promise(resolve=>reached=resolve);let first=true;
+   await page.route('**/api/v1/automation/actions/list',async route=>{
+    if(first){first=false;reached();await gate;await route.fulfill({json:outcome==='success'?{code:0,data:{...f.d.status(),templates:f.templates}}:{code:7,message:'synthetic old list failure',data:f.d.status()}});}
+    else await route.fulfill({json:{code:0,data:{...f.d.status(),templates:f.templates}}});
+   });
+   await page.locator('#rules-list [onclick*="editRule"]').first().click();await paused;
+   await page.evaluate(()=>{window.__oldRuleBatch=document.getElementById('add-rule-modal');});
+   await page.locator('#add-rule-modal .sf button:not(.primary)').click();
+   if(target==='edit')await page.locator('#rules-list [onclick*="editRule"]').nth(1).click();
+   else {
+    await page.locator('[onclick="showAddRuleModal()"]').click();
+    await page.locator('#rule-id').fill('new_B');await page.locator('#rule-name').fill('New current rule');
+    await page.locator('#add-rule-modal [onclick="addActionTemplateRow()"]').click();
+   }
+   await page.waitForFunction(()=>document.querySelectorAll('#add-rule-modal .action-template-id').length===1);
+   await page.locator('#add-rule-modal .action-template-id').selectOption('current_B');
+   release();await page.waitForFunction(()=>__oldRuleBatch.dataset.loading==='false');
+   assert.equal(await page.locator('#add-rule-modal .action-row').count(),1,'the remaining old batch never appends its inline or template tail');
+   assert.deepEqual(await page.locator('#add-rule-modal .action-template-id').evaluateAll(nodes=>nodes.map(node=>node.value)),['current_B']);
+   await page.locator('#add-rule-modal .sf .primary').click();
+   await page.waitForFunction(()=>!document.getElementById('add-rule-modal'));
+   assert.equal(f.writes.length,1);assert.equal(f.writes[0].params.id,target==='edit'?'B':'new_B');
+   assert.deepEqual(f.writes[0].params.actions.map(action=>action.template_id),['current_B']);
+  });
+ });
+ test(`${language}: F51 current multi-action batch saves and reopens in order with inline and repeat fields`,async()=>{
+  const f=ruleBatchFixture();
+  await kit.withPage(language,f.respond,async({page})=>{
+   await ruleBatchPage(page);await page.locator('#rules-list [onclick*="editRule"]').first().click();
+   await page.waitForFunction(()=>document.getElementById('add-rule-modal')?.dataset.loading==='false');
+   assert.equal(await page.locator('#add-rule-modal .action-row').count(),4);
+   await page.locator('#rule-name').fill('Kept multi-action order');await page.locator('#add-rule-modal .sf .primary').click();
+   await page.waitForFunction(()=>!document.getElementById('add-rule-modal'));
+   const actions=f.writes[0].params.actions;
+   assert.deepEqual(actions.map(action=>action.template_id||action.type),['late_A1','cli','late_A2','late_A3']);assert.deepEqual(actions[1],f.inline);
+   assert.equal(actions[0].delay_ms,123);assert.equal(actions[0].repeat_mode,'count');assert.equal(actions[0].repeat_count,3);assert.equal(actions[0].repeat_interval_ms,0);assert.equal(actions[0].condition.value,false);
+   assert.equal(actions[2].delay_ms,456);assert.equal(actions[2].repeat_mode,'while_true');assert.equal(actions[2].repeat_interval_ms,2345);
+   await page.locator('#rules-list [onclick*="editRule"]').first().click();await page.waitForFunction(()=>document.getElementById('add-rule-modal')?.dataset.loading==='false');
+   assert.deepEqual(await page.locator('#add-rule-modal .action-template-id').evaluateAll(nodes=>nodes.map(node=>node.value)),['late_A1','late_A2','late_A3']);
+   assert.match(await page.locator('#add-rule-modal [data-inline="true"]').innerText(),/synthetic --inline/);
+  });
+ });
+}
+
+for(const language of ['zh-CN','en-US'])test(`${language}: F48 source and action export downloads feed the original import preview and confirmation`,async()=>{
+ const d=fixture(),calls=[],payloads={source:JSON.stringify({fixture:'source export bytes'}),action:JSON.stringify({fixture:'action export bytes'})};
+ const respond=call=>{
+  calls.push(call);
+  if(call.endpoint==='automation/sources/list')return {code:0,data:{...d.status(),sources:[{id:'source',label:'SSH variable source',type:'variable',enabled:false,poll_interval_ms:60000}]}};
+  const kind=call.endpoint==='automation/sources/export'?'source':call.endpoint==='automation/actions/export'?'action':null;
+  if(kind)return {code:0,data:{tscfg:payloads[kind],filename:`${kind}_${call.params.id}.tscfg`}};
+  return d.respond(call);
+ };
+ await kit.withPage(language,respond,async({page})=>{
+  await automation(page);
+  for(const [key,collection,id,title] of [['source','sources','source','Source'],['action','actions','act','Action']]){
+   await page.locator(`#${collection}-list [onclick*="showExport${title}Modal"]`).first().click();
+   const download=page.waitForEvent('download');await page.locator(`#export-${key}-btn`).click();const artifact=await download;
+   assert.equal(artifact.suggestedFilename(),`${key}_${id}.tscfg`);const bytes=fs.readFileSync(await artifact.path());assert.equal(bytes.toString(),payloads[key]);
+   const exported=calls.find(call=>call.endpoint===`automation/${collection}/export`);assert.deepEqual(exported.params,{id});
+   await page.waitForFunction(key=>document.getElementById(`export-${key}-modal`).classList.contains('hidden'),key);
+   await page.locator(`[onclick="showImport${title}Modal()"]`).click();
+   await page.locator(`#import-${key}-file`).setInputFiles({name:artifact.suggestedFilename(),mimeType:'application/json',buffer:bytes});
+   await page.waitForFunction(key=>!document.getElementById(`import-${key}-btn`).disabled,key);
+   const previews=calls.filter(call=>call.endpoint===`automation/${collection}/import`);assert.equal(previews.length,1);assert.equal(previews[0].params.preview,true);assert.equal(previews[0].params.tscfg,payloads[key]);
+   await page.locator(`#import-${key}-overwrite`).check();await page.locator(`#import-${key}-btn`).click();
+   await page.waitForFunction(key=>document.getElementById(`import-${key}-result`).classList.contains('success'),key);
+   const writes=calls.filter(call=>call.endpoint===`automation/${collection}/import`);assert.equal(writes.length,2);assert.equal(writes[1].params.tscfg,payloads[key]);assert.equal(writes[1].params.overwrite,true);assert.equal(writes[1].params.active_version,previews[0].params.active_version);
+   await page.locator(`#import-${key}-modal .sf button`).first().click();
+  }
+ });
+});

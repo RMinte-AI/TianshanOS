@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include "ts_service.h"
 #include "ts_event.h"
 #include "esp_log.h"
@@ -38,6 +39,7 @@ typedef struct ts_service_handle {
     uint32_t start_duration_ms;                     /**< 启动耗时 */
     uint32_t last_health_check_ms;                  /**< 上次健康检查时间 */
     bool healthy;                                   /**< 健康状态 */
+    atomic_bool control_busy;                       /**< 当前控制调用独占此实例 */
     void *api;                                      /**< 服务 API */
     SemaphoreHandle_t state_sem;                    /**< 状态变化信号量 */
     struct ts_service_handle *next;                 /**< 链表下一个 */
@@ -212,6 +214,7 @@ esp_err_t ts_service_register(const ts_service_def_t *def, ts_service_handle_t *
     memcpy(&service->def, def, sizeof(ts_service_def_t));
 
     service->state = TS_SERVICE_STATE_REGISTERED;
+    atomic_init(&service->control_busy, false);
     service->healthy = true;
     service->api = NULL;
 
@@ -459,7 +462,10 @@ esp_err_t ts_service_start(ts_service_handle_t handle)
     }
 
     ts_service_instance_t *service = (ts_service_instance_t *)handle;
-    return start_service_internal(service);
+    if (atomic_exchange(&service->control_busy, true)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = start_service_internal(service);
+    atomic_store(&service->control_busy, false);
+    return ret;
 }
 
 esp_err_t ts_service_stop(ts_service_handle_t handle)
@@ -473,7 +479,10 @@ esp_err_t ts_service_stop(ts_service_handle_t handle)
     }
 
     ts_service_instance_t *service = (ts_service_instance_t *)handle;
-    return stop_service_internal(service);
+    if (atomic_exchange(&service->control_busy, true)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = stop_service_internal(service);
+    atomic_store(&service->control_busy, false);
+    return ret;
 }
 
 esp_err_t ts_service_restart(ts_service_handle_t handle)
@@ -481,6 +490,7 @@ esp_err_t ts_service_restart(ts_service_handle_t handle)
     if (handle == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!s_svc_ctx.initialized) return ESP_ERR_INVALID_STATE;
 
     ts_service_instance_t *service = (ts_service_instance_t *)handle;
 
@@ -491,13 +501,14 @@ esp_err_t ts_service_restart(ts_service_handle_t handle)
 
     ESP_LOGI(TAG, "Restarting service: %s", service->def.name);
 
-    esp_err_t ret = ts_service_stop(handle);
-    if (ret != ESP_OK && (ret != ESP_ERR_INVALID_STATE ||
-                         service->state == TS_SERVICE_STATE_RUNNING)) {
-        return ret;
+    if (atomic_exchange(&service->control_busy, true)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = stop_service_internal(service);
+    if (ret == ESP_OK || (ret == ESP_ERR_INVALID_STATE &&
+                         service->state != TS_SERVICE_STATE_RUNNING)) {
+        ret = start_service_internal(service);
     }
-
-    return ts_service_start(handle);
+    atomic_store(&service->control_busy, false);
+    return ret;
 }
 
 /* ============================================================================
@@ -848,7 +859,7 @@ static esp_err_t start_service_internal(ts_service_instance_t *service)
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Service '%s' init failed: %s", 
                      service->def.name, esp_err_to_name(ret));
-            set_service_state(service, TS_SERVICE_STATE_ERROR);
+            set_service_state(service, ret == ESP_ERR_NOT_FINISHED ? old_state : TS_SERVICE_STATE_ERROR);
             return ret;
         }
     }
@@ -859,7 +870,7 @@ static esp_err_t start_service_internal(ts_service_instance_t *service)
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Service '%s' start failed: %s", 
                      service->def.name, esp_err_to_name(ret));
-            set_service_state(service, TS_SERVICE_STATE_ERROR);
+            set_service_state(service, ret == ESP_ERR_NOT_FINISHED ? old_state : TS_SERVICE_STATE_ERROR);
             return ret;
         }
     }

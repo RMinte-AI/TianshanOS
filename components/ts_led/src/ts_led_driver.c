@@ -76,7 +76,7 @@ esp_err_t ts_led_driver_send(ts_led_device_impl_t *dev)
     if (!dev || !dev->strip_handle) return ESP_ERR_INVALID_STATE;
     
     led_strip_handle_t strip = dev->strip_handle;
-    uint8_t brightness = dev->brightness;
+    uint8_t brightness = dev->enabled ? dev->brightness : 0;
     
     /* Check if color correction is enabled */
     bool cc_enabled = ts_led_cc_is_enabled();

@@ -2,6 +2,7 @@
 /* Internal bounded delivery path. Session mutation and send execute in HTTPD. */
 #include "esp_http_server.h"
 #include "cJSON.h"
+#include "ts_security.h"
 #include <stdbool.h>
 #include <stdint.h>
 #define TS_WS_TOPIC_TX_SLOTS 32
@@ -41,9 +42,13 @@ esp_err_t ts_ws_peer_open(httpd_req_t *req, ts_ws_peer_t *peer);
 void ts_ws_peer_close(ts_ws_peer_t peer);
 bool ts_ws_peer_get(httpd_handle_t server, int fd, ts_ws_peer_t *peer);
 bool ts_ws_peer_equal(ts_ws_peer_t a, ts_ws_peer_t b);
+esp_err_t ts_ws_peer_bind_session(ts_ws_peer_t peer, uint32_t session_id);
+bool ts_ws_peer_authorized(ts_ws_peer_t peer, ts_perm_level_t required);
+unsigned ts_ws_peer_snapshot_for_level(ts_ws_peer_t *peers, unsigned capacity, ts_perm_level_t required);
 unsigned ts_ws_transport_capacity(void);
 ts_ws_message_t *ts_ws_message_json(const char *topic, const cJSON *data, int64_t timestamp);
 ts_ws_message_t *ts_ws_message_text(const char *text, size_t len);
+void ts_ws_message_require(ts_ws_message_t *message, ts_perm_level_t required);
 void ts_ws_message_release(ts_ws_message_t *message);
 /* ESP_OK means local acceptance. Each accepted target settles once via done,
  * including later queue failure, stale/canceled target and socket failure.
@@ -52,6 +57,8 @@ esp_err_t ts_ws_transport_submit(ts_ws_peer_t peer, ts_ws_message_t *message,
     uint64_t revision, uint64_t delivery, ts_ws_delivery_check_t check, ts_ws_delivery_done_t done);
 /* Compatibility bridge for existing global/stream senders; never coalesces. */
 esp_err_t ts_ws_transport_send(httpd_handle_t server, int fd, const httpd_ws_frame_t *frame);
+esp_err_t ts_ws_transport_send_private(ts_ws_peer_t peer, const httpd_ws_frame_t *frame,
+                                      ts_perm_level_t required);
 
 void ts_ws_transport_stopped(httpd_handle_t server);
 esp_err_t ts_ws_transport_broadcast(const httpd_ws_frame_t *frame);

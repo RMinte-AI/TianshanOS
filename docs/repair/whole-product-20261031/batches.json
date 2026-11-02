@@ -1,0 +1,579 @@
+[
+  {
+    "id": "A01",
+    "owner": "p1",
+    "title": "登录凭据与临时锁定",
+    "finding_ids": [
+      "F02",
+      "F04"
+    ],
+    "dependencies": [],
+    "normal_cases": [
+      "N01",
+      "N02"
+    ],
+    "repair_design": "使凭据校验绑定实际签发内容，去除可复用认证材料日志；按用户确认，重启清除临时锁定，正常运行仍五分钟限制，不新增跨重启计时。保留账号、角色和现有限流，不新建认证平台。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_log.c",
+      "components/ts_core/ts_log/src/ts_log.c",
+      "components/ts_security/src/ts_auth.c",
+      "components/ts_security/src/ts_security.c"
+    ]
+  },
+  {
+    "id": "A02",
+    "owner": "p1",
+    "title": "写入、终端及私有输出的既有权限",
+    "finding_ids": [
+      "F03"
+    ],
+    "dependencies": [
+      "A01"
+    ],
+    "normal_cases": [
+      "N01",
+      "N04",
+      "N06",
+      "N08",
+      "N23",
+      "N24"
+    ],
+    "repair_design": "现有peer绑定已核验session，身份改变重连；逐私有发送检查，保留公开遥测与READ账户权限；本机代理复用同一现有会话策略。admin/root合法操作照常；Root终端可用；立即运行至多一次1000ms输出身份准备，观察失败不阻止业务；零观察者仍匹配/更新变量。不变边界、顺序、字段合同及测试详见five-designs.txt 第一节（C-WS），执行时按选定合同实施，不再延后选择核心修法。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/include/ts_api.h",
+      "components/ts_api/src/ts_api.c",
+      "components/ts_api/src/ts_api_automation.c",
+      "components/ts_api/src/ts_api_ssh.c",
+      "components/ts_api/src/ts_api_storage.c",
+      "components/ts_net/src/ts_http_server.c",
+      "components/ts_webui/include/ts_ws_transport.h",
+      "components/ts_webui/src/ts_webui_api.c",
+      "components/ts_webui/src/ts_webui_ws.c",
+      "components/ts_webui/src/ts_ws_operation.c",
+      "components/ts_webui/src/ts_ws_transport.c",
+      "components/ts_webui/web/js/api.js",
+      "components/ts_webui/web/js/app.js",
+      "components/ts_webui/web/js/terminal.js"
+    ],
+    "integrated_issue_dependencies": [
+      "F43"
+    ],
+    "design_status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+    "implementation_contract": "five-designs.txt 第一节（C-WS），执行时按选定合同实施，不再延后选择核心修法。"
+  },
+  {
+    "id": "A03",
+    "owner": "p1",
+    "title": "共享公式与变量展示的执行边界",
+    "finding_ids": [
+      "F46",
+      "F52"
+    ],
+    "dependencies": [
+      "A02"
+    ],
+    "normal_cases": [
+      "N01",
+      "N03",
+      "N18"
+    ],
+    "repair_design": "同一app.js局部解析/结构校验/按值求值；固定运算、Math、纯转换、数值格式合同；不生成JS、不引入运行库。旧实证公式及合法数字/中文/引号文本、条件、单位保持；admin仍可编辑；未知不变0；原图标布局保留。不变边界、顺序、字段合同及测试详见five-designs.txt 第二节（C-EXPR），执行时按选定合同实施，不再延后选择核心修法。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_ui.c",
+      "components/ts_webui/web/js/app.js",
+      "components/ts_webui/web/js/lang/en-US.js",
+      "components/ts_webui/web/js/lang/zh-CN.js"
+    ],
+    "design_status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+    "implementation_contract": "five-designs.txt 第二节（C-EXPR），执行时按选定合同实施，不再延后选择核心修法。"
+  },
+  {
+    "id": "A04",
+    "owner": "p1",
+    "title": "普通文件批量删除的本次确认对象",
+    "finding_ids": [
+      "F08"
+    ],
+    "dependencies": [
+      "A02"
+    ],
+    "normal_cases": [
+      "N08"
+    ],
+    "repair_design": "在确认处固定本次删除名单，后续改选不扩大已确认操作；取消无副作用。不是重新修自动化对象删除的七项既有问题。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_webui/web/js/app.js"
+    ]
+  },
+  {
+    "id": "A05",
+    "owner": "p1",
+    "title": "SSH转发退出、栈预算与临时任务资源配对",
+    "finding_ids": [
+      "F16",
+      "F65",
+      "F64"
+    ],
+    "dependencies": [],
+    "normal_cases": [
+      "N05",
+      "N06",
+      "N23"
+    ],
+    "repair_design": "旧转发任务退出前不释放在用对象；核定该任务栈后可只调整该栈，不强制搬缓冲。F64四类实际WithCaps任务退出均按SDK匹配销毁，不能只修转发。无全局锁、缓冲池或通用清理框架。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_automation/src/ts_action_manager.c",
+      "components/ts_drivers/src/ts_device_ctrl.c",
+      "components/ts_net/src/ts_eth.c",
+      "components/ts_security/CMakeLists.txt",
+      "components/ts_security/src/ts_port_forward.c"
+    ]
+  },
+  {
+    "id": "A06",
+    "owner": "p1",
+    "title": "本机服务停止后重新可用",
+    "finding_ids": [
+      "F01",
+      "F18",
+      "F66"
+    ],
+    "dependencies": [],
+    "normal_cases": [
+      "N09",
+      "N10",
+      "N11"
+    ],
+    "repair_design": "SDK read hook作50ms可结束UART读取，保留半行；局部退出信号/控制归属；外部交接后新读者、自调用原地恢复新读取循环。慢打字/停顿/退格/回车/历史保持；网页正常重启恢复；自身停止/重启不等自己，无第二输入任务。不变边界、顺序、字段合同及测试详见five-designs.txt 第三节（C-CONSOLE），执行时按选定合同实施，不再延后选择核心修法。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_power.c",
+      "components/ts_api/src/ts_api_service.c",
+      "components/ts_console/include/ts_console.h",
+      "components/ts_console/src/ts_console.c",
+      "components/ts_core/ts_service/src/ts_service.c",
+      "components/ts_drivers/src/ts_power_monitor.c",
+      "components/ts_drivers/src/ts_power_policy.c",
+      "components/ts_webui/web/js/app.js",
+      "main/ts_services.c"
+    ],
+    "design_status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+    "implementation_contract": "five-designs.txt 第三节（C-CONSOLE），执行时按选定合同实施，不再延后选择核心修法。"
+  },
+  {
+    "id": "A07",
+    "owner": "p1",
+    "title": "字体与GIF正在显示时的释放边界",
+    "finding_ids": [
+      "F29",
+      "F30"
+    ],
+    "dependencies": [
+      "A06"
+    ],
+    "normal_cases": [
+      "N12",
+      "N14",
+      "N16"
+    ],
+    "repair_design": "以实际在用字体、GIF上下文和图像所有权为准，交接完成后释放。字体加载失败允许安全停显并报错，不强求保留旧画面、双字体驻留或重写渲染框架。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_led.c",
+      "components/ts_console/commands/ts_cmd_led.c",
+      "components/ts_led/src/ts_led_font.c",
+      "components/ts_led/src/ts_led_image.c",
+      "components/ts_led/src/ts_led_text.c"
+    ]
+  },
+  {
+    "id": "A08",
+    "owner": "p1",
+    "title": "旧监控任务的停止与销毁",
+    "finding_ids": [
+      "F22"
+    ],
+    "dependencies": [],
+    "normal_cases": [
+      "N11"
+    ],
+    "repair_design": "让原任务可结束重连等待，确认退出后清理其上下文；不以延长固定睡眠掩盖问题。不顺带启用旧监控或修F21待核实项。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_console/commands/ts_cmd_monitor.c",
+      "components/ts_drivers/src/ts_compute_monitor.c"
+    ]
+  },
+  {
+    "id": "A09",
+    "owner": "p1",
+    "title": "内存详情查询的空快照边界",
+    "finding_ids": [
+      "F53"
+    ],
+    "dependencies": [],
+    "normal_cases": [
+      "N22"
+    ],
+    "repair_design": "正确处理SDK返回0/1项，再进入既有排序；不锁全系统、不重试采样或建立任务注册框架。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_system.c"
+    ]
+  },
+  {
+    "id": "B01",
+    "owner": "p2",
+    "title": "配置名称、接口分类与GPIO表的实际容量",
+    "finding_ids": [
+      "F11",
+      "F43",
+      "F49"
+    ],
+    "dependencies": [],
+    "normal_cases": [
+      "N01",
+      "N22"
+    ],
+    "repair_design": "只对有效模块取名，补齐已有SECURITY名称，按当前ESP32-S3编号覆盖GPIO48；不新增全局兜底或换接线。本批优先交接F43以支持A02鉴权链。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api.c",
+      "components/ts_api/src/ts_api_config.c",
+      "components/ts_core/ts_config/include/ts_config_module.h",
+      "components/ts_hal/src/ts_pin_manager.c",
+      "components/ts_webui/src/ts_webui_api.c"
+    ],
+    "partial_handoff": "F43独立小提交优先交接、复核和整合后即可释放A02，不必等F11/F49；剩余两项仍由本批负责人完成，不重新计数。"
+  },
+  {
+    "id": "B02",
+    "owner": "p2",
+    "title": "普通文件路径的一次正确解码",
+    "finding_ids": [
+      "F05"
+    ],
+    "dependencies": [
+      "A02",
+      "A04"
+    ],
+    "normal_cases": [
+      "N08"
+    ],
+    "repair_design": "修正各入口解码层级，保留合法加号与百分号名称；既有配置目录保护继续有效，不扩大写权限。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_net/src/ts_http_server.c",
+      "components/ts_webui/src/ts_webui_api.c"
+    ]
+  },
+  {
+    "id": "B03",
+    "owner": "p2",
+    "title": "SSH CLI认证、可信主机和记录清理",
+    "finding_ids": [
+      "F12",
+      "F13",
+      "F14",
+      "F15"
+    ],
+    "dependencies": [
+      "A02",
+      "A05"
+    ],
+    "normal_cases": [
+      "N05",
+      "N23"
+    ],
+    "repair_design": "最后一条远端公钥也能按既定撤销完成；实际键前缀和计数API一致；CLI传递用户明确选择的密钥ID。只用隔离数据验证清空，保留真实主机/密钥/运行历史。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_ssh.c",
+      "components/ts_console/commands/ts_cmd_hosts.c",
+      "components/ts_console/commands/ts_cmd_ssh.c",
+      "components/ts_security/src/ts_known_hosts.c",
+      "components/ts_security/src/ts_ssh_hosts_config.c"
+    ]
+  },
+  {
+    "id": "B04",
+    "owner": "p2",
+    "title": "电源读数和局部阈值设置",
+    "finding_ids": [
+      "F19",
+      "F67",
+      "F68"
+    ],
+    "dependencies": [
+      "A06"
+    ],
+    "normal_cases": [
+      "N10",
+      "N22"
+    ],
+    "repair_design": "网页尊重UART已有有效标志而不改变独立ADC/保护策略；CLI读取完整阈值对并检查结果；已知非法恢复保持时间在改动前拒绝，范围沿用1–300秒，不造通用事务或全失败回滚。 F68应在API第一次修改阈值前预检该已知字段，沿用同一1–300规则（有现有定义就复用，不为两个比较抽出通用校验API）；HTML现有min=1已存在，单加输入框限制不足。底层setter对独立调用保留既有校验，不以“去冗余”为由删掉；不把其他失败扩成通用事务。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_power.c",
+      "components/ts_console/commands/ts_cmd_voltprot.c",
+      "components/ts_drivers/include/ts_power_policy.h",
+      "components/ts_drivers/src/ts_power_monitor.c",
+      "components/ts_drivers/src/ts_power_policy.c",
+      "components/ts_webui/web/js/app.js"
+    ]
+  },
+  {
+    "id": "B05",
+    "owner": "p2",
+    "title": "风扇曲线编辑与保存结果",
+    "finding_ids": [
+      "F20",
+      "F24"
+    ],
+    "dependencies": [
+      "A06"
+    ],
+    "normal_cases": [
+      "N09"
+    ],
+    "repair_design": "保留实际硬件操作和持久化结果区别；温度节点修改后同一行仍指向同一节点。保持现有TTI、限值及保护算法，不把NVS失败变成硬件回滚。 原“应用曲线”成功后主动切换到curve模式必须保留；取消才不改变当前模式，验收结束恢复本机原模式。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_fan.c",
+      "components/ts_drivers/src/ts_fan.c",
+      "components/ts_webui/web/js/app.js"
+    ]
+  },
+  {
+    "id": "B06",
+    "owner": "p2",
+    "title": "设置弹窗草稿的当前归属",
+    "finding_ids": [
+      "F61"
+    ],
+    "dependencies": [
+      "B04",
+      "B05"
+    ],
+    "normal_cases": [
+      "N09",
+      "N10"
+    ],
+    "repair_design": "每次打开一个owner，按依赖组短暂等待；成功填全真值，失败结束等待且沿原手动设置；所有直接异步DOM回填核对owner。取消随时可用；保存和恢复默认沿实际写入语义；加载失败可手动设置；风扇应用仍切curve；没改字段不丢。不变边界、顺序、字段合同及测试详见five-designs.txt 第四节（C-MODAL），执行时按选定合同实施，不再延后选择核心修法。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_webui/web/js/app.js",
+      "components/ts_webui/web/js/lang/en-US.js",
+      "components/ts_webui/web/js/lang/zh-CN.js"
+    ],
+    "design_status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+    "implementation_contract": "five-designs.txt 第四节（C-MODAL），执行时按选定合同实施，不再延后选择核心修法。"
+  },
+  {
+    "id": "B07",
+    "owner": "p2",
+    "title": "灯光内容切换、关闭和保存",
+    "finding_ids": [
+      "F26",
+      "F27",
+      "F28",
+      "F31",
+      "F32"
+    ],
+    "dependencies": [
+      "A07"
+    ],
+    "normal_cases": [
+      "N12",
+      "N13",
+      "N15"
+    ],
+    "repair_design": "每设备保存自己的颜色；按现有图层写持续内容；基础动画/纯色/QR正常交接；整设备关闭与清单层分开；当前内容类型、参数和关闭保存与开机层一致，保留选择，不全局重定义clear。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_led.c",
+      "components/ts_automation/src/ts_action_manager.c",
+      "components/ts_console/commands/ts_cmd_led.c",
+      "components/ts_led/src/ts_led.c",
+      "components/ts_led/src/ts_led_animation.c",
+      "components/ts_led/src/ts_led_effect.c",
+      "components/ts_led/src/ts_led_layer.c",
+      "components/ts_led/src/ts_led_preset.c",
+      "components/ts_led/src/ts_led_qrcode.c",
+      "components/ts_led/src/ts_led_text.c",
+      "components/ts_webui/web/js/app.js"
+    ]
+  },
+  {
+    "id": "B08",
+    "owner": "p2",
+    "title": "图片有效范围校验",
+    "finding_ids": [
+      "F33"
+    ],
+    "dependencies": [
+      "A07"
+    ],
+    "normal_cases": [
+      "N16"
+    ],
+    "repair_design": "保留原支持格式；仅核对BMP声明范围及GIF固定字典边界，错误按已有格式错误返回；不自动修图、换库或加重试。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_led/src/ts_led_image.c"
+    ]
+  },
+  {
+    "id": "B09",
+    "owner": "p2",
+    "title": "二维码、文字位置及LED色彩校正选项",
+    "finding_ids": [
+      "F55",
+      "F57",
+      "F58"
+    ],
+    "dependencies": [
+      "B07",
+      "B08"
+    ],
+    "normal_cases": [
+      "N14",
+      "N15",
+      "N17"
+    ],
+    "repair_design": "保留单一RGB/image_path，加qr_color_set/manual_position两位必要信息；旧默认不变，完整codec复用，renderer不改。旧默认白/非零旧色、新显式黑/白、图片选择和auto_pos缺省/true/false从编辑到运行及导出往返一致。不变边界、顺序、字段合同及测试详见five-designs.txt 第五节（C-LED-FIELDS），执行时按选定合同实施，不再延后选择核心修法。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_led.c",
+      "components/ts_automation/include/ts_automation_types.h",
+      "components/ts_automation/src/ts_action_codec.c",
+      "components/ts_automation/src/ts_action_manager.c",
+      "components/ts_led/src/ts_led_color_correction.c",
+      "components/ts_webui/web/js/app.js"
+    ],
+    "design_status": "DESIGN_APPROVED_LOCAL_IMPLEMENTATION",
+    "implementation_contract": "five-designs.txt 第五节（C-LED-FIELDS），执行时按选定合同实施，不再延后选择核心修法。"
+  },
+  {
+    "id": "B10",
+    "owner": "p2",
+    "title": "升级当前来源及取消结果",
+    "finding_ids": [
+      "F34",
+      "F36"
+    ],
+    "dependencies": [
+      "A02"
+    ],
+    "normal_cases": [
+      "N24"
+    ],
+    "repair_design": "一轮尝试使用该轮明确的固件与配套网页来源；不能取消阶段可准确拒绝，接受取消必须由原工作任务确认。无备用源、强杀任务或新取消框架。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_ota/src/ts_ota.c",
+      "components/ts_ota/src/ts_ota_sdcard.c",
+      "components/ts_webui/web/js/app.js"
+    ]
+  },
+  {
+    "id": "B11",
+    "owner": "p2",
+    "title": "现有外部数据源连接和采样",
+    "finding_ids": [
+      "F41",
+      "F42",
+      "F63"
+    ],
+    "dependencies": [
+      "A02"
+    ],
+    "normal_cases": [
+      "N18"
+    ],
+    "repair_design": "Socket.IO按已有正确升级/连接序列，失败尝试仍按设置间隔，同时保留最近成功时间；本机查询保留合法参数且不绕过目标权限。不增加另一套重连/退避协议。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_automation.c",
+      "components/ts_api/src/ts_api_hosts.c",
+      "components/ts_automation/src/ts_source_manager.c",
+      "components/ts_webui/src/ts_webui_api.c"
+    ]
+  },
+  {
+    "id": "B12",
+    "owner": "p2",
+    "title": "配置往返与规则编辑窗口",
+    "finding_ids": [
+      "F48",
+      "F51"
+    ],
+    "dependencies": [
+      "B09",
+      "B11"
+    ],
+    "normal_cases": [
+      "N04",
+      "N19",
+      "N20",
+      "N25"
+    ],
+    "repair_design": "复用完整生产编解码器，保留包外层、签名和目标要求；整批异步动作坚持原窗口归属。普通上传包不直接应用是既定限制，不重启F45。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_api/src/ts_api_auto_config.c",
+      "components/ts_api/src/ts_api_automation.c",
+      "components/ts_automation/src/ts_action_codec.c",
+      "components/ts_automation/src/ts_automation_document.c",
+      "components/ts_webui/web/js/app.js"
+    ]
+  },
+  {
+    "id": "B13",
+    "owner": "p2",
+    "title": "终端实际输出长度",
+    "finding_ids": [
+      "F44"
+    ],
+    "dependencies": [
+      "A02",
+      "A06"
+    ],
+    "normal_cases": [
+      "N22"
+    ],
+    "repair_design": "给接收者实际有效长度，并保留既有上限内需要的完整JSON/文本。不能只截长度却假装结构完整，也不取消输出上限或重做终端。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_console/src/ts_console.c",
+      "components/ts_webui/src/ts_webui_ws.c"
+    ]
+  },
+  {
+    "id": "B14",
+    "owner": "p2",
+    "title": "网页重连后的现有订阅",
+    "finding_ids": [
+      "F50"
+    ],
+    "dependencies": [
+      "A02",
+      "A03"
+    ],
+    "normal_cases": [
+      "N03",
+      "N21"
+    ],
+    "repair_design": "沿现有连接回调恢复当前有效主题和参数；离开页面不带回旧主题、不重复订阅，不加轮询或另一个重试器。",
+    "status": "not_started",
+    "planned_files": [
+      "components/ts_webui/web/js/api.js",
+      "components/ts_webui/web/js/app.js"
+    ]
+  }
+]

@@ -18,7 +18,16 @@ async function pageFor(language='en-US',handler){
  const context=await browser.newContext({locale:language,viewport:{width:1280,height:900}});
  await context.addInitScript(({language})=>{
    localStorage.setItem('ts_language',language);
-   class Socket {static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;}send(){}close(){this.readyState=3;}}
+   window.__sockets=[];
+   class Socket {
+     static OPEN=1;static CONNECTING=0;static CLOSING=2;static CLOSED=3;
+     constructor(){this.readyState=0;this.sent=[];window.__sockets.push(this);}
+     send(text){this.sent.push(JSON.parse(text));}
+     open(){this.readyState=1;this.onopen?.();}
+     message(msg){this.onmessage?.({data:JSON.stringify(msg)});}
+     close(){this.readyState=3;queueMicrotask(()=>this.onclose?.({code:1000}));}
+     emitClose(code=1006){this.readyState=3;this.onclose?.({code});}
+   }
    window.WebSocket=Socket;
  },{language});
  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -299,5 +308,371 @@ for (const language of ['zh-CN','en-US']) {
     assert.deepEqual(result.sent[1],{type:'unsubscribe',topic:'system.cpu'});
    }
   }finally{await first.context.close();await second.context.close();}
+ });
+}
+
+for(const language of ['zh-CN','en-US']) {
+ test(`A02: login/logout replaces only current main and terminal sockets ${language}`,async()=>{
+  const {page,context,errors}=await pageFor(language);try{
+   await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&window.ws);
+   const result=await page.evaluate(async()=>{
+    closeLoginModal();
+    api.call=async(name,params)=>name==='auth.login'?{code:0,data:{token:params.username+'-token',username:params.username,level:params.username,expires_in:3600}}:{code:0,data:{}};
+    const old=ws.ws,events=[];window.addEventListener('authChanged',()=>events.push(api.token));
+    const set=window.setTimeout,clear=window.clearTimeout;let staleReconnect,clearedReconnect=false;
+    window.setTimeout=(fn,delay,...args)=>{if(delay===1000){staleReconnect=fn;return 271828;}return set(fn,delay,...args);};
+    window.clearTimeout=id=>{if(id===271828){clearedReconnect=true;return;}return clear(id);};
+    old.emitClose();
+    subscriptionManager.subscribe('system.cpu',()=>{},{interval:2345});
+    await api.login('admin','fixture');const admin=ws.ws;admin.open();
+    const order=admin.sent.map(m=>m.type),restored=admin.sent.find(m=>m.topic==='system.cpu');
+    staleReconnect();window.setTimeout=set;window.clearTimeout=clear;
+    old.onmessage({data:JSON.stringify({type:'auth_error',reason:'session_expired'})});old.onclose({code:1006});
+    const oldIgnored=api.token==='admin-token'&&ws.ws===admin&&clearedReconnect;
+    const term=new WebTerminal('unused');term.connect();term.ws.open();const firstTerminal=term.ws.sent[0];
+    const oldTerminal=term.ws;
+    await api.login('root','fixture');const root=ws.ws;root.open();const rootTerminal=term.ws;rootTerminal.open();rootTerminal.message({type:'connected'});
+    term.startSshShell({host:'fixture.invalid',port:22,user:'u',password:'p'});
+    const ssh=rootTerminal.sent.find(m=>m.type==='ssh_connect');
+    oldTerminal.onmessage({data:JSON.stringify({type:'auth_error',reason:'session_expired'})});oldTerminal.onclose({code:1006});
+    const terminalIgnored=term.ws===rootTerminal&&api.token==='root-token';
+    root.message({type:'auth_ok'});const prepared=await ws.prepareOutputIdentity();
+    root.message({type:'auth_error',reason:'session_expired'});
+    const expired=api.token===null&&ws.ws!==root;
+    const anonymous=ws.ws;anonymous.open();anonymous.message({type:'auth_error',message:'Unauthorized'});
+    const publicOnly=anonymous.sent[0].type==='auth'&&anonymous.sent[0].token===null&&anonymous.sent[1].type==='subscribe'&&!ws.authenticated&&api.token===null;
+    term.destroy();const count=__sockets.length;api.clearAuth();const destroyedListenerRemoved=__sockets.length===count+1;
+    return {order,restored,oldIgnored,firstTerminal,ssh,terminalIgnored,prepared,expired,publicOnly,destroyedListenerRemoved,events};
+   });
+   assert.equal(result.order[0],'auth');assert.equal(result.order[1],'subscribe');assert.deepEqual(result.restored.params,{interval:2345});
+   assert(result.oldIgnored&&result.terminalIgnored&&result.prepared&&result.expired&&result.publicOnly&&result.destroyedListenerRemoved);
+   assert.equal(result.firstTerminal.token,'admin-token');assert.equal(result.ssh.token,'root-token');assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+ test(`A02: upload paths retain their original body/result and send current token ${language}`,async()=>{
+  const {page,context,errors}=await pageFor(language);try{
+   await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+   const result=await page.evaluate(async()=>{
+    closeLoginModal();api.token='admin-token';const calls=[];
+    window.fetch=async(url,options)=>{calls.push({url,headers:options.headers,body:options.body});return {ok:true,status:200,json:async()=>({status:String(url).includes('/file/upload')?'uploaded':'success'})};};
+    const file=await api.fileUpload('/sdcard/ordinary file.txt','ordinary');
+    const firmware=await uploadImageToDevice('/api/v1/ota/firmware?auto_reboot=false','firmware','ota.firmware');
+    const www=await uploadImageToDevice('/api/v1/ota/www','www','ota.www');
+    return {calls,file,firmware,www};
+   });
+   assert.equal(result.file.status,'uploaded');assert(result.firmware.success&&result.www.success);
+   assert.deepEqual(result.calls.map(c=>c.headers.Authorization),['Bearer admin-token','Bearer admin-token','Bearer admin-token']);
+   assert.deepEqual(result.calls.map(c=>c.body),['ordinary','firmware','www']);assert.equal(result.calls[1].headers['Content-Type'],'application/octet-stream');assert.match(result.calls[1].url,/auto_reboot=false$/);assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+ for(const mode of ['early','late','auth-error','timeout','closed','http-error','logout','same-token-auth-change','cancel','page-replaced']) {
+  test(`A02: immediate foreground execution ${mode} ${language}`,async()=>{
+   const {page,context,errors}=await pageFor(language);try{
+    await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&window.ws);
+    const result=await page.evaluate(async mode=>{
+     closeLoginModal();window.submitted=[];
+     api.call=async(name,params)=>{
+      if(name==='auth.login')return {code:0,data:{token:'admin-token',username:'admin',level:'admin',expires_in:3600}};
+      if(name==='ssh.exec_stream'){submitted.push(structuredClone(params));return mode==='http-error'?{code:4,message:'ssh_exec_busy'}:{code:0,data:{session_id:25}};}
+      return {code:0,data:{hosts:name==='ssh.hosts.list'?[{id:'local',username:'ordinary',host:'fixture.invalid',port:22,keyid:'default'}]:[],commands:[]}};
+     };
+     await api.login('admin','fixture');updateAuthUI();await loadCommandsPage();
+     window._cmdHostsList=[{id:'local',username:'ordinary',host:'fixture.invalid',port:22,keyid:'default'}];
+     sshCommands={local:[{id:'foreground',name:'Normal command',command:'printf ordinary',enabled:true}]};selectHost('local');
+     const socket=ws.ws;socket.open();
+     if(mode==='early')socket.message({type:'auth_ok'});
+     if(mode==='closed')socket.emitClose(1000);
+     const set=window.setTimeout,clear=window.clearTimeout;let deadline,deadlines=0,cleared=0;
+     if(mode==='timeout') {
+      window.setTimeout=(fn,delay,...args)=>{if(delay===1000){deadlines++;deadline=fn;return 314159;}return set(fn,delay,...args);};
+      window.clearTimeout=id=>{if(id===314159){cleared++;return;}return clear(id);};
+     }
+     const pending=executeCommand(0);await Promise.resolve();const before=submitted.length;
+     if(mode==='late')socket.message({type:'auth_ok'});
+     if(mode==='auth-error'||mode==='http-error')socket.message({type:'auth_error',message:'Unauthorized'});
+     if(mode==='timeout'){deadline();window.setTimeout=set;window.clearTimeout=clear;}
+     if(mode==='logout')api.clearAuth();
+     if(mode==='same-token-auth-change')window.dispatchEvent(new CustomEvent('authChanged'));
+     if(mode==='cancel')await cancelExecution();
+     if(mode==='page-replaced')releaseExecDisplay();
+     await pending;
+     const after=submitted.length,text=document.getElementById('exec-result').textContent,token=api.token;
+     socket.onmessage({data:JSON.stringify({type:'auth_ok'})});await Promise.resolve();
+     return {before,after,final:submitted.length,text,token,deadlines,cleared,waiters:ws.authWaiters?.size||0,hasSession:currentExecSessionId===25,params:submitted[0]};
+    },mode);
+    const cancelled=['logout','same-token-auth-change','cancel','page-replaced'].includes(mode);
+    assert.equal(result.after,cancelled?0:1);assert.equal(result.final,result.after);assert.equal(result.waiters,0);
+    if(!['early','closed'].includes(mode))assert.equal(result.before,0);
+    if(mode==='timeout'){assert.equal(result.deadlines,1);assert.equal(result.cleared,1);}
+    if(!cancelled&&mode!=='http-error')assert(result.hasSession);
+    if(['auth-error','timeout','closed'].includes(mode))assert.match(result.text,language==='zh-CN'?/指令已提交，实时输出尚未连接/:/Command submitted; live output is not connected/);
+    if(mode==='http-error'){assert(!result.hasSession);assert.doesNotMatch(result.text,/实时输出尚未连接|live output is not connected/);}
+    if(mode==='auth-error')assert.equal(result.token,'admin-token');
+    if(result.params)assert.equal(result.params.command,'printf ordinary');
+    assert.deepEqual(errors,[]);
+    if(mode==='auth-error'&&process.env.TS_TEST_EVIDENCE_DIR)await page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a02-${language}-submitted-output-unavailable.png`)});
+   }finally{await context.close();}
+  });
+ }
+}
+
+for(const language of ['zh-CN','en-US'])test(`A02: no-auth server ACK keeps real logged-out UI output connected ${language}`,async()=>{
+ const {page,context,errors}=await pageFor(language);const submissions=[];try{
+  const version='00000000000000000000000000000001';
+  await page.route('**/api/**',async route=>{
+   const request=route.request(),u=new URL(request.url());let data={};
+   if(u.pathname.endsWith('/auth/logout')){await route.fulfill({json:{success:true}});return;}
+   if(u.pathname.endsWith('/auth/login'))data={token:'root-token',username:'root',level:'root',expires_in:3600,password_changed:true};
+   if(u.pathname.endsWith('/auth/status'))data={valid:true,username:'root',level:'root'};
+   if(u.pathname.endsWith('/ssh/hosts/list'))data={active_version:version,hosts:[{id:'local',host:'fixture.invalid',port:22,username:'ordinary',keyid:'default'}]};
+   if(u.pathname.endsWith('/ssh/commands/list'))data={active_version:version,commands:[{id:'foreground',host_id:'local',name:'Normal command',command:'printf ordinary',enabled:true}]};
+   if(u.pathname.endsWith('/ssh/exec_stream')){submissions.push({authorization:request.headers().authorization||null,params:request.postDataJSON()});data={session_id:25};}
+   await route.fulfill({json:{code:0,data}});
+  });
+  await page.goto(base);await page.waitForFunction(()=>i18n.isReady()&&window.ws);
+  await page.locator('#username').fill('root');await page.locator('#password').fill('fixture');await page.locator('#login-form button[type="submit"]').click();
+  await page.waitForFunction(()=>api.token==='root-token');await page.evaluate(()=>{ws.ws.open();ws.ws.message({type:'auth_ok'});location.hash='/commands';});
+  await page.locator('.page-commands .host-card').click();await page.locator('.page-commands .btn-exec').waitFor({state:'visible'});
+  await page.locator('#login-btn').click();await page.waitForFunction(()=>api.token===null&&!document.getElementById('login-modal').classList.contains('hidden'));
+  await page.locator('#login-form button[type="button"]').click();
+  const ack=await page.evaluate(()=>{
+   ws.ws.open();const before=ws.authenticated,sent=ws.ws.sent;
+   ws.ws.message({type:'auth_ok'});
+   return {before,after:ws.authenticated,sent,token:api.token,retainedCommands:!!document.querySelector('.page-commands'),routeDenied:!router.checkAccess('/commands').allowed};
+  });
+  assert(!ack.before&&ack.after&&ack.retainedCommands&&ack.routeDenied);assert.equal(ack.token,null);
+  assert.equal(ack.sent[0].type,'auth');assert.equal(ack.sent[0].token,null);assert.equal(ack.sent[1].type,'subscribe');
+  await page.locator('.page-commands .btn-exec').click();await page.waitForFunction(()=>currentExecSessionId===25);
+  await page.evaluate(()=>ws.ws.message({type:'ssh_exec_output',session_id:25,data:'VALUE_FROM_SERVER\n'}));
+  const output=await page.locator('#exec-result').innerText();assert.match(output,/VALUE_FROM_SERVER/);assert.doesNotMatch(output,/实时输出尚未连接|live output is not connected/);
+  assert.equal(submissions.length,1);assert.equal(submissions[0].authorization,null);assert.deepEqual(errors,[]);
+  if(process.env.TS_TEST_EVIDENCE_DIR)await page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`a02-noauth-${language}-output-connected.png`)});
+ }finally{await context.close();}
+});
+
+async function batchFilesPage(language,{hold=false,failSecond=false}={}){
+ const f=await pageFor(language);
+ await f.page.goto(base);await f.page.waitForFunction(()=>i18n.isReady());
+ await f.page.evaluate(async({hold,failSecond})=>{
+  closeLoginModal();
+  window.batchEntries=[{name:'A 中文.txt',type:'file',size:3},{name:'B folder',type:'dir'},{name:'C.txt',type:'file',size:5}];
+  window.deleteCalls=[];window.fileListReads=0;
+  api.storageStatus=async()=>({code:0,data:{sd:{mounted:true},spiffs:{mounted:true}}});
+  api.storageList=async()=>{++fileListReads;return {code:0,data:{entries:structuredClone(batchEntries)}};};
+  api.storageDelete=async path=>{
+   deleteCalls.push(path);
+   if(hold&&deleteCalls.length===1)await new Promise(resolve=>{window.releaseDelete=resolve;});
+   if(failSecond&&path==='/sdcard/B folder')return {code:3,error:'Permission denied'};
+   batchEntries=batchEntries.filter(entry=>'/sdcard/'+entry.name!==path);
+   return {code:0,data:{}};
+  };
+  await loadFilesPage();
+ },{hold,failSecond});
+ return f;
+}
+for(const language of ['zh-CN','en-US']){
+ test(language+': A04 normal one/multiple file deletion and cancellation retain request counts and refresh behavior',async()=>{
+  for(const count of [1,2]){
+   const f=await batchFilesPage(language);try{
+    const {page}=f;
+    await page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).check();
+    if(count===2)await page.getByRole('checkbox',{name:'B folder',exact:true}).check();
+    const before=await page.evaluate(()=>fileListReads);
+    await page.locator('#batch-toolbar button[onclick="batchDelete()"]').click();
+    assert.match(await page.locator('.confirm-sheet').innerText(),new RegExp(String(count)));
+    await page.locator('.confirm-sheet button[data-r="1"]').click();
+    await page.waitForFunction(()=>document.getElementById('operation-summary'));
+    assert.deepEqual(await page.evaluate(()=>deleteCalls),['/sdcard/A 中文.txt','/sdcard/B folder'].slice(0,count));
+    assert.equal(await page.evaluate(()=>selectedFiles.size),0);
+    assert.equal(await page.evaluate(()=>fileListReads),before+1);
+    assert.equal(await page.locator('#toast').getAttribute('class').then(x=>x.includes('toast-success')),true);
+    assert.equal(await page.getByRole('checkbox',{name:'C.txt',exact:true}).isChecked(),false);
+    assert.deepEqual(f.errors,[]);
+   }finally{await f.context.close();}
+  }
+  const f=await batchFilesPage(language);try{
+   await f.page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).check();
+   const before=await f.page.evaluate(()=>fileListReads);
+   await f.page.locator('#batch-toolbar button[onclick="batchDelete()"]').click();
+   await f.page.locator('.confirm-sheet button[data-r="0"]').click();
+   assert.deepEqual(await f.page.evaluate(()=>deleteCalls),[]);
+   assert.equal(await f.page.evaluate(()=>fileListReads),before);
+   assert.deepEqual(await f.page.evaluate(()=>[...selectedFiles]),['/sdcard/A 中文.txt']);
+   assert.equal(await f.page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).isChecked(),true);
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ for(const failSecond of [false,true]){
+  test(language+': A04 confirmed paths stay fixed while awaiting the first delete; second failure='+failSecond,async()=>{
+   const f=await batchFilesPage(language,{hold:true,failSecond});try{
+    const {page}=f;
+    await page.getByRole('checkbox',{name:'A 中文.txt',exact:true}).check();
+    await page.getByRole('checkbox',{name:'B folder',exact:true}).check();
+    const before=await page.evaluate(()=>fileListReads);
+    await page.locator('#batch-toolbar button[onclick="batchDelete()"]').click();
+    assert.match(await page.locator('.confirm-sheet').innerText(),/2/);
+    await page.locator('.confirm-sheet button[data-r="1"]').click();
+    await page.waitForFunction(()=>deleteCalls.length===1&&typeof releaseDelete==='function');
+    await page.getByRole('checkbox',{name:'C.txt',exact:true}).check();
+    await page.getByRole('checkbox',{name:'B folder',exact:true}).uncheck();
+    assert.deepEqual(await page.evaluate(()=>[...selectedFiles]),['/sdcard/A 中文.txt','/sdcard/C.txt']);
+    await page.evaluate(()=>releaseDelete());
+    await page.waitForFunction(()=>document.getElementById('operation-summary'));
+    assert.deepEqual(await page.evaluate(()=>deleteCalls),['/sdcard/A 中文.txt','/sdcard/B folder']);
+    const expected=await page.evaluate(failSecond=>t('promptRepair.deleteSummary',{success:failSecond?1:2,fail:failSecond?1:0}),failSecond);
+    assert.equal(await page.locator('#toast').innerText(),expected);
+    const summary=await page.locator('#operation-summary').innerText();
+    assert(summary.startsWith(expected));assert.equal(summary.includes('/sdcard/B folder'),failSecond);
+    assert.equal(summary.includes('/sdcard/C.txt'),false);
+    assert.equal(await page.evaluate(()=>fileListReads),before+1);
+    assert.equal(await page.evaluate(()=>selectedFiles.size),0);
+    assert.equal(await page.getByRole('checkbox',{name:'C.txt',exact:true}).isChecked(),false);
+    assert.equal(await page.locator('#toast').getAttribute('class').then(x=>x.includes('toast-'+(failSecond?'warning':'success'))),true);
+    assert.deepEqual(f.errors,[]);
+   }finally{await f.context.close();}
+  });
+ }
+}
+
+for(const language of ['zh-CN','en-US']) {
+ test('ordinary file names survive upload and download '+language,async()=>{
+  const f=await pageFor(language);try{
+   const names=['report.txt','report+v1.txt','report v1.txt','report%20v1.txt','report%25v1.txt','进度100%.txt','记录.txt'];
+   const directory='/sdcard/b02',stored=new Map(),uploads=[],downloads=[];
+   // Register these routes after the common fixture; only this flow models file bytes.
+   await f.page.route('**/api/v1/storage/list',async route=>{
+    assert.equal(route.request().postDataJSON().path,directory);
+    await route.fulfill({json:{code:0,data:{entries:[...stored].map(([file,body])=>({name:file.slice(directory.length+1),type:'file',size:body.length}))}}});
+   });
+   await f.page.route('**/api/v1/file/*',async route=>{
+    const request=route.request(),url=new URL(request.url()),file=url.searchParams.get('path');
+    assert(names.some(name=>file===directory+'/'+name));
+    assert.equal(request.url(),base+url.pathname+'?path='+encodeURIComponent(file));
+    if(url.pathname.endsWith('/upload')){
+     assert.equal(request.method(),'POST');const body=request.postDataBuffer();assert(body);
+     stored.set(file,body);uploads.push(file);
+     await route.fulfill({json:{path:file,size:body.length,status:'uploaded'}});
+    }else{
+     assert(url.pathname.endsWith('/download'));assert(stored.has(file));downloads.push(file);
+     await route.fulfill({status:200,contentType:'text/plain',body:stored.get(file)});
+    }
+   });
+   await f.page.goto(base);await f.page.waitForFunction(()=>i18n.isReady());
+   await f.page.evaluate(async directory=>{
+    closeLoginModal();currentFilePath=directory;
+    api.storageStatus=async()=>({code:0,data:{sd:{mounted:true}}});
+    await loadFilesPage();showUploadDialog();
+   },directory);
+   const files=names.map((name,i)=>({name,mimeType:'text/plain',buffer:Buffer.from('independent file contents '+i)}));
+   await f.page.locator('#file-input').setInputFiles(files);
+   await f.page.evaluate(()=>uploadFiles());
+   assert.deepEqual(uploads,names.map(name=>directory+'/'+name));assert.equal(stored.size,names.length);
+   for(let i=0;i<names.length;i++){
+    const pending=f.page.waitForEvent('download');
+    assert.deepEqual(await f.page.evaluate(file=>downloadFile(file),directory+'/'+names[i]),{started:true});
+    const download=await pending;assert.equal(download.suggestedFilename(),names[i]);
+    const stream=await download.createReadStream(),parts=[];for await(const part of stream)parts.push(part);
+    assert.deepEqual(Buffer.concat(parts),files[i].buffer);
+   }
+   assert.deepEqual(downloads,names.map(name=>directory+'/'+name));assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+}
+
+for (const language of ['zh-CN','en-US']) {
+ test(`B07 LED buttons: explicit device off, all off and existing on policy ${language}`,async()=>{
+  const {page,context,errors}=await pageFor(language),writes=[];
+  try {
+   await page.route('**/api/v1/led/**',async route=>{
+    const request=route.request(),endpoint=new URL(request.url()).pathname;
+    if(request.method()==='POST')writes.push({endpoint,params:request.postDataJSON()});
+    const devices=['touch','board','matrix'].map(name=>({name,layout:name==='matrix'?'matrix':'strip',brightness:80,effects:['solid','breathing'],current:{on:true,animation:'breathing',speed:73,color:{r:0,g:0,b:255}}}));
+    await route.fulfill({json:{code:0,data:endpoint.endsWith('/list')?{devices}:{}}});
+   });
+   await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+   await page.evaluate(async()=>{
+    closeLoginModal();api.token='local-fixture';
+    await loadSystemPage();
+   });
+   await page.locator('#toggle-matrix').click();
+   await page.waitForFunction(()=>ledStates.matrix===false);
+   assert.deepEqual(writes.at(-1),{endpoint:'/api/v1/led/clear',params:{device:'matrix',off:true}});
+   await page.locator('#toggle-matrix').click();
+   await page.waitForFunction(()=>ledStates.matrix===true);
+   assert.deepEqual(writes.at(-1),{endpoint:'/api/v1/led/fill',params:{device:'matrix',color:'#ffffff'}});
+   const before=writes.length;await page.locator('[onclick="allLedsOff()"]').click();
+   await page.waitForFunction(()=>['touch','board','matrix'].every(device=>ledStates[device]===false));
+   assert.deepEqual(writes.slice(before),['touch','board','matrix'].map(device=>({endpoint:'/api/v1/led/clear',params:{device,off:true}})));
+   await page.evaluate(()=>openLedModal('matrix','effect'));
+   await page.locator('#modal-device-enabled-matrix').check();
+   await page.waitForFunction(()=>ledStates.matrix===true);
+   assert.deepEqual(writes.at(-1),{endpoint:'/api/v1/led/effect/start',params:{device:'matrix',effect:'breathing',speed:73,color:'#0000ff'}});
+   assert.deepEqual(errors,[]);
+  }finally{await context.close();}
+ });
+}
+
+for (const language of ['zh-CN', 'en-US']) {
+ test(`F50: network-only automatic reconnect restores visible home data and current listeners ${language}`, async () => {
+  const {page,context,errors}=await pageFor(language);
+  try {
+   await page.addInitScript(()=>{
+    localStorage.setItem('ts_token','f50-fixture-root');localStorage.setItem('ts_username','root');
+    localStorage.setItem('ts_level','root');localStorage.setItem('ts_expires',String(Date.now()+3600000));
+   });
+   await page.route('**/api/v1/auth/status',route=>route.fulfill({json:{code:0,data:{valid:true,username:'root',level:'root'}}}));
+   await page.route('**/api/v1/ui/widgets/get',route=>route.fulfill({json:{code:0,data:{widgets:[],refresh_interval:0,source:'nvs'}}}));
+   await page.goto(base);
+   await page.waitForFunction(()=>i18n.isReady()&&subscriptionManager?.subscriptions.has('system.dashboard'));
+   const initial=await page.evaluate(()=>{
+    closeLoginModal();window.__f50Cpu=document.getElementById('cpu-avg');window.__f50Identity=api.token;
+    const transport=ws.ws;transport.open();transport.message({type:'auth_ok'});
+    // Two independent current listeners legitimately share this telemetry topic.
+    window.__f50Shared=[[],[]];
+    subscriptionManager.subscribe('system.memory',msg=>__f50Shared[0].push(msg.data.internal.free),{interval:2345});
+    subscriptionManager.subscribe('system.memory',msg=>__f50Shared[1].push(msg.data.internal.free),{interval:2345});
+    return {count:__sockets.length,topics:[...subscriptionManager.subscriptionParams].map(([topic,params])=>({type:'subscribe',topic,params}))};
+   });
+   const topicFrames=()=>page.evaluate(()=>ws.ws.sent.filter(message=>message.type==='subscribe'&&message.topic));
+   assert.deepEqual(await topicFrames(),initial.topics);
+   const dashboard=usage=>page.evaluate(usage=>ws.ws.message({type:'data',topic:'system.dashboard',data:{cpu:{cores:[{id:0,usage},{id:1,usage}],total_usage:usage}},timestamp:1}),usage);
+   await dashboard(13);await page.waitForFunction(()=>document.getElementById('cpu-avg')?.textContent==='13');
+   assert.equal(await page.locator('#cpu-avg').isVisible(),true);
+   for (const [round,usage] of [37,52].entries()) {
+    await page.evaluate(()=>ws.ws.emitClose());
+    // Let the production onclose timer create the next transport itself.
+    await page.waitForFunction(count=>__sockets.length===count,initial.count+round+1);
+    const connection=await page.evaluate(()=>{
+     const transport=ws.ws;transport.open();transport.message({type:'auth_ok'});
+     return {token:transport.sent[0].token,identity:__f50Identity,samePage:document.getElementById('cpu-avg')===__f50Cpu};
+    });
+    assert.equal(connection.token,connection.identity);assert.equal(connection.samePage,true);
+    assert.deepEqual(await topicFrames(),initial.topics,'each current topic is restored once with its original params');
+    await dashboard(usage);await page.waitForFunction(value=>document.getElementById('cpu-avg')?.textContent===String(value),usage);
+    assert.equal(await page.locator('#cpu-avg').isVisible(),true);
+   }
+   const beforeAway=await page.evaluate(()=>{const count=__sockets.length;ws.ws.emitClose();return count;});
+   await page.locator('a.nav-link[href="#/network"]').click();
+   await page.locator('.page-network').waitFor();
+   assert.equal(await page.evaluate(()=>subscriptionManager.subscriptions.has('system.dashboard')),false);
+   assert.equal(await page.evaluate(()=>__sockets.length),beforeAway,'leave the page before the pending reconnect timer fires');
+   await page.waitForFunction(count=>__sockets.length===count,beforeAway+1);
+   const away=await page.evaluate(()=>{
+    const transport=ws.ws;transport.open();transport.message({type:'auth_ok'});
+    transport.message({type:'data',topic:'system.memory',data:{internal:{total:1000,free:444,allocated:556}},timestamp:2});
+    return {token:transport.sent[0].token,identity:__f50Identity,shared:__f50Shared,homeGone:!document.getElementById('cpu-avg')};
+   });
+   assert.equal(away.token,away.identity);assert.equal(away.homeGone,true);assert.deepEqual(away.shared,[[444],[444]]);
+   assert.deepEqual(await topicFrames(),[{type:'subscribe',topic:'system.memory',params:{interval:2345}}],'disposed home topic stays absent while shared listeners survive');
+   await page.locator('a.nav-link[href="#/"]').click();
+   await page.waitForFunction(()=>subscriptionManager.subscriptions.has('system.dashboard'));
+   await dashboard(76);await page.waitForFunction(()=>document.getElementById('cpu-avg')?.textContent==='76');
+   assert.equal(await page.locator('#cpu-avg').isVisible(),true);
+   const final=await topicFrames();
+   assert.equal(final.filter(message=>message.topic==='system.dashboard').length,1);
+   assert.equal(final.filter(message=>message.topic==='system.memory').length,1);
+   assert.deepEqual(final.find(message=>message.topic==='system.dashboard').params,{interval:1000});
+   assert.equal(await page.evaluate(()=>__sockets.length),beforeAway+1);assert.deepEqual(errors,[]);
+  } finally {await context.close();}
  });
 }

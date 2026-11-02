@@ -7,16 +7,21 @@ mkdir -p "$STORAGE_PATH_TEST_BUILD"
 python3 - "$STORAGE_PATH_TEST_BUILD/storage_upload.inc" <<'PYTHON'
 from pathlib import Path
 import sys
-source=Path('components/ts_webui/src/ts_webui_api.c').read_text()
 parts=[]
-for name in ('url_decode','file_upload_handler'):
-    start=source.index('static '+('void ' if name=='url_decode' else 'esp_err_t ')+name+'(')
+for file,name,signature in (
+    ('components/ts_net/src/ts_http_server.c','url_decode_inplace','static void '),
+    ('components/ts_net/src/ts_http_server.c','ts_http_get_query_param','esp_err_t '),
+    ('components/ts_webui/src/ts_webui_api.c','file_download_handler','static esp_err_t '),
+    ('components/ts_webui/src/ts_webui_api.c','file_upload_handler','static esp_err_t '),
+):
+    source=Path(file).read_text()
+    start=source.index(signature+name+'(')
     parts.append(source[start:source.index('\n}',start)+2])
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-cc -std=c11 -D_DEFAULT_SOURCE -g -fsanitize=address,undefined -Wno-deprecated-declarations \
+cc -std=c11 -D_DEFAULT_SOURCE -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wno-deprecated-declarations \
   -Itests/runtime/storage_stubs -Itests/runtime/rule_pack/stubs \
-  -Icomponents/ts_storage/include -Icomponents/ts_core/ts_config/include \
+  -Icomponents/ts_storage/include -Icomponents/ts_core/ts_config/include -Icomponents/ts_security/include \
   -I"$STORAGE_PATH_TEST_BUILD" -Icomponents/ts_config_pack/include -Icomponents/ts_api/include -I"$IDF_PATH/components/json/cJSON" \
   tests/runtime/test_storage_paths.c "$IDF_PATH/components/json/cJSON/cJSON.c" \
   -lpthread -o "$STORAGE_PATH_TEST_BUILD/paths"

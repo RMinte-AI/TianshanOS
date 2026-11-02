@@ -9,6 +9,8 @@
 
 #include "ts_api.h"
 #include "ts_config_pack.h"
+#include "ts_security.h"
+#include "ts_storage.h"
 #include "ts_core.h"  /* TS_STRDUP_PSRAM, TS_CALLOC_PSRAM */
 #include "ts_log.h"
 #include "freertos/FreeRTOS.h"
@@ -46,7 +48,8 @@ static const char *s_category_names[] = {
     [TS_API_CAT_POWER]   = "power",
     [TS_API_CAT_NETWORK] = "network",
     [TS_API_CAT_DEVICE]  = "device",
-    [TS_API_CAT_STORAGE] = "storage"
+    [TS_API_CAT_STORAGE] = "storage",
+    [TS_API_CAT_SECURITY] = "security"
 };
 
 /*===========================================================================*/
@@ -271,6 +274,63 @@ esp_err_t ts_api_unregister(const char *name)
     return ESP_OK;
 }
 
+void ts_api_parse_query(cJSON *params, char *query)
+{
+    // Parse query string parameters
+    char *saveptr = NULL;
+    char *pair = strtok_r(query, "&", &saveptr);
+    while (pair) {
+        char *eq = strchr(pair, '=');
+        if (eq) {
+            *eq = '\0';
+            char *key = pair;
+            char *value = eq + 1;
+
+            // URL decode the value
+            char *src = value;
+            char *dst = value;
+            while (*src) {
+                if (*src == '%' && src[1] && src[2]) {
+                    int high = src[1];
+                    int low = src[2];
+                    // Convert hex
+                    if (high >= '0' && high <= '9') high -= '0';
+                    else if (high >= 'A' && high <= 'F') high = high - 'A' + 10;
+                    else if (high >= 'a' && high <= 'f') high = high - 'a' + 10;
+                    else { *dst++ = *src++; continue; }
+
+                    if (low >= '0' && low <= '9') low -= '0';
+                    else if (low >= 'A' && low <= 'F') low = low - 'A' + 10;
+                    else if (low >= 'a' && low <= 'f') low = low - 'a' + 10;
+                    else { *dst++ = *src++; continue; }
+
+                    *dst++ = (char)((high << 4) | low);
+                    src += 3;
+                } else if (*src == '+') {
+                    *dst++ = ' ';
+                    src++;
+                } else {
+                    *dst++ = *src++;
+                }
+            }
+            *dst = '\0';
+
+            // Try to parse as number first
+            char *endptr;
+            long num = strtol(value, &endptr, 10);
+            if (*endptr == '\0' && value[0] != '\0') {
+                // It's a number
+                cJSON_AddNumberToObject(params, key, num);
+            } else {
+                // It's a string
+                cJSON_AddStringToObject(params, key, value);
+            }
+        }
+        pair = strtok_r(NULL, "&", &saveptr);
+    }
+}
+
+
 esp_err_t ts_api_call(const char *name, const cJSON *params, ts_api_result_t *result)
 {
     if (!s_api.initialized) {
@@ -309,6 +369,60 @@ esp_err_t ts_api_call(const char *name, const cJSON *params, ts_api_result_t *re
         ts_api_result_error(result, TS_API_ERR_INTERNAL, "Handler error");
     }
     
+    return ret;
+}
+
+esp_err_t ts_api_call_for_session(const char *name, const cJSON *params,
+                                  uint32_t session_id, ts_api_result_t *result)
+{
+    if (!name || !result) return ESP_ERR_INVALID_ARG;
+    ts_api_result_init(result);
+    cJSON *info = ts_api_get_info(name);
+    if (!info) {
+        ts_api_result_error(result, TS_API_ERR_NOT_FOUND, "API not found");
+        return ESP_ERR_NOT_FOUND;
+    }
+    const cJSON *auth = cJSON_GetObjectItemCaseSensitive(info, "requires_auth");
+    if (!cJSON_IsBool(auth)) {
+        cJSON_Delete(info);
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "API policy unavailable");
+        return ESP_FAIL;
+    }
+    bool needs_auth = cJSON_IsTrue(auth);
+    cJSON_Delete(info);
+    bool source_secrets = true;
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    ts_session_t session;
+    ts_perm_level_t level = TS_PERM_NONE;
+    if (session_id && ts_security_validate_session(session_id, &session) == ESP_OK)
+        level = session.level;
+    source_secrets = level >= TS_PERM_ROOT;
+    bool root_only = needs_auth && !strncmp(name, "automation.", 11) &&
+        strcmp(name, "automation.actions.execute") &&
+        strcmp(name, "automation.rules.trigger") &&
+        strcmp(name, "automation.services.list") &&
+        strcmp(name, "automation.services.status") &&
+        strcmp(name, "automation.services.stop");
+    ts_perm_level_t required = root_only ? TS_PERM_ROOT :
+        !strcmp(name, "ui.widgets.set") ? TS_PERM_ADMIN : TS_PERM_READ;
+    const cJSON *path = !strcmp(name, "storage.read") ? cJSON_GetObjectItem(params, "path") : NULL;
+    if ((needs_auth && level < required) ||
+        (cJSON_IsString(path) && ts_storage_check_write_path(path->valuestring, false) != ESP_OK && !source_secrets)) {
+        ts_api_result_error(result, TS_API_ERR_AUTH, "Unauthorized");
+        return ESP_ERR_NOT_ALLOWED;
+    }
+#else
+    (void)needs_auth;
+    (void)session_id;
+#endif
+    esp_err_t ret = ts_api_call(name, params, result);
+    if (!strcmp(name, "automation.sources.list") && !source_secrets && result->data) {
+        cJSON *source;
+        cJSON_ArrayForEach(source, cJSON_GetObjectItemCaseSensitive(result->data, "sources")) {
+            cJSON_DeleteItemFromObjectCaseSensitive(source, "rest_auth");
+            cJSON_DeleteItemFromObjectCaseSensitive(source, "auth_header");
+        }
+    }
     return ret;
 }
 

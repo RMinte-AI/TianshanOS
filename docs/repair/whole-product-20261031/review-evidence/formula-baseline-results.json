@@ -1,0 +1,153 @@
+{
+  "kind": "BASELINE_COMPATIBILITY_PROBE_ONLY",
+  "source": "components/ts_webui/web/js/app.js",
+  "source_sha256": "7aa884935f38ce706d2eb8857eaea483dee5d17cbefcd6cf30b9fc4f89c93771",
+  "function_first_line": 3475,
+  "method": "Actual baseline evaluateExpression in isolated Node VM; fixed benign math/text inputs only; not a firmware/browser/security or repaired-code test",
+  "cases": [
+    {
+      "id": "direct",
+      "expression": "${temp}",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 42.36,
+      "actual": 42.36,
+      "matches": true
+    },
+    {
+      "id": "zero",
+      "expression": "${used}",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 0,
+      "actual": 0,
+      "matches": true
+    },
+    {
+      "id": "convert",
+      "expression": "${temp} * 1.8 + 32",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 108.248,
+      "actual": 108.248,
+      "matches": true
+    },
+    {
+      "id": "round",
+      "expression": "Math.round(${temp} * 10) / 10",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 42.4,
+      "actual": 42.4,
+      "matches": true
+    },
+    {
+      "id": "clamp",
+      "expression": "Math.min(100, Math.max(0, ${temp}))",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 42.36,
+      "actual": 42.36,
+      "matches": true
+    },
+    {
+      "id": "fixed",
+      "expression": "(${temp}).toFixed(1)",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "42.4",
+      "actual": "42.4",
+      "matches": true
+    },
+    {
+      "id": "condition",
+      "expression": "${temp} > 40 ? \"偏热\" : \"正常\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "偏热",
+      "actual": "偏热",
+      "matches": true
+    },
+    {
+      "id": "boolean",
+      "expression": "${enabled} && ${temp} >= 40 ? \"偏热\" : \"正常\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "偏热",
+      "actual": "偏热",
+      "matches": true
+    },
+    {
+      "id": "unit",
+      "expression": "${temp} + \" °C\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "42.36 °C",
+      "actual": "42.36 °C",
+      "matches": true
+    },
+    {
+      "id": "label",
+      "expression": "${name} + \" \" + Math.round(${temp}) + \" °C\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "GPU 42 °C",
+      "actual": "GPU 42 °C",
+      "matches": true
+    },
+    {
+      "id": "negative",
+      "expression": "(-${temp} + 2) / 2",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": -20.18,
+      "actual": -20.18,
+      "matches": true
+    }
+  ],
+  "all_match": true
+}

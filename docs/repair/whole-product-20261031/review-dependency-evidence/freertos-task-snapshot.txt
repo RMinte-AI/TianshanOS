@@ -1,0 +1,88 @@
+Source: /Users/massif/esp/v5.5.2/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c
+SHA256: 193c3d8379acc847097632da8e6d4dd2ee0bf8e069d78979d68dd26b653d48df
+2965: #endif /* configSUPPORT_STATIC_ALLOCATION */
+2966: /*-----------------------------------------------------------*/
+2967:
+2968: #if ( configUSE_TRACE_FACILITY == 1 )
+2969:
+2970:     UBaseType_t uxTaskGetSystemState( TaskStatus_t * const pxTaskStatusArray,
+2971:                                       const UBaseType_t uxArraySize,
+2972:                                       configRUN_TIME_COUNTER_TYPE * const pulTotalRunTime )
+2973:     {
+2974:         UBaseType_t uxTask = 0, uxQueue = configMAX_PRIORITIES;
+2975:
+2976:         prvENTER_CRITICAL_OR_SUSPEND_ALL( &xKernelLock );
+2977:         {
+2978:             /* Is there a space in the array for each task in the system? */
+2979:             if( uxArraySize >= uxCurrentNumberOfTasks )
+2980:             {
+2981:                 /* Fill in an TaskStatus_t structure with information on each
+2982:                  * task in the Ready state. */
+2983:                 do
+2984:                 {
+2985:                     uxQueue--;
+2986:                     uxTask += prvListTasksWithinSingleList( &( pxTaskStatusArray[ uxTask ] ), &( pxReadyTasksLists[ uxQueue ] ), eReady );
+2987:                 } while( uxQueue > ( UBaseType_t ) tskIDLE_PRIORITY ); /*lint !e961 MISRA exception as the casts are only redundant for some ports. */
+2988:
+2989:                 /* Fill in an TaskStatus_t structure with information on each
+2990:                  * task in the Blocked state. */
+2991:                 uxTask += prvListTasksWithinSingleList( &( pxTaskStatusArray[ uxTask ] ), ( List_t * ) pxDelayedTaskList, eBlocked );
+2992:                 uxTask += prvListTasksWithinSingleList( &( pxTaskStatusArray[ uxTask ] ), ( List_t * ) pxOverflowDelayedTaskList, eBlocked );
+2993:
+2994:                 #if ( INCLUDE_vTaskDelete == 1 )
+2995:                 {
+2996:                     /* Fill in an TaskStatus_t structure with information on
+2997:                      * each task that has been deleted but not yet cleaned up. */
+2998:                     uxTask += prvListTasksWithinSingleList( &( pxTaskStatusArray[ uxTask ] ), &xTasksWaitingTermination, eDeleted );
+2999:                 }
+3000:                 #endif
+3001:
+3002:                 #if ( INCLUDE_vTaskSuspend == 1 )
+3003:                 {
+3004:                     /* Fill in an TaskStatus_t structure with information on
+3005:                      * each task in the Suspended state. */
+3006:                     uxTask += prvListTasksWithinSingleList( &( pxTaskStatusArray[ uxTask ] ), &xSuspendedTaskList, eSuspended );
+3007:                 }
+3008:                 #endif
+3009:
+3010:                 #if ( configGENERATE_RUN_TIME_STATS == 1 )
+3011:                 {
+3012:                     if( pulTotalRunTime != NULL )
+3013:                     {
+3014:                         #ifdef portALT_GET_RUN_TIME_COUNTER_VALUE
+3015:                             portALT_GET_RUN_TIME_COUNTER_VALUE( ( *pulTotalRunTime ) );
+3016:                         #else
+3017:                             *pulTotalRunTime = portGET_RUN_TIME_COUNTER_VALUE();
+3018:                         #endif
+3019:                     }
+3020:                 }
+3021:                 #else /* if ( configGENERATE_RUN_TIME_STATS == 1 ) */
+3022:                 {
+3023:                     if( pulTotalRunTime != NULL )
+3024:                     {
+3025:                         *pulTotalRunTime = 0;
+3026:                     }
+3027:                 }
+3028:                 #endif /* if ( configGENERATE_RUN_TIME_STATS == 1 ) */
+3029:             }
+3030:             else
+3031:             {
+3032:                 mtCOVERAGE_TEST_MARKER();
+3033:             }
+3034:         }
+3035:         ( void ) prvEXIT_CRITICAL_OR_RESUME_ALL( &xKernelLock );
+3036:
+3037:         return uxTask;
+3038:     }
+3039:
+3040: #endif /* configUSE_TRACE_FACILITY */
+3041: /*----------------------------------------------------------*/
+3042:
+3043: #if ( INCLUDE_xTaskGetIdleTaskHandle == 1 )
+3044:
+3045:     TaskHandle_t xTaskGetIdleTaskHandle( void )
+3046:     {
+3047:         return xTaskGetIdleTaskHandleForCore( portGET_CORE_ID() );
+3048:     }
+3049:
+3050: #endif /* INCLUDE_xTaskGetIdleTaskHandle */

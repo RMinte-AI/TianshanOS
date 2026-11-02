@@ -1,0 +1,3 @@
+PASS long ordinary SSH: late success/failure/extraction and split patterns with stop enabled/disabled
+PASS ordinary rule SSH: saved match/extract/stop options, real exit code, timeout, expansion, replaced variables and option-free path
+PASS service API/executor: queued plan and persistence before launch, stale start cancellation, responsive cached reads, admitted-I/O cleanup, deleted-definition controls, frozen target, expiry, queue rejection and unknown remote state

@@ -1,4 +1,4 @@
-"""Exercise production HTTP authorization with local API/storage boundaries."""
+"""Exercise production credentials, sessions and HTTP authorization offline."""
 from pathlib import Path
 import os
 import re
@@ -8,10 +8,10 @@ import tempfile
 source = Path('components/ts_webui/src/ts_webui_api.c').read_text()
 
 
-def extract(name):
-    match = re.search(r'^static [^\n;]+\b' + name + r'\([^;]+?\)\s*\{', source, re.M)
+def extract(name, implementation=source):
+    match = re.search(r'^(?:static )?[^\n;]+\b' + name + r'\([^;]+?\)\s*\{', implementation, re.M)
     assert match, name
-    return source[match.start():source.index('\n}', match.start()) + 2] + '\n'
+    return implementation[match.start():implementation.index('\n}', match.start()) + 2] + '\n'
 
 
 code = r'''
@@ -26,12 +26,23 @@ code = r'''
 #include <string.h>
 #include "cJSON.h"
 typedef int esp_err_t;
-enum { ESP_OK=0, ESP_FAIL=-1, ESP_ERR_NOT_FOUND=1, ESP_ERR_NOT_ALLOWED=2, TS_API_OK=0, TS_API_ERR_NOT_FOUND=3 };
+enum { ESP_OK=0, ESP_FAIL=-1, ESP_ERR_NOT_FOUND=1, ESP_ERR_NOT_ALLOWED=2, ESP_ERR_INVALID_ARG=4, TS_API_OK=0, TS_API_ERR_NOT_FOUND=3, TS_API_ERR_INTERNAL=7, TS_API_ERR_INVALID_ARG=1, TS_API_ERR_AUTH=11, ESP_ERR_NO_MEM=0x101, TS_API_ERR_NO_MEM=6 };
 typedef enum { TS_PERM_NONE=0, TS_PERM_READ=1, TS_PERM_ADMIN=3, TS_PERM_ROOT=4 } ts_perm_level_t;
-typedef struct { int content_len; } httpd_req_t;
+typedef struct { int content_len;const char *query; } httpd_req_t;
 typedef struct { httpd_req_t *req; const char *uri; int method; const char *body; size_t body_len; const char *auth; const char *path; } ts_http_request_t;
 typedef struct { int code; char *message; cJSON *data; } ts_api_result_t;
-static int status, calls;
+typedef struct { uint32_t session_id; ts_perm_level_t level; } ts_session_t;
+static bool session_live = true;
+static esp_err_t ts_security_validate_session(uint32_t sid, ts_session_t *session) {
+    if (!session_live || !sid || sid > 3) return ESP_ERR_NOT_FOUND;
+    if (session) *session = (ts_session_t){sid,sid==1?TS_PERM_ROOT:sid==2?TS_PERM_ADMIN:TS_PERM_READ};
+    return ESP_OK;
+}
+static void ts_api_result_init(ts_api_result_t *r) {memset(r,0,sizeof(*r));}
+static void ts_api_result_error(ts_api_result_t *r,int code,const char *message) {r->code=code;r->message=strdup(message);}
+static bool fail_query_copy;
+static char *query_strdup(const char *s){return fail_query_copy?NULL:strdup(s);}
+static int status, calls;static cJSON *received_params;static char received_name[64];
 static char *response;
 #define TS_LOGD(...) ((void)0)
 #define TS_LOGI(...) ((void)0)
@@ -39,14 +50,15 @@ static char *response;
 #define TS_API_MALLOC(size) malloc(size)
 static const char *esp_err_to_name(int e) {(void)e; return "error";}
 static int64_t esp_timer_get_time(void) {return 0;}
-static size_t httpd_req_get_url_query_len(httpd_req_t *r) {(void)r;return 0;}
-static esp_err_t httpd_req_get_url_query_str(httpd_req_t *r,char *b,size_t n) {(void)r;(void)b;(void)n;return ESP_FAIL;}
+static size_t httpd_req_get_url_query_len(httpd_req_t *r) {return r->query?strlen(r->query):0;}
+static esp_err_t httpd_req_get_url_query_str(httpd_req_t *r,char *b,size_t n) {assert(r->query&&strlen(r->query)<n);strcpy(b,r->query);return ESP_OK;}
 static esp_err_t ts_http_get_header(ts_http_request_t *r,const char *key,char *out,size_t n) {
     (void)key;if (!r->auth) return ESP_ERR_NOT_FOUND;snprintf(out,n,"Bearer %s",r->auth);return ESP_OK;
 }
 static esp_err_t ts_auth_validate_request(const char *header,uint32_t *session,ts_perm_level_t *level) {
     if (!strcmp(header,"Bearer root")) {*session=1;*level=TS_PERM_ROOT;return ESP_OK;}
     if (!strcmp(header,"Bearer admin")) {*session=2;*level=TS_PERM_ADMIN;return ESP_OK;}
+    if (!strcmp(header,"Bearer read")) {*session=3;*level=TS_PERM_READ;return ESP_OK;}
     return ESP_ERR_NOT_FOUND;
 }
 static esp_err_t ts_http_send_error(ts_http_request_t *r,int code,const char *message) {
@@ -65,13 +77,15 @@ static esp_err_t ts_storage_check_write_path(const char *path,bool children) {
     (void)children;return strstr(path,"/config/automation/")||!strncmp(path,"/autocfg/",9)?ESP_ERR_NOT_ALLOWED:ESP_OK;
 }
 static cJSON *ts_api_get_info(const char *name) {
+    if (!strcmp(name,"missing")) return NULL;
     cJSON *info=cJSON_CreateObject();
-    bool required=!strcmp(name,"automation.sources.export")||!strcmp(name,"automation.actions.add")||!strcmp(name,"ui.widgets.set")||
+    bool required=!strncmp(name,"storage.",8)&&strcmp(name,"storage.read")&&strcmp(name,"storage.list")&&strcmp(name,"storage.status")&&strcmp(name,"storage.info");
+    required=required||!strcmp(name,"ssh.exec")||!strcmp(name,"ssh.cancel")||!strcmp(name,"automation.sources.export")||!strcmp(name,"automation.actions.add")||
         !strncmp(name,"automation.services.",20)||!strcmp(name,"automation.rules.trigger")||!strcmp(name,"automation.actions.execute");
     cJSON_AddBoolToObject(info,"requires_auth",required);return info;
 }
 static esp_err_t ts_api_call(const char *name,const cJSON *request,ts_api_result_t *result) {
-    (void)request;++calls;result->code=0;result->data=cJSON_CreateObject();
+    ++calls;strcpy(received_name,name);cJSON_Delete(received_params);received_params=cJSON_Duplicate(request,true);result->code=0;result->data=cJSON_CreateObject();
     if(!strcmp(name,"automation.sources.list")) {
         cJSON *items=cJSON_AddArrayToObject(result->data,"sources"),*row=cJSON_CreateObject();
         cJSON_AddStringToObject(row,"id","weather");cJSON_AddStringToObject(row,"rest_auth","secret");cJSON_AddStringToObject(row,"auth_header","alias-secret");cJSON_AddItemToArray(items,row);
@@ -85,11 +99,45 @@ static esp_err_t send_key_generate_result(ts_http_request_t *r,ts_api_result_t *
     (void)r;(void)result;(void)id;(void)start;return ESP_OK;
 }
 '''
-code += extract('check_auth') + extract('api_handler') + extract('url_decode') + extract('file_download_handler')
+metadata = r"""
+typedef struct { const char *name, *description; int category; void *handler; bool requires_auth; } ts_api_endpoint_t;
+#define TS_API_CAT_STORAGE 0
+#define TS_API_CAT_SECURITY 1
+#define TS_API_CAT_SYSTEM 2
+"""
+for filename, array in [('ts_api_storage.c','s_storage_endpoints'),('ts_api_ssh.c','ssh_endpoints'),('ts_api_ui.c','ui_endpoints')]:
+    implementation = Path('components/ts_api/src', filename).read_text()
+    start = implementation.index('static const ts_api_endpoint_t ' + array + '[]')
+    table = implementation[start:implementation.index('\n};', start) + 3]
+    for handler in set(re.findall(r'\.handler\s*=\s*(\w+)', table)):
+        metadata += '#define ' + handler + ' NULL\n'
+    metadata += table + '\n'
+# Insert declarations before get_info; its metadata decisions come from real tables.
+marker = 'static cJSON *ts_api_get_info'
+index = code.index(marker)
+code = code[:index] + metadata + code[index:]
+marker = '    cJSON_AddBoolToObject(info,"requires_auth",required);return info;'
+code = code.replace(marker, r"""
+    for(unsigned i=0;i<sizeof(s_storage_endpoints)/sizeof(s_storage_endpoints[0]);i++)
+        if(!strcmp(s_storage_endpoints[i].name,name))required=s_storage_endpoints[i].requires_auth;
+    for(unsigned i=0;i<sizeof(ssh_endpoints)/sizeof(ssh_endpoints[0]);i++)
+        if(!strcmp(ssh_endpoints[i].name,name))required=ssh_endpoints[i].requires_auth;
+    for(unsigned i=0;i<sizeof(ui_endpoints)/sizeof(ui_endpoints[0]);i++)
+        if(!strcmp(ui_endpoints[i].name,name))required=ui_endpoints[i].requires_auth;
+    cJSON_AddBoolToObject(info,"requires_auth",required);return info;
+""", 1)
+code += extract('ts_api_parse_query', Path('components/ts_api/src/ts_api.c').read_text())
+code += extract('ts_api_call_for_session', Path('components/ts_api/src/ts_api.c').read_text())
+# Keep the actual local proxy branch; the external network path is forbidden in this offline fixture.
+proxy_root=Path(os.environ.get('SOURCE_BASELINE_ROOT','.'))
+proxy = extract('ts_api_automation_proxy_fetch_for_session', (proxy_root/'components/ts_api/src/ts_api_automation.c').read_text())
+code += '#define strdup query_strdup\n' + proxy[:proxy.index('    // 外部 HTTP 请求')] + '    assert(!"external network reached"); return ESP_FAIL;\n}\n#undef strdup\n'
+code += extract('api_automation_proxy_fetch', Path('components/ts_api/src/ts_api_automation.c').read_text())
+code += extract('check_auth') + extract('api_handler') + extract('file_download_handler')
 code += r'''
 static void api(const char *uri,const char *body,const char *auth,int expected_status) {
-    httpd_req_t native={0};ts_http_request_t req={.req=&native,.uri=uri,.method=1,.body=body,.body_len=body?strlen(body):0,.auth=auth};
-    status=0;free(response);response=NULL;api_handler(&req,NULL);assert(status==expected_status);
+    const char *query=strchr(uri,'?');httpd_req_t native={.query=query?query+1:NULL};ts_http_request_t req={.req=&native,.uri=uri,.method=1,.body=body,.body_len=body?strlen(body):0,.auth=auth};
+    status=0;free(response);response=NULL;api_handler(&req,NULL);if(status!=expected_status)fprintf(stderr,"HTTP %s expected %d received %d: %s\n",uri,expected_status,status,response?response:"");assert(status==expected_status);
 }
 static void file(const char *path,const char *auth,int expected_status) {
     ts_http_request_t req={.path=path,.auth=auth};status=0;file_download_handler(&req,NULL);assert(status==expected_status);
@@ -112,6 +160,8 @@ int main(void) {
     }
     api("/api/v1/ui/widgets/set","{}",NULL,401);
     api("/api/v1/ui/widgets/set","{}","admin",200);
+    api("/api/v1/ui/widgets/set","{}","root",200);
+    api("/api/v1/ui/widgets/get",NULL,NULL,200);
     api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}",NULL,401);
     api("/api/v1/storage/read","{\"Path\":\"/sdcard/config/automation/state.json\"}",NULL,401);
     api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}","root",200);
@@ -120,7 +170,72 @@ int main(void) {
     file("/sdcard/config/automation/state.json","admin",401);
     file("/sdcard/config/automation/state.json","root",200);
     file("/sdcard/hello.txt",NULL,200);
-    free(response);puts("PASS source secrets, protected files, role policy and public reads");
+    const char *writes[]={"storage.mount","storage.unmount","storage.delete","storage.mkdir","storage.rename","ssh.exec","ssh.cancel"};
+    for(unsigned i=0;i<sizeof(writes)/sizeof(writes[0]);++i) {
+        char uri[96]; snprintf(uri,sizeof(uri),"/api/v1/%s",writes[i]);
+        before=calls;api(uri,"{}",NULL,401);assert(calls==before);
+        api(uri,"{}","admin",200);api(uri,"{}","root",200);assert(calls==before+2);
+    }
+    api("/api/v1/ui/widgets/set","{}","read",401);
+    const char *targets[]={"system.memory","ssh.exec","automation.sources.export","automation.sources.list"};
+    for(unsigned i=0;i<4;i++)for(uint32_t sid=0;sid<=2;sid++) {
+        char url[160];snprintf(url,sizeof(url),"http://127.0.0.1/api/v1/%s",targets[i]);
+        cJSON *params=cJSON_CreateObject();cJSON_AddStringToObject(params,"url",url);
+        cJSON_AddNumberToObject(params,"session_id",1);cJSON *headers=cJSON_AddObjectToObject(params,"headers");
+        cJSON_AddStringToObject(headers,"Authorization","Bearer root");
+        ts_api_result_t direct={0},proxy={0};
+        ts_api_call_for_session(targets[i],NULL,sid,&direct);
+        ts_api_automation_proxy_fetch_for_session(params,sid,&proxy);
+        assert(direct.code==proxy.code);
+        if(direct.code==TS_API_OK && !strcmp(targets[i],"automation.sources.list")) {
+            char *d=cJSON_PrintUnformatted(direct.data),*p=cJSON_PrintUnformatted(proxy.data);
+            assert(!!strstr(d,"secret")==!!strstr(p,"secret"));assert(!!strstr(p,"secret")== (sid==1));free(d);free(p);
+        }
+        ts_api_result_free(&direct);ts_api_result_free(&proxy);cJSON_Delete(params);
+    }
+    cJSON *params=cJSON_Parse("{\"url\":\"http://localhost/api/v1/ssh.exec\",\"session_id\":1}");
+    ts_api_result_t denied={0};before=calls;api_automation_proxy_fetch(params,&denied);
+    assert(denied.code==TS_API_ERR_AUTH && calls==before);ts_api_result_free(&denied);cJSON_Delete(params);
+    /* Query grammar reaches the actual HTTP dispatch and local proxy receiver. */
+    api("/api/v1/hosts/info?host=192.0.2.8&port=2222&label=A+B%252E&empty=&bad=%Q2&h%6fst=key&bare&dup=first&dup=second",
+        "{\"host\":\"body\",\"extra\":7}",NULL,200);
+    assert(!strcmp(received_name,"hosts.info"));
+    assert(cJSON_IsString(cJSON_GetObjectItem(received_params,"host"))&&!strcmp(cJSON_GetObjectItem(received_params,"host")->valuestring,"192.0.2.8"));
+    assert(cJSON_GetObjectItem(received_params,"port")->valueint==2222&&cJSON_IsNumber(cJSON_GetObjectItem(received_params,"port")));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"label")->valuestring,"A B%2E"));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"empty")->valuestring,"")&&!strcmp(cJSON_GetObjectItem(received_params,"bad")->valuestring,"%Q2"));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"h%6fst")->valuestring,"key")&&!cJSON_GetObjectItem(received_params,"bare"));
+    assert(!strcmp(cJSON_GetObjectItem(received_params,"dup")->valuestring,"first")&&cJSON_GetObjectItem(received_params,"extra")->valueint==7);
+    /* Original cJSON append order retains duplicate query/body items, unchanged. */
+    unsigned hosts=0,dups=0;for(cJSON *i=received_params->child;i;i=i->next){hosts+=!strcmp(i->string,"host");dups+=!strcmp(i->string,"dup");}assert(hosts==2&&dups==2);
+    const char *query_targets[]={"system.memory","hosts.info","ssh.exec","automation.sources.export","storage.read"};
+    for(unsigned i=0;i<5;++i)for(uint32_t sid=0;sid<=3;++sid){
+        const char *query="host=192.0.2.8&port=2222&label=A+B%252E&session_id=1&path=%2Fsdcard%2Fconfig%2Fautomation%2Fstate.json";
+        cJSON *expected=cJSON_Parse("{\"host\":\"192.0.2.8\",\"port\":2222,\"label\":\"A B%2E\",\"session_id\":1,\"path\":\"/sdcard/config/automation/state.json\"}");
+        ts_api_result_t direct={0},proxy_result={0};ts_api_call_for_session(query_targets[i],expected,sid,&direct);
+        char url[320];snprintf(url,sizeof(url),"http://localhost/api/v1/%s?%s",query_targets[i],query);
+        cJSON *input=cJSON_CreateObject();cJSON_AddStringToObject(input,"url",url);cJSON_AddNumberToObject(input,"session_id",1);
+        int previous=calls;ts_api_automation_proxy_fetch_for_session(input,sid,&proxy_result);
+        assert(proxy_result.code==direct.code);
+        if(direct.code==TS_API_OK){
+            assert(calls==previous+1&&!strcmp(received_name,query_targets[i]));
+            assert(cJSON_IsString(cJSON_GetObjectItem(received_params,"host"))&&!strcmp(cJSON_GetObjectItem(received_params,"host")->valuestring,"192.0.2.8"));
+            assert(cJSON_GetObjectItem(received_params,"port")->valueint==2222&&!strcmp(cJSON_GetObjectItem(received_params,"label")->valuestring,"A B%2E"));
+        }else assert(calls==previous);
+        ts_api_result_free(&direct);ts_api_result_free(&proxy_result);cJSON_Delete(input);cJSON_Delete(expected);
+    }
+    fail_query_copy=true;before=calls;
+    cJSON *allocation_input=cJSON_Parse("{\"url\":\"http://localhost/api/v1/hosts/info?host=192.0.2.8\"}");ts_api_result_t allocation_result={0};
+    assert(ts_api_automation_proxy_fetch_for_session(allocation_input,1,&allocation_result)==ESP_ERR_NO_MEM&&allocation_result.code==TS_API_ERR_NO_MEM&&calls==before);
+    ts_api_result_free(&allocation_result);cJSON_Delete(allocation_input);fail_query_copy=false;
+    /* The verified HTTP caller, not query or nested JSON, supplies proxy identity. */
+    before=calls;api("/api/v1/automation/proxy/fetch?session_id=1","{\"url\":\"http://localhost/api/v1/ssh/exec?session_id=1\"}",NULL,200);assert(calls==before);cJSON *refused=cJSON_Parse(response);assert(cJSON_GetObjectItem(refused,"code")->valueint==TS_API_ERR_AUTH);cJSON_Delete(refused);
+    api("/api/v1/automation/proxy/fetch","{\"url\":\"http://localhost/api/v1/hosts/info?host=192.0.2.8&port=2222\"}",NULL,200);
+    assert(!strcmp(received_name,"hosts.info")&&!strcmp(cJSON_GetObjectItem(received_params,"host")->valuestring,"192.0.2.8"));
+    session_live=false;
+    api("/api/v1/system/memory",NULL,"root",200);api("/api/v1/ssh/exec","{}","root",401);
+    api("/api/v1/automation/sources/list",NULL,"root",200);assert(!strstr(response,"secret"));session_live=true;
+    cJSON_Delete(received_params);free(response);puts("PASS shared HTTP/local proxy roles, public reads, protected paths, redaction, forged JSON and revoked sessions");
 }
 '''
 
@@ -129,6 +244,237 @@ cjson = idf / 'components/json/cJSON'
 with tempfile.TemporaryDirectory(prefix='ts-sensitive-auth-') as directory:
     build = Path(directory)
     (build / 'test.c').write_text(code)
-    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-I' + str(cjson),
+    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-I' + str(cjson),
                     str(build / 'test.c'), str(cjson / 'cJSON.c'), '-o', str(build / 'test')], check=True)
     subprocess.run([str(build / 'test')], check=True)
+    noauth = code.replace('#define CONFIG_TS_WEBUI_AUTH_REQUIRED 1', '')
+    start = noauth.index('int main(void) {')
+    noauth = noauth[:start] + r"""
+int main(void) {
+    api("/api/v1/automation/sources/export","{}",NULL,200);
+    api("/api/v1/ui/widgets/set","{}",NULL,200);
+    api("/api/v1/ui/widgets/get",NULL,NULL,200);
+    api("/api/v1/storage/read","{\"path\":\"/sdcard/config/automation/state.json\"}",NULL,200);
+    api("/api/v1/automation/sources/list",NULL,NULL,200);assert(strstr(response,"secret"));
+    cJSON_Delete(received_params);free(response);puts("PASS auth-disabled shared API preserves original public/internal behavior");
+}
+"""
+    (build / 'noauth.c').write_text(noauth)
+    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-I' + str(cjson),
+                    str(build / 'noauth.c'), str(cjson / 'cJSON.c'), '-o', str(build / 'noauth')], check=True)
+    subprocess.run([str(build / 'noauth')], check=True)
+
+
+# Run the production credential/session implementation with a persistent NVS
+# fixture and a controllable boot clock. Crypto uses the SDK's actual routines.
+auth_code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "ts_security.h"
+#include "ts_auth_layout.h"
+#include "ts_crypto.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/sha256.h"
+#include "mbedtls/sha512.h"
+#define CONFIG_TS_SECURITY_TOKEN_EXPIRE_SEC 86400
+#define TS_CONFIG_KEYS_PARTITION "keys"
+#define NVS_READWRITE 1
+#define TS_MALLOC_PSRAM malloc
+typedef int nvs_handle_t;
+static ts_auth_user_credential_t stored[2];
+static bool present[2];
+static uint8_t version;
+static int writes;
+static int open_handles, fail_write_user=-1;
+static int64_t clock_us;
+static uint32_t random_state=12345;
+static char logs[8192];
+static void capture_log(const char *tag,const char *format,...) {
+    (void)tag;
+    size_t used=strlen(logs);
+    va_list ap;va_start(ap,format);vsnprintf(logs+used,sizeof(logs)-used,format,ap);va_end(ap);
+}
+#define TS_LOGI capture_log
+#define TS_LOGW capture_log
+#define TS_LOGE capture_log
+static const char *esp_err_to_name(int e) {(void)e;return "fixture error";}
+static int64_t esp_timer_get_time(void) {return clock_us;}
+static void esp_fill_random(void *p,size_t n) {
+    for(size_t i=0;i<n;i++){random_state=random_state*1664525+1013904223;((uint8_t *)p)[i]=random_state>>24;}
+}
+static int user_index(const char *key) {
+    if(!strcmp(key,"cred_admin"))return 0;
+    assert(!strcmp(key,"cred_root"));return 1;
+}
+static int nvs_open(const char *name,int mode,nvs_handle_t *handle) {(void)name;(void)mode;*handle=++open_handles;return ESP_OK;}
+static int nvs_open_from_partition(const char *part,const char *name,int mode,nvs_handle_t *handle) {
+    (void)part;return nvs_open(name,mode,handle);
+}
+static void nvs_close(nvs_handle_t handle) {(void)handle;assert(open_handles>0);--open_handles;}
+static int nvs_get_blob(nvs_handle_t handle,const char *key,void *out,size_t *len) {
+    (void)handle;int i=user_index(key);if(!present[i])return ESP_ERR_NOT_FOUND;
+    assert(*len>=sizeof(stored[i]));memcpy(out,&stored[i],sizeof(stored[i]));*len=sizeof(stored[i]);return ESP_OK;
+}
+static int nvs_set_blob(nvs_handle_t handle,const char *key,const void *data,size_t len) {
+    (void)handle;int i=user_index(key);assert(len==sizeof(stored[i]));
+    if(i==fail_write_user){fail_write_user=-1;return ESP_FAIL;}
+    memcpy(&stored[i],data,len);present[i]=true;++writes;return ESP_OK;
+}
+static int nvs_commit(nvs_handle_t handle) {(void)handle;return ESP_OK;}
+static int nvs_get_u8(nvs_handle_t handle,const char *key,uint8_t *out) {(void)handle;(void)key;*out=version;return ESP_OK;}
+static int nvs_set_u8(nvs_handle_t handle,const char *key,uint8_t value) {(void)handle;(void)key;version=value;return ESP_OK;}
+static int nvs_erase_key(nvs_handle_t handle,const char *key) {(void)handle;(void)key;return ESP_OK;}
+static int ts_ssh_hosts_config_init(void) {return ESP_OK;}
+static int ts_ssh_commands_config_init(void) {return ESP_OK;}
+static int ts_ssh_service_init(void) {return ESP_OK;}
+static int ts_ssh_log_watch_init(void) {return ESP_OK;}
+'''
+auth_code = '#include <stdarg.h>\n' + auth_code
+crypto_source = Path('components/ts_security/src/ts_crypto.c').read_text()
+for name in ['ts_crypto_hash', 'ts_crypto_base64_encode', 'ts_crypto_base64_decode']:
+    start = crypto_source.index('esp_err_t ' + name + '(')
+    auth_code += crypto_source[start:crypto_source.index('\n}', start) + 2] + '\n'
+for filename in ['ts_security.c', 'ts_auth.c']:
+    implementation = Path('components/ts_security/src', filename).read_text()
+    auth_code += '\n#undef TAG\n' + re.sub(r'^#include[^\n]*\n', '', implementation, flags=re.M)
+auth_code += r'''
+static void boot(void) {
+    s_auth_initialized=false;s_initialized=false;clock_us=0;open_handles=0;
+    assert(ts_security_init()==ESP_OK);assert(ts_auth_init()==ESP_OK);
+}
+static void fixture(void) {
+    boot();
+    assert(ts_auth_set_admin_password("admin-fixture")==ESP_OK);
+    assert(ts_auth_set_root_password("root-fixture")==ESP_OK);
+    logs[0]=0;
+}
+static uint32_t login(const char *user,const char *password,char *token) {
+    uint32_t sid=0;assert(ts_auth_login(user,password,&sid,token,128)==ESP_OK);return sid;
+}
+static void request(const char *token,ts_perm_level_t expected) {
+    char header[160];snprintf(header,sizeof(header),"Bearer %s",token);
+    uint32_t sid=0;ts_perm_level_t level=TS_PERM_NONE;
+    assert(ts_auth_validate_request(header,&sid,&level)==ESP_OK);assert(level==expected);
+    assert(ts_security_check_permission(sid,TS_PERM_READ));
+    assert(ts_security_check_permission(sid,TS_PERM_ROOT)==(expected==TS_PERM_ROOT));
+}
+static void lock(const char *user) {
+    for(int i=0;i<5;i++)assert(ts_auth_verify_password(user,"wrong-password",NULL)==ESP_ERR_INVALID_ARG);
+}
+int main(int argc,char **argv) {
+    assert(argc==2);fixture();const char *mode=argv[1];
+    if(!strcmp(mode,"normal")) {
+        char token[128];uint32_t sid=login("root","root-fixture",token);request(token,TS_PERM_ROOT);
+        assert(ts_auth_logout(sid)==ESP_OK);assert(ts_security_validate_token(token,&sid)!=ESP_OK);
+        sid=login("admin","admin-fixture",token);request(token,TS_PERM_ADMIN);
+        assert(ts_auth_logout(sid)==ESP_OK);
+        login("root","root-fixture",token);request(token,TS_PERM_ROOT);
+        assert(ts_auth_password_changed("admin")&&ts_auth_password_changed("root"));
+    } else if(!strcmp(mode,"sid_only")||!strcmp(mode,"altered_tail")) {
+        char token[128],forged[128];uint32_t sid=login("root","root-fixture",token),result=0;
+        uint8_t raw[16];size_t n=sizeof(raw);assert(ts_crypto_base64_decode(token,strlen(token),raw,&n)==ESP_OK);
+        if(!strcmp(mode,"sid_only")) {
+            size_t encoded=sizeof(forged);assert(ts_crypto_base64_encode(raw,4,forged,&encoded)==ESP_OK);
+            assert(ts_security_validate_token(forged,&result)!=ESP_OK);
+        } else for(size_t byte=0;byte<n;byte++) {
+            raw[byte]^=1;
+            size_t encoded=sizeof(forged);assert(ts_crypto_base64_encode(raw,n,forged,&encoded)==ESP_OK);
+            assert(ts_security_validate_token(forged,&result)!=ESP_OK);raw[byte]^=1;
+        }
+        request(token,TS_PERM_ROOT);assert(ts_auth_logout(sid)==ESP_OK);
+    } else if(!strcmp(mode,"lengths_and_unissued")) {
+        uint32_t sid=0,out=0;assert(ts_security_create_session("root",TS_PERM_ROOT,&sid)==ESP_OK);
+        uint8_t raw[17]={0};memcpy(raw,&sid,4);char token[128];
+        for(size_t len=0;len<=sizeof(raw);len++) {
+            size_t n=sizeof(token);assert(ts_crypto_base64_encode(raw,len,token,&n)==ESP_OK);
+            assert(ts_security_validate_token(token,&out)!=ESP_OK);
+        }
+        assert(ts_security_validate_token("not-base64",&out)!=ESP_OK);
+    } else if(!strcmp(mode,"expiry_and_reuse")) {
+        char first[128],second[128];uint32_t before_random=random_state;
+        uint32_t sid=login("root","root-fixture",first),out=0,reused=0;
+        assert(ts_auth_logout(sid)==ESP_OK);
+        random_state=before_random;
+        assert(ts_security_create_session("admin",TS_PERM_ADMIN,&reused)==ESP_OK&&reused==sid);
+        assert(ts_security_validate_token(first,&out)!=ESP_OK);
+        random_state^=0x12345; /* Repeat only the SID, not the next random credential. */
+        assert(ts_security_generate_token(reused,second,sizeof(second))==ESP_OK);
+        assert(ts_security_validate_token(first,&out)!=ESP_OK);request(second,TS_PERM_ADMIN);
+        clock_us=(int64_t)(CONFIG_TS_SECURITY_TOKEN_EXPIRE_SEC+1)*1000000;
+        assert(ts_security_validate_token(second,&out)!=ESP_OK);
+        login("root","root-fixture",second);request(second,TS_PERM_ROOT);
+    } else if(!strcmp(mode,"lockout")) {
+        clock_us=7LL*86400*1000000;lock("root");
+        assert(ts_auth_verify_password("root","root-fixture",NULL)==ESP_ERR_INVALID_STATE);
+        assert(ts_auth_init()==ESP_OK);
+        assert(ts_auth_verify_password("root","root-fixture",NULL)==ESP_ERR_INVALID_STATE);
+        assert(ts_auth_verify_password("admin","admin-fixture",NULL)==ESP_OK);
+        clock_us+=299LL*1000000;
+        assert(ts_auth_verify_password("root","root-fixture",NULL)==ESP_ERR_INVALID_STATE);
+        clock_us+=1000000;assert(ts_auth_verify_password("root","root-fixture",NULL)==ESP_OK);
+        assert(stored[1].failed_attempts==0&&stored[1].lockout_until==0);
+        lock("root");assert(ts_auth_verify_password("root","root-fixture",NULL)==ESP_ERR_INVALID_STATE);
+    } else if(!strcmp(mode,"reboot_locked")||!strcmp(mode,"reboot_expired")) {
+        clock_us=7LL*86400*1000000;lock("root");
+        assert(ts_auth_verify_password("admin","wrong-password",NULL)==ESP_ERR_INVALID_ARG);
+        if(!strcmp(mode,"reboot_expired")) {
+            clock_us+=300LL*1000000;assert(ts_auth_verify_password("root","root-fixture",NULL)==ESP_OK);
+            assert(stored[1].failed_attempts==0&&stored[1].lockout_until==0);
+        }
+        ts_auth_user_credential_t root=stored[1],admin=stored[0];boot();
+        assert(!memcmp(root.salt,stored[1].salt,TS_AUTH_SALT_LEN));
+        assert(!memcmp(root.hash,stored[1].hash,TS_AUTH_HASH_LEN));
+        assert(root.password_changed==stored[1].password_changed);
+        assert(!memcmp(admin.salt,stored[0].salt,TS_AUTH_SALT_LEN));
+        assert(!memcmp(admin.hash,stored[0].hash,TS_AUTH_HASH_LEN));
+        assert(admin.password_changed==stored[0].password_changed&&version==TS_AUTH_CONFIG_VERSION);
+        char token[128];login("root","root-fixture",token);request(token,TS_PERM_ROOT);
+        assert(stored[0].failed_attempts==0&&stored[0].lockout_until==0);
+        lock("root");assert(ts_auth_verify_password("root","root-fixture",NULL)==ESP_ERR_INVALID_STATE);
+    } else if(!strcmp(mode,"clean_boot")) {
+        int before=writes;boot();assert(writes==before);
+        char token[128];login("root","root-fixture",token);request(token,TS_PERM_ROOT);
+    } else if(!strcmp(mode,"init_failure_admin")||!strcmp(mode,"init_failure_root")) {
+        int user=!strcmp(mode,"init_failure_admin")?0:1;
+        stored[user].lockout_until=300;stored[user].failed_attempts=1;
+        ts_auth_user_credential_t original=stored[user];
+        s_auth_initialized=false;s_initialized=false;clock_us=0;open_handles=0;
+        assert(ts_security_init()==ESP_OK);int before=open_handles;fail_write_user=user;
+        assert(ts_auth_init()==ESP_FAIL);assert(!s_auth_initialized&&open_handles==before);
+        assert(!memcmp(&original,&stored[user],sizeof(original)));
+        assert(ts_auth_init()==ESP_OK);assert(open_handles==before+1);
+        assert(!stored[user].lockout_until&&!stored[user].failed_attempts);
+        char token[128];login(user?"root":"admin",user?"root-fixture":"admin-fixture",token);
+        request(token,user?TS_PERM_ROOT:TS_PERM_ADMIN);
+        before=open_handles;assert(ts_auth_init()==ESP_OK&&open_handles==before);
+    } else if(!strcmp(mode,"logs")) {
+        char token[128],sid_text[16];uint32_t sid=login("root","root-fixture",token);
+        snprintf(sid_text,sizeof(sid_text),"%08lx",(unsigned long)sid);
+        assert(!strstr(logs,sid_text)&&!strstr(logs,token));assert(strstr(logs,"root"));
+        assert(ts_auth_logout(sid)==ESP_OK);assert(!strstr(logs,sid_text));
+    } else assert(false);
+    printf("PASS credential/session %s\n",mode);
+}
+'''
+with tempfile.TemporaryDirectory(prefix='ts-auth-session-') as directory:
+    build = Path(directory)
+    (build / 'auth.c').write_text(auth_code)
+    mbed = idf / 'components/mbedtls/mbedtls'
+    subprocess.run(['cc', '-std=gnu11', '-g', '-Wno-deprecated-declarations', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+                    '-Itests/runtime/rule_pack/stubs', '-Icomponents/ts_security/include',
+                    '-Icomponents/ts_auth_layout/include', '-I' + str(mbed / 'include'),
+                    str(build / 'auth.c'), *[str(mbed / 'library' / name) for name in
+                                            ['base64.c', 'sha256.c', 'sha512.c', 'platform_util.c']],
+                    '-o', str(build / 'auth')], check=True)
+    failed = []
+    for case in ['normal', 'sid_only', 'altered_tail', 'lengths_and_unissued',
+                 'expiry_and_reuse', 'lockout', 'reboot_locked', 'reboot_expired', 'clean_boot',
+                 'init_failure_admin', 'init_failure_root', 'logs']:
+        result = subprocess.run([str(build / 'auth'), case])
+        if result.returncode:
+            failed.append(case)
+    assert not failed, failed

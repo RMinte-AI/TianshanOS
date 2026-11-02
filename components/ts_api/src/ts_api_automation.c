@@ -1,4 +1,5 @@
 #include "ts_api_auto_config.h"
+#include "ts_action_codec.h"
 #include "ts_rule_codec.h"
 #include "ts_ssh_service.h"
 #include <math.h>
@@ -996,25 +997,6 @@ static esp_err_t api_automation_test_ssh(const cJSON *params, ts_api_result_t *r
 
 
 /**
- * @brief Convert action type enum to string
- */
-static const char *action_type_to_string(ts_auto_action_type_t type)
-{
-    switch (type) {
-        case TS_AUTO_ACT_CLI: return "cli";
-        case TS_AUTO_ACT_LED: return "led";
-        case TS_AUTO_ACT_SSH_CMD: return "ssh_cmd";
-        case TS_AUTO_ACT_SSH_CMD_REF: return "ssh_cmd_ref";
-        case TS_AUTO_ACT_GPIO: return "gpio";
-        case TS_AUTO_ACT_WEBHOOK: return "webhook";
-        case TS_AUTO_ACT_LOG: return "log";
-        case TS_AUTO_ACT_SET_VAR: return "set_var";
-        case TS_AUTO_ACT_DEVICE_CTRL: return "device_ctrl";
-        default: return "unknown";
-    }
-}
-
-/**
  * @brief automation.actions.list - List all action templates
  */
 static esp_err_t api_automation_actions_list(const cJSON *params,ts_api_result_t *result)
@@ -1189,6 +1171,12 @@ static esp_err_t api_automation_action_stats_reset(const cJSON *params, ts_api_r
  */
 static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t *result)
 {
+    return ts_api_automation_proxy_fetch_for_session(params, 0, result);
+}
+
+esp_err_t ts_api_automation_proxy_fetch_for_session(const cJSON *params, uint32_t session_id,
+                                                   ts_api_result_t *result)
+{
     cJSON *url_json = cJSON_GetObjectItem(params, "url");
     cJSON *method_json = cJSON_GetObjectItem(params, "method");
     cJSON *headers_json = cJSON_GetObjectItem(params, "headers");
@@ -1236,9 +1224,20 @@ static esp_err_t api_automation_proxy_fetch(const cJSON *params, ts_api_result_t
 
             // 直接调用本地 API
             ts_api_result_t local_result = {0};
-            cJSON *api_params = cJSON_CreateObject();  // 空参数，实际应解析 query string
+            cJSON *api_params = cJSON_CreateObject();
+            const char *query = strchr(api_path, '?');
+            if (query) {
+                char *copy = strdup(query + 1);
+                if (!copy) {
+                    cJSON_Delete(api_params);
+                    ts_api_result_error(result, TS_API_ERR_NO_MEM, "Query allocation failed");
+                    return ESP_ERR_NO_MEM;
+                }
+                ts_api_parse_query(api_params, copy);
+                free(copy);
+            }
 
-            esp_err_t ret = ts_api_call(api_name, api_params, &local_result);
+            esp_err_t ret = ts_api_call_for_session(api_name, api_params, session_id, &local_result);
             cJSON_Delete(api_params);
 
             if (ret == ESP_OK && local_result.code == TS_API_OK) {
@@ -2285,71 +2284,10 @@ cleanup:
  */
 static cJSON *source_to_export_json(const ts_auto_source_t *source)
 {
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "id", source->id);
-    cJSON_AddStringToObject(obj, "label", source->label);
-
-    const char *type_str = "unknown";
-    switch (source->type) {
-        case TS_AUTO_SRC_WEBSOCKET: type_str = "websocket"; break;
-        case TS_AUTO_SRC_SOCKETIO: type_str = "socketio"; break;
-        case TS_AUTO_SRC_REST: type_str = "rest"; break;
-        case TS_AUTO_SRC_VARIABLE: type_str = "variable"; break;
-        default: type_str = "unknown"; break;
-    }
-    cJSON_AddStringToObject(obj, "type", type_str);
-    cJSON_AddBoolToObject(obj, "enabled", source->enabled);
-    cJSON_AddBoolToObject(obj, "auto_discover", source->auto_discover);
-    cJSON_AddNumberToObject(obj, "poll_interval_ms", source->poll_interval_ms);
-
-    // Type-specific config
-    switch (source->type) {
-        case TS_AUTO_SRC_WEBSOCKET:
-            cJSON_AddStringToObject(obj, "uri", source->websocket.uri);
-            cJSON_AddNumberToObject(obj, "reconnect_ms", source->websocket.reconnect_ms);
-            break;
-        case TS_AUTO_SRC_SOCKETIO:
-            cJSON_AddStringToObject(obj, "url", source->socketio.url);
-            cJSON_AddStringToObject(obj, "event", source->socketio.event);
-            cJSON_AddNumberToObject(obj, "reconnect_ms", source->socketio.reconnect_ms);
-            break;
-        case TS_AUTO_SRC_REST:
-            cJSON_AddStringToObject(obj, "url", source->rest.url);
-            cJSON_AddStringToObject(obj, "method", source->rest.method);
-            if (source->rest.auth_header[0]) {
-                cJSON_AddStringToObject(obj, "auth_header", source->rest.auth_header);
-            }
-            break;
-        case TS_AUTO_SRC_VARIABLE:
-            if (source->variable.ssh_host_id[0]) {
-                cJSON_AddStringToObject(obj, "ssh_host_id", source->variable.ssh_host_id);
-            }
-            if (source->variable.ssh_command[0]) {
-                cJSON_AddStringToObject(obj, "ssh_command", source->variable.ssh_command);
-            }
-            if (source->variable.var_prefix[0]) {
-                cJSON_AddStringToObject(obj, "var_prefix", source->variable.var_prefix);
-            }
-            break;
-        default:
-            break;
-    }
-
-    // Mappings
-    if (source->mapping_count > 0) {
-        cJSON *mappings = cJSON_AddArrayToObject(obj, "mappings");
-        for (int i = 0; i < source->mapping_count && i < TS_AUTO_MAX_MAPPINGS; i++) {
-            cJSON *map = cJSON_CreateObject();
-            cJSON_AddStringToObject(map, "json_path", source->mappings[i].json_path);
-            cJSON_AddStringToObject(map, "var_name", source->mappings[i].var_name);
-            if (source->mappings[i].transform[0]) {
-                cJSON_AddStringToObject(map, "transform", source->mappings[i].transform);
-            }
-            cJSON_AddItemToArray(mappings, map);
-        }
-    }
-
-    return obj;
+    char *encoded = ts_source_config_encode(source);
+    cJSON *object = encoded ? cJSON_Parse(encoded) : NULL;
+    free(encoded);
+    return object;
 }
 
 /**
@@ -2381,9 +2319,14 @@ static esp_err_t api_automation_sources_export(const cJSON *params, ts_api_resul
     }
 
     // Build export JSON
+    cJSON *source_json = source_to_export_json(&source_copy);
+    if (!source_json) {
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to serialize source");
+        return ESP_ERR_NO_MEM;
+    }
     cJSON *export_json = cJSON_CreateObject();
     cJSON_AddStringToObject(export_json, "type", "automation_source");
-    cJSON_AddItemToObject(export_json, "source", source_to_export_json(&source_copy));
+    cJSON_AddItemToObject(export_json, "source", source_json);
 
     char *json_str = cJSON_PrintUnformatted(export_json);
     cJSON_Delete(export_json);
@@ -2620,94 +2563,10 @@ static esp_err_t api_automation_rules_import(const cJSON *params, ts_api_result_
  */
 static cJSON *action_template_to_export_json(const ts_action_template_t *tpl)
 {
-    cJSON *obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(obj, "id", tpl->id);
-    cJSON_AddStringToObject(obj, "name", tpl->name);
-    cJSON_AddStringToObject(obj, "description", tpl->description);
-    cJSON_AddBoolToObject(obj, "enabled", tpl->enabled);
-    cJSON_AddBoolToObject(obj, "async", tpl->async);
-    cJSON_AddStringToObject(obj, "type", action_type_to_string(tpl->action.type));
-    cJSON_AddNumberToObject(obj, "delay_ms", tpl->action.delay_ms);
-
-    // Type-specific config
-    switch (tpl->action.type) {
-        case TS_AUTO_ACT_CLI: {
-            cJSON *cli = cJSON_AddObjectToObject(obj, "cli");
-            cJSON_AddStringToObject(cli, "command", tpl->action.cli.command);
-            cJSON_AddStringToObject(cli, "var_name", tpl->action.cli.var_name);
-            cJSON_AddNumberToObject(cli, "timeout_ms", tpl->action.cli.timeout_ms);
-            break;
-        }
-        case TS_AUTO_ACT_SSH_CMD_REF: {
-            cJSON *ssh_ref = cJSON_AddObjectToObject(obj, "ssh_ref");
-            cJSON_AddStringToObject(ssh_ref, "cmd_id", tpl->action.ssh_ref.cmd_id);
-            break;
-        }
-        case TS_AUTO_ACT_LED: {
-            cJSON *led = cJSON_AddObjectToObject(obj, "led");
-            cJSON_AddStringToObject(led, "device", tpl->action.led.device);
-            const char *ctrl_type = "fill";
-            switch (tpl->action.led.ctrl_type) {
-                case TS_LED_CTRL_EFFECT: ctrl_type = "effect"; break;
-                case TS_LED_CTRL_BRIGHTNESS: ctrl_type = "brightness"; break;
-                case TS_LED_CTRL_OFF: ctrl_type = "off"; break;
-                case TS_LED_CTRL_TEXT: ctrl_type = "text"; break;
-                case TS_LED_CTRL_IMAGE: ctrl_type = "image"; break;
-                case TS_LED_CTRL_QRCODE: ctrl_type = "qrcode"; break;
-                case TS_LED_CTRL_FILTER: ctrl_type = "filter"; break;
-                case TS_LED_CTRL_FILTER_STOP: ctrl_type = "filter_stop"; break;
-                case TS_LED_CTRL_TEXT_STOP: ctrl_type = "text_stop"; break;
-                default: break;
-            }
-            cJSON_AddStringToObject(led, "ctrl_type", ctrl_type);
-            cJSON_AddNumberToObject(led, "index", tpl->action.led.index);
-            char color_str[8];
-            snprintf(color_str, sizeof(color_str), "#%02X%02X%02X",
-                     tpl->action.led.r, tpl->action.led.g, tpl->action.led.b);
-            cJSON_AddStringToObject(led, "color", color_str);
-            cJSON_AddNumberToObject(led, "brightness", tpl->action.led.brightness);
-            if (tpl->action.led.effect[0]) {
-                cJSON_AddStringToObject(led, "effect", tpl->action.led.effect);
-            }
-            cJSON_AddNumberToObject(led, "duration_ms", tpl->action.led.duration_ms);
-            cJSON_AddNumberToObject(led, "speed", tpl->action.led.speed);
-            cJSON_AddStringToObject(led, "text", tpl->action.led.text);
-            cJSON_AddStringToObject(led, "font", tpl->action.led.font);
-            cJSON_AddStringToObject(led, "image_path", tpl->action.led.image_path);
-            cJSON_AddStringToObject(led, "qr_text", tpl->action.led.qr_text);
-            char ecc[2] = {tpl->action.led.qr_ecc, '\0'};
-            cJSON_AddStringToObject(led, "qr_ecc", ecc);
-            cJSON_AddStringToObject(led, "filter", tpl->action.led.filter);
-            if (!ts_action_filter_encode(&tpl->action.led.filter_params, led)) {
-                cJSON_Delete(obj);
-                return NULL;
-            }
-            cJSON_AddBoolToObject(led, "center", tpl->action.led.center);
-            cJSON_AddBoolToObject(led, "loop", tpl->action.led.loop);
-            cJSON_AddStringToObject(led, "scroll", tpl->action.led.scroll);
-            cJSON_AddStringToObject(led, "align", tpl->action.led.align);
-            cJSON_AddNumberToObject(led, "x", tpl->action.led.x);
-            cJSON_AddNumberToObject(led, "y", tpl->action.led.y);
-            break;
-        }
-        case TS_AUTO_ACT_LOG: {
-            cJSON *log_obj = cJSON_AddObjectToObject(obj, "log");
-            cJSON_AddNumberToObject(log_obj, "level", tpl->action.log.level);
-            cJSON_AddStringToObject(log_obj, "message", tpl->action.log.message);
-            break;
-        }
-        case TS_AUTO_ACT_WEBHOOK: {
-            cJSON *webhook = cJSON_AddObjectToObject(obj, "webhook");
-            cJSON_AddStringToObject(webhook, "url", tpl->action.webhook.url);
-            cJSON_AddStringToObject(webhook, "method", tpl->action.webhook.method);
-            cJSON_AddStringToObject(webhook, "body_template", tpl->action.webhook.body_template);
-            break;
-        }
-        default:
-            break;
-    }
-
-    return obj;
+    char *encoded = ts_action_template_encode(tpl);
+    cJSON *object = encoded ? cJSON_Parse(encoded) : NULL;
+    free(encoded);
+    return object;
 }
 
 /**

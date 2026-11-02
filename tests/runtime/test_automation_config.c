@@ -15,6 +15,7 @@
 #include "nvs.h"
 #include <math.h>
 #include "ts_action_codec.h"
+#include "ts_action_filter.h"
 #include "esp_timer.h"
 #include "ts_jsonpath.h"
 #include "ts_api.h"
@@ -100,8 +101,9 @@ enum {WEBSOCKET_EVENT_CONNECTED=1,WEBSOCKET_EVENT_DISCONNECTED,WEBSOCKET_EVENT_D
 #define SIO_UPGRADE_MSG "5"
 #define SIO_PING_MSG "2"
 #define SIO_PONG_MSG "3"
+static char sent_frames[128][64];static unsigned sent_count;
 static int esp_websocket_client_send_text(esp_websocket_client_handle_t c,const char *data,int len,int wait)
-{(void)c;(void)data;(void)len;(void)wait;return len;}
+{(void)c;(void)wait;assert(sent_count<128&&len<64);memcpy(sent_frames[sent_count],data,len);sent_frames[sent_count++][len]=0;return len;}
 #define SIO_SID_MAX_LEN 64
 #ifndef CONFIG_TS_AUTOMATION_MAX_SOURCES
 #define CONFIG_TS_AUTOMATION_MAX_SOURCES 16
@@ -183,6 +185,26 @@ void ts_rule_config_publish(ts_rule_config_view_t *view,bool enabled,const ts_au
 void ts_rule_config_pause(void) { ++pauses;engine_pause(); }
 
 
+/* Export is a controlled plaintext boundary here; real encryption is exercised
+ * with these exact captured records by the existing crypto executable. */
+static bool export_allowed=true;static cJSON *export_records;
+bool ts_config_pack_can_export(void){return export_allowed;}
+esp_err_t ts_cert_get_certificate(char *out,size_t *length){const char *cert="fixture-self-cert";assert(*length>strlen(cert));strcpy(out,cert);*length=strlen(cert)+1;return ESP_OK;}
+ts_config_pack_result_t ts_config_pack_create(const char *name,const char *content,size_t length,const ts_config_pack_export_opts_t *opts,char **out,size_t *out_length)
+{
+    assert(length==strlen(content)&&opts&&opts->description);
+    assert(!strcmp(opts->recipient_cert_pem,"fixture-self-cert")||!strcmp(opts->recipient_cert_pem,"fixture-recipient-cert"));
+    if(!export_records)export_records=cJSON_CreateArray();assert(export_records);
+    cJSON *record=cJSON_CreateObject();assert(record);
+    cJSON_AddStringToObject(record,"name",name);cJSON_AddStringToObject(record,"description",opts->description);
+    cJSON_AddStringToObject(record,"recipient",!strcmp(opts->recipient_cert_pem,"fixture-self-cert")?"self":"specified");
+    cJSON_AddStringToObject(record,"content",content);cJSON_AddNumberToObject(record,"length",length);
+    unsigned char digest[32];char hex[65];assert(ts_crypto_hash(TS_HASH_SHA256,content,length,digest,32)==ESP_OK&&ts_crypto_hex_encode(digest,32,hex,65)==ESP_OK);
+    cJSON_AddStringToObject(record,"sha256",hex);assert(cJSON_AddItemToArray(export_records,record));
+    *out=strdup(content);*out_length=length;return *out?TS_CONFIG_PACK_OK:TS_CONFIG_PACK_ERR_NO_MEM;
+}
+const char *ts_config_pack_reason(ts_config_pack_result_t result){(void)result;return "fixture_pack_error";}
+const char *ts_config_pack_strerror(ts_config_pack_result_t result){(void)result;return "fixture pack error";}
 static bool reject_package;
 cJSON *ts_config_pack_parse_json(const char *text,size_t length)
 { return cJSON_ParseWithLengthOpts(text,length+1,NULL,true); }
@@ -399,6 +421,36 @@ static void source_cases(void)
     assert(sio_http_handshake("https://example.invalid:443",sid,sizeof(sid))==ESP_OK&&!strcmp(sid,"fixture"));
     assert(!strncmp(http_url,"https://",8)&&http_bundle&&!http_skip_name);
     http_payload="{\"temperature\":21}";
+    /* Real runtime handshake: standard server sends no WS noop acknowledgement. */
+    ts_auto_source_t protocol={.enabled=true,.type=TS_AUTO_SRC_SOCKETIO,.mapping_count=1};
+    strcpy(protocol.id,"protocol");strcpy(protocol.socketio.url,"http://fixture.invalid");strcpy(protocol.socketio.event,"telemetry");
+    strcpy(protocol.mappings[0].json_path,"temperature");strcpy(protocol.mappings[0].var_name,"protocol.temperature");
+    assert(ts_source_register(&protocol)==ESP_OK&&stream_connect(protocol.id,TS_AUTO_SRC_SOCKETIO)==ESP_OK);
+    sio_connection_t *transport=sio_find_connection(protocol.id);assert(transport);
+    for(unsigned cycle=0;cycle<2;++cycle){
+        unsigned start=sent_count;
+        sio_websocket_event_handler(transport,NULL,WEBSOCKET_EVENT_CONNECTED,NULL);
+        assert(sent_count==start+1&&!strcmp(sent_frames[start],"2probe")&&!transport->upgraded);
+        assert(ts_source_get_copy(protocol.id,&protocol)==ESP_OK&&!protocol.connected);
+        char probe[]="3probe";esp_websocket_event_data_t frame={.data_ptr=probe,.data_len=6,.payload_len=6,.fin=true,.op_code=1};
+        sio_websocket_event_handler(transport,NULL,WEBSOCKET_EVENT_DATA,&frame);
+        assert(sent_count==start+3&&!strcmp(sent_frames[start+1],"5")&&!strcmp(sent_frames[start+2],"40"));
+        assert(!transport->upgraded&&ts_source_get_copy(protocol.id,&protocol)==ESP_OK&&!protocol.connected);
+        char noop[]="6";frame.data_ptr=noop;frame.data_len=frame.payload_len=1;
+        sio_websocket_event_handler(transport,NULL,WEBSOCKET_EVENT_DATA,&frame);assert(sent_count==start+3);
+        char ack[]="40{\"sid\":\"local\"}";frame.data_ptr=ack;frame.data_len=frame.payload_len=(int)strlen(ack);
+        sio_websocket_event_handler(transport,NULL,WEBSOCKET_EVENT_DATA,&frame);
+        assert(transport->upgraded&&ts_source_get_copy(protocol.id,&protocol)==ESP_OK&&protocol.connected);
+        char ping[]="2";frame.data_ptr=ping;frame.data_len=frame.payload_len=1;
+        sio_websocket_event_handler(transport,NULL,WEBSOCKET_EVENT_DATA,&frame);assert(sent_count==start+4&&!strcmp(sent_frames[start+3],"3"));
+        char event[96];snprintf(event,sizeof(event),"42[\"telemetry\",{\"temperature\":%u}]",30+cycle);frame.data_ptr=event;frame.data_len=frame.payload_len=(int)strlen(event);
+        sio_websocket_event_handler(transport,NULL,WEBSOCKET_EVENT_DATA,&frame);assert(transport->pending_json);test_process_pending(transport);
+        ts_auto_value_t mapped;assert(ts_variable_get("protocol.temperature",&mapped)==ESP_OK&&mapped.int_val==(int)(30+cycle));
+        sio_websocket_event_handler(transport,NULL,WEBSOCKET_EVENT_DISCONNECTED,NULL);
+        assert(!transport->upgraded&&ts_source_get_copy(protocol.id,&protocol)==ESP_OK&&!protocol.connected);
+    }
+    assert(ts_source_unregister(protocol.id)==ESP_OK);free(transport->msg_buf);transport->msg_buf=NULL;
+    vSemaphoreDelete(transport->pending_mutex);transport->pending_mutex=NULL;sio_release_connection(transport,false);
     ts_auto_source_t source={.enabled=true,.type=TS_AUTO_SRC_SOCKETIO};
     strcpy(source.id,"stream");strcpy(source.label,"Stream");
     strcpy(source.socketio.url,"http://192.0.2.10:9000");strcpy(source.socketio.event,"telemetry");
@@ -407,6 +459,7 @@ static void source_cases(void)
     strcpy(source.id,"other");assert(ts_source_register(&source)==ESP_OK);
     ts_auto_source_t other;assert(ts_source_get_copy("other",&other)==ESP_OK);
     sio_connection_t *old=&s_sio_ctx.connections[0],*stable=&s_sio_ctx.connections[1];
+    memset(old,0,sizeof(*old));memset(stable,0,sizeof(*stable));
     strcpy(old->source_id,"stream");old->source_instance=first.instance;old->allocated=true;old->task_handle=(void*)1;
     old->pending_mutex=xSemaphoreCreateMutex();assert(old->pending_mutex);
     strcpy(stable->source_id,"other");stable->source_instance=other.instance;stable->allocated=true;stable->task_handle=(void*)2;
@@ -542,6 +595,16 @@ static void source_cases(void)
     int prior_http_calls=http_calls;strcpy(rest.rest.url,"http://127.0.0.1/api/v1/example/status");
     assert(ts_source_register(&rest)==ESP_OK&&ts_source_get_copy(rest.id,&rest)==ESP_OK);
     assert(read_rest_source(&rest,NULL)==ESP_OK&&http_calls==prior_http_calls&&local_api_calls==1);
+    xSemaphoreTake(ts_source_runtime.mutex,portMAX_DELAY);
+    int rest_index=find_source_index(rest.id);assert(rest_index>=0);
+    ts_source_runtime.sources[rest_index].last_attempt_ms=123456;
+    ts_source_runtime.sources[rest_index].last_update_ms=120000;
+    xSemaphoreGive(ts_source_runtime.mutex);
+    assert(write_object(TS_AUTO_CONFIG_HOST,"{\"id\":\"unrelated_clock\",\"host\":\"192.0.2.75\",\"username\":\"operator\"}",NULL,NULL)==ESP_OK);
+    assert(ts_source_get_copy(rest.id,&rest)==ESP_OK&&rest.last_attempt_ms==123456&&rest.last_update_ms==120000);
+    uint64_t old_instance=rest.instance;strcpy(rest.rest.url,"http://127.0.0.1/api/v1/example/status?changed=1");
+    assert(ts_source_register(&rest)==ESP_OK&&ts_source_get_copy(rest.id,&rest)==ESP_OK&&rest.instance!=old_instance&&!rest.last_attempt_ms&&!rest.last_update_ms);
+    assert(ts_ssh_hosts_config_remove("unrelated_clock")==ESP_OK);
     assert(ts_source_unregister("rest_method")==ESP_OK);
 
     cJSON *many=cJSON_CreateArray();assert(many);
@@ -560,6 +623,7 @@ static void source_cases(void)
 #define TS_STRDUP_PSRAM strdup
 #include "api_result.inc"
 #undef TS_STRDUP_PSRAM
+#include "../../components/ts_api/src/ts_api_pack.h"
 #include "config_api.inc"
 #include "test_automation_modes.inc"
 #include "test_action_lifecycle.inc"
@@ -882,6 +946,7 @@ int main(void)
     lifecycle_crud_api_cases();
     reference_origin_api_cases();
     config_pack_api_cases();
+    export_roundtrip_cases();
     mode_cases();
     ts_ssh_commands_config_deinit();ts_ssh_hosts_config_deinit();
     for(int location=TS_AUTO_FILE_SD;location<=TS_AUTO_FILE_INTERNAL;++location)

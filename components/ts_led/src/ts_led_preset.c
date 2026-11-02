@@ -221,6 +221,10 @@ static void apply_filter_to_layer_with_params(ts_led_layer_t layer, const char *
     if (!layer || !filter || !filter[0] || dev_idx < 0 || dev_idx >= 3) return;
     
     ts_led_effect_config_t cfg = s_current_filter_config[dev_idx];  // 使用保存的配置
+    if (cfg.type != TS_LED_EFFECT_NONE) {
+        ts_led_layer_set_effect(layer, &cfg);
+        return;
+    }
     cfg.type = TS_LED_EFFECT_NONE;  // 先重置 type
     
     if (strcmp(filter, "pulse") == 0) {
@@ -337,8 +341,7 @@ static void delayed_image_load_callback(void *arg)
                 TS_LOGI(TAG, "Delayed restored %s: image=%s", device_name, s_delayed_image_path);
             }
             
-            strncpy(s_current_image_path[s_delayed_device_idx], s_delayed_image_path, 
-                    sizeof(s_current_image_path[s_delayed_device_idx]) - 1);
+            ts_led_preset_set_current_image(device_name, s_delayed_image_path);
             
             // 应用之前保存的 filter（如果有）
             if (s_current_filter[s_delayed_device_idx][0]) {
@@ -404,6 +407,11 @@ void ts_led_preset_set_current_animation(const char *device_name, const char *an
     if (idx >= 0) {
         if (animation) {
             strncpy(s_current_animation[idx], animation, sizeof(s_current_animation[idx]) - 1);
+            if (animation[0]) {
+                s_current_image_path[idx][0] = '\0';
+                s_current_qrcode[idx][0] = '\0';
+                s_current_qrcode_bg[idx][0] = '\0';
+            }
         } else {
             s_current_animation[idx][0] = '\0';
         }
@@ -444,6 +452,8 @@ void ts_led_preset_set_current_qrcode(const char *device_name, const char *text)
     if (idx >= 0) {
         if (text) {
             strncpy(s_current_qrcode[idx], text, sizeof(s_current_qrcode[idx]) - 1);
+            s_current_animation[idx][0] = '\0';
+            s_current_image_path[idx][0] = '\0';
         } else {
             s_current_qrcode[idx][0] = '\0';
             s_current_qrcode_bg[idx][0] = '\0';  // 清除 QR Code 时也清除背景图
@@ -512,6 +522,8 @@ void ts_led_preset_set_current_image(const char *device_name, const char *path)
             s_current_image_path[idx][sizeof(s_current_image_path[idx]) - 1] = '\0';
             // 设置图像时清除动画记录
             s_current_animation[idx][0] = '\0';
+            s_current_qrcode[idx][0] = '\0';
+            s_current_qrcode_bg[idx][0] = '\0';
         } else {
             s_current_image_path[idx][0] = '\0';
         }
@@ -574,15 +586,20 @@ esp_err_t ts_led_save_boot_config(const char *device_name)
     
     // 保存启用标志
     snprintf(key, sizeof(key), "%s.en", nvs_prefix);
-    nvs_set_u8(nvs, key, 1);
+    nvs_set_u8(nvs, key, ts_led_device_is_enabled(dev));
     
-    // 保存颜色（如果有）
+    // 旧 QR 配置的 clr 可能是先前动画的颜色；QR 使用独立键，内存仍复用当前颜色。
+    bool qrcode = s_current_qrcode[idx][0] != '\0';
+    snprintf(key, sizeof(key), "%s.%s", nvs_prefix, qrcode ? "clr" : "qrclr");
+    nvs_erase_key(nvs, key);
+    snprintf(key, sizeof(key), "%s.%s", nvs_prefix, qrcode ? "qrclr" : "clr");
     if (s_current_color_valid[idx]) {
-        snprintf(key, sizeof(key), "%s.clr", nvs_prefix);
         uint32_t color_val = (s_current_color[idx].r << 16) | 
                              (s_current_color[idx].g << 8) | 
                              s_current_color[idx].b;
         nvs_set_u32(nvs, key, color_val);
+    } else {
+        nvs_erase_key(nvs, key);
     }
     
     // 保存图像路径（如果有）
@@ -701,9 +718,7 @@ esp_err_t ts_led_get_current_state(const char *device_name, ts_led_boot_config_t
         state->color = s_current_color[idx];
     }
     
-    // 启用状态（有动画、图像或 QR Code 表示开启）
-    state->enabled = (state->animation[0] != '\0' || state->image_path[0] != '\0' || 
-                      state->qrcode_text[0] != '\0' || state->brightness > 0);
+    state->enabled = ts_led_device_is_enabled(dev);
     
     return ESP_OK;
 }
@@ -755,12 +770,15 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
     snprintf(key, sizeof(key), "%s.en", nvs_prefix);
     uint8_t enabled = 0;
     ret = nvs_get_u8(nvs, key, &enabled);
-    if (ret != ESP_OK || !enabled) {
+    if (ret != ESP_OK) {
         nvs_close(nvs);
         TS_LOGD(TAG, "No boot config for %s", device_name);
         return ESP_ERR_NOT_FOUND;
     }
     
+    // A saved off state is valid; low-level restore never re-enables output.
+    ts_led_device_set_enabled(dev, enabled != 0);
+
     // 加载亮度
     snprintf(key, sizeof(key), "%s.br", nvs_prefix);
     uint8_t brightness = 128;
@@ -768,6 +786,11 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
         ts_led_device_set_brightness(dev, brightness);
     }
     
+    snprintf(key, sizeof(key), "%s.fsp", nvs_prefix);
+    uint8_t filter_speed = 50;
+    nvs_get_u8(nvs, key, &filter_speed);
+    s_current_filter_speed[idx] = filter_speed;
+
     // 首先检查 QR Code（QR Code 优先级最高，仅限 matrix）
     if (idx == 2) {  // matrix
         snprintf(key, sizeof(key), "%s.qr", nvs_prefix);
@@ -779,6 +802,11 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
             char qrcode_bg[128] = {0};
             size_t qrbg_len = sizeof(qrcode_bg);
             bool has_bg = (nvs_get_str(nvs, key, qrcode_bg, &qrbg_len) == ESP_OK && qrcode_bg[0]);
+
+            // 没有 QR 专用颜色的旧配置仍按原行为显示白色，不读取残留动画颜色。
+            snprintf(key, sizeof(key), "%s.qrclr", nvs_prefix);
+            uint32_t qr_color = 0xffffff;
+            nvs_get_u32(nvs, key, &qr_color);
             
             // 读取 filter
             snprintf(key, sizeof(key), "%s.flt", nvs_prefix);
@@ -815,6 +843,7 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
             // 生成并显示 QR Code
             ts_led_qr_config_t qr_cfg = TS_LED_QR_DEFAULT_CONFIG();
             qr_cfg.text = qrcode_text;
+            qr_cfg.fg_color = (ts_led_rgb_t){(qr_color >> 16) & 0xff, (qr_color >> 8) & 0xff, qr_color & 0xff};
             qr_cfg.bg_image = bg_image;
             qr_cfg.version_min = 1;
             qr_cfg.version_max = 4;
@@ -830,10 +859,9 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
             
             if (qr_ret == ESP_OK) {
                 // 记录当前 QR Code
-                strncpy(s_current_qrcode[idx], qrcode_text, sizeof(s_current_qrcode[idx]) - 1);
-                if (has_bg) {
-                    strncpy(s_current_qrcode_bg[idx], qrcode_bg, sizeof(s_current_qrcode_bg[idx]) - 1);
-                }
+                ts_led_preset_set_current_qrcode(device_name, qrcode_text);
+                ts_led_preset_set_current_qrcode_bg(device_name, has_bg ? qrcode_bg : NULL);
+                ts_led_preset_set_current_color(device_name, qr_cfg.fg_color);
                 
                 // 应用 filter（如果有）
                 if (has_filter) {
@@ -931,7 +959,7 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
                 }
                 
                 // 记录当前图像路径
-                strncpy(s_current_image_path[idx], image_path, sizeof(s_current_image_path[idx]) - 1);
+                ts_led_preset_set_current_image(device_name, image_path);
                 
                 // 应用 filter（如果有）
                 if (has_filter) {
@@ -964,6 +992,7 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
         snprintf(key, sizeof(key), "%s.clr", nvs_prefix);
         uint32_t color_val = 0;
         bool has_color = (nvs_get_u32(nvs, key, &color_val) == ESP_OK);
+        s_current_color_valid[idx] = has_color;
         if (has_color) {
             s_current_color[idx].r = (color_val >> 16) & 0xFF;
             s_current_color[idx].g = (color_val >> 8) & 0xFF;
@@ -1005,8 +1034,7 @@ esp_err_t ts_led_load_boot_config(const char *device_name)
                 ts_led_animation_start(layer, &modified);
                 
                 // 记录当前动画
-                strncpy(s_current_animation[idx], animation, sizeof(s_current_animation[idx]) - 1);
-                s_current_speed[idx] = speed;
+                ts_led_preset_set_current_animation(device_name, animation, speed);
                 
                 // 应用后处理效果（如果有）
                 if (has_filter) {
@@ -1074,6 +1102,8 @@ esp_err_t ts_led_clear_boot_config(const char *device_name)
         nvs_erase_key(nvs, key);
         snprintf(key, sizeof(key), "%s.clr", nvs_prefix);
         nvs_erase_key(nvs, key);
+        snprintf(key, sizeof(key), "%s.qrclr", nvs_prefix);
+        nvs_erase_key(nvs, key);
         
         nvs_commit(nvs);
         nvs_close(nvs);
@@ -1113,7 +1143,7 @@ esp_err_t ts_led_get_boot_config(const char *device_name, ts_led_boot_config_t *
     ret = nvs_get_u8(nvs, key, &enabled);
     config->enabled = (ret == ESP_OK && enabled);
     
-    if (!config->enabled) {
+    if (ret != ESP_OK) {
         nvs_close(nvs);
         return ESP_ERR_NOT_FOUND;
     }

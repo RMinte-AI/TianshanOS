@@ -1,0 +1,1777 @@
+[
+  {
+    "id": "F01",
+    "priority": "P2",
+    "title": "LED、电源和串口控制台服务的重启生命周期与重复初始化规则冲突",
+    "batch": "A06",
+    "owner": "p1",
+    "user_trigger": "设备正常启动后，在系统页的服务列表点击led或power行的重启（或停止后再启动）。",
+    "expected_user_boundary": "声明可重启的服务应完成其自身生命周期，失败应准确返回，不能以重复初始化导致停后无法恢复。 现有服务列表标明可重启的LED/power/console正常操作须恢复，不能用拒绝代替。",
+    "strongest_counterevidence": "不是重复init本身有罪；network/WebUI可幂等初始化，不能一律要求deinit。",
+    "judgment": "服务已明示可重启；实际重启先stop再无条件init，LED/power/console的init拒绝已初始化，因而选中重启后失败；power还已被停下。",
+    "minimal_direction": "仅修三个服务适配器的重启生命周期，保留配置；不能把全部驱动初始化改为永远成功或统一强制deinit。",
+    "evidence_at_baseline": [
+      "main/ts_services.c:226",
+      "main/ts_services.c:326",
+      "components/ts_core/ts_service/src/ts_service.c:846",
+      "docs/user-guides/0.6.3/shared.zh.md:65"
+    ],
+    "original_call_chain": [
+      "app.js2085-2087 → serviceAction3067-3075 → api.js509",
+      "ts_api_service.c269 → ts_service_restart479-500 → stop_service_internal886-936 → start_service_internal818-868",
+      "main/ts_services.c255-259 stop no-op; 1067-1076 restart capability; 219-230 init calls ts_led_init",
+      "ts_led.c89-91 rejects initialized state",
+      "main/ts_services.c375-385 power stop只停policy/monitor；318-329 power init调用ts_power_policy_init",
+      "components/ts_drivers/src/ts_power_policy.c338-342重复初始化拒绝；main/ts_services.c1091-1099明确power具有TS_SERVICE_CAP_RESTARTABLE。",
+      "补充同根因：main/ts_services.c1163-1172将console标记RESTARTABLE；843每次调用ts_console_init；ts_console.c247-251已初始化即失败，而stop392-408并不deinit。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中LED和power的停止/重复初始化拒绝均已存在；不是当前六个未提交文件的修复引入。",
+    "normal_cases": [
+      "N11"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "main/ts_services.c:226",
+      "main/ts_services.c:326",
+      "components/ts_core/ts_service/src/ts_service.c:846",
+      "docs/user-guides/0.6.3/shared.zh.md:65"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第三节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F02",
+    "priority": "P1",
+    "title": "登录锁定使用持久化的开机计时，重启后可能把5分钟锁定延长到数天",
+    "batch": "A01",
+    "owner": "p1",
+    "user_trigger": "设备已运行7天；同一账户连续输错5次；重启设备，等待既定锁定时长5分钟后输入正确密码。也可能在原锁定已过期后重启，因为成功登录没有清除旧lockout_until。",
+    "expected_user_boundary": "用户已确认：设备重启后清除这次临时锁定；正常运行时仍保留五分钟限制。不得把上次开机计时带入新一次开机，不改账号/口令或新增跨重启授时要求。",
+    "strongest_counterevidence": "锁定五分钟是已接受行为，不能去掉限流；并非每次重启都会发生。",
+    "judgment": "失败登录留下持久化uptime截止值；后续重启uptime归零，正确密码也先被拒。已过锁定后成功登录也未必清掉旧截止值。",
+    "minimal_direction": "只修锁定时间跨启动的含义，保留五次/五分钟，不引入网络校时依赖或新限流框架。",
+    "evidence_at_baseline": [
+      "components/ts_security/src/ts_auth.c:221",
+      "components/ts_security/src/ts_auth.c:247",
+      "components/ts_security/src/ts_auth.c:255"
+    ],
+    "original_call_chain": [
+      "真实网页：app.js783-825 → api.js342-357 → ts_webui_api.c404-440 login_handler → ts_auth_login339-347；专用路由901-913早于通用API注册",
+      "ts_auth.c149-151 uptime; 243-251 deadline+save; 77-86 persist whole credential",
+      "ts_auth.c161-190 keeps version3 credentials; 63-71 load; 221-226 rejects before checking correct password",
+      "docs/SECURITY_IMPLEMENTATION.md26 confirms5 failed/5minutes; shared matcher language hint exists atzh-CN4244 but real login_handler439-440 masks reason. Separate core api_auth_login93-96 has detailed error but ordinary HTTP login bypasses it."
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中的计时源、持久化字段及比较方式相同；不是本次修复引入。",
+    "normal_cases": [
+      "N02"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_security/src/ts_auth.c:221",
+      "components/ts_security/src/ts_auth.c:247",
+      "components/ts_security/src/ts_auth.c:255"
+    ],
+    "product_decision_authority": "重启后清除这次临时锁定；正常运行时仍保留五分钟限制（建议）",
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F03",
+    "priority": "P1",
+    "title": "部分HTTP和WebSocket入口遗漏登录权限检查",
+    "batch": "A02",
+    "owner": "p1",
+    "user_trigger": "设备HTTP可达时，未登录客户端提交普通文件上传、删除/重命名/创建目录、挂载/卸载SD卡或固件/WebUI上传请求。相关文件/存储存在且可写、升级任务未占用时，无需密码即可进入相应修改路径。",
+    "expected_user_boundary": "按已有账户和角色保护配置写入、升级、私有SSH交互及控制；公共读取范围保持原约定。",
+    "strongest_counterevidence": "公开读取本身不是漏洞；Shell仍需要远端凭据及可信指纹，不能声称匿名免密接管主机。不同入口不能靠一处bool包办。",
+    "judgment": "登录保护已有需求，普通写文件/升级能绕过它；另有Shell准入、前台SSH输出/取消、本机proxy绕过受保护stop等独立子路径。应保留具体边界，撤去任何所有API都要鉴权的扩大解释。",
+    "minimal_direction": "逐入口复用现有会话/角色；只约束写入及私有输出/控制。代理核对目标权限，保留公共遥测，不建立新权限体系。 同步接通现有浏览器上传和SSH消息凭据；六组入口逐条核对合法用户、重连/注销，不能只改后端或关闭公共WS。",
+    "evidence_at_baseline": [
+      "components/ts_webui/src/ts_webui_api.c:733",
+      "components/ts_api/src/ts_api_storage.c:444",
+      "components/ts_webui/src/ts_webui_ws.c:292",
+      "components/ts_webui/src/ts_ws_operation.c:147",
+      "components/ts_api/src/ts_api_automation.c:1239",
+      "components/ts_webui/src/ts_webui_api.c:177",
+      "components/ts_webui/src/ts_webui_api.c:605",
+      "components/ts_webui/src/ts_webui_api.c:825",
+      "components/ts_net/src/ts_http_server.c:129",
+      "components/ts_webui/src/ts_ws_transport.c:512",
+      "components/ts_webui/src/ts_ws_transport.c:244",
+      "components/ts_api/src/ts_api_ssh.c:1771",
+      "components/ts_api/src/ts_api_ssh.c:590",
+      "components/ts_api/src/ts_api.c:299",
+      "components/ts_api/src/ts_api_automation.c:2862",
+      "sdkconfig:2504"
+    ],
+    "original_call_chain": [
+      "ts_webui.c102-141 start HTTP and register special routes",
+      "ts_webui_api.c934-962 special uploads → ts_http_server.c129-184 wrapper → direct handler",
+      "file_upload_handler605-650 → ts_storage_write_file236-241; protected auto-config path still guarded, ordinary files not identity checked",
+      "ota_firmware_upload_handler733-815 → ts_ota_save_upload215-271 → ts_ota_flash_file_sync103-324 → esp_ota_write/end/set_boot_partition; successful response may schedule reboot",
+      "sdkconfig2504 AUTH_REQUIRED=y; generic api_handler177-198 performs auth but special routes never call it",
+      "ts_api_storage.c444-484 marks mount/unmount/delete/mkdir/rename requires_auth=false → api_handler177-198 skips login check → storage handlers54-96,187-303 perform mutation; path guard prevents managed automation changes only"
+    ],
+    "origin_from_review": "历史遗留/本次认证修复仍有遗漏：ea9a4a2b的通用认证原本整段被注释，专用上传也未鉴权。本次启用通用端点策略后仍未覆盖这些写入口，不能冒充本次新增回归。",
+    "normal_cases": [
+      "N01",
+      "N04",
+      "N06",
+      "N08",
+      "N18",
+      "N23",
+      "N24"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/src/ts_webui_api.c:733",
+      "components/ts_api/src/ts_api_storage.c:444",
+      "components/ts_webui/src/ts_webui_ws.c:292",
+      "components/ts_webui/src/ts_ws_operation.c:147",
+      "components/ts_api/src/ts_api_automation.c:1239",
+      "components/ts_webui/src/ts_webui_api.c:177",
+      "components/ts_webui/src/ts_webui_api.c:605",
+      "components/ts_webui/src/ts_webui_api.c:825",
+      "components/ts_net/src/ts_http_server.c:129",
+      "components/ts_webui/src/ts_ws_transport.c:512",
+      "components/ts_webui/src/ts_ws_transport.c:244",
+      "components/ts_api/src/ts_api_ssh.c:1771",
+      "components/ts_api/src/ts_api_ssh.c:590",
+      "components/ts_api/src/ts_api.c:299",
+      "components/ts_api/src/ts_api_automation.c:2862",
+      "sdkconfig:2504"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第一节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F04",
+    "priority": "P1",
+    "title": "公开日志中的会话编号足以冒充仍有效的登录会话",
+    "batch": "A01",
+    "owner": "p1",
+    "user_trigger": "root或admin正常登录后，在该会话仍有效、登录日志尚未被环形缓冲覆盖期间，未登录但可访问设备HTTP的客户端读取公开日志，利用其中会话编号构造凭证。",
+    "expected_user_boundary": "公开诊断信息不应足以冒用仍有效的会话，凭据必须与实际签发内容绑定。",
+    "strongest_counterevidence": "SID只有活动会话期间有效，日志会滚动，注销后的SID不能继续用；不等于永久万能token。",
+    "judgment": "token实际只检查解码后前4字节SID；INFO登录日志含SID，log.list无认证，因此活动会话存在时可绕过随机token部分。",
+    "minimal_direction": "让现有token校验绑定实际已签发凭据；停止记录可复用认证材料。不能仅藏日志或更改编码来当作完整修复。",
+    "evidence_at_baseline": [
+      "components/ts_security/src/ts_security.c:302",
+      "components/ts_security/src/ts_security.c:321",
+      "components/ts_security/src/ts_auth.c:364",
+      "components/ts_api/src/ts_api_log.c:288",
+      "components/ts_core/ts_log/src/ts_log.c:336",
+      "sdkconfig:2551",
+      "sdkconfig:2561",
+      "sdkconfig:2562"
+    ],
+    "original_call_chain": [
+      "ts_auth.c364-365 logs User/name/level/session; ts_security.c249 also logs created session",
+      "ts_log.h206-207 → ts_log.c336-418,848-862 → INFO circular buffer; sdkconfig2550-2563 enabled",
+      "ts_api_log.c57-143,280-295 → log.list requires_auth=false → ts_webui_api.c177-198 allows public endpoint; log_entry_to_json28-38 returns rawmessage",
+      "ts_security.c294-331 generated random bytes not retained/checked; decode accepts>=4 bytes and validates sid only; ts_crypto.c154-168 actualBase64decode",
+      "ts_auth.c380-395 → session.level → check_auth94-107, root_only191-198; attacker inherits that active session level"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中token生成/校验和公开log.list均已存在；本次改动未引入。",
+    "normal_cases": [
+      "N01",
+      "N02"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_security/src/ts_security.c:302",
+      "components/ts_security/src/ts_security.c:321",
+      "components/ts_security/src/ts_auth.c:364",
+      "components/ts_api/src/ts_api_log.c:288",
+      "components/ts_core/ts_log/src/ts_log.c:336",
+      "sdkconfig:2551",
+      "sdkconfig:2561",
+      "sdkconfig:2562"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F05",
+    "priority": "P2",
+    "title": "文件路径重复解码，使带+号或%序列的名称指向另一文件",
+    "batch": "B02",
+    "owner": "p2",
+    "user_trigger": "在文件页上传config+backup.json，或从列表下载已有同名文件。若同时存在config backup.json，错误路径恰好指向这个带空格的文件。",
+    "expected_user_boundary": "合法文件名中的加号应保持为加号，URL路径只按正确层级解码。",
+    "strongest_counterevidence": "普通无特殊字符的文件不受影响；路径安全检查另有保护，不能扩张成任意目录写入。",
+    "judgment": "query helper已解码，上传/下载又解码一次；a+b会变成a b，正常文件名可读错或写错目标。",
+    "minimal_direction": "只去除这两个调用点的重复解码，保留统一query解码和路径保护。",
+    "evidence_at_baseline": [
+      "components/ts_net/src/ts_http_server.c:465",
+      "components/ts_webui/src/ts_webui_api.c:573",
+      "components/ts_webui/src/ts_webui_api.c:621"
+    ],
+    "original_call_chain": [
+      "app.js7577-7585 selects original file.name;7613-7633 builds destination/name → api.js645-650 encodes path",
+      "ts_http_server.c449-470 ts_http_get_query_param → url_decode_inplace414-447",
+      "ts_webui_api.c565-573 download and614-621 upload call url_decode again; url_decode520-550 treats+=space",
+      "upload650 → storage_write_file236-241 → fopenwb213-233; download597 → ts_http_send_file",
+      "app.js7735-7745 downloads returned blob but anchor.download uses original requested basename"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中get_query_param内部解码和两个handler再次解码均已存在。",
+    "normal_cases": [
+      "N08"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_net/src/ts_http_server.c:465",
+      "components/ts_webui/src/ts_webui_api.c:573",
+      "components/ts_webui/src/ts_webui_api.c:621"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F08",
+    "priority": "P1",
+    "title": "批量删除读取实时选择集合，可能删掉确认之后才勾选的文件",
+    "batch": "A04",
+    "owner": "p1",
+    "user_trigger": "勾选A并确认批量删除；第一项删除请求尚未返回时，用户在仍可操作的列表中勾选B，准备下一次操作。",
+    "expected_user_boundary": "批量删除应只针对用户这一次确认的文件集合。",
+    "strongest_counterevidence": "需在已确认删除尚未完成时再改变选择；不涉及自动化对象删除那七项。",
+    "judgment": "确认后直接遍历可变Set，await期间新勾选文件可进入同一迭代并被删除。最小反例不需要恶意输入。",
+    "minimal_direction": "确认内容和执行共用一次文件清单快照；无需全站加锁或关闭所有选择操作。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:7234",
+      "components/ts_webui/web/js/app.js:7244"
+    ],
+    "original_call_chain": [
+      "app.js7182-7188 checkbox mutates globalSet; 7409-7415 wires active row checkbox",
+      "batchDelete7228-7256: count7234,confirm7235,live iteration7244,await7246",
+      "confirmSheet11971-12001 removes modal11981 before resolving; confirmAction12004-12009",
+      "api.js617 storageDelete POST → api_storage_delete187-229 → storage mutation"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b的batchDelete同样遍历实时selectedFiles并await。",
+    "normal_cases": [
+      "N08"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:7234",
+      "components/ts_webui/web/js/app.js:7244"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F11",
+    "priority": "P2",
+    "title": "配置模块列表接口按12个模块遍历，却只有8个名称可读取",
+    "batch": "B01",
+    "owner": "p2",
+    "user_trigger": "调用已注册的config.module.list接口（/api/v1/config/module/list）查看配置模块清单，使用正常无参数请求即可。",
+    "expected_user_boundary": "枚举当前配置模块时，应仅对有效模块索引取名称。",
+    "strongest_counterevidence": "这是独立模块列表API；不是日常网页配置必然崩溃，越界后的具体结果未知。",
+    "judgment": "12项枚举搭配8项名称，API先取名称才检查是否注册，越界读取可直接由现有入口触发。",
+    "minimal_direction": "复用已有完整模块名称映射或补齐名称，保持API语义；不用新通用防御层。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_config.c:43",
+      "components/ts_api/src/ts_api_config.c:247",
+      "components/ts_core/ts_config/include/ts_config_module.h:85"
+    ],
+    "original_call_chain": [
+      "ts_config_module.h76-90 enum defines 12 modules",
+      "ts_api_config.c41-45 names[8], check against TS_CONFIG_MODULE_MAX;236-257 iterates all modules and calls at247 before registration check",
+      "ts_api_config.c650-655 registers public config.module.list;ts_webui_api.c177-198 accepts its policy→ts_api_call319"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b相同8项名称表和MAX边界已存在。",
+    "normal_cases": [
+      "N22"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_config.c:43",
+      "components/ts_api/src/ts_api_config.c:247",
+      "components/ts_core/ts_config/include/ts_config_module.h:85"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F12",
+    "priority": "P2",
+    "title": "远端仅剩待撤销公钥时，撤销操作会失败并保留该公钥",
+    "batch": "B03",
+    "owner": "p2",
+    "user_trigger": "远端账户的authorized_keys只有TianShanOS部署的这一把公钥（也包括全为该公钥的重复行）；在安全页输入服务器密码并点击撤销远端公钥。",
+    "expected_user_boundary": "删除最后一条远端authorized_keys记录也应能正确完成，操作失败应保持真实结果。",
+    "strongest_counterevidence": "后端确实报告撤销失败，没有伪报成功；不是本地删除密钥的已处理问题。",
+    "judgment": "仅剩该公钥时grep正确地产生空结果但退出1，&&链不再替换文件，所以最普通的单密钥撤销无法完成。",
+    "minimal_direction": "让过滤空结果是合法成功，同时保留真正读写失败；不能用无条件||true或自动重试掩盖失败。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_ssh.c:1161",
+      "components/ts_api/src/ts_api_ssh.c:1179",
+      "components/ts_console/commands/ts_cmd_ssh.c:1284"
+    ],
+    "original_call_chain": [
+      "components/ts_webui/web/js/app.js10275-10336及10629-10690→api.sshRevoke",
+      "components/ts_api/src/ts_api_ssh.c1108-1145检查存在；1159-1171 grep -vF && mv && chmod && marker；1179-1181返回失败",
+      "components/ts_console/commands/ts_cmd_ssh.c1098-1351完整撤销分支已读；1284-1307同根因失败，CLI也不会报告撤销成功。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b ts_api_ssh.c1139-1149已有同样grep组合，本次六文件SSH修复没有引入。",
+    "normal_cases": [
+      "N23"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_ssh.c:1161",
+      "components/ts_api/src/ts_api_ssh.c:1179",
+      "components/ts_console/commands/ts_cmd_ssh.c:1284"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F13",
+    "priority": "P2",
+    "title": "命令行清空SSH指纹总是误认为没有已保存指纹",
+    "batch": "B03",
+    "owner": "p2",
+    "user_trigger": "已经在SSH连接中登记过服务器指纹，运行hosts --list能看到记录，再运行hosts --clear --yes。",
+    "expected_user_boundary": "可信主机清理应按实际存储键前缀工作，而不是误报为空。",
+    "strongest_counterevidence": "单条删除和列出可信指纹可用，不是整个主机信任功能失效。",
+    "judgment": "批量clear依赖count，而count查host_、实际存储h_，导致有记录也提前返回。",
+    "minimal_direction": "统一现有计数与实际键前缀，保留原确认与删除语义；无需新遍历层。",
+    "evidence_at_baseline": [
+      "components/ts_security/src/ts_known_hosts.c:589",
+      "components/ts_console/commands/ts_cmd_hosts.c:259"
+    ],
+    "original_call_chain": [
+      "components/ts_security/src/ts_known_hosts.c30 HOST_KEY_PREFIX=host_；90实际生成h_%08lx；513列表按h_筛选；572-602计数按错误前缀",
+      "components/ts_console/commands/ts_cmd_hosts.c257-283 count==0即返回；543-544已注册hosts --clear入口"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b已同时存在host_常量、h_存储/list和错误计数。",
+    "normal_cases": [
+      "N23"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_security/src/ts_known_hosts.c:589",
+      "components/ts_console/commands/ts_cmd_hosts.c:259"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F14",
+    "priority": "P2",
+    "title": "SSH命令行选择安全存储密钥后，执行和连接检查没有把密钥传给接口",
+    "batch": "B03",
+    "owner": "p2",
+    "user_trigger": "已有正常部署、可信的服务器和安全存储密钥lab-key，运行ssh --host <地址> --user <用户> --keyid lab-key --exec \"uname -a\"，或同参数加--test。",
+    "expected_user_boundary": "SSH CLI显式选择已保存的密钥ID时，应真正传递该认证方式。",
+    "strongest_counterevidence": "网页、密码/文件密钥方式及CLI Shell/forward不是此问题范围。",
+    "judgment": "CLI成功加载keyid后，exec/test参数只转发password/keypath，实际API已支持keyid而收不到认证数据。",
+    "minimal_direction": "只补齐两个适配入口的既有keyid传递，保留现有密钥生命周期，不重写SSH认证。",
+    "evidence_at_baseline": [
+      "components/ts_console/commands/ts_cmd_ssh.c:321",
+      "components/ts_console/commands/ts_cmd_ssh.c:699",
+      "components/ts_api/src/ts_api_ssh.c:115"
+    ],
+    "original_call_chain": [
+      "components/ts_console/commands/ts_cmd_ssh.c1698-1723加载指定密钥；1755-1761转发exec/test",
+      "同文件308-339及692-712只写password/keypath；326注释与已支持keyid的实际API不一致",
+      "components/ts_api/src/ts_api_ssh.c105-135要求password/keyid/keypath之一；exec/test在配置失败时返回参数错误"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b同两个适配分支已有此遗漏；不是六文件未提交修复引入。",
+    "normal_cases": [
+      "N05",
+      "N23"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_console/commands/ts_cmd_ssh.c:321",
+      "components/ts_console/commands/ts_cmd_ssh.c:699",
+      "components/ts_api/src/ts_api_ssh.c:115"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F15",
+    "priority": "P2",
+    "title": "命令行批量清空已部署主机记录时，使用错误的计数方式而提前返回",
+    "batch": "B03",
+    "owner": "p2",
+    "user_trigger": "已有已部署主机记录，运行hosts --deployed可见，再运行hosts --deployed --clear --yes。",
+    "expected_user_boundary": "清除已部署记录应使用真实记录数量，不能因错误列表调用而假报完成。",
+    "strongest_counterevidence": "这是CLI批量已部署记录清空计数错误，不是依赖检查锁死或远端进程删除原则。",
+    "judgment": "capacity=0调用立即返回参数错误，count仍0，clear永远无动作。已有正确count API。",
+    "minimal_direction": "直接用现有count入口；不修改强制删除/远端状态或新增删除策略。",
+    "evidence_at_baseline": [
+      "components/ts_console/commands/ts_cmd_hosts.c:421",
+      "components/ts_security/src/ts_ssh_hosts_config.c:104",
+      "components/ts_security/src/ts_ssh_hosts_config.c:109"
+    ],
+    "original_call_chain": [
+      "components/ts_console/commands/ts_cmd_hosts.c417-435 capacity0取数量、count0提前返回；528-532注册调用链",
+      "components/ts_security/src/ts_ssh_hosts_config.c102-107要求capacity非0；109-116已有专门count接口"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b相同；002d3a7b旧list的循环found<max_count在max_count=0也返回count0，因此不是SD配置改造才引入。",
+    "normal_cases": [
+      "N23"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_console/commands/ts_cmd_hosts.c:421",
+      "components/ts_security/src/ts_ssh_hosts_config.c:104",
+      "components/ts_security/src/ts_ssh_hosts_config.c:109"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F16",
+    "priority": "P1",
+    "title": "端口转发遇到持续阻塞时，停止会释放仍被后台任务使用的资源",
+    "batch": "A05",
+    "owner": "p1",
+    "user_trigger": "通过ssh --forward L8080:<远端主机>:<端口>建立转发并传输数据；本地接收端长时间不再读取但保持连接，随后在TianShanOS终端按Ctrl+C停止转发。",
+    "expected_user_boundary": "停止或销毁转发前，工作任务必须不再使用被释放的转发对象和锁。",
+    "strongest_counterevidence": "只有转发的发送/写通道持续阻塞且停止超时才进入；不是任何SSH停止都会释放在用内存。",
+    "judgment": "转发任务在不检查stop的等待中，stop五秒后仍成功，destroy释放forward和mutex，旧任务继续访问。",
+    "minimal_direction": "只收敛转发停止/释放所有权，任务未结束不能释放；不要延长固定超时或强删持锁任务。",
+    "evidence_at_baseline": [
+      "components/ts_security/src/ts_port_forward.c:213",
+      "components/ts_security/src/ts_port_forward.c:549",
+      "components/ts_security/src/ts_port_forward.c:572"
+    ],
+    "original_call_chain": [
+      "components/ts_console/commands/ts_cmd_ssh.c630-663 Ctrl+C→stop→destroy→disconnect/destroy session",
+      "components/ts_security/src/ts_port_forward.c208-224本地非阻塞send EAGAIN等待不观察停止；379-385任务持mutex进入该函数",
+      "同文件534-559等待超时也报成功；562-577无条件释放；374-414后台仍继续使用forward及mutex"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b同样的发送循环、stop及destroy代码已存在。",
+    "normal_cases": [
+      "N05",
+      "N06",
+      "N23"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_security/src/ts_port_forward.c:213",
+      "components/ts_security/src/ts_port_forward.c:549",
+      "components/ts_security/src/ts_port_forward.c:572"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F18",
+    "priority": "P1",
+    "title": "网页把初始化成功当成保护已启用，停用后无法再通过开关启用低压保护",
+    "batch": "A06",
+    "owner": "p1",
+    "user_trigger": "在系统页点开关停用低电压保护，随后再次点击，希望重新启用；或设备启动时已保存为停用状态。",
+    "expected_user_boundary": "正常停止电源保护后，用户应能重新启用其监控和保护任务。",
+    "strongest_counterevidence": "initialized=true可表示功能可用，单独保留它是正确的；错误在把它当running的替代值。",
+    "judgment": "已初始化设备停用后，网页OR仍算为启用，再点击又发enable=false，无法恢复实际保护。",
+    "minimal_direction": "只让显示和切换依据running，保留initialized及后端正常stop/start，不重做保护状态机。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:1537",
+      "components/ts_api/src/ts_api_power.c:278",
+      "components/ts_drivers/src/ts_power_policy.c:461"
+    ],
+    "original_call_chain": [
+      "components/ts_webui/web/js/app.js1419-1424轮询；1516-1524显示启用；1535-1548 OR后取反并发送",
+      "components/ts_api/src/ts_api_power.c278-293分别返回initialized/running；191-204 start/stop并保存",
+      "components/ts_drivers/src/ts_power_policy.c453-470 stop只清running，保留initialized；412-449 start为实际启用路径"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b网页1378/1493存在相同OR表达式。",
+    "normal_cases": [
+      "N10",
+      "N11"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:1537",
+      "components/ts_api/src/ts_api_power.c:278",
+      "components/ts_drivers/src/ts_power_policy.c:461"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第三节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F19",
+    "priority": "P2",
+    "title": "电源数据校验已失败，系统页仍把其中的数值当作正常读数展示",
+    "batch": "B04",
+    "owner": "p2",
+    "user_trigger": "查看系统页电源信息时，电源芯片UART收到校验和错误的数据包。",
+    "expected_user_boundary": "无效的电压采样应保留无效状态，不能作为可信的新读数展示。",
+    "strongest_counterevidence": "ADC读数是另一来源，CRC问题不能据此推断低压保护也按坏UART数据工作。",
+    "judgment": "UART无效帧的valid/crc_valid已沿后端返回，网页不读标志，仅按number格式展示，丢失无效信息。",
+    "minimal_direction": "只在该读数展示处采用既有无效显示，保留独立ADC与有效读数；不修改采样或保护策略。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_power.c:47",
+      "components/ts_webui/web/js/app.js:1908",
+      "components/ts_drivers/src/ts_power_monitor.c:603"
+    ],
+    "original_call_chain": [
+      "components/ts_drivers/src/ts_power_monitor.c456-478标无效但解析数值；602-624更新缓存",
+      "components/ts_api/src/ts_api_power.c43-52返回valid、crc_valid及数值",
+      "components/ts_webui/web/js/app.js1414-1417→1904-1930显示数值，未检查有效标志"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b相同updatePowerInfo未读有效标志。",
+    "normal_cases": [
+      "N10",
+      "N22"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_power.c:47",
+      "components/ts_webui/web/js/app.js:1908",
+      "components/ts_drivers/src/ts_power_monitor.c:603"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F20",
+    "priority": "P2",
+    "title": "风扇曲线或模式保存失败时，接口仍返回成功并让网页显示已保存",
+    "batch": "B05",
+    "owner": "p2",
+    "user_trigger": "在风扇曲线管理点击保存曲线，或切换会自动保存的模式；本次NVS写入/提交返回失败。",
+    "expected_user_boundary": "硬件控制和持久化结果应准确反馈；不要求失败时回滚已经执行的风扇控制。",
+    "strongest_counterevidence": "正常NVS写入路径没有问题；硬件已应用与NVS失败可以同时发生，不能要求回滚风速。",
+    "judgment": "三类保存入口忽略真实持久化错误，CLI all-save另有覆盖前次错误；已保存提示不可靠。",
+    "minimal_direction": "只保留并表达保存错误及已应用事实，不加NVS重试、事务回滚或SD副本同步。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_fan.c:225",
+      "components/ts_drivers/src/ts_fan.c:1225",
+      "components/ts_drivers/src/ts_fan.c:1270"
+    ],
+    "original_call_chain": [
+      "components/ts_webui/web/js/app.js2869-2898 limits→curve→mode→success toast",
+      "components/ts_api/src/ts_api_fan.c224-232、323-333、414-423丢弃保存错误",
+      "components/ts_drivers/src/ts_fan.c1240-1276真实NVS错误返回；1279-1338启动从fan_config恢复",
+      "components/ts_core/ts_config/src/ts_config_module.c606-669额外schema持久化为另一个命名空间，并不能代替fan_config恢复",
+      "components/ts_drivers/src/ts_fan.c1225-1237 all-fan save只记录nvs_set_blob失败，再用commit覆盖ret；components/ts_console/commands/ts_cmd_fan.c507-525 fan --save使用此路径。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b相同自动保存调用未检查返回；不是六文件SSH修复引入。",
+    "normal_cases": [
+      "N09"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_fan.c:225",
+      "components/ts_drivers/src/ts_fan.c:1225",
+      "components/ts_drivers/src/ts_fan.c:1270"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F22",
+    "priority": "P1",
+    "title": "算力监控停止等待期短于已有重连休眠，旧任务可在停止后干扰新连接或访问已释放状态",
+    "batch": "A08",
+    "owner": "p1",
+    "user_trigger": "算力监控因服务器暂不可达进入12/24/30秒重连等待时，执行monitor --stop，然后立即再启动、修改服务器或重启drivers服务。",
+    "expected_user_boundary": "旧监控停止或销毁前应等任务退出，不能超时后释放其仍在访问的上下文。",
+    "strongest_counterevidence": "必须主动开启旧monitor并处在长重连等待；没有启动它的机器不受影响，不能泛化成全站重连问题。",
+    "judgment": "已有12/24/30秒休眠，stop只等5秒并返回成功；CLI配置随后deinit/free，旧任务醒来仍取全局s_ctx。完整触发有现有入口。",
+    "minimal_direction": "只让该客户端停止完成后交接/释放；不延长固定等待、全局强删或改新Socket.IO引擎。",
+    "evidence_at_baseline": [
+      "components/ts_drivers/src/ts_compute_monitor.c:1001",
+      "components/ts_drivers/src/ts_compute_monitor.c:417",
+      "components/ts_console/commands/ts_cmd_monitor.c:256"
+    ],
+    "original_call_chain": [
+      "components/ts_drivers/src/ts_compute_monitor.c989-1004最长30秒重连休眠；406-427 stop五秒后无条件成功；371-395 start重置should_stop",
+      "同文件345-365 deinit根据running决定是否stop后释放；244-290设置服务器也stop后重新启动",
+      "components/ts_console/commands/ts_cmd_monitor.c216-230现有停止入口；254-267停/释放/重建；main ts_drivers.c150-169驱动清理也调用deinit"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b相同stop/重连延迟代码。",
+    "normal_cases": [
+      "N11"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_drivers/src/ts_compute_monitor.c:1001",
+      "components/ts_drivers/src/ts_compute_monitor.c:417",
+      "components/ts_console/commands/ts_cmd_monitor.c:256"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F24",
+    "priority": "P2",
+    "title": "修改曲线节点温度后，接着修改同一行的调速值会改到另一节点",
+    "batch": "B05",
+    "owner": "p2",
+    "user_trigger": "曲线原为30°C/30%、50°C/60%、70°C/100%。在第一行把30°C改成60°C并离开输入框，再把同一行30%改成80%，然后保存。",
+    "expected_user_boundary": "编辑某一温度节点后继续改该行，应仍修改用户看到的那一个节点。",
+    "strongest_counterevidence": "仅温度跨邻近节点造成排序换位后出现；正常不换位编辑不受影响。",
+    "judgment": "输入行捕获旧index，温度onchange原地重排全局数组却不刷新输入行；同一行duty随后写到别点。",
+    "minimal_direction": "去掉编辑时原地排序即可，预览/保存已有副本排序；不必新增节点ID或改弹窗。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:2489",
+      "components/ts_webui/web/js/app.js:2533"
+    ],
+    "original_call_chain": [
+      "components/ts_webui/web/js/app.js2486-2494两列onchange捕获同一index；2530-2534更新后排序但不刷新编辑行",
+      "同文件2540-2547只有refreshCurveEditor会重建行，但updateCurvePoint没有调用；2554-2628 draw只画canvas",
+      "同文件2867-2885用全局数组排序副本发送fan.curve；components/ts_api/src/ts_api_fan.c371-386接收并写曲线"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b app.js2486-2490同原地排序。",
+    "normal_cases": [
+      "N09"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:2489",
+      "components/ts_webui/web/js/app.js:2533"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F26",
+    "priority": "P2",
+    "title": "各LED设备的带颜色动画共用同一颜色地址，后设置的设备会改掉先前设备",
+    "batch": "B07",
+    "owner": "p2",
+    "user_trigger": "先给touch启动红色呼吸，再给board启动蓝色呼吸。",
+    "expected_user_boundary": "每个灯层应使用自己的颜色参数，修改另一个设备不能覆盖前一个层的颜色。",
+    "strongest_counterevidence": "只涉及使用user_data颜色的动画；不需要并发，两个独立设备顺序设置就会出现。",
+    "judgment": "每个layer浅存同一个static effect_color地址，后设的颜色影响之前设备，违反独立颜色控制。",
+    "minimal_direction": "使用既有每设备/图层状态保存颜色，既不每帧分配，也不复制所有user_data（其中有其他类型上下文）。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_led.c:429",
+      "components/ts_led/src/ts_led_animation.c:620"
+    ],
+    "original_call_chain": [
+      "app5292-5307 applyEffectFromModal→api.js521",
+      "ts_api_led.c429-439 static effect_color与user_data",
+      "ts_led_animation.c614-622保存指针；92-101 breathing每帧读取",
+      "ts_led_preset.c487-493按设备保存的元数据反而仍分开",
+      "同根因CLI：ts_cmd_led.c298单个s_effect_color；335-363给各设备layer保存同一地址。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同入口和根因已存在；不归因于本轮六个未提交文件。",
+    "normal_cases": [
+      "N12"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_led.c:429",
+      "components/ts_led/src/ts_led_animation.c:620"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F27",
+    "priority": "P2",
+    "title": "关灯或从图片切换纯色时没有更新保存状态，重启恢复了旧内容",
+    "batch": "B07",
+    "owner": "p2",
+    "user_trigger": "在board运行红色呼吸，点击关灯，再点保存，重启；另一路径是matrix显示图片后改纯色、保存再重启。",
+    "expected_user_boundary": "保存当前灯效应反映当前显示类型及已有参数，关闭状态与上次选择内容不应被混淆。",
+    "strongest_counterevidence": "关灯不等于应该丢弃已选样式；保存只是用户主动操作，也不能加成自动保存。",
+    "judgment": "图片/QR换纯色后旧元数据仍优先恢复，保存滤镜后又用默认参数覆盖，足以独立支持此项。关闭/保存还需真实开关语义，不能仅把en改0就声称修好（load会跳过、可能留下启动默认动画）。",
+    "minimal_direction": "同步本次内容类型及已有保存状态，关灯保留样式选择；滤镜恢复使用已存参数。不要清空所有元数据或改开机默认策略来掩盖问题。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_led.c:340",
+      "components/ts_led/src/ts_led_preset.c:577",
+      "components/ts_led/src/ts_led_preset.c:758",
+      "components/ts_led/src/ts_led_preset.c:228"
+    ],
+    "original_call_chain": [
+      "app5785-5800→led.clear/led.fill；5823-5830→led.save",
+      "ts_api_led.c192-230 clear；301-353 fill；1258-1281 save",
+      "ts_led_preset.c530-627保存状态且577固定enabled=1",
+      "ts_led_preset.c663-706当前状态；731-1034恢复，771/859优先QR/图片，953恢复旧动画",
+      "附加同一保存/恢复状态链：preset.c223先取已存filter config，226-242却覆盖pulse/blink/breathing/color-shift实际速度；API_led.c739-758接受的速度值在恢复时被替换。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同入口和根因已存在；不归因于本轮六个未提交文件。",
+    "normal_cases": [
+      "N13"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_led.c:340",
+      "components/ts_led/src/ts_led_preset.c:577",
+      "components/ts_led/src/ts_led_preset.c:758",
+      "components/ts_led/src/ts_led_preset.c:228"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F28",
+    "priority": "P2",
+    "title": "关灯和全部关闭只清底层内容，文字及部分滤镜仍继续输出",
+    "batch": "B07",
+    "owner": "p2",
+    "user_trigger": "在矩阵上显示滚动文字，再点矩阵灯泡关闭或全部关闭。",
+    "expected_user_boundary": "网页中整机灯光关闭应真正关闭相应可见输出，同时保留独立图层清除原有语义。",
+    "strongest_counterevidence": "底层清空layer0本来可以与独立文字叠加配合，不能把这种能力全局改掉。",
+    "judgment": "页面关灯/全部关闭使用led.clear后仍有文字layer1及反色输出，页面却显示关闭。缺陷在整个关闭操作与显示语义不一致。",
+    "minimal_direction": "在明确的整设备关闭入口处理实际输出/文字/滤镜，保留底层单层clear及配置选择；禁止把所有clear调用都改成清全部图层。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:4979",
+      "components/ts_api/src/ts_api_led.c:208",
+      "components/ts_led/src/ts_led_text.c:597",
+      "components/ts_led/src/ts_led_effect.c:335"
+    ],
+    "original_call_chain": [
+      "app4974-4987 allLedsOff；5785-5794 toggleLed→api.js ledClear",
+      "ts_api_led.c208-219仅layer0",
+      "ts_led_text.c404 layer1；755-790独立持续任务；847-900创建显示覆盖层",
+      "ts_led.c49-82合成所有可见层；ts_led_text.c911-932已有文字停止入口",
+      "ts_led.c69-76后处理仍执行；ts_led_effect.c335-345 invert黑色→白色",
+      "CLIts_cmd_led.c245-290和自动化action_manager.c896-901也只清基础层，文字路径同样遗漏。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同入口和根因已存在；不归因于本轮六个未提交文件。",
+    "normal_cases": [
+      "N12",
+      "N13"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:4979",
+      "components/ts_api/src/ts_api_led.c:208",
+      "components/ts_led/src/ts_led_text.c:597",
+      "components/ts_led/src/ts_led_effect.c:335"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F29",
+    "priority": "P1",
+    "title": "切换字体时先释放仍被文字任务使用的字体，加载失败后留下悬空引用",
+    "batch": "A07",
+    "owner": "p1",
+    "user_trigger": "矩阵正在显示使用字体A的文字，再通过现有字体加载接口换成无法加载的字体B；加载失败后旧显示仍可能使用已经释放的A。",
+    "expected_user_boundary": "替换字体时不能让显示线程继续使用已释放的字体；加载失败准确报错即可，不要求保留旧画面。",
+    "strongest_counterevidence": "没有明确需求保证新字体加载失败后旧画面必须继续；原预期强加这一点，会迫使双份字体同时驻留。",
+    "judgment": "unload真正释放font及缓存，而旧overlay保存font裸指针并持续取字形；失败返回使旧引用长期存在，内存生命周期错误仍成立。",
+    "minimal_direction": "必须先让旧渲染安全停止使用旧font再释放；可在这一边界停止旧显示后加载并如实报错。先装新再交接只是方案选项，不是必须，不加旧字体兜底/重试。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_led.c:1149",
+      "components/ts_led/src/ts_led_font.c:269",
+      "components/ts_led/src/ts_led_text.c:643",
+      "components/ts_led/src/ts_led_text.c:869"
+    ],
+    "original_call_chain": [
+      "app5369-5400列出字体；5413-5448 led.text",
+      "ts_api_led.c1146-1160释放旧字体后可能提前返回；1211成功后才替换overlay",
+      "ts_led_text.c869保存font原指针；755-790任务；597-665解引用",
+      "ts_led_font.c249-269关闭文件并释放字体/缓存",
+      "CLI同根因：ts_cmd_led.c1591-1606先卸载旧字体，加载失败提前返回；1650才交给覆盖层。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同入口和根因已存在；不归因于本轮六个未提交文件。",
+    "normal_cases": [
+      "N14",
+      "N16"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_led.c:1149",
+      "components/ts_led/src/ts_led_font.c:269",
+      "components/ts_led/src/ts_led_text.c:643",
+      "components/ts_led/src/ts_led_text.c:869"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F30",
+    "priority": "P1",
+    "title": "关闭其他LED设备时释放了矩阵正在播放GIF的全局上下文",
+    "batch": "A07",
+    "owner": "p1",
+    "user_trigger": "先在matrix播放多帧GIF，然后在现有控制台执行led --off --device touch（或--clear）。",
+    "expected_user_boundary": "清除图像与GIF播放之间应按实际所有权释放，活动GIF不能继续使用已释放的图像或上下文。",
+    "strongest_counterevidence": "网页clear另一设备不经过同一CLI释放路径；只给全局ctx加layer条件也可能遗漏CLI全局s_current_image。",
+    "judgment": "CLI关touch会free矩阵GIF的全局ctx，并且还无条件free当前image；矩阵回调仍使用ctx/image。",
+    "minimal_direction": "按实际layer归属处理ctx与图像两份资源，修准此跨设备路径；不新增全局图像框架或顺手停止所有设备。",
+    "evidence_at_baseline": [
+      "components/ts_console/commands/ts_cmd_led.c:263",
+      "components/ts_console/commands/ts_cmd_led.c:269",
+      "components/ts_led/src/ts_led_image.c:1500",
+      "components/ts_led/src/ts_led_image.c:1423"
+    ],
+    "original_call_chain": [
+      "console/CMakeLists21+ts_cmd_register.c54实际编译注册led",
+      "ts_cmd_led.c2249-2251 off→773-775→245-271 clear",
+      "ts_led_image.c49-50全局ctx；1445-1483播放把ctx存入matrix layer",
+      "ts_led_image.c1494-1503传入touch只停touch却free matrix ctx",
+      "ts_led.c39-42调用matrix旧回调→ts_led_image.c1417-1441读取已释放ctx"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同实现已存在；本轮未提交修改未改动这些LED根因。",
+    "normal_cases": [
+      "N12",
+      "N16"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_console/commands/ts_cmd_led.c:263",
+      "components/ts_console/commands/ts_cmd_led.c:269",
+      "components/ts_led/src/ts_led_image.c:1500",
+      "components/ts_led/src/ts_led_image.c:1423"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F31",
+    "priority": "P2",
+    "title": "命令行开灯写入临时输出缓冲，下一帧被图层覆盖",
+    "batch": "B07",
+    "owner": "p2",
+    "user_trigger": "控制台执行led --off --device touch，再执行led --on --device touch --color red。",
+    "expected_user_boundary": "LED CLI及自动化的设色输出应进入实际渲染层，不能下一帧被原图层覆盖。",
+    "strongest_counterevidence": "无layer时直接写framebuffer可工作；网页fill已使用layer，不受同一问题影响。",
+    "judgment": "CLI off后有黑layer0，on只写framebuffer，下帧从layer合成覆盖；自动化单灯同类写入也应对照实际层。",
+    "minimal_direction": "仅把持续内容写到既有对应层，保留瞬时设备refresh接口；不要全局让framebuffer反写各层。",
+    "evidence_at_baseline": [
+      "components/ts_console/commands/ts_cmd_led.c:755",
+      "components/ts_led/src/ts_led.c:52",
+      "components/ts_automation/src/ts_action_manager.c:941"
+    ],
+    "original_call_chain": [
+      "ts_cmd_led.c2244-2252 active on/off分发",
+      "ts_cmd_led.c245-265 off创建清layer0；731-770 on只写framebuffer",
+      "ts_led.c251-260 device_fill只改framebuffer；49-67每帧合成覆盖",
+      "同根因自动化action_manager.c887总先取得layer0，941-945单灯分支却写device_set_pixel；1117-1122只报告成功。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同实现已存在；本轮未提交修改未改动这些LED根因。",
+    "normal_cases": [
+      "N12"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_console/commands/ts_cmd_led.c:755",
+      "components/ts_led/src/ts_led.c:52",
+      "components/ts_automation/src/ts_action_manager.c:941"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F32",
+    "priority": "P2",
+    "title": "生成QR码没有停止此前动画，成功提示后画面被旧动画覆盖",
+    "batch": "B07",
+    "owner": "p2",
+    "user_trigger": "matrix正在显示rainbow等程序动画，打开图像/QR码填写短文本，点击生成。",
+    "expected_user_boundary": "显示二维码后，不应继续让先前的普通动画逐帧覆盖它；保留独立文字图层。",
+    "strongest_counterevidence": "文字叠加是独立功能；不能为QR可见把它也停掉。错误不是QR编码容量或裁剪限制。",
+    "judgment": "UI/API/CLI到QR画图均未停止同基础层anim_fn，下一帧旧程序动画覆盖新QR，已有正常先动画再QR入口。",
+    "minimal_direction": "只交接基础层内容/动画；无须改QR算法或要求失败时回滚画面。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:5361",
+      "components/ts_api/src/ts_api_led.c:1049",
+      "components/ts_led/src/ts_led_qrcode.c:207",
+      "components/ts_led/src/ts_led_layer.c:232"
+    ],
+    "original_call_chain": [
+      "app5348-5362→api_led_qrcode993-1049",
+      "ts_led_qrcode.c272-300→122-269仅fill/逐点绘制",
+      "ts_led.c36-45继续调用layer动画",
+      "CLIts_cmd_led.c1691-1760同样未停止；自动化action_manager.c1017-1035走该CLI"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同实现已存在；本轮未提交修改未改动这些LED根因。",
+    "normal_cases": [
+      "N12",
+      "N15"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:5361",
+      "components/ts_api/src/ts_api_led.c:1049",
+      "components/ts_led/src/ts_led_qrcode.c:207",
+      "components/ts_led/src/ts_led_layer.c:232"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F33",
+    "priority": "P2",
+    "title": "损坏图片声明的范围未被校验，BMP可越界读取、GIF可越界写入",
+    "batch": "B08",
+    "owner": "p2",
+    "user_trigger": "上传或从SD选择一个保存/传输不完整的24位BMP：头部仍完整，但像素区被截断；点击显示。",
+    "expected_user_boundary": "用户能打开的图片应按相应格式的真实边界读取；不合法数据准确失败，无需新增格式或修复文件。",
+    "strongest_counterevidence": "需要损坏/畸形图片；正常图片没有由此必然失败，未证明具体崩溃或代码执行。",
+    "judgment": "54字节BMP声明像素区后直接越界读；GIF最小码长13使4096项表循环写8192项，入口无前置拦截。属于具体容量错误。",
+    "minimal_direction": "只做各格式已声明字节范围与固定位宽校验，返回已有格式错误；不增加图像库替代、自动修复损坏文件或重试。",
+    "evidence_at_baseline": [
+      "components/ts_led/src/ts_led_image.c:73",
+      "components/ts_led/src/ts_led_image.c:108",
+      "components/ts_led/src/ts_led_image.c:484",
+      "components/ts_led/src/ts_led_image.c:499",
+      "components/ts_led/src/ts_led_image.c:801"
+    ],
+    "original_call_chain": [
+      "app5331-5344 led.image→ts_api_led.c930",
+      "ts_led_image.c940-959按实际文件size分配/读取→962-974格式分派",
+      "ts_led_image.c69-115 BMP：71仅54字节下限，73-75读offset/dimensions；100-110按声明读像素",
+      "ts_led_image.c799-807文件值lzw_min→477-502计算clear_code并初始化固定4096项table；519-526子块声明长度未核实际剩余字节。"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同实现已存在；本轮未提交修改未改动这些LED根因。",
+    "normal_cases": [
+      "N16"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_led/src/ts_led_image.c:73",
+      "components/ts_led/src/ts_led_image.c:108",
+      "components/ts_led/src/ts_led_image.c:484",
+      "components/ts_led/src/ts_led_image.c:499",
+      "components/ts_led/src/ts_led_image.c:801"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F34",
+    "priority": "P2",
+    "title": "SD固件升级的中止操作只改状态，后台继续写入并可能自动重启",
+    "batch": "B10",
+    "owner": "p2",
+    "user_trigger": "在网页手动从SD卡升级固件，写入时点击中止并确认；或命令行从文件升级后执行ota --abort。",
+    "expected_user_boundary": "取消升级的结果应真实；不能取消的阶段可以明确拒绝，不能假报已中止。",
+    "strongest_counterevidence": "网页明确no_reboot=true；不能说网页点中止后马上自行重启，也不必承诺刷写所有阶段都可取消。",
+    "judgment": "SD写入阶段按钮可见，中止却只改通用状态，SD任务仍写完并选择新启动分区；成功中止的提示不真实。",
+    "minimal_direction": "最小可先对不能取消的SD阶段准确拒绝，不伪造idle；若提供取消，需由原任务确认。不能强杀任务，也不用新取消框架。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:12955",
+      "components/ts_webui/web/js/app.js:13295",
+      "components/ts_ota/src/ts_ota.c:220",
+      "components/ts_ota/src/ts_ota_sdcard.c:518"
+    ],
+    "original_call_chain": [
+      "app.js13274-13330 otaFromFile→ota.upgrade_file(no_reboot=true)→ts_api_ota.c423-484→ts_ota_start→SD task330-574",
+      "app.js13382-13414→ota.abort→ts_api_ota.c491-503→ts_ota.c199-229，仅HTTPS/upload",
+      "ts_ota_sdcard.c446-498写入无取消检查；503-528验证/选择下次启动分区；547-550默认自动重启",
+      "ts_cmd_ota.c460-468中止成功文本"
+    ],
+    "origin_from_review": "历史遗留：git blame显示SD任务及中止状态根因在cc54a177b已存在；3577da8b9仅接入HTTPS中止，本轮未提交修改未触及。",
+    "normal_cases": [
+      "N24"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:12955",
+      "components/ts_webui/web/js/app.js:13295",
+      "components/ts_ota/src/ts_ota.c:220",
+      "components/ts_ota/src/ts_ota_sdcard.c:518"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F36",
+    "priority": "P2",
+    "title": "手动URL升级固件后，WebUI却优先从已保存的另一服务器下载",
+    "batch": "B10",
+    "owner": "p2",
+    "user_trigger": "设备已保存OTA服务器A；在手动URL升级框填写服务器B的固件地址，保留包含WebUI后升级。",
+    "expected_user_boundary": "手动指定升级服务器时，固件与配套网页的来源选择应按这次输入一致处理，不新增同源安全政策。",
+    "strongest_counterevidence": "不同URL并不自动代表版本不兼容；不应增加禁止跨域、强求同一主机的新规则。",
+    "judgment": "手动选择B固件时第二步静默优先A，来源违背本次选择。当前指南要求配套版本，但未证明任意A/B组合必坏。",
+    "minimal_direction": "固定当前尝试的实际固件及配套www来源；不新增同源限制、备用源或自动回退。",
+    "evidence_at_baseline": [
+      "docs/user-guides/0.6.3/shared.zh.md:360",
+      "components/ts_webui/web/js/app.js:13213",
+      "components/ts_webui/web/js/app.js:13010"
+    ],
+    "original_call_chain": [
+      "app.js13213/13228-13252使用手动url启动ota.upgrade_url",
+      "app.js12962-12965完成app后进入startWwwOta",
+      "app.js13009-13023优先ota-server-input而非本次url；13063-13067发送ota.www.start",
+      "app.js13107-13116/13180-13198只核对目标app分区/版本"
+    ],
+    "origin_from_review": "历史遗留：优先读取服务器输入的根因git blame为3577da8b9；后续修复增加升级对象但仍未固定URL来源。",
+    "normal_cases": [
+      "N24"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "docs/user-guides/0.6.3/shared.zh.md:360",
+      "components/ts_webui/web/js/app.js:13213",
+      "components/ts_webui/web/js/app.js:13010"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F41",
+    "priority": "P2",
+    "title": "Socket.IO首次连接等待不会从WebSocket返回的升级确认，无法完成订阅",
+    "batch": "B11",
+    "owner": "p2",
+    "user_trigger": "在网页添加标准Socket.IO v3或更新服务器作为数据源，填写正确地址和事件名后启用。",
+    "expected_user_boundary": "新数据源的Engine.IO升级应按实际协议进入Socket.IO连接，不能等待错误传输上的帧。",
+    "strongest_counterevidence": "连通性测试API已发送5再40；它成功不能证明运行时也正确。非标准服务端可能主动发不同消息。",
+    "judgment": "实际EIO4运行时等待WS上的6才发40，标准升级没有该确认；默认命名空间无法建立。需修协议顺序，不是普遍加强重连。",
+    "minimal_direction": "对齐已有正确5→40流程，保留服务端CONNECT确认；不加试探/备用协议/重试。",
+    "evidence_at_baseline": [
+      "components/ts_automation/src/ts_source_manager.c:1325",
+      "components/ts_automation/src/ts_source_manager.c:1330",
+      "components/ts_api/src/ts_api_automation.c:2196",
+      "components/ts_api/src/ts_api_automation.c:2204"
+    ],
+    "original_call_chain": [
+      "app.js16680-16698提供Socket.IO源→ts_api_auto_config/source codec→ts_source_config_activate1084-1103→sio_connection_task1431-1555",
+      "ts_source_manager.c1325-1334：3probe仅发5，40只在6分支发送；1335才标记连接完成",
+      "Engine.IO官方协议Upgrade：客户端3probe后发5即完成；noop发给挂起HTTP GET。Socket.IO官方协议Connection to a namespace：客户端必须首先发送CONNECT；线上封装40",
+      "Counterevidence/contrast: ts_api_automation.c2182-2204 connection-test correctly sends5 then40 afterprobe; runtime manager waitsWS6. Thus test can succeed while saved source fails."
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b中相同6→40逻辑已存在，非本轮六文件修复引入。",
+    "normal_cases": [
+      "N18"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_automation/src/ts_source_manager.c:1325",
+      "components/ts_automation/src/ts_source_manager.c:1330",
+      "components/ts_api/src/ts_api_automation.c:2196",
+      "components/ts_api/src/ts_api_automation.c:2204"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F42",
+    "priority": "P2",
+    "title": "REST数据源读取失败后不遵守设置的采样间隔",
+    "batch": "B11",
+    "owner": "p2",
+    "user_trigger": "将REST数据源采样间隔设为60秒，服务器暂时快速返回503或无效JSON，保持自动化启用。",
+    "expected_user_boundary": "失败请求也应受用户设置的轮询间隔约束，同时不能把失败时刻当成新数据时刻。",
+    "strongest_counterevidence": "慢超时会降低频率；不是任何失败都必达每秒10次。成功数据时间仍要保留给新鲜度判断。",
+    "judgment": "只有成功更新last_update，poll_all按它决定尝试，快速失败就每次引擎tick重试，违反用户所设采样间隔。",
+    "minimal_direction": "在现有源状态区分尝试时间与成功时间，按原间隔调度；不要重写成功时间掩盖旧数据，也不增加退避框架。",
+    "evidence_at_baseline": [
+      "components/ts_automation/src/ts_source_manager.c:966",
+      "components/ts_automation/src/ts_source_manager.c:991"
+    ],
+    "original_call_chain": [
+      "app.js16650/16658保存poll_interval_ms→source codec/API所有者保留间隔",
+      "ts_source_manager.c643-658错误状态返回失败；936-974仅成功更新last_update_ms966",
+      "ts_source_manager.c979-996按同一last_update_ms筛选；ts_automation.c349/364/380每100ms再次轮询"
+    ],
+    "origin_from_review": "历史遗留：ea9a4a2b有相同轮询判断与成功更新时间规则。",
+    "normal_cases": [
+      "N18"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_automation/src/ts_source_manager.c:966",
+      "components/ts_automation/src/ts_source_manager.c:991"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F43",
+    "priority": "P2",
+    "title": "新增网页权限检查读取接口分类时，SSH等安全接口会越界读取名称表",
+    "batch": "B01",
+    "owner": "p2",
+    "user_trigger": "通过正常网页调用SSH执行、SFTP或其他注册为SECURITY分类的接口。",
+    "expected_user_boundary": "新增配置分类的名称映射应覆盖其真实枚举索引，避免正常信息查询越界。",
+    "strongest_counterevidence": "越界后值由链接布局决定，未证明所有SSH/SFTP请求崩溃或已泄露内存。",
+    "judgment": "SECURITY已是现有类别，却缺名称表项；新HTTP get_info实际调用到越界读取。补齐对应关系是直接修正。",
+    "minimal_direction": "仅补已有SECURITY名称；不借此改鉴权架构或给所有名称查询堆新兜底。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api.c:40",
+      "components/ts_api/src/ts_api.c:388",
+      "components/ts_api/src/ts_api.c:521",
+      "components/ts_webui/src/ts_webui_api.c:179"
+    ],
+    "original_call_chain": [
+      "ts_api.h60-71定义SECURITY=9；ts_api.c40-50名称表只到STORAGE=8",
+      "ts_api.c516-521只按枚举MAX判界→get_info367-397在387-388读取分类字符串",
+      "ts_webui_api.c177-187本次每个HTTP API请求都调用get_info；例如ts_api_ssh.c注册SECURITY接口。该读取发生在权限判定之前"
+    ],
+    "origin_from_review": "本次新增回归路径：ce400825新增HTTP请求177-179的get_info调用；此前版本该处理器没有此调用。名称表遗漏本身历史存在，不能称本次才写错数组。",
+    "normal_cases": [
+      "N01",
+      "N22"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api.c:40",
+      "components/ts_api/src/ts_api.c:388",
+      "components/ts_api/src/ts_api.c:521",
+      "components/ts_webui/src/ts_webui_api.c:179"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F44",
+    "priority": "P2",
+    "title": "终端长输出被截断，网页收集回调还会按错误长度越界读取",
+    "batch": "B13",
+    "owner": "p2",
+    "user_trigger": "已有多把密钥时，在串口或网页终端运行 key --list --json，使本次JSON输出超过511字节；其他单次长文本输出也同样触发。",
+    "expected_user_boundary": "控制台回调收到的长度应是缓冲区内实际有效字节数；不要求取消既有输出总量限制。",
+    "strongest_counterevidence": "缓冲有NUL，越界复制不能直接等同于网页已泄露后续内存；框架输出本身仍有总容量限制。",
+    "judgment": "vsnprintf应有长度被当实际长度交回调；长JSON既被截断，又可能从512字节缓冲之外复制。",
+    "minimal_direction": "在现有输出函数保留所需有界完整文本并传实际长度；不只夹紧len后继续假装JSON完整，也不重做终端/无限输出。",
+    "evidence_at_baseline": [
+      "components/ts_console/src/ts_console.c:564",
+      "components/ts_console/src/ts_console.c:568",
+      "components/ts_webui/src/ts_webui_ws.c:384"
+    ],
+    "original_call_chain": [
+      "ts_cmd_key.c128-146完整cJSON序列化后139一次ts_console_printf；662-663/706/724是实际已注册list/json入口",
+      "ts_api_key.c85-119生成完整多条密钥信息",
+      "ts_console.c555-572固定buf512，564的vsnprintf应有长度→568回调",
+      "ts_webui_ws.c374-386 terminal_output_cb只按终端总剩余空间限制copy_len，未得到真实源缓冲长度；584安装回调"
+    ],
+    "origin_from_review": "历史遗留：do_printf根因为初始2d0b2cda版本，非本轮六文件修改引入。",
+    "normal_cases": [
+      "N22"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_console/src/ts_console.c:564",
+      "components/ts_console/src/ts_console.c:568",
+      "components/ts_webui/src/ts_webui_ws.c:384"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F46",
+    "priority": "P1",
+    "title": "首页组件把可匿名写入的表达式作为JavaScript执行",
+    "batch": "A03",
+    "owner": "p1",
+    "user_trigger": "能访问设备网络的人通过公开ui.widgets.set写入包含JavaScript表达式的普通数值组件；已登录用户之后打开首页，组件自动刷新。另一条入口是复合表达式中未经转义的外部字符串变量。",
+    "expected_user_boundary": "共享组件应保留约定的数学与文本公式，但不能让外部数据或较低信任编辑者执行任意观看者脚本。",
+    "strongest_counterevidence": "单变量快捷路径不eval，变量文字正常展示应保留。共享组件允许Admin编辑并会被Root加载，登录编辑者并不等于所有观看者的脚本信任来源；因此不能以已有登录就排除公式代码执行问题。",
+    "judgment": "原匿名写入和外部字符串进入代码的两条路径成立。同一已有公式执行边界还存在跨登录角色的影响，反证不足以推翻原来限制任意JS执行的目标。只加鉴权/转义并不完整，不能为了简化而误称已经足够。",
+    "minimal_direction": "补既定写入权限、安全变量代入，并将执行约束在已支持的数学/文本公式能力。原有受限表达式方向有必要；先列明实际支持的运算、拼接与Math函数，不能任意字符白名单破坏正常公式，也不必建通用脚本引擎或把编辑改为Root专属。 以基线真实函数11条正常表达式为最低兼容样本，实施前明确受限求值语法与函数；不能将尚未验证的兼容性当已通过。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_ui.c:218",
+      "components/ts_api/src/ts_api_ui.c:268",
+      "components/ts_webui/web/js/app.js:3482",
+      "components/ts_webui/web/js/app.js:3497",
+      "components/ts_webui/web/js/app.js:3745",
+      "docs/user-guides/0.6.3/shared.zh.md:124",
+      "components/ts_webui/web/js/app.js:3987",
+      "components/ts_webui/web/js/app.js:4269",
+      "components/ts_webui/web/js/lang/zh-CN.js:3248",
+      "components/ts_webui/web/js/lang/en-US.js:3287",
+      "components/ts_api/src/ts_api_ui.c:231"
+    ],
+    "original_call_chain": [
+      "ts_api_ui.c205-232复制widgets写NVS；255-269写入口公开；ts_webui_api.c177-198按该标志允许请求",
+      "app.js3270-3309加载→3692-3706首页初始化→3755-3763执行表达式",
+      "app.js3475-3502：单纯变量引用直接返回是反证，但其他表达式3497直接new Function；3482字符串原样拼接",
+      "api.js189-190/352令牌存于localStorage ts_token；components/main未发现限制eval的CSP设置"
+    ],
+    "origin_from_review": "历史遗留：evaluateExpression根因b2f6e090b（2026-01-30）；并非本轮六文件修复新写入。",
+    "normal_cases": [
+      "N01",
+      "N03"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_ui.c:218",
+      "components/ts_api/src/ts_api_ui.c:268",
+      "components/ts_webui/web/js/app.js:3482",
+      "components/ts_webui/web/js/app.js:3497",
+      "components/ts_webui/web/js/app.js:3745",
+      "docs/user-guides/0.6.3/shared.zh.md:124",
+      "components/ts_webui/web/js/app.js:3987",
+      "components/ts_webui/web/js/app.js:4269",
+      "components/ts_webui/web/js/lang/zh-CN.js:3248",
+      "components/ts_webui/web/js/lang/en-US.js:3287",
+      "components/ts_api/src/ts_api_ui.c:231"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第二节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F48",
+    "priority": "P2",
+    "title": "动作及数据源导出使用不完整的序列化，恢复后丢失原配置",
+    "batch": "B12",
+    "owner": "p2",
+    "user_trigger": "已能运行的“设置变量”动作导出配置包，再在原设备覆盖导入，或导入给指定的另一台设备；SSH指令变量数据源带提取/匹配设置后同样导出再恢复。",
+    "expected_user_boundary": "受支持的导出再导入应保留已实现动作和SSH数据源的有效配置字段。",
+    "strongest_counterevidence": "手动应急副本和新严格包验签不受同一序列化遗漏影响；与同ID覆盖那项无关。",
+    "judgment": "单对象导出缺set_var及SSH变量源匹配字段，canonical补默认并不会恢复丢失值，导入后行为改变；这是正常备份/恢复路径。",
+    "minimal_direction": "调用已有完整编解码器，保留既有包外层；不另建导出格式、扩大包信任或为缺字段加猜测默认值。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_automation.c:2633",
+      "components/ts_api/src/ts_api_automation.c:2323",
+      "components/ts_automation/src/ts_action_codec.c:518",
+      "components/ts_api/src/ts_api_auto_config.c:171",
+      "components/ts_automation/src/ts_automation_document.c:317"
+    ],
+    "original_call_chain": [
+      "app.js14693-14695/14876-14888创建set_var→17765-17799导出入口",
+      "ts_api_automation.c2621-2708 export helper没有SET_VAR；2734-2749/2794-2795实际用于pack_create",
+      "ts_api_automation.c2323-2333 SSH变量数据源export省略模式/超时；正常codec ts_action_codec.c597-618包含这些字段",
+      "ts_api_auto_config.c460/466/479 verified解包→canonical149-174→ts_action_codec.c518-525缺失字段保持零值→action_manager.c1258写空变量失败"
+    ],
+    "origin_from_review": "历史遗留：动作导出helper来自660d4811e（2026-02-04）；本轮六文件没有引入。",
+    "normal_cases": [
+      "N04",
+      "N19"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_automation.c:2633",
+      "components/ts_api/src/ts_api_automation.c:2323",
+      "components/ts_automation/src/ts_action_codec.c:518",
+      "components/ts_api/src/ts_api_auto_config.c:171",
+      "components/ts_automation/src/ts_automation_document.c:317"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F49",
+    "priority": "P2",
+    "title": "默认GPIO48映射写入只有48个元素的数组之外",
+    "batch": "B01",
+    "owner": "p2",
+    "user_trigger": "RM01 ESP32S3设备以默认引脚配置启动；不需要异常输入或并发操作。",
+    "expected_user_boundary": "合法GPIO48应在引脚映射容量之内，不需要改变所有引脚使用策略。",
+    "strongest_counterevidence": "尚未证明被覆盖的相邻对象或任何确定的设备异常；不能从一次越界写推导所有机器启动失败。",
+    "judgment": "默认GPIO48确实写入仅含0..47的表，平台允许0..48。此容量矛盾无需新增产品假设，局部纠正值得做。",
+    "minimal_direction": "按现有芯片编号范围修正数组及边界，保留GPIO48硬件映射；不用改接线/加备用引脚。",
+    "evidence_at_baseline": [
+      "components/ts_hal/src/ts_pin_manager.c:35",
+      "components/ts_hal/src/ts_pin_manager.c:141",
+      "components/ts_hal/src/ts_pin_manager.c:499"
+    ],
+    "original_call_chain": [
+      "main/ts_services.c78-79默认HALinit→ts_hal.c179-180默认映射",
+      "ts_pin_manager.c35MAX48及141数组→474-479宏→499映射GPIO48",
+      "ts_platform_s3.c66-70允许0..48；SDK soc_caps.h177 SOC_GPIO_PIN_COUNT49"
+    ],
+    "origin_from_review": "历史遗留：默认GPIO48及数组尺寸来自2d0b2cda初始实现。",
+    "normal_cases": [
+      "N22"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_hal/src/ts_pin_manager.c:35",
+      "components/ts_hal/src/ts_pin_manager.c:141",
+      "components/ts_hal/src/ts_pin_manager.c:499"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F50",
+    "priority": "P2",
+    "title": "网页WebSocket重连没有恢复主题订阅，连接显示恢复而监控停止更新",
+    "batch": "B14",
+    "owner": "p2",
+    "user_trigger": "保持系统首页打开，Wi-Fi或网页连接短暂中断，随后网络恢复；不切页或重新加载。",
+    "expected_user_boundary": "页面重连成功后，应恢复仍在使用的订阅；连接恢复不能只改变状态灯。",
+    "strongest_counterevidence": "HTTP轮询、广播事件和设备自动化可以继续，不能说断线后设备任务都停了。",
+    "judgment": "重连只发events订阅，manager仍记旧activeSubs，后端新连接无原dashboard主题，首页依赖主题的监控不再更新。",
+    "minimal_direction": "沿现有onConnect恢复当前有效主题与参数；不加另一套重试、定时刷新或重复订阅集合。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:569",
+      "components/ts_webui/web/js/app.js:938",
+      "components/ts_webui/web/js/api.js:862"
+    ],
+    "original_call_chain": [
+      "app.js548-577主题首次发送/activeSubs→935-944连接回调只renderWsStatus",
+      "api.js859-864 onopen仅subscribe events[*]；875-880既有自动重连",
+      "app.js1288-1323首页首次HTTP加载后仅依赖system.dashboard更新，没有该聚合数据的周期HTTP替代",
+      "ts_webui_ws.c644-646 peer_closed→ts_ws_subscriptions.c464-468清除旧peer；ws.c738-765无topic的events不创建新主题"
+    ],
+    "origin_from_review": "历史遗留：主题类33a91c9ab（2026-01-23），WSonopen1ffd27cf8（2026-01-20）；本轮六文件未引入。",
+    "normal_cases": [
+      "N03",
+      "N21"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:569",
+      "components/ts_webui/web/js/app.js:938",
+      "components/ts_webui/web/js/api.js:862"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F51",
+    "priority": "P2",
+    "title": "关闭仍在加载的规则编辑器后，旧规则的后续动作可被加入新规则",
+    "batch": "B12",
+    "owner": "p2",
+    "user_trigger": "规则A有两个以上动作。打开编辑A，在动作模板请求尚未返回时取消，随后打开规则B或新建规则；A的旧请求此时返回。",
+    "expected_user_boundary": "旧规则弹窗的剩余异步动作不能进入后来打开的新规则弹窗。",
+    "strongest_counterevidence": "旧单次请求已有context保护；并非所有页面返回都串数据。需要带异步模板加载的多动作旧规则。",
+    "judgment": "内层失效后返回，但旧外循环下一轮重取B窗口context，把A剩余动作加入B；已有版本校验不能识别其来源。",
+    "minimal_direction": "让整批循环保持创建时的modal/context并及时结束，不再重新取得新窗口；无需新全局请求框架或关闭编辑功能。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:16897",
+      "components/ts_webui/web/js/app.js:17182",
+      "components/ts_webui/web/js/app.js:17194",
+      "components/ts_webui/web/js/app.js:17270"
+    ],
+    "original_call_chain": [
+      "app.js16893-16907旧ruleData.actions异步循环，无原modal有效性检查",
+      "app.js17522-17528取消允许关闭并标记旧context失效；16789-16791新建替换同IDmodal",
+      "app.js17181-17194每次重新按ID获取modal/context，首轮return不停止外层；下一轮17269-17270追加到新container",
+      "app.js17427-17468从当前编辑器收集全部动作→17501正常版本化保存"
+    ],
+    "origin_from_review": "历史遗留/既有修复遗漏：异步循环来自fffd3e3cb/d06b66b53（2026-01）；ac109b00d添加loading/关闭保护，未覆盖外层循环所有轮次。非本轮六文件引入。",
+    "normal_cases": [
+      "N04",
+      "N20"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:16897",
+      "components/ts_webui/web/js/app.js:17182",
+      "components/ts_webui/web/js/app.js:17194",
+      "components/ts_webui/web/js/app.js:17270"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F52",
+    "priority": "P1",
+    "title": "查看数据源或命令变量时把外部字符串作为网页HTML执行",
+    "batch": "A03",
+    "owner": "p1",
+    "user_trigger": "REST/WebSocket/SSH来源生成字符串变量，用户点击该数据源或指令的“查看变量”；字符串里包含HTML标记。",
+    "expected_user_boundary": "外部变量值在网页中应作为数据展示，不能被解释为HTML和脚本。",
+    "strongest_counterevidence": "需要能影响已接入数据源/SSH输出，且用户打开变量窗口；不是任意匿名客户端直接执行设备命令。",
+    "judgment": "外部字符串进入span/code/title后被innerHTML解析；JSON编码及只转义变量名均不能保护值的HTML上下文。",
+    "minimal_direction": "只在展示边界使用现有HTML转义/文本节点，先保留原值和截断含义；不把变量存储内容、正则或整个模板系统改写。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:14493",
+      "components/ts_webui/web/js/app.js:14501",
+      "components/ts_webui/web/js/app.js:8395",
+      "components/ts_webui/web/js/app.js:1090"
+    ],
+    "original_call_chain": [
+      "ts_source_manager.c295-298外部JSON字符串保留到str_val→447-467映射更新→ts_api_automation.c74-75作为JSON字符串返回",
+      "app.js15860-15876数据源查看入口/8398指令查看入口→renderSourceVarsTable8392-8395 innerHTML",
+      "app.js14490-14503直接拼接未经escapeHtml处理的原值与title；同函数调用仅此实际表格入口"
+    ],
+    "origin_from_review": "历史遗留：formatVariableValue来自c15410f36（2026-01-27），非本轮六文件引入。",
+    "normal_cases": [
+      "N03",
+      "N18"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:14493",
+      "components/ts_webui/web/js/app.js:14501",
+      "components/ts_webui/web/js/app.js:8395",
+      "components/ts_webui/web/js/app.js:1090"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第二节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F53",
+    "priority": "P1",
+    "title": "打开内存详情时，任务数恰好增加会使排序越界访问",
+    "batch": "A09",
+    "owner": "p1",
+    "user_trigger": "设备正在启动SSH执行、连接或其他后台任务时，用户打开系统页的内存详情；两次任务计数之间新增任务。",
+    "expected_user_boundary": "任务列表为空或快照容量不足时，诊断排序不能发生无符号下溢并越界。",
+    "strongest_counterevidence": "稳定任务数下可正常返回；静态未复现崩溃，SDK已有正确的容量不足返回0。",
+    "judgment": "产品把SDK合法返回0送入无符号actual_count-1排序，产生越界循环；问题在本地排序边界。",
+    "minimal_direction": "0/1项跳过排序并如实处理无快照；不用锁住调度器、反复分配重试或新任务注册层。",
+    "evidence_at_baseline": [
+      "components/ts_api/src/ts_api_system.c:570",
+      "components/ts_api/src/ts_api_system.c:577",
+      "dependency-evidence/freertos-task-snapshot.txt:17"
+    ],
+    "original_call_chain": [
+      "app.js1157详情按钮→showMemoryDetailModal14026/getMemoryDetail→api.js468 system.memory_detail",
+      "ts_api_system.c565-570分别计数、分配和取任务快照；577-582对零长度执行无符号减1排序",
+      "SDKv5.5.2 FreeRTOS-Kernel/tasks.c2974初始化uxTask=0，2979仅容量足够才填数组，3047返回0；产品WS2207确实会动态创建SSH任务"
+    ],
+    "origin_from_review": "历史遗留：cb8bb3512（2026-01-24），非本轮六文件引入。",
+    "normal_cases": [
+      "N22"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_api/src/ts_api_system.c:570",
+      "components/ts_api/src/ts_api_system.c:577",
+      "docs/repair/whole-product-20261031/review-dependency-evidence/freertos-task-snapshot.txt:17"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F55",
+    "priority": "P2",
+    "title": "QR码的前景色和自动化背景图选项没有传到执行端",
+    "batch": "B09",
+    "owner": "p2",
+    "user_trigger": "在矩阵QR窗口选择红色生成，或在自动化QR动作里选择颜色/背景图片后保存运行。",
+    "expected_user_boundary": "已提供的二维码颜色和背景选项应接入实际命令，保留旧配置的默认颜色和未设置语义。",
+    "strongest_counterevidence": "普通QR背景实现可用，自动化的RGB/图像路径结构也已经存在，不需要据此添加新QR引擎。",
+    "judgment": "网页前景色键与API不符；自动化qr_fg/qr_bg_image未被codec/执行器接通，选择正常参数也丢失。",
+    "minimal_direction": "对齐现有color/RGB与已有图像路径及CLI --bg，优先复用字段；不另添平行颜色/背景结构或改变QR裁剪策略。 接通时保留QR默认白色；旧配置的RGB零值与未提供颜色存在歧义，不能用一条无条件--color把原默认QR变成黑底黑码，也不为此造迁移框架。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:5361",
+      "components/ts_api/src/ts_api_led.c:1028",
+      "components/ts_webui/web/js/app.js:14836",
+      "components/ts_automation/src/ts_action_codec.c:214",
+      "components/ts_automation/src/ts_action_manager.c:1024"
+    ],
+    "original_call_chain": [
+      "app.js5352-5362→ts_api_led.c1026-1029只读color",
+      "app.js14835-14837/15131-15135→ts_action_codec.c230-251/475-502无qr_fg/qr_bg_image→ts_action_manager.c1024-1035仅text/ecc/rgb"
+    ],
+    "origin_from_review": "历史实现遗漏，普通页面至少在ac109b00d（2026-09-28）已存在，动作参数/执行适配来自2026-01，非本轮六文件引入。",
+    "normal_cases": [
+      "N15",
+      "N19"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:5361",
+      "components/ts_api/src/ts_api_led.c:1028",
+      "components/ts_webui/web/js/app.js:14836",
+      "components/ts_automation/src/ts_action_codec.c:214",
+      "components/ts_automation/src/ts_action_manager.c:1024"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第五节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F57",
+    "priority": "P2",
+    "title": "自动化文字的手动定位及对齐未接入执行；自动定位不属错误",
+    "batch": "B09",
+    "owner": "p2",
+    "user_trigger": "在自动化文字动作中显式关闭自动定位后设置X/Y，或设置文字对齐，再运行。开启自动定位时忽略坐标不属于错误。",
+    "expected_user_boundary": "显式手动定位及对齐应传到文字命令；开启自动定位时忽略X/Y是正确行为，默认布局必须保留。",
+    "strongest_counterevidence": "自动定位开启时忽略X/Y本来是正确行为，不能把这种场景判错。只确认显式关闭自动定位后的坐标丢失及对齐选项未贯通；默认auto_pos开启，机械补X/Y会改变正常布局。",
+    "judgment": "对齐/坐标已保存但执行器遗漏，手动位置不生效；auto_pos未贯通使原修复建议不能机械地只补三个参数。",
+    "minimal_direction": "同时明确自动/手动位置传递；缺少auto_pos的既有配置保持当前自动行为，不猜测迁移。复用原文字实现，不重写渲染或擅改默认布局。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:14813",
+      "components/ts_webui/web/js/app.js:14819",
+      "components/ts_automation/src/ts_action_codec.c:247",
+      "components/ts_automation/src/ts_action_manager.c:965",
+      "components/ts_webui/web/js/app.js:5444",
+      "components/ts_webui/web/js/app.js:15122"
+    ],
+    "original_call_chain": [
+      "app.js14813/14817-14819及15118-15122提供选项",
+      "ts_action_codec.c247-251/494-501保留align/x/y",
+      "ts_action_manager.c965-986省略这些参数→ts_cmd_led.c1642-1648/2321-2322已有坐标对齐能力"
+    ],
+    "origin_from_review": "历史遗漏：UI80d66f716（2026-01-28）、执行适配d06b66b53（2026-01-29），非本轮六文件引入。",
+    "normal_cases": [
+      "N14",
+      "N19"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:14813",
+      "components/ts_webui/web/js/app.js:14819",
+      "components/ts_automation/src/ts_action_codec.c:247",
+      "components/ts_automation/src/ts_action_manager.c:965",
+      "components/ts_webui/web/js/app.js:5444",
+      "components/ts_webui/web/js/app.js:15122"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第五节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F58",
+    "priority": "P2",
+    "title": "色彩校正已保存生效，却因自动导出SD失败被报告为应用失败",
+    "batch": "B09",
+    "owner": "p2",
+    "user_trigger": "无SD卡时调整网页色彩校正并点击应用。",
+    "expected_user_boundary": "LED色彩校正已经应用并保存到系统NVS时，不应因另一个SD导出失败被报告成保存/应用失败；导出是独立用户操作。",
+    "strongest_counterevidence": "实际NVS保存/运行应用已经成功；不能为了让页面失败提示成立而撤销已完成控制，也不是应急副本同步要求。",
+    "judgment": "前端在成功set后把写SD export作为应用必经步骤，无卡误报应用失败。",
+    "minimal_direction": "应用按已有set结果完成并更新初始值；导出留在用户独立选择的入口。不加SD兜底、自动重试或回滚。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:5661",
+      "components/ts_webui/web/js/app.js:5664",
+      "components/ts_led/src/ts_led_color_correction.c:369",
+      "components/ts_api/src/ts_api_led.c:1499"
+    ],
+    "original_call_chain": [
+      "app.js5655-5672成功set后强制export→ts_api_led.c1486-1503",
+      "ts_led_color_correction.c369-374保存和生效，647-667独立写SD",
+      "docs/CONFIGURATION_GUIDE.md系统NVS配置归属"
+    ],
+    "origin_from_review": "历史前端73eea56fe（2026-02-06）遗留，0.6.3系统存储改造仍未收敛该入口；非本轮六文件引入。",
+    "normal_cases": [
+      "N17"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:5661",
+      "components/ts_webui/web/js/app.js:5664",
+      "components/ts_led/src/ts_led_color_correction.c:369",
+      "components/ts_api/src/ts_api_led.c:1499"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第五节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F61",
+    "priority": "P2",
+    "title": "风扇和关机设置的迟到加载会覆盖用户已编辑的新草稿",
+    "batch": "B06",
+    "owner": "p2",
+    "user_trigger": "打开风扇曲线/关机设置后，网络尚未返回当前配置时已经开始修改；或关闭窗口重新打开后，旧请求才返回。",
+    "expected_user_boundary": "旧弹窗或较早请求不能覆盖用户已经编辑的当前草稿；GET返回本身不等于硬件被改变。",
+    "strongest_counterevidence": "单纯迟到GET不改变硬件，通常快速加载也不会丢草稿；实际风险在随后保存了被覆盖的输入。",
+    "judgment": "风扇和关机窗口先可编辑，旧成功/失败回调直接写同ID字段及全局配置，可覆盖本次输入或新窗口。",
+    "minimal_direction": "在这两个窗口复用现有归属检查，并在初始加载前暂缓编辑或保护已改草稿；不搞全站草稿合并/重试层。 优先局部初次加载暂缓配置编辑/保存，结束时恢复；复用DOM要区分本次打开。若选择dirty保护，必须保住未改字段真值，不能跳过整份加载后写回默认值。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:2285",
+      "components/ts_webui/web/js/app.js:2301",
+      "components/ts_webui/web/js/app.js:15923",
+      "components/ts_webui/web/js/app.js:15932"
+    ],
+    "original_call_chain": [
+      "app.js2243-2277先显示可编辑曲线和保存按钮，2285-2301迟到数据写全局及当前DOM，2310-2311可关闭并移除",
+      "app.js15905-15920先显示关机表单，15923-15936成功/失败后都直接写当前字段；15954-15960保存读取这些字段"
+    ],
+    "origin_from_review": "历史遗漏：29573c05c（2026-04-06）风扇加载，acf2434ca（2026-02-01）关机窗口，非本轮六文件引入。",
+    "normal_cases": [
+      "N09",
+      "N10"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:2285",
+      "components/ts_webui/web/js/app.js:2301",
+      "components/ts_webui/web/js/app.js:15923",
+      "components/ts_webui/web/js/app.js:15932"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第四节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F63",
+    "priority": "P2",
+    "title": "本机REST数据源丢弃URL查询参数，合法读取地址不能按配置工作",
+    "batch": "B11",
+    "owner": "p2",
+    "user_trigger": "建立本机REST数据源，例如指向已有主机指纹信息的http://127.0.0.1/api/v1/hosts/info?host=目标主机，或其他需要查询参数的只读API。",
+    "expected_user_boundary": "本机代理的受支持查询参数应与普通HTTP调用保持同义，同时不得绕过目标权限。",
+    "strongest_counterevidence": "无参数本机源与外部REST源正常；本机直调是有意优化，不应全部改回网络请求或增加SSRF通用策略。",
+    "judgment": "合法hosts/info?host=字符串URL在本机分支被截断且传空参数，而普通HTTP会保留这个字符串，语义不一致。",
+    "minimal_direction": "仅在现有本机适配保留既有query含义；如果与公开proxy共用解析代码，先处理F03权限边界，不借修参数扩大匿名可调用操作。",
+    "evidence_at_baseline": [
+      "components/ts_automation/src/ts_source_manager.c:576",
+      "components/ts_automation/src/ts_source_manager.c:589",
+      "components/ts_api/src/ts_api_hosts.c:85",
+      "components/ts_webui/src/ts_webui_api.c:269"
+    ],
+    "original_call_chain": [
+      "app.jsREST源URL编辑/保存入口→ts_source_manager.c547-556识别本机",
+      "573-589截断查询且传空对象→591 ts_api_call",
+      "ts_api_hosts.c85-88要求host字符串；ts_webui_api.c262-270普通HTTP查询解析将非纯数字值作为字符串传入，含点IP地址符合。"
+    ],
+    "origin_from_review": "历史遗留：c15410f36（2026-01-27），非本轮六文件引入。",
+    "normal_cases": [
+      "N18"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_automation/src/ts_source_manager.c:576",
+      "components/ts_automation/src/ts_source_manager.c:589",
+      "components/ts_api/src/ts_api_hosts.c:85",
+      "components/ts_webui/src/ts_webui_api.c:269"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F64",
+    "priority": "P2",
+    "title": "部分临时任务使用不匹配的销毁函数，退出后栈和控制块没有释放",
+    "batch": "A05",
+    "owner": "p1",
+    "user_trigger": "设备运行中以太网断开再接通；每次链路恢复都会创建一次DHCP启动任务，任务正常结束。",
+    "expected_user_boundary": "使用WithCaps创建的动态任务应按SDK对应方式结束，实际退出时不遗留其栈和TCB。",
+    "strongest_counterevidence": "驻留任务占用内存是正常的；不能单凭WithCaps创建就计泄漏，也不能说网线插几次一定死机。",
+    "judgment": "已退出的dhcp_start/LPMU检测/forward/action_exec实际用普通delete；匹配SDK明确用静态TCB/stack且普通delete不释放。默认以太网可反复触发。",
+    "minimal_direction": "只配对这几处实际退出的WithCaps任务，使用SDK既有销毁接口和正确所有权；不造新清理框架、不改普通task创建/销毁。",
+    "evidence_at_baseline": [
+      "components/ts_net/src/ts_eth.c:118",
+      "components/ts_net/src/ts_eth.c:88",
+      "components/ts_drivers/src/ts_device_ctrl.c:948",
+      "components/ts_security/src/ts_port_forward.c:414",
+      "components/ts_automation/src/ts_action_manager.c:2098",
+      "dependency-evidence/caps-idf_additions.c.txt:117"
+    ],
+    "original_call_chain": [
+      "components/ts_net/src/ts_eth.c108-119链路事件创建4096字节WithCaps任务；69-88完成后vTaskDelete(NULL)",
+      "本地ESP-IDF5.5.2 idf_additions.h307-312要求配套删除，idf_additions.c44-58分配并静态创建，84-116配套释放",
+      "FreeRTOS-Kernel/tasks.c4922-4940静态栈和TCB分支不释放；Xtensa portmacro.h88-91 StackType_t为uint8_t",
+      "同根因还见ts_device_ctrl.c947-965、ts_port_forward.c413-414/521、ts_action_manager.c315-321/2094-2098；持久运行未退出的任务不能仅因使用WithCaps就算泄漏。"
+    ],
+    "origin_from_review": "历史遗留：以太网WithCaps创建ac13828b1（2026-02-04），普通vTaskDelete未随之更改；ea9a4a2b已存在，不归因本轮六文件。",
+    "normal_cases": [
+      "N06",
+      "N23"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_net/src/ts_eth.c:118",
+      "components/ts_net/src/ts_eth.c:88",
+      "components/ts_drivers/src/ts_device_ctrl.c:948",
+      "components/ts_security/src/ts_port_forward.c:414",
+      "components/ts_automation/src/ts_action_manager.c:2098",
+      "docs/repair/whole-product-20261031/review-dependency-evidence/caps-idf_additions.c.txt:117"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F65",
+    "priority": "P1",
+    "title": "SSH转发任务栈预算不足以容纳局部缓冲及调用开销",
+    "batch": "A05",
+    "owner": "p1",
+    "user_trigger": "通过现有ssh --forward建立转发后，让本地客户端连接并开始传输。",
+    "expected_user_boundary": "转发任务栈必须容纳其局部缓冲区及调用开销，不能仅局部数组就占满整个栈。",
+    "strongest_counterevidence": "只影响已编译支持的本地端口转发；没有测量编译后栈帧或实际崩溃，不能给出已复现结论。",
+    "judgment": "WithCaps参数确实是4096字节，局部buffer真实占4096且传给多层调用，预算已经不够。这不是泛泛建议栈留更大余量。",
+    "minimal_direction": "先核定这一个转发任务的栈需求；内存预算允许时，仅调整该任务栈即可，不强制搬缓冲。确有预算限制再考虑把缓冲归入既有转发对象，并与F16生命周期对齐。两者择一，不扩大全部任务栈、不建缓冲池。",
+    "evidence_at_baseline": [
+      "components/ts_security/CMakeLists.txt:11",
+      "components/ts_security/src/ts_port_forward.c:178",
+      "components/ts_security/src/ts_port_forward.c:521",
+      "dependency-evidence/caps-idf_additions.h.txt:17"
+    ],
+    "original_call_chain": [
+      "components/ts_console/commands/ts_cmd_ssh.c607-663现有转发入口",
+      "components/ts_security/src/ts_port_forward.c521为forward_task分配4096字节栈；379-382调用process_connection",
+      "同文件174-214在栈上声明4096字节且交给recv/libssh2/send真实使用，不能优化成未使用变量",
+      "SDK idf_additions.h311-312明确字节，portmacro.h88-91栈元素为1字节"
+    ],
+    "origin_from_review": "历史遗留：c88e9383b（2026-01-18）已引入4096字节局部缓冲，当前4KiB栈路径在ea9a4a2b已存在；非本轮六文件引入。",
+    "normal_cases": [
+      "N05",
+      "N06",
+      "N23"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_security/CMakeLists.txt:11",
+      "components/ts_security/src/ts_port_forward.c:178",
+      "components/ts_security/src/ts_port_forward.c:521",
+      "docs/repair/whole-product-20261031/review-dependency-evidence/caps-idf_additions.h.txt:17"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F66",
+    "priority": "P2",
+    "title": "停止电源任务会直接删除持锁任务，再启用后状态和保护状态机可能持续失效",
+    "batch": "A06",
+    "owner": "p1",
+    "user_trigger": "停用低压保护或停止电源服务时，工作任务恰好正持有状态/数据互斥锁；随后再次启用或读取状态。",
+    "expected_user_boundary": "停用电源任务不能把持有的互斥锁永久遗留，任务重新启用后仍应可获取必要锁。",
+    "strongest_counterevidence": "必须与持锁窗口交叉，并非每次停用都会坏；与F01重复初始化、F18网页取错状态是不同错误。",
+    "judgment": "两个stop直接删除可持state/data mutex的工作任务，删除不会归还其持有的锁；start复用这些锁，可能长期无法工作。",
+    "minimal_direction": "只修本地电源工作任务的有序退出和资源交接；不替其他任务强制解锁，不延长固定等待，不把等待逻辑套到强制删除远端配置。",
+    "evidence_at_baseline": [
+      "components/ts_drivers/src/ts_power_policy.c:465",
+      "components/ts_drivers/src/ts_power_policy.c:762",
+      "components/ts_drivers/src/ts_power_monitor.c:540",
+      "components/ts_drivers/src/ts_power_monitor.c:603",
+      "reassessment-20261031/dependency-evidence/tasks.c.txt:3"
+    ],
+    "original_call_chain": [
+      "components/ts_api/src/ts_api_power.c191-204停用入口→ts_power_policy_stop453-470，465强删",
+      "ts_power_policy.c762-856持state_mutex执行并在末尾Give；473-497状态读超时；412-441重新启动复用已有状态锁",
+      "ts_power_monitor.c524-545同模式强删；603-620工作任务持data_mutex",
+      "本地SDK tasks.c1342-1487删除任务及4895-4944资源清理不返还应用mutex；queue.c1742-1750取锁减少计数并记录持有人"
+    ],
+    "origin_from_review": "历史遗留：3538a5b63（2026-01-20）电源策略直接删任务；ea9a4a2b相同，不是本轮六文件引入。",
+    "normal_cases": [
+      "N10",
+      "N11"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_drivers/src/ts_power_policy.c:465",
+      "components/ts_drivers/src/ts_power_policy.c:762",
+      "components/ts_drivers/src/ts_power_monitor.c:540",
+      "components/ts_drivers/src/ts_power_monitor.c:603",
+      "docs/repair/whole-product-20261031/review-dependency-evidence/reassessment-tasks.c.txt:3"
+    ],
+    "plan_revision": "v3",
+    "implementation_contract": "five-designs.txt 第三节",
+    "design_status": "DESIGN_CLOSED_PENDING_USER_CONFIRMATION"
+  },
+  {
+    "id": "F67",
+    "priority": "P2",
+    "title": "voltprot修改电压阈值时使用未初始化的另一阈值",
+    "batch": "B04",
+    "owner": "p2",
+    "user_trigger": "在已初始化的设备终端执行voltprot -c --low 12.5，或用--recovery修改恢复阈值。",
+    "expected_user_boundary": "局部修改电源阈值应先正确读取另一项并检查结果，不能使用未初始化浮点值。",
+    "strongest_counterevidence": "未初始化float的具体值不可预测，不能声称必然设成某一危险电压。头文件也没有允许NULL输出参数的承诺。",
+    "judgment": "CLI单字段修改传NULL给要求两输出非空的getter，忽略失败后使用未初始化另一阈值；正常已提供命令本身有错。",
+    "minimal_direction": "读取当前完整阈值对并检查结果，再合并用户明确填写值；不放宽getter/阈值限制，也不重新设计配置事务。",
+    "evidence_at_baseline": [
+      "components/ts_console/commands/ts_cmd_voltprot.c:299",
+      "components/ts_console/commands/ts_cmd_voltprot.c:314",
+      "components/ts_drivers/src/ts_power_policy.c:616",
+      "components/ts_drivers/include/ts_power_policy.h:238"
+    ],
+    "original_call_chain": [
+      "components/ts_console/commands/ts_cmd_voltprot.c194-196文档化入口；295-316两处传NULL，忽略读取结果并使用局部变量",
+      "components/ts_drivers/src/ts_power_policy.c603-615 get_thresholds要求两个输出均非NULL，未写任何输出即失败；575-598 setter按传入值覆盖两阈值"
+    ],
+    "origin_from_review": "历史遗留：3538a5b63（2026-01-20）已存在；非本轮六文件引入。",
+    "normal_cases": [
+      "N10"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_console/commands/ts_cmd_voltprot.c:299",
+      "components/ts_console/commands/ts_cmd_voltprot.c:314",
+      "components/ts_drivers/src/ts_power_policy.c:616",
+      "components/ts_drivers/include/ts_power_policy.h:238"
+    ],
+    "plan_revision": "v3"
+  },
+  {
+    "id": "F68",
+    "priority": "P2",
+    "title": "关机设置因后面的时间字段无效而保存失败，但电压阈值已经改变",
+    "batch": "B04",
+    "owner": "p2",
+    "user_trigger": "在关机设置中修改电压阈值，同时误把恢复等待输入0秒，点击保存。输入框不是原生表单提交，现有按钮允许提交这种草稿。",
+    "expected_user_boundary": "可提交的恢复持续时间应符合已有1至300秒约定；这个已知无效值不能先改变其他字段再报告拒绝。",
+    "strongest_counterevidence": "任何失败都保证完全未生效并不是已确认的全局契约；尤其不能据此要求NVS/硬件失败回滚。",
+    "judgment": "正常关机设置窗口允许提交恢复等待0，后端先改阈值再拒绝该已知非法时间；用户失败保存的这部分已临时生效却未持久化，缺乏明确说明。",
+    "minimal_direction": "范围限定到已明确存在的字段限制，在变更前处理；可复用现有前端readNumericInput避免这条用户路径，或将同一验证前置。不得增加新限制、重复保留两套规则或引入通用事务/回滚。",
+    "evidence_at_baseline": [
+      "components/ts_webui/web/js/app.js:15958",
+      "components/ts_webui/web/js/app.js:15970",
+      "components/ts_api/src/ts_api_power.c:159",
+      "components/ts_api/src/ts_api_power.c:174",
+      "components/ts_drivers/src/ts_power_policy.c:1098"
+    ],
+    "original_call_chain": [
+      "components/ts_webui/web/js/app.js15905-15920时间输入/onclick保存；15954-15980只预检部分字段",
+      "components/ts_api/src/ts_api_power.c158-179先写阈值/关机时间，再校验恢复等待",
+      "components/ts_drivers/src/ts_power_policy.c1092-1102拒绝0秒；575-598前面的阈值已经更新；API203-209才保存NVS"
+    ],
+    "origin_from_review": "历史遗留：acf2434ca（2026-02-01）同顺序已存在，非本轮六文件引入。",
+    "normal_cases": [
+      "N10"
+    ],
+    "status": "NOT_STARTED",
+    "evidence_for_this_package": [
+      "components/ts_webui/web/js/app.js:15958",
+      "components/ts_webui/web/js/app.js:15970",
+      "components/ts_api/src/ts_api_power.c:159",
+      "components/ts_api/src/ts_api_power.c:174",
+      "components/ts_drivers/src/ts_power_policy.c:1098"
+    ],
+    "plan_revision": "v3"
+  }
+]

@@ -1,0 +1,62 @@
+{
+  "recorded_at": "2026-10-31T03:15:04.924804+08:00",
+  "scope": "只更正复裁交付记录，不修改原报告、代码或分类数量",
+  "corrections": [
+    {
+      "id": "F37",
+      "old": {
+        "title_revised": "WiFi开启构建没有接入已保存的无线配置；当前默认构建不受影响",
+        "trigger_revised": "先构建启用了WiFi的变体，保存无线连接参数后启动该无线接口；当前默认发布构建关闭WiFi。",
+        "normative_expectation": "仅在启用WiFi构建时，已读取的无线配置应传入驱动；不把当前关闭的功能当成已发生故障。"
+      },
+      "corrected": {
+        "title_revised": "网络共享保存后重启未自动恢复（仅WiFi开启构建）",
+        "trigger_revised": "仅在启用了WiFi并正常连接的版本上，开启NAT网络共享、保存后重启，等待WiFi重新连接。当前冻结的默认发布构建未开启WiFi。",
+        "normative_expectation": "按已确认保存约定，网络恢复后应恢复先前保存为启用的网络共享；保存为关闭的应继续关闭。当前默认WiFi关闭构建不受这条路径影响。"
+      },
+      "reason": "复裁整理时标题、触发和预期串项；原发现正文、复裁判定、证据及修复方向原本对应正确问题。已重新对照冻结源码。",
+      "classification_unchanged": "B"
+    },
+    {
+      "id": "F59",
+      "old": {
+        "title_revised": "WiFi开启构建重启后未接入已保存功率；当前默认构建不受影响",
+        "trigger_revised": "仅在启用了WiFi的变体上修改无线功率、保存并按说明重启；当前默认构建不受此路径影响。",
+        "normative_expectation": "仅在启用WiFi构建且完成重启后，已保存的功率设置应由原运行配置接入驱动。"
+      },
+      "corrected": {
+        "title_revised": "含单引号的WiFi名称使连接按钮失效（仅WiFi开启构建）",
+        "trigger_revised": "在启用了WiFi的版本上扫描到John's iPhone这类含单引号的热点，点击连接，密码窗口不能正常打开。当前默认WiFi关闭构建不受此路径影响。",
+        "normative_expectation": "合法热点名称含单引号时，也应能正常打开密码窗口并进入连接流程；名称应作为数据传递。当前默认WiFi关闭构建不受影响。"
+      },
+      "reason": "复裁整理时标题、触发和预期串项；原发现正文、复裁判定、证据及修复方向原本对应正确问题。已重新对照冻结源码。",
+      "classification_unchanged": "B"
+    },
+    {
+      "id": "F74",
+      "old": {
+        "title_revised": "WiFi开启构建的指定接口设置固定写入STA；当前默认构建不受影响",
+        "trigger_revised": "仅在WiFi编译启用且选用AP或其他可选接口时，对该指定接口设置静态IP/MAC；默认仅以太网的发布构建不计为当前故障。",
+        "normative_expectation": "仅在启用WiFi构建时，静态IP与MAC设置应写到用户指定的接口，而不是固定写STA。"
+      },
+      "corrected": {
+        "title_revised": "WiFi断线后部分状态查询仍报就绪及旧地址（仅WiFi开启构建）",
+        "trigger_revised": "在启用了WiFi的版本上，无线已经取得IP后关闭热点，再从串口或wifi.status查询状态。普通network.status另读正确的低层标志，不归入这条错误路径。",
+        "normative_expectation": "无线断开后，相应串口和wifi.status查询应反映未连接，不能把旧地址作为当前就绪地址。当前默认WiFi关闭构建不受影响。"
+      },
+      "reason": "复裁整理时标题、触发和预期串项；原发现正文、复裁判定、证据及修复方向原本对应正确问题。已重新对照冻结源码。",
+      "classification_unchanged": "B"
+    },
+    {
+      "id": "F58",
+      "old": {
+        "normative_expectation": "电源CC配置已经应用和NVS保存成功时，不应因另一个SD导出失败被报告成配置应用失败。"
+      },
+      "corrected": {
+        "normative_expectation": "LED色彩校正已经应用并保存到系统NVS时，不应因另一个SD导出失败被报告成保存/应用失败；导出是独立用户操作。"
+      },
+      "reason": "交接逐项核对时发现把LED色彩校正的CC误写成电源CC；原题目、触发、判定、证据和最小修复方向原本正确。",
+      "classification_unchanged": "A"
+    }
+  ]
+}

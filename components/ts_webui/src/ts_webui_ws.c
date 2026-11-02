@@ -24,6 +24,8 @@
 #include <stdatomic.h>
 #include <assert.h>
 #include "esp_timer.h"
+#include "esp_random.h"
+#include "ts_exec_output.h"
 // ts_var.h 已废弃，统一使用 ts_variable.h（ts_automation 变量系统）
 #include "ts_variable.h"
 #include "esp_http_server.h"
@@ -78,9 +80,6 @@ static _Atomic(httpd_handle_t) s_server = NULL;
 static atomic_bool s_ws_stopping;
 static SemaphoreHandle_t s_terminal_mutex = NULL;
 static int s_terminal_client_fd = -1;  // 当前终端会话的 fd
-#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
-static uint32_t s_terminal_session_id;
-#endif
 
 /* 终端输出缓冲区 */
 static char *s_terminal_output_buf = NULL;
@@ -111,6 +110,7 @@ static void exec_retry_timer_drain(void);
 static void update_log_stream_state(void);
 esp_err_t ts_webui_log_stream_enable(bool enable);
 esp_err_t ts_webui_ws_stop(httpd_handle_t server);
+static void exec_cache_clear(void);
 void ts_webui_ws_stopped(httpd_handle_t server);
 static bool has_log_clients(void);
 
@@ -199,6 +199,34 @@ static void ssh_request_error(httpd_req_t *req, const char *message)
     free(json);
 }
 
+static bool bind_request_session(httpd_req_t *req, const cJSON *msg, ts_perm_level_t required)
+{
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    const cJSON *token = cJSON_GetObjectItemCaseSensitive(msg, "token");
+    char authorization[136];
+    uint32_t session_id = 0;
+    ts_perm_level_t level = TS_PERM_NONE;
+    int n = cJSON_IsString(token) ? snprintf(authorization, sizeof(authorization), "Bearer %s", token->valuestring) : -1;
+    if (n < 0 || n >= sizeof(authorization) ||
+        ts_auth_validate_request(authorization, &session_id, &level) != ESP_OK || level < required)
+        return false;
+    ts_ws_peer_t peer = *(ts_ws_peer_t *)req->sess_ctx;
+    return ts_ws_peer_bind_session(peer, session_id) == ESP_OK && ts_ws_peer_authorized(peer, required);
+#else
+    (void)req;
+    (void)msg;
+    (void)required;
+    return true;
+#endif
+}
+static void handle_auth(httpd_req_t *req, const cJSON *msg)
+{
+    const char *text = bind_request_session(req, msg, TS_PERM_READ) ?
+        "{\"type\":\"auth_ok\"}" : "{\"type\":\"auth_error\",\"message\":\"Unauthorized\"}";
+    httpd_ws_frame_t frame = {.type=HTTPD_WS_TYPE_TEXT, .payload=(uint8_t *)text, .len=strlen(text)};
+    httpd_ws_send_frame(req, &frame);
+}
+
 static void shell_resources_close(ssh_shell_context_t *ctx)
 {
     xSemaphoreTake(ctx->io,portMAX_DELAY);
@@ -249,8 +277,8 @@ static esp_err_t ssh_start_status(ssh_shell_context_t *ctx,const char *status,co
     char *json=ok?cJSON_PrintUnformatted(msg):NULL;cJSON_Delete(msg);
     esp_err_t ret=ESP_ERR_NO_MEM;
     if(json){ts_ws_peer_t peer=ts_ws_op_peer(ctx->op);httpd_ws_frame_t f={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)json,.len=strlen(json)};
-        ret=ts_ws_transport_send(peer.server,peer.fd,&f);}
-    free(json);return ret;
+        ret=ts_ws_transport_send_private(peer,&f,TS_PERM_ROOT);}
+    free(json);return ret==ESP_ERR_NOT_ALLOWED ? ESP_OK : ret;
 }
 /* Poller remains the only ordinary observation producer. User disconnect is
  * handed to that producer, preserving the disconnecting/closed wire messages. */
@@ -291,6 +319,11 @@ static void ssh_cleanup(void)
 }
 static void handle_ssh_connect(httpd_req_t *req,cJSON *params)
 {
+    if (!bind_request_session(req, params, TS_PERM_ROOT)) {
+        ssh_request_error(req, "Unauthorized");
+        return;
+    }
+
     cJSON *host=cJSON_GetObjectItem(params,"host"),*user=cJSON_GetObjectItem(params,"user");
     cJSON *port=cJSON_GetObjectItem(params,"port"),*password=cJSON_GetObjectItem(params,"password");
     if(!cJSON_IsString(host) || !cJSON_IsString(user)){ssh_request_error(req,"Missing host or user");return;}
@@ -333,6 +366,11 @@ failed:
  * pinned across resource I/O; no handler can retarget the current Shell. */
 static void handle_ssh_control(httpd_req_t *req,ts_ws_peer_t peer,const char *type,cJSON *msg)
 {
+    if (!ts_ws_peer_authorized(peer, TS_PERM_ROOT)) {
+        ssh_request_error(req, "Unauthorized");
+        return;
+    }
+
     ts_ws_operation_t *op=ts_ws_op_shell_control(peer);
     if(!op){ssh_request_error(req,"This connection does not own an active SSH session");return;}
     ssh_shell_context_t *ctx=ts_ws_op_data(op);
@@ -370,26 +408,116 @@ static void handle_ssh_control(httpd_req_t *req,ts_ws_peer_t peer,const char *ty
 /*                          Terminal Functions                                */
 /*===========================================================================*/
 
-/* 终端输出回调 - 收集到缓冲区 */
+typedef struct {
+    ts_ws_operation_t *op;
+    ts_ws_peer_t peer;
+    char *command;
+    atomic_bool cancel, detached, finished, truncated;
+    int code;
+    int64_t retry_deadline;
+} terminal_job_t;
+
+static bool terminal_cancelled(void *data) {
+    terminal_job_t *job=data;
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    if(!ts_ws_peer_authorized(job->peer,TS_PERM_ROOT))job->cancel=true;
+#endif
+    return job->cancel;
+}
 static void terminal_output_cb(const char *data, size_t len, void *user_data)
 {
-    if (!data || len == 0) return;
-    if (!s_terminal_output_buf || !s_output_mutex) return;
-    
-    if (xSemaphoreTake(s_output_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        size_t space = TERMINAL_OUTPUT_BUF_SIZE - s_terminal_output_len - 1;
-        size_t copy_len = len < space ? len : space;
-        
-        if (copy_len > 0) {
-            memcpy(s_terminal_output_buf + s_terminal_output_len, data, copy_len);
-            s_terminal_output_len += copy_len;
-            s_terminal_output_buf[s_terminal_output_len] = '\0';
-            TS_LOGD(TAG, "Output collected: %zu bytes, total: %zu", copy_len, s_terminal_output_len);
-        }
-        xSemaphoreGive(s_output_mutex);
-    } else {
-        TS_LOGW(TAG, "Failed to acquire output mutex");
+    terminal_job_t *job = user_data;
+    if (!data || !len || job->detached) return;
+    xSemaphoreTake(s_output_mutex, portMAX_DELAY);
+    size_t space = TERMINAL_OUTPUT_BUF_SIZE - s_terminal_output_len - 1;
+    size_t count = len < space ? len : space;
+    memcpy(s_terminal_output_buf + s_terminal_output_len, data, count);
+    s_terminal_output_len += count;
+    s_terminal_output_buf[s_terminal_output_len] = 0;
+    if (count != len) job->truncated = true;
+    xSemaphoreGive(s_output_mutex);
+    ts_ws_subscriptions_wake();
+}
+
+/* Do not split a valid UTF-8 character at a JSON/WebSocket frame boundary. */
+static size_t terminal_utf8_prefix(const char *data, size_t n)
+{
+    if (!n) return 0;
+    size_t start = n - 1;
+    while (start && (((unsigned char)data[start] & 0xc0) == 0x80)) --start;
+    unsigned char lead = data[start];
+    size_t width = lead < 0x80 ? 1 : lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4;
+    return width > n - start ? start : n;
+}
+static void terminal_job_destroy(void *data)
+{
+    terminal_job_t *job = data;
+    assert(job->finished && !job->command);
+    free(job);
+}
+static bool terminal_job_maintain(void *data)
+{
+    terminal_job_t *job = data;
+    bool pending;
+    xSemaphoreTake(s_output_mutex, portMAX_DELAY);
+    if (job->detached) s_terminal_output_len = 0;
+    size_t n = s_terminal_output_len < 4096 ? s_terminal_output_len : 4096;
+    n = terminal_utf8_prefix(s_terminal_output_buf, n);
+    if (!n && s_terminal_output_len && job->finished) {
+        s_terminal_output_len = 0; job->truncated = true;
     }
+    if (n) {
+        char saved = s_terminal_output_buf[n]; s_terminal_output_buf[n] = 0;
+        cJSON *msg = cJSON_CreateObject();
+        bool ok = msg && cJSON_AddStringToObject(msg,"type","output") &&
+            cJSON_AddStringToObject(msg,"data",s_terminal_output_buf);
+        s_terminal_output_buf[n] = saved;
+        char *json = ok ? cJSON_PrintUnformatted(msg) : NULL; cJSON_Delete(msg);
+        ts_ws_output_ticket_t ticket;
+        bool accepted = false;
+        if (json && ts_ws_op_output_begin(job->op,&ticket)) accepted = ts_ws_op_output_try(&ticket,json);
+        free(json);
+        if (accepted) {
+            memmove(s_terminal_output_buf,s_terminal_output_buf+n,s_terminal_output_len-n);
+            s_terminal_output_len -= n; job->retry_deadline = 0;
+        } else {
+            if (!job->retry_deadline) job->retry_deadline = esp_timer_get_time()+30000000;
+            if (esp_timer_get_time() >= job->retry_deadline) { s_terminal_output_len=0; job->truncated=true; }
+        }
+    }
+    pending = s_terminal_output_len != 0;
+    xSemaphoreGive(s_output_mutex);
+    if (!pending && job->finished && ts_ws_op_close_begin(job->op)) {
+        char done[128]; ts_ws_op_stats_t stats; ts_ws_op_stats(TS_WS_OP_TERMINAL,&stats);
+        snprintf(done,sizeof(done),"{\"type\":\"done\",\"code\":%d,\"output_incomplete\":%s,\"stopped\":%s}",
+            job->code, job->truncated || stats.failed ? "true":"false",job->cancel?"true":"false");
+        ts_ws_op_close_finish(job->op,done);
+    }
+    return pending;
+}
+static void terminal_job_task(void *data)
+{
+    terminal_job_t *job = data;
+    ts_console_exec_context_t context = {.remote=true,.cancelled=terminal_cancelled,
+        .output=terminal_output_cb,.user_data=job};
+    ts_cmd_result_t result = {.code=-1};
+    esp_err_t ret = ts_console_exec_with_context(job->command,&result,&context);
+    if (ret == ESP_ERR_INVALID_STATE) { const char busy[]="Console is busy. Retry after the current command ends.\n";terminal_output_cb(busy,sizeof(busy)-1,job); }
+    job->code = ret == ESP_OK ? result.code : -1;
+    memset(job->command,0,strlen(job->command));free(job->command);job->command=NULL;
+    ts_ws_op_executor_done(job->op);
+    job->finished = true; /* release: all producer access precedes retirement */
+    ts_ws_subscriptions_wake();
+    vTaskDelete(NULL);
+}
+static bool terminal_job_cancel(ts_ws_peer_t peer, bool detach)
+{
+    ts_ws_operation_t *op = ts_ws_op_acquire(TS_WS_OP_TERMINAL,0);
+    if (!op) return false;
+    terminal_job_t *job = ts_ws_op_data(op);
+    bool matches = job && ts_ws_peer_equal(job->peer,peer);
+    if (matches) { job->cancel=true; if(detach)job->detached=true; }
+    ts_ws_op_release(op); return matches;
 }
 
 /* 前向声明 */
@@ -438,133 +566,82 @@ static void handle_terminal_command(httpd_req_t *req, const char *command)
         return;
     }
     
-    TS_LOGD(TAG, "Terminal exec (%u bytes)", (unsigned)strlen(command));
-    
-    // 清空输出缓冲区
-    if (s_output_mutex && xSemaphoreTake(s_output_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_terminal_output_len = 0;
-        if (s_terminal_output_buf) {
-            s_terminal_output_buf[0] = '\0';
-        }
-        xSemaphoreGive(s_output_mutex);
+    if (strlen(command) >= TS_CONSOLE_MAX_LINE_LENGTH) { ssh_request_error(req,"Command is too long"); return; }
+    ts_ws_peer_t peer = *(ts_ws_peer_t *)req->sess_ctx;
+    esp_err_t error;
+    ts_ws_operation_t *op = ts_ws_op_create(TS_WS_OP_TERMINAL,peer,&error);
+    if (!op) { ssh_request_error(req,"A terminal command is already running"); return; }
+    terminal_job_t *job = calloc(1,sizeof(*job));
+    if (job) job->command=strdup(command);
+    if (!job || !job->command) {
+        free(job);ts_ws_op_discard(op);ts_ws_op_executor_done(op);ssh_request_error(req,"No memory for terminal command");return;
     }
-    
-    // 执行命令
-    ts_cmd_result_t result;
-    ts_console_exec(command, &result);
-    
-    TS_LOGD(TAG, "Command finished, output len: %zu", s_terminal_output_len);
-    
-    // 获取输出并发送
-    if (s_output_mutex && xSemaphoreTake(s_output_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        TS_LOGD(TAG, "Sending output: %zu bytes", s_terminal_output_len);
-        if (s_terminal_output_len > 0 && s_terminal_output_buf) {
-            cJSON *output_msg = cJSON_CreateObject();
-            cJSON_AddStringToObject(output_msg, "type", "output");
-            cJSON_AddStringToObject(output_msg, "data", s_terminal_output_buf);
-            char *json = cJSON_PrintUnformatted(output_msg);
-            cJSON_Delete(output_msg);
-            
-            if (json) {
-                httpd_ws_frame_t ws_pkt = {
-                    .type = HTTPD_WS_TYPE_TEXT,
-                    .payload = (uint8_t *)json,
-                    .len = strlen(json)
-                };
-                httpd_ws_send_frame(req, &ws_pkt);
-                free(json);
-            }
-        }
-        xSemaphoreGive(s_output_mutex);
+    job->op=op;job->peer=peer;
+    ts_ws_op_bind(op,job,terminal_job_destroy);
+    ts_ws_op_set_maintenance(op,terminal_job_maintain);
+    xSemaphoreTake(s_output_mutex,portMAX_DELAY);s_terminal_output_len=0;s_terminal_output_buf[0]=0;xSemaphoreGive(s_output_mutex);
+    ts_ws_op_open(op);
+    /* Arbitrary console commands may access NVS/flash: stack must be internal. */
+    if (xTaskCreate(terminal_job_task,"terminal_cmd",8192,job,5,NULL)!=pdPASS) {
+        free(job->command);job->command=NULL;job->finished=true;
+        ts_ws_op_discard(op);ts_ws_op_executor_done(op);ssh_request_error(req,"Failed to start terminal command");return;
     }
-    
-    // 发送命令完成消息
-    cJSON *done = cJSON_CreateObject();
-    cJSON_AddStringToObject(done, "type", "done");
-    cJSON_AddNumberToObject(done, "code", result.code);
-    char *json = cJSON_PrintUnformatted(done);
-    cJSON_Delete(done);
-    
-    if (json) {
-        httpd_ws_frame_t ws_pkt = {
-            .type = HTTPD_WS_TYPE_TEXT,
-            .payload = (uint8_t *)json,
-            .len = strlen(json)
-        };
-        httpd_ws_send_frame(req, &ws_pkt);
-        free(json);
-    }
+    const char *started="{\"type\":\"command_started\"}";
+    httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)started,.len=strlen(started)};
+    httpd_ws_send_frame(req,&frame);
 }
 
 /* 启动终端会话 */
-static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
+static esp_err_t start_terminal_session(httpd_req_t *req, const cJSON *msg)
 {
     int fd = httpd_req_to_sockfd(req);
-#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
-    const cJSON *token = cJSON_GetObjectItemCaseSensitive(msg, "token");
-    char authorization[136];
-    uint32_t session_id = 0;
-    ts_perm_level_t level = TS_PERM_NONE;
-    int n = cJSON_IsString(token) ? snprintf(authorization, sizeof(authorization), "Bearer %s", token->valuestring) : -1;
-    if (n < 0 || n >= sizeof(authorization) ||
-        ts_auth_validate_request(authorization, &session_id, &level) != ESP_OK || level < TS_PERM_ROOT) {
+    if (!bind_request_session(req, msg, TS_PERM_ROOT)) {
         ssh_request_error(req, "Unauthorized");
-        return;
+        return ESP_OK;
     }
-#else
-    (void)msg;
-#endif
-    
+    ts_ws_operation_t *running = ts_ws_op_acquire(TS_WS_OP_TERMINAL,0);
+    if (running) {
+        terminal_job_t *job = ts_ws_op_data(running);
+        bool other = job && !ts_ws_peer_equal(job->peer,*(ts_ws_peer_t *)req->sess_ctx);
+        ts_ws_op_release(running);
+        if (other) { ssh_request_error(req,"Previous terminal command is still stopping"); return ESP_FAIL; }
+    }
     // 检查是否有其他终端会话
     if (s_terminal_client_fd >= 0 && s_terminal_client_fd != fd) {
         // 检查旧的终端 fd 是否还在活跃客户端列表中
         bool old_fd_active = false;
-        httpd_handle_t old_hd = NULL;
         ts_ws_peer_t old_peer={0};
         for (int i = 0; i < MAX_WS_CLIENTS; i++) {
             if (s_clients[i].active && s_clients[i].fd == s_terminal_client_fd) {
                 old_fd_active = true;
-                old_hd = s_clients[i].hd;
                 old_peer=s_clients[i].peer;
                 break;
             }
         }
         
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+        if (old_fd_active && !ts_ws_peer_authorized(old_peer, TS_PERM_ROOT)) {
+            cleanup_disconnected_client(old_peer);
+            httpd_sess_trigger_close(old_peer.server, old_peer.fd);
+            old_fd_active = false;
+        }
+#endif
         // 如果旧的 fd 已经不活跃（例如页面刷新），强制清理
         if (!old_fd_active) {
             TS_LOGW(TAG, "Terminal session orphaned (fd=%d), cleaning up", s_terminal_client_fd);
             ts_console_clear_output_cb();
             s_terminal_client_fd = -1;
         } else {
-            // 旧会话仍在列表中
-            // 采用宽松策略：新的终端请求优先，主动关闭旧会话
-            // 原因：通常是用户刷新页面或网络重连，旧会话应该让位
-            TS_LOGI(TAG, "Terminal takeover: closing old session (fd=%d) for new request (fd=%d)", 
-                    s_terminal_client_fd, fd);
-            
-            // 向旧会话发送关闭通知
-            cJSON *close_msg = cJSON_CreateObject();
-            cJSON_AddStringToObject(close_msg, "type", "session_closed");
-            cJSON_AddStringToObject(close_msg, "reason", "Another terminal session requested");
-            char *close_json = cJSON_PrintUnformatted(close_msg);
-            cJSON_Delete(close_msg);
-            
-            if (close_json) {
-                httpd_ws_frame_t ws_pkt = {
-                    .type = HTTPD_WS_TYPE_TEXT,
-                    .payload = (uint8_t *)close_json,
-                    .len = strlen(close_json)
-                };
-                ts_ws_transport_send(old_hd, s_terminal_client_fd, &ws_pkt);
-                free(close_json);
-            }
-            
-            // 清理旧会话
-            cleanup_disconnected_client(old_peer);
-            s_terminal_client_fd = -1;
-            
-            // 短暂延迟确保关闭消息发送
-            vTaskDelay(pdMS_TO_TICKS(50));
+            /* A background retry must not take over a live terminal. Reject
+             * only the requesting connection; its handler closes it below. */
+            static const char busy[] = "{\"type\":\"terminal_busy\",\"retry_after\":5}";
+            httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT,
+                .payload = (uint8_t *)busy, .len = sizeof(busy) - 1};
+            httpd_ws_send_frame(req, &frame);
+            uint8_t reason[] = {0x03, 0xf5};
+            frame = (httpd_ws_frame_t){.type = HTTPD_WS_TYPE_CLOSE, .payload = reason, .len = sizeof(reason)};
+            httpd_ws_send_frame(req, &frame);
+            return ESP_FAIL;
         }
     }
     
@@ -578,10 +655,7 @@ static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
     
     // 设置输出回调
     s_terminal_client_fd = fd;
-#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
-    s_terminal_session_id = session_id;
-#endif
-    ts_console_set_output_cb(terminal_output_cb, NULL);
+    /* Command output is bound to its execution context, not a global callback. */
     
     // 发送确认消息和欢迎信息
     cJSON *welcome = cJSON_CreateObject();
@@ -597,16 +671,19 @@ static void start_terminal_session(httpd_req_t *req, const cJSON *msg)
             .payload = (uint8_t *)json,
             .len = strlen(json)
         };
-        httpd_ws_send_frame(req, &ws_pkt);
+        if (ts_ws_peer_authorized(*(ts_ws_peer_t *)req->sess_ctx, TS_PERM_ROOT))
+            httpd_ws_send_frame(req, &ws_pkt);
         free(json);
     }
     
     TS_LOGD(TAG, "Terminal session started (fd=%d)", fd);
+    return ESP_OK;
 }
 
 /* 清理断开的客户端 */
 static void cleanup_disconnected_client(ts_ws_peer_t peer)
 {
+    terminal_job_cancel(peer,true);
     bool was_log_client = false;
     int fd=peer.fd;
     ts_ws_peer_t live;
@@ -655,6 +732,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
         TS_LOGD(TAG, "WebSocket handshake");
         // 初次连接时添加为事件客户端
         if (s_ws_stopping) return ESP_ERR_INVALID_STATE;
+        if (ts_http_server_admit_ws(req, MAX_WS_CLIENTS) != ESP_OK) return ESP_FAIL;
         return add_client(req, WS_CLIENT_TYPE_EVENT);
     }
     
@@ -723,7 +801,14 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
             TS_LOGD(TAG, "WS msg type=%s from fd=%d", type->valuestring, httpd_req_to_sockfd(req));
             
-            if (strcmp(type->valuestring, "ping") == 0) {
+            if (strcmp(type->valuestring, "auth") == 0) {
+                handle_auth(req, msg);
+            }
+            else if (strcmp(type->valuestring, "ping") == 0) {
+                /* Existing heartbeat retires a revoked binding even when the
+                 * producer has already filtered every private recipient. Pong
+                 * remains public, including for anonymous connections. */
+                (void)ts_ws_peer_authorized(peer, TS_PERM_READ);
                 // Respond to ping
                 cJSON *pong = cJSON_CreateObject();
                 cJSON_AddStringToObject(pong, "type", "pong");
@@ -790,13 +875,13 @@ static esp_err_t ws_handler(httpd_req_t *req)
             }
             else if (strcmp(type->valuestring, "terminal_start") == 0) {
                 // 启动终端会话
-                start_terminal_session(req, msg);
+                ret = start_terminal_session(req, msg);
             }
             else if (strcmp(type->valuestring, "terminal_input") == 0) {
                 // 终端命令输入
 #ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
                 if (s_terminal_client_fd != httpd_req_to_sockfd(req) ||
-                    !ts_security_check_permission(s_terminal_session_id, TS_PERM_ROOT)) {
+                    !ts_ws_peer_authorized(peer, TS_PERM_ROOT)) {
                     ssh_request_error(req, "Unauthorized");
                 } else
 #endif
@@ -811,12 +896,16 @@ static esp_err_t ws_handler(httpd_req_t *req)
                 // 发送中断信号 (Ctrl+C)
 #ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
                 if (s_terminal_client_fd != httpd_req_to_sockfd(req) ||
-                    !ts_security_check_permission(s_terminal_session_id, TS_PERM_ROOT)) {
+                    !ts_ws_peer_authorized(peer, TS_PERM_ROOT)) {
                     ssh_request_error(req, "Unauthorized");
                 } else
 #endif
                 {
-                ts_console_request_interrupt();
+                if (terminal_job_cancel(peer,false)) {
+                    const char *text="{\"type\":\"command_stopping\"}";
+                    httpd_ws_frame_t frame={.type=HTTPD_WS_TYPE_TEXT,.payload=(uint8_t*)text,.len=strlen(text)};
+                    httpd_ws_send_frame(req,&frame);
+                }
                 TS_LOGD(TAG, "Terminal interrupt requested");
                 }
             }
@@ -824,6 +913,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
                 // 停止终端会话
                 int fd = httpd_req_to_sockfd(req);
                 if (s_terminal_client_fd == fd) {
+                    terminal_job_cancel(*(ts_ws_peer_t *)req->sess_ctx,true);
                     ts_console_clear_output_cb();
                     s_terminal_client_fd = -1;
                     // 恢复为普通事件客户端
@@ -970,7 +1060,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
         cJSON_Delete(msg);
     }
     
-    return ESP_OK;
+    return ret;
 }
 
 esp_err_t ts_webui_ws_init(void)
@@ -1069,6 +1159,12 @@ esp_err_t ts_webui_ws_init(void)
 esp_err_t ts_webui_ws_stop(httpd_handle_t server)
 {
     if (ts_ws_transport_in_context() || ts_event_in_callback() || ts_ws_subscriptions_in_context()) return ESP_ERR_INVALID_STATE;
+    ts_ws_operation_t *terminal = ts_ws_op_acquire(TS_WS_OP_TERMINAL,0);
+    if (terminal) {
+        terminal_job_t *job=ts_ws_op_data(terminal);if(job){job->cancel=true;job->detached=true;}
+        ts_ws_op_release(terminal);
+        return ESP_ERR_INVALID_STATE; /* sender/worker remain alive until retirement */
+    }
     ts_ws_op_stop_admission();
     exec_retry_timer_drain();
     s_ws_stopping = true;
@@ -1105,6 +1201,7 @@ esp_err_t ts_webui_ws_stop(httpd_handle_t server)
 void ts_webui_ws_stopped(httpd_handle_t server)
 {
     ts_ws_transport_stopped(server);
+    exec_cache_clear();
     if (s_server == server) s_server = NULL;
     /* Existing terminal buffer/mutex are stable reusable singleton resources. */
 }
@@ -1249,9 +1346,61 @@ static void update_log_stream_state(void)
 /*                     SSH Exec Stream Functions                              */
 /*===========================================================================*/
 
+/* Only the active result and the latest completed result are retained. No
+ * credentials or log history. Records are pinned while parsed, never freed or
+ * allocated under the critical section. Published final JSON is immutable. */
+typedef struct exec_record {
+    unsigned refs; uint32_t id; bool done;
+    ts_webui_ssh_receipt_t receipt;
+    char json[TS_WS_LEGACY_BYTES];
+} exec_record_t;
+static portMUX_TYPE s_exec_cache_lock=portMUX_INITIALIZER_UNLOCKED;
+static exec_record_t *s_exec_active,*s_exec_latest;
+static char s_exec_boot[33];
+static void exec_hex_random(char out[33]) {
+    unsigned char bytes[16];esp_fill_random(bytes,sizeof(bytes));
+    static const char hex[]="0123456789abcdef";
+    for(unsigned i=0;i<16;i++){out[2*i]=hex[bytes[i]>>4];out[2*i+1]=hex[bytes[i]&15];}out[32]=0;
+}
+static void exec_record_release(exec_record_t *r) {
+    if(!r)return;
+    portENTER_CRITICAL(&s_exec_cache_lock);assert(r->refs);bool last=!--r->refs;portEXIT_CRITICAL(&s_exec_cache_lock);
+    if(last)free(r);
+}
+static void exec_record_complete(exec_record_t *r) {
+    portENTER_CRITICAL(&s_exec_cache_lock);
+    r->done=true;r->refs++;exec_record_t *old=s_exec_latest;s_exec_latest=r;
+    if(s_exec_active==r)s_exec_active=NULL; /* active is a borrowed params reference */
+    portEXIT_CRITICAL(&s_exec_cache_lock);exec_record_release(old);
+}
+static void exec_cache_clear(void) {
+    portENTER_CRITICAL(&s_exec_cache_lock);exec_record_t *old=s_exec_latest;s_exec_latest=NULL;portEXIT_CRITICAL(&s_exec_cache_lock);
+    exec_record_release(old);
+}
+char *ts_webui_ssh_exec_status(uint32_t id,const char *boot,const char *key,esp_err_t *error) {
+    if(error)*error=ESP_ERR_NOT_FOUND;
+    if(!id || !boot || !key || strlen(boot)!=32 || strlen(key)!=32)return NULL;
+    portENTER_CRITICAL(&s_exec_cache_lock);
+    exec_record_t *r=s_exec_active && s_exec_active->id==id?s_exec_active:s_exec_latest;
+    if(r && (r->id!=id || strcmp(r->receipt.boot_id,boot) || strcmp(r->receipt.result_key,key)))r=NULL;
+    bool done=r && r->done;if(r)r->refs++;
+    portEXIT_CRITICAL(&s_exec_cache_lock);
+    if(!r)return NULL;
+    char *json=done?strdup(r->json):NULL;
+    if(!done){cJSON *obj=cJSON_CreateObject();cJSON_AddStringToObject(obj,"type","ssh_exec_running");cJSON_AddNumberToObject(obj,"session_id",id);json=cJSON_PrintUnformatted(obj);cJSON_Delete(obj);}
+    if(error)*error=json?ESP_OK:ESP_ERR_NO_MEM;
+    exec_record_release(r);return json;
+}
+
 /* SSH Exec 任务参数 */
 typedef struct {
     ts_ws_operation_t *op;
+    exec_record_t *record;
+    SemaphoreHandle_t output_lock;
+    exec_output_t *stream;
+    char *send_bytes, *send_base64;
+    bool collection_truncated, pending_final, conditions_incomplete;
+    int64_t final_flush_until;
     ts_ssh_session_t session;
     SemaphoreHandle_t io;
     TimerHandle_t timer;
@@ -1281,6 +1430,7 @@ typedef struct {
     char *output_buffer;      /* 输出缓冲区 */
     size_t output_len;        /* 当前输出长度 */
     size_t output_capacity;   /* 缓冲区容量 */
+    ts_ssh_match_window_t matching;
     /* 实时匹配状态 */
     bool match_found;         /* 是否已找到匹配 */
     bool expect_matched;      /* 期望模式是否匹配 */
@@ -1339,6 +1489,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
     if (params && params->collect_output && params->output_buffer) {
         size_t space = params->output_capacity - params->output_len - 1;
         size_t copy_len = (len < space) ? len : space;
+        params->collection_truncated |= copy_len != len || memchr(data,0,len)!=NULL;
         if (copy_len > 0) {
             memcpy(params->output_buffer + params->output_len, data, copy_len);
             params->output_len += copy_len;
@@ -1346,34 +1497,21 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         }
     }
     
-    ts_ws_output_ticket_t ticket;
-    if(ts_ws_op_output_begin(params->op,&ticket)) {
-    if(ticket.count) {
-    cJSON *msg=cJSON_CreateObject();
-    char *buf=heap_caps_malloc(len+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if(!buf)buf=malloc(len+1);
-    if(buf){memcpy(buf,data,len);buf[len]=0;}
-    bool encoded=buf && msg && cJSON_AddStringToObject(msg,"type","ssh_exec_output") &&
-        cJSON_AddNumberToObject(msg,"session_id",session_id) && cJSON_AddBoolToObject(msg,"is_stderr",is_stderr) &&
-        cJSON_AddStringToObject(msg,"data",buf);
-    char *json=encoded?cJSON_PrintUnformatted(msg):NULL;
-    free(buf);cJSON_Delete(msg);
-    ts_ws_op_output_finish(&ticket,json);
-    free(json);
-
-    } else ts_ws_op_output_finish(&ticket,NULL);
-    }
+    xSemaphoreTake(params->output_lock,portMAX_DELAY);
+    exec_output_put(params->stream,data,len,is_stderr);
+    xSemaphoreGive(params->output_lock);
+    ts_ws_subscriptions_wake();
 
     /* 实时模式匹配 */
-    if (params && params->output_buffer) {
-        const char *output = params->output_buffer;
+    if (params->matching.data) {
+        ts_ssh_match_window_append(&params->matching,data,len);
         bool should_send_match = false;
         bool pattern_matched = false;  /* expect/fail 模式是否匹配 */
         bool is_first_extract = false;  /* 是否为首次提取 */
         
         /* 检查失败模式（仅在尚未匹配时） */
         if (!params->match_found && params->fail_pattern && params->fail_pattern[0]) {
-            if (ts_ssh_pattern_match(output, params->fail_pattern, NULL)) {
+            if (ts_ssh_match_window_match(&params->matching, params->fail_pattern, NULL)) {
                 params->fail_matched = true;
                 params->match_found = true;
                 should_send_match = true;
@@ -1385,7 +1523,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         /* 检查期望模式（仅在尚未匹配时，且失败模式没有匹配） */
         if (!params->match_found && !params->fail_matched &&
             params->expect_pattern && params->expect_pattern[0]) {
-            if (ts_ssh_pattern_match(output, params->expect_pattern, NULL)) {
+            if (ts_ssh_match_window_match(&params->matching, params->expect_pattern, NULL)) {
                 params->expect_matched = true;
                 params->match_found = true;
                 should_send_match = true;
@@ -1397,7 +1535,7 @@ static void ssh_exec_output_callback(const char *data, size_t len, bool is_stder
         /* 提取值 */
         if (params->extract_pattern && params->extract_pattern[0]) {
             char *extracted = NULL;
-            if (ts_ssh_pattern_match(output, params->extract_pattern, &extracted)) {
+            if (ts_ssh_match_window_match(&params->matching, params->extract_pattern, &extracted)) {
                 /* 检查是否为首次提取 */
                 if (!params->extracted_value) {
                     is_first_extract = true;
@@ -1551,7 +1689,60 @@ static void exec_timer_drained(void *arg,uint32_t unused)
     params->timer_phase=5;
     ts_ws_op_release(params->op);
 }
-static bool exec_maintenance(void *data)
+static void exec_stage_result(ssh_exec_task_params_t *p,const char *json) {
+    /* The worker owns this record until it publishes pending_final. */
+    if(!json || strlen(json)>=sizeof(p->record->json))
+        snprintf(p->record->json,sizeof(p->record->json),"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"ssh_result_unknown\"}",(unsigned long)p->session_id);
+    else strcpy(p->record->json,json);
+    xSemaphoreTake(p->output_lock,portMAX_DELAY);
+    p->final_flush_until=esp_timer_get_time()+2000000;p->pending_final=true;
+    xSemaphoreGive(p->output_lock);ts_ws_subscriptions_wake();
+}
+static bool exec_stream_maintenance(ssh_exec_task_params_t *p) {
+    xSemaphoreTake(p->output_lock,portMAX_DELAY);
+    exec_span_t span=exec_output_peek(p->stream,p->send_bytes);
+    bool pending=p->pending_final;
+    bool expired=pending && esp_timer_get_time()>=p->final_flush_until;
+    xSemaphoreGive(p->output_lock);
+    if(span.len && !expired){
+        exec_output_base64((unsigned char*)p->send_bytes,span.len,p->send_base64);
+        cJSON *msg=cJSON_CreateObject();
+        bool ok=msg && cJSON_AddStringToObject(msg,"type","ssh_exec_output") &&
+            cJSON_AddNumberToObject(msg,"session_id",p->session_id) &&
+            cJSON_AddNumberToObject(msg,"output_offset",(double)span.offset) &&
+            cJSON_AddNumberToObject(msg,"output_length",span.len) &&
+            cJSON_AddBoolToObject(msg,"is_stderr",span.is_stderr) &&
+            cJSON_AddStringToObject(msg,"data_b64",p->send_base64);
+        char *json=ok?cJSON_PrintUnformatted(msg):NULL;cJSON_Delete(msg);
+        bool sent=false;ts_ws_output_ticket_t ticket;
+        if(json && ts_ws_op_output_begin(p->op,&ticket))sent=ts_ws_op_output_try(&ticket,json);
+        free(json);
+        if(sent){xSemaphoreTake(p->output_lock,portMAX_DELAY);exec_output_pop(p->stream,span.len);xSemaphoreGive(p->output_lock);}
+    }
+    xSemaphoreTake(p->output_lock,portMAX_DELAY);
+    bool finish=p->pending_final && (!p->stream->used || expired);
+    bool tick=p->stream->used || p->pending_final;
+    if(finish){p->pending_final=false;p->stream->incomplete|=p->stream->used!=0;}
+    uint64_t total=p->stream->total;bool incomplete=p->stream->incomplete;
+    xSemaphoreGive(p->output_lock);
+    if(finish){
+        cJSON *result=cJSON_Parse(p->record->json);
+        if(result){
+            cJSON_AddNumberToObject(result,"output_bytes",(double)total);
+            cJSON_AddBoolToObject(result,"output_incomplete",incomplete);
+            cJSON_AddBoolToObject(result,"collection_truncated",p->collection_truncated);
+            cJSON_AddBoolToObject(result,"conditions_complete",!p->conditions_incomplete);
+            bool encoded=cJSON_PrintPreallocated(result,p->record->json,sizeof(p->record->json),false);
+            cJSON_Delete(result);
+            if(!encoded)snprintf(p->record->json,sizeof(p->record->json),"{\"type\":\"ssh_exec_error\",\"session_id\":%lu,\"error\":\"ssh_result_unknown\"}",(unsigned long)p->session_id);
+        }
+        exec_record_complete(p->record);
+        if(ts_ws_op_close_begin(p->op))ts_ws_op_close_finish(p->op,p->record->json);
+        tick=false;
+    }
+    return tick;
+}
+static bool exec_timer_maintenance(void *data)
 {
     ssh_exec_task_params_t *params=data;unsigned phase=params->timer_phase;
     if(phase<2 || phase>=5)return false;
@@ -1575,6 +1766,11 @@ static bool exec_maintenance(void *data)
     if(ret==pdPASS)params->timer_retries=0;
     return params->timer_phase!=5;
 }
+static bool exec_maintenance(void *data) {
+    ssh_exec_task_params_t *p=data;
+    bool output=exec_stream_maintenance(p);
+    return exec_timer_maintenance(p) || output;
+}
 static void exec_retry_timer_drain(void)
 {
     ts_ws_operation_t *op=ts_ws_op_acquire(TS_WS_OP_EXEC,0);
@@ -1593,6 +1789,13 @@ static void exec_destroy(void *data)
     if(params->password_owned){memset(params->password_owned,0,strlen(params->password_owned));free(params->password_owned);}
     free(params->expect_pattern);free(params->fail_pattern);free(params->extract_pattern);
     free(params->output_buffer);free(params->extracted_value);
+    free(params->matching.data);
+    portENTER_CRITICAL(&s_exec_cache_lock);
+    if(s_exec_active==params->record)s_exec_active=NULL;
+    portEXIT_CRITICAL(&s_exec_cache_lock);
+    exec_record_release(params->record);
+    free(params->stream);free(params->send_bytes);free(params->send_base64);
+    if(params->output_lock)vSemaphoreDelete(params->output_lock);
     vSemaphoreDelete(params->io);free(params);
 }
 
@@ -1626,7 +1829,7 @@ static void ssh_exec_task(void *arg)
             if(stop_reason){ret=ESP_ERR_TIMEOUT;goto execution_finished;}
             TS_LOGE(TAG, "Failed to load key '%s': %s", params->keyid, esp_err_to_name(ret));
             /* 发送错误消息 */
-            if(ts_ws_op_close_begin(params->op)) {
+            if(!params->pending_final) {
         cJSON *msg = cJSON_CreateObject();
         bool encoded=msg!=NULL;
             encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
@@ -1634,7 +1837,7 @@ static void ssh_exec_task(void *arg)
             encoded = (cJSON_AddStringToObject(msg, "error", "key_not_found"))!=NULL && encoded;
             char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
             cJSON_Delete(msg);
-            ts_ws_op_close_finish(params->op,json); free(json);
+            exec_stage_result(params,json); free(json);
         }
             goto cleanup;
         }
@@ -1650,7 +1853,7 @@ static void ssh_exec_task(void *arg)
         stop_reason=ts_ws_op_business_end(params->op,false);
         if(stop_reason){ret=ESP_ERR_TIMEOUT;goto execution_finished;}
         TS_LOGE(TAG, "Failed to create SSH session: %s", esp_err_to_name(ret));
-        if(ts_ws_op_close_begin(params->op)) {
+        if(!params->pending_final) {
         cJSON *msg = cJSON_CreateObject();
         bool encoded=msg!=NULL;
         encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
@@ -1658,7 +1861,7 @@ static void ssh_exec_task(void *arg)
         encoded = (cJSON_AddStringToObject(msg, "error", "no_memory"))!=NULL && encoded;
         char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
         cJSON_Delete(msg);
-        ts_ws_op_close_finish(params->op,json); free(json);
+        exec_stage_result(params,json); free(json);
         }
         goto cleanup;
     }
@@ -1670,7 +1873,7 @@ static void ssh_exec_task(void *arg)
         if(stop_reason)goto execution_finished;
         const char *err = ts_ssh_get_error(params->session);
         TS_LOGE(TAG, "SSH connect failed: %s", err ? err : "unknown");
-        if(ts_ws_op_close_begin(params->op)) {
+        if(!params->pending_final) {
         cJSON *msg = cJSON_CreateObject();
         bool encoded=msg!=NULL;
         encoded = (cJSON_AddStringToObject(msg, "type", "ssh_exec_error"))!=NULL && encoded;
@@ -1682,7 +1885,7 @@ static void ssh_exec_task(void *arg)
         if (err && err[0]) encoded = (cJSON_AddStringToObject(msg, "detail", err))!=NULL && encoded;
         char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
         cJSON_Delete(msg);
-        ts_ws_op_close_finish(params->op,json); free(json);
+        exec_stage_result(params,json); free(json);
         }
         goto cleanup;
     }
@@ -1789,23 +1992,22 @@ execution_finished:
         status = TS_WEBUI_SSH_STATUS_FAILED;
     } else {
         /* 命令完成，确定最终状态 */
-        const char *output = params->output_buffer ? params->output_buffer : "";
         
         /* 如果实时匹配没有找到，再做一次完整匹配 */
         if (!params->match_found) {
             /* 检查失败模式 */
             if (params->fail_pattern && params->fail_pattern[0]) {
-                fail_matched = ts_ssh_pattern_match(output, params->fail_pattern, NULL);
+                fail_matched = ts_ssh_match_window_match(&params->matching, params->fail_pattern, NULL);
             }
             
             /* 检查期望模式 */
             if (!fail_matched && params->expect_pattern && params->expect_pattern[0]) {
-                expect_matched = ts_ssh_pattern_match(output, params->expect_pattern, NULL);
+                expect_matched = ts_ssh_match_window_match(&params->matching, params->expect_pattern, NULL);
             }
             
             /* 提取值 */
             if (!extracted_value && params->extract_pattern && params->extract_pattern[0]) {
-                ts_ssh_pattern_match(output, params->extract_pattern, &extracted_value);
+                ts_ssh_match_window_match(&params->matching, params->extract_pattern, &extracted_value);
             }
         }
         
@@ -1821,6 +2023,11 @@ execution_finished:
         }
     }
     
+    /* Retained-display truncation does not invalidate a match/capture already
+     * observed by the independent streaming matcher. */
+    params->conditions_incomplete = params->collection_truncated &&
+        (params->expect_pattern || params->fail_pattern || params->extract_pattern) &&
+        !params->match_found && !extracted_value;
     /* 诊断日志：检查变量写入条件 */
     TS_LOGI(TAG, "SSH exec finished: var_name='%s' (has_var=%d), status=%d (is_cancelled=%d), exit_code=%d",
             params->var_name,
@@ -1847,6 +2054,7 @@ execution_finished:
          * 现在只使用 ts_automation 变量系统 */
         
         /* 同步更新到 ts_automation 变量系统 - 使用 register 确保变量存在并更新 */
+        if(params->conditions_incomplete)status_str="unknown";
         TS_LOGI(TAG, "Writing SSH result to automation variables: var_name=%s, status=%s, exit_code=%d",
                 params->var_name, status_str, exit_code);
         
@@ -1910,13 +2118,15 @@ execution_finished:
     
     /* 发送完成消息 */
     {
-        if(ts_ws_op_close_begin(params->op)) {
+        if(!params->pending_final) {
         cJSON *msg = cJSON_CreateObject();
         bool encoded=msg!=NULL;
         encoded = (cJSON_AddStringToObject(msg, "type",
             status == TS_WEBUI_SSH_STATUS_CANCELLED ? "ssh_exec_cancelled" : "ssh_exec_done"))!=NULL && encoded;
         encoded = (cJSON_AddNumberToObject(msg, "session_id", session_id))!=NULL && encoded;
         
+        encoded = (cJSON_AddStringToObject(msg,"execution_status",
+            ret==ESP_OK && exit_code>=0 ? (exit_code==0?"success":"failed") : "unknown"))!=NULL && encoded;
         if (status != TS_WEBUI_SSH_STATUS_CANCELLED) {
             encoded = (cJSON_AddNumberToObject(msg, "exit_code", exit_code))!=NULL && encoded;
             
@@ -1930,10 +2140,11 @@ execution_finished:
                 case TS_WEBUI_SSH_STATUS_MATCH_FAILED:  status_str = "match_failed"; break;
                 default: break;
             }
+            if(params->conditions_incomplete)status_str="unknown";
             encoded = (cJSON_AddStringToObject(msg, "status", status_str))!=NULL && encoded;
             
             /* 简单的成功标志 */
-            bool is_success = (status == TS_WEBUI_SSH_STATUS_SUCCESS || 
+            bool is_success = !params->conditions_incomplete && (status == TS_WEBUI_SSH_STATUS_SUCCESS ||
                               status == TS_WEBUI_SSH_STATUS_MATCH_SUCCESS);
             encoded = (cJSON_AddBoolToObject(msg, "success", is_success))!=NULL && encoded;
             
@@ -1958,7 +2169,7 @@ execution_finished:
         
         char *json = encoded?cJSON_PrintUnformatted(msg):NULL;
         cJSON_Delete(msg);
-        ts_ws_op_close_finish(params->op,json); free(json);
+        exec_stage_result(params,json); free(json);
         }
     }
     
@@ -2009,7 +2220,18 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
     params->io=xSemaphoreCreateMutex();
     if(!params->io){free(params);return ESP_ERR_NO_MEM;}
     ts_ws_op_bind(op,params,exec_destroy);
-    ts_ws_op_set_maintenance(op,exec_maintenance);
+
+    params->output_lock=xSemaphoreCreateMutex();
+    params->stream=heap_caps_calloc(1,sizeof(exec_output_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    params->send_bytes=heap_caps_malloc(EXEC_OUTPUT_CHUNK,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    params->send_base64=heap_caps_malloc(4*((EXEC_OUTPUT_CHUNK+2)/3)+1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    params->record=heap_caps_calloc(1,sizeof(exec_record_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(params->record)params->record->refs=1;
+    if(!params->output_lock || !params->stream || !params->send_bytes || !params->send_base64 || !params->record)return ESP_ERR_NO_MEM;
+    exec_record_t *record=params->record;record->id=params->session_id;
+    if(!s_exec_boot[0])exec_hex_random(s_exec_boot); /* only one exec creator admitted */
+    strcpy(record->receipt.boot_id,s_exec_boot);exec_hex_random(record->receipt.result_key);
+    if(options && options->receipt)*options->receipt=record->receipt;
 
     /* 配置 SSH */
     params->config = (ts_ssh_config_t)TS_SSH_DEFAULT_CONFIG();
@@ -2081,6 +2303,9 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
         params->stop_on_match = false;
     }
     
+    if(params->expect_pattern || params->fail_pattern || params->extract_pattern)params->collect_output=true;
+    if(params->max_output_size>TS_WS_LEGACY_BYTES || params->max_output_size<2)return ESP_ERR_INVALID_ARG;
+
     /* 初始化实时匹配状态 */
     params->match_found = false;
     params->expect_matched = false;
@@ -2103,6 +2328,17 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
     
 
     
+    if (params->collect_output &&
+        (params->expect_pattern || params->fail_pattern || params->extract_pattern)) {
+        params->matching.capacity = params->max_output_size;
+        params->matching.data = heap_caps_malloc(params->matching.capacity,
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!params->matching.data) params->matching.data = malloc(params->matching.capacity);
+        if (!params->matching.data) return ESP_ERR_NO_MEM;
+        params->matching.data[0] = '\0';
+    }
+    if(params->collect_output && !params->output_buffer)return ESP_ERR_NO_MEM;
+
     /* Bind the saved command and result variables atomically with publication. */
     if ((params->command_id[0] || params->var_name[0]) && !ts_variable_is_initialized()) {
         if (params->command_id[0]) return ESP_ERR_NOT_FOUND;
@@ -2191,6 +2427,8 @@ static esp_err_t ts_webui_ssh_exec_start_ex_impl(ts_ws_operation_t *op, const ch
      * SPI Flash operations disable cache, and PSRAM access requires cache.
      */
     /* Task may finish before task-create returns: creator still owns params. */
+    ts_ws_op_set_maintenance(op,exec_maintenance);
+    portENTER_CRITICAL(&s_exec_cache_lock);s_exec_active=record;portEXIT_CRITICAL(&s_exec_cache_lock);
     ts_ws_op_executor_take(op);
     ts_ws_op_open(op);
     BaseType_t ret=xTaskCreate(ssh_exec_task,"ssh_exec",8192,params,5,NULL);

@@ -205,18 +205,19 @@ static esp_err_t api_led_clear(const cJSON *params, ts_api_result_t *result)
         return ESP_ERR_NOT_FOUND;
     }
     
-    // 获取 layer 0 并清除（清除 layer buffer，render_task 会自动刷新）
-    ts_led_layer_t layer = ts_led_layer_get(dev, 0);
-    if (!layer) {
-        ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to get layer");
-        return ESP_FAIL;
+    esp_err_t ret;
+    if (cJSON_IsTrue(cJSON_GetObjectItem(params, "off"))) {
+        ret = ts_led_device_set_enabled(dev, false);
+    } else {
+        // Ordinary clear still affects the base layer only.
+        ts_led_layer_t layer = ts_led_layer_get(dev, 0);
+        if (!layer) {
+            ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to get layer");
+            return ESP_FAIL;
+        }
+        ts_led_animation_stop(layer);
+        ret = ts_led_layer_clear(layer);
     }
-    
-    // 先停止任何正在运行的动画
-    ts_led_animation_stop(layer);
-    
-    // 清除 layer buffer
-    esp_err_t ret = ts_led_layer_clear(layer);
     if (ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to clear device");
         return ret;
@@ -340,6 +341,7 @@ static esp_err_t api_led_fill(const cJSON *params, ts_api_result_t *result)
     // 记录当前状态：使用 solid 动画表示纯色填充
     ts_led_preset_set_current_animation(device_param->valuestring, "solid", 50);
     ts_led_preset_set_current_color(device_param->valuestring, color);
+    ts_led_device_set_enabled(dev, true);
     
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "device", device_param->valuestring);
@@ -426,17 +428,16 @@ static esp_err_t api_led_effect_start(const cJSON *params, ts_api_result_t *resu
     }
     
     // 处理颜色参数（用于支持自定义颜色的动画）
-    static ts_led_rgb_t effect_color;
     ts_led_rgb_t color;
-    if (parse_color_param(params, "color", &color) == ESP_OK) {
-        effect_color = color;
-        modified.user_data = &effect_color;
-    }
+    bool has_color = parse_color_param(params, "color", &color) == ESP_OK;
+    if (has_color) modified.user_data = &color;
     
     // 获取设备的 layer 0 并启动动画
     ts_led_layer_t layer = ts_led_layer_get(dev, 0);
-    if (layer) {
-        ts_led_animation_start(layer, &modified);
+    esp_err_t ret = ts_led_animation_start(layer, &modified);
+    if (ret != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to start effect");
+        return ret;
     }
     
     // 记录当前状态（供保存用），清除图像和 QR Code
@@ -445,9 +446,12 @@ static esp_err_t api_led_effect_start(const cJSON *params, ts_api_result_t *resu
     ts_led_preset_set_current_qrcode(device_param->valuestring, NULL);
     
     // 如果有颜色参数，也记录下来
-    if (parse_color_param(params, "color", &color) == ESP_OK) {
+    if (has_color) {
         ts_led_preset_set_current_color(device_param->valuestring, color);
+    } else {
+        ts_led_preset_clear_current_color(device_param->valuestring);
     }
+    ts_led_device_set_enabled(dev, true);
     
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "device", device_param->valuestring);
@@ -964,6 +968,7 @@ static esp_err_t api_led_image(const cJSON *params, ts_api_result_t *result)
     ts_led_preset_set_current_image(device_name, path_param->valuestring);
     ts_led_preset_set_current_effect(device_name, NULL, 0);
     ts_led_preset_set_current_qrcode(device_name, NULL);
+    ts_led_device_set_enabled(dev, true);
     
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "device", device_name);
@@ -1066,6 +1071,7 @@ static esp_err_t api_led_qrcode(const cJSON *params, ts_api_result_t *result)
     ts_led_preset_clear_current_image(device_name);
     ts_led_preset_set_current_effect(device_name, NULL, 0);
     ts_led_preset_set_current_qrcode(device_name, text_param->valuestring);
+    ts_led_preset_set_current_color(device_name, config.fg_color);
     // 记录背景图路径（如果有）
     if (bg_image_param && cJSON_IsString(bg_image_param) && strlen(bg_image_param->valuestring) > 0) {
         ts_led_preset_set_current_qrcode_bg(device_name, bg_image_param->valuestring);
@@ -1073,6 +1079,8 @@ static esp_err_t api_led_qrcode(const cJSON *params, ts_api_result_t *result)
         ts_led_preset_set_current_qrcode_bg(device_name, NULL);
     }
     
+    ts_led_device_set_enabled(ts_led_device_get(internal_name), true);
+
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "device", device_name);
     cJSON_AddStringToObject(data, "text", text_param->valuestring);
@@ -1214,6 +1222,8 @@ static esp_err_t api_led_text(const cJSON *params, ts_api_result_t *result)
         return ret;
     }
     
+    ts_led_device_set_enabled(ts_led_device_get(resolve_device_name(device_name)), true);
+
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "device", device_name);
     cJSON_AddStringToObject(data, "text", text_param->valuestring);

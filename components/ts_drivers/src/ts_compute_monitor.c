@@ -34,6 +34,7 @@
 #include "freertos/semphr.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 static const char *TAG = "ts_compute_monitor";
 
@@ -67,8 +68,8 @@ typedef struct {
     
     /* 状态 */
     bool initialized;
-    bool running;
-    bool should_stop;
+    atomic_bool running;
+    atomic_bool should_stop;
     ts_compute_status_t status;
     
     /* WebSocket */
@@ -83,6 +84,7 @@ typedef struct {
     
     /* 任务 */
     TaskHandle_t task_handle;
+    SemaphoreHandle_t exit_done;
     
     /* 统计 */
     uint32_t total_reconnects;
@@ -101,6 +103,15 @@ typedef struct {
 } compute_monitor_ctx_t;
 
 static compute_monitor_ctx_t *s_ctx = NULL;
+/* One controller owns this monitor's context until its complete handoff. */
+static atomic_flag s_control_busy = ATOMIC_FLAG_INIT;
+static esp_err_t finish_control(esp_err_t result)
+{
+    atomic_flag_clear(&s_control_busy);
+    return result;
+}
+static esp_err_t start_monitor(void);
+static esp_err_t stop_monitor(void);
 
 /*===========================================================================*/
 /*                              Forward Declarations                          */
@@ -243,8 +254,10 @@ esp_err_t ts_compute_monitor_save_config(const ts_compute_config_t *config)
 
 esp_err_t ts_compute_monitor_set_server(const char *server_ip, uint16_t server_port)
 {
+    if (atomic_flag_test_and_set(&s_control_busy)) return ESP_ERR_NOT_FINISHED;
+
     if (server_ip == NULL || strlen(server_ip) == 0) {
-        return ESP_ERR_INVALID_ARG;
+        return finish_control(ESP_ERR_INVALID_ARG);
     }
     
     ts_compute_config_t config;
@@ -261,7 +274,7 @@ esp_err_t ts_compute_monitor_set_server(const char *server_ip, uint16_t server_p
     /* 保存到 NVS */
     esp_err_t ret = ts_compute_monitor_save_config(&config);
     if (ret != ESP_OK) {
-        return ret;
+        return finish_control(ret);
     }
     
     /* 如果已初始化，更新运行时配置 */
@@ -271,7 +284,8 @@ esp_err_t ts_compute_monitor_set_server(const char *server_ip, uint16_t server_p
         /* 如果正在运行，先停止 */
         if (was_running) {
             ESP_LOGI(TAG, "Stopping monitor to apply new config...");
-            ts_compute_monitor_stop();
+            ret = stop_monitor();
+            if (ret != ESP_OK) return finish_control(ret);
         }
         
         /* 更新配置 */
@@ -286,18 +300,20 @@ esp_err_t ts_compute_monitor_set_server(const char *server_ip, uint16_t server_p
         /* 如果之前在运行，重新启动 */
         if (was_running) {
             ESP_LOGI(TAG, "Restarting monitor with new config...");
-            ret = ts_compute_monitor_start();
+            ret = start_monitor();
         }
     }
     
-    return ret;
+    return finish_control(ret);
 }
 
 esp_err_t ts_compute_monitor_init(const ts_compute_config_t *config)
 {
+    if (atomic_flag_test_and_set(&s_control_busy)) return ESP_ERR_NOT_FINISHED;
+
     if (s_ctx != NULL) {
         ESP_LOGW(TAG, "Already initialized");
-        return ESP_ERR_INVALID_STATE;
+        return finish_control(ESP_ERR_INVALID_STATE);
     }
     
     ESP_LOGI(TAG, "Initializing compute monitor v%s", TS_COMPUTE_MONITOR_VERSION);
@@ -306,9 +322,12 @@ esp_err_t ts_compute_monitor_init(const ts_compute_config_t *config)
     s_ctx = TS_CALLOC_PSRAM(1, sizeof(compute_monitor_ctx_t));
     if (s_ctx == NULL) {
         ESP_LOGE(TAG, "Failed to allocate context");
-        return ESP_ERR_NO_MEM;
+        return finish_control(ESP_ERR_NO_MEM);
     }
     
+    atomic_init(&s_ctx->running, false);
+    atomic_init(&s_ctx->should_stop, false);
+
     /* 加载配置：优先使用传入配置，否则尝试从 NVS 加载，最后使用默认值 */
     if (config != NULL) {
         memcpy(&s_ctx->config, config, sizeof(ts_compute_config_t));
@@ -325,9 +344,17 @@ esp_err_t ts_compute_monitor_init(const ts_compute_config_t *config)
         ESP_LOGE(TAG, "Failed to create mutex");
         free(s_ctx);
         s_ctx = NULL;
-        return ESP_ERR_NO_MEM;
+        return finish_control(ESP_ERR_NO_MEM);
     }
     
+    s_ctx->exit_done = xSemaphoreCreateBinary();
+    if (s_ctx->exit_done == NULL) {
+        vSemaphoreDelete(s_ctx->data_mutex);
+        free(s_ctx);
+        s_ctx = NULL;
+        return finish_control(ESP_ERR_NO_MEM);
+    }
+
     /* 注册为温度源 provider */
     if (s_ctx->config.update_temp_source) {
         ts_temp_provider_register(TS_TEMP_SOURCE_AGX_AUTO, "agx_cpu");
@@ -339,18 +366,21 @@ esp_err_t ts_compute_monitor_init(const ts_compute_config_t *config)
     ESP_LOGI(TAG, "Initialized, server: %s:%d", 
              s_ctx->config.server_ip, s_ctx->config.server_port);
     
-    return ESP_OK;
+    return finish_control(ESP_OK);
 }
 
 esp_err_t ts_compute_monitor_deinit(void)
 {
+    if (atomic_flag_test_and_set(&s_control_busy)) return ESP_ERR_NOT_FINISHED;
+
     if (s_ctx == NULL) {
-        return ESP_ERR_INVALID_STATE;
+        return finish_control(ESP_ERR_INVALID_STATE);
     }
     
     /* 停止监控 */
-    if (s_ctx->running) {
-        ts_compute_monitor_stop();
+    if (s_ctx->task_handle != NULL) {
+        esp_err_t ret = stop_monitor();
+        if (ret != ESP_OK) return finish_control(ret);
     }
     
     /* 注销温度源 provider */
@@ -361,14 +391,15 @@ esp_err_t ts_compute_monitor_deinit(void)
         vSemaphoreDelete(s_ctx->data_mutex);
     }
     
+    vSemaphoreDelete(s_ctx->exit_done);
     free(s_ctx);
     s_ctx = NULL;
     
     ESP_LOGI(TAG, "Deinitialized");
-    return ESP_OK;
+    return finish_control(ESP_OK);
 }
 
-esp_err_t ts_compute_monitor_start(void)
+static esp_err_t start_monitor(void)
 {
     if (s_ctx == NULL || !s_ctx->initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -381,50 +412,65 @@ esp_err_t ts_compute_monitor_start(void)
     
     ESP_LOGI(TAG, "Starting compute monitor...");
     
+    xSemaphoreTake(s_ctx->data_mutex, portMAX_DELAY);
+    xSemaphoreTake(s_ctx->exit_done, 0);
     s_ctx->should_stop = false;
     s_ctx->running = true;
     
     /* 创建监控任务 */
+    TaskHandle_t task = NULL;
     BaseType_t ret = xTaskCreate(
         compute_monitor_task,
         "compute_monitor",
         s_ctx->config.task_stack_size,
-        NULL,
+        s_ctx,
         s_ctx->config.task_priority,
-        &s_ctx->task_handle
+        &task
     );
     
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create task");
         s_ctx->running = false;
+        xSemaphoreGive(s_ctx->data_mutex);
         return ESP_FAIL;
     }
     
+    s_ctx->task_handle = task;
+    xSemaphoreGive(s_ctx->data_mutex);
+    return ESP_OK;
+}
+
+esp_err_t ts_compute_monitor_start(void)
+{
+    if (atomic_flag_test_and_set(&s_control_busy)) return ESP_ERR_NOT_FINISHED;
+    return finish_control(start_monitor());
+}
+
+static esp_err_t stop_monitor(void)
+{
+    if (s_ctx == NULL || !s_ctx->running) return ESP_ERR_INVALID_STATE;
+    if (s_ctx->task_handle == xTaskGetCurrentTaskHandle()) return ESP_ERR_NOT_ALLOWED;
+
+    ESP_LOGI(TAG, "Stopping compute monitor...");
+    xSemaphoreTake(s_ctx->data_mutex, portMAX_DELAY);
+    s_ctx->should_stop = true;
+    xTaskNotifyGive(s_ctx->task_handle);
+    xSemaphoreGive(s_ctx->data_mutex);
+    while (xSemaphoreTake(s_ctx->exit_done, portMAX_DELAY) != pdTRUE) {}
+    /* The worker's last context access is its mutex release after signalling. */
+    xSemaphoreTake(s_ctx->data_mutex, portMAX_DELAY);
+    s_ctx->task_handle = NULL;
+    s_ctx->running = false;
+    xSemaphoreGive(s_ctx->data_mutex);
+    set_status(TS_COMPUTE_STATUS_INITIALIZED);
+    ESP_LOGI(TAG, "Stopped");
     return ESP_OK;
 }
 
 esp_err_t ts_compute_monitor_stop(void)
 {
-    if (s_ctx == NULL || !s_ctx->running) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    ESP_LOGI(TAG, "Stopping compute monitor...");
-    
-    s_ctx->should_stop = true;
-    
-    /* 等待任务退出 */
-    int timeout = 50;  /* 5秒 */
-    while (s_ctx->task_handle != NULL && timeout > 0) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        timeout--;
-    }
-    
-    s_ctx->running = false;
-    set_status(TS_COMPUTE_STATUS_INITIALIZED);
-    
-    ESP_LOGI(TAG, "Stopped");
-    return ESP_OK;
+    if (atomic_flag_test_and_set(&s_control_busy)) return ESP_ERR_NOT_FINISHED;
+    return finish_control(stop_monitor());
 }
 
 bool ts_compute_monitor_is_initialized(void)
@@ -984,35 +1030,40 @@ static esp_err_t parse_tegrastats_data(const char *json_str, ts_compute_data_t *
  */
 static void compute_monitor_task(void *arg)
 {
+    compute_monitor_ctx_t *ctx = arg;
+    xSemaphoreTake(ctx->data_mutex, portMAX_DELAY);
+    xSemaphoreGive(ctx->data_mutex);
     ESP_LOGI(TAG, "Monitor task started");
     
-    uint32_t reconnect_delay = s_ctx->config.reconnect_interval_ms;
+    uint32_t reconnect_delay = ctx->config.reconnect_interval_ms;
     
-    while (!s_ctx->should_stop) {
+    while (!ctx->should_stop) {
         /* Socket.IO 握手 */
         set_status(TS_COMPUTE_STATUS_CONNECTING);
         
-        if (socketio_handshake() != ESP_OK) {
+        esp_err_t handshake = socketio_handshake();
+        if (ctx->should_stop) break;
+        if (handshake != ESP_OK) {
             ESP_LOGW(TAG, "Handshake failed, retry in %lu ms", reconnect_delay);
             set_status(TS_COMPUTE_STATUS_RECONNECTING);
-            s_ctx->total_reconnects++;
+            ctx->total_reconnects++;
             
             /* 指数退避 */
-            vTaskDelay(pdMS_TO_TICKS(reconnect_delay));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(reconnect_delay));
             reconnect_delay = (reconnect_delay * 2 > MAX_RECONNECT_DELAY_MS) 
                             ? MAX_RECONNECT_DELAY_MS : reconnect_delay * 2;
             continue;
         }
         
         /* 重置重连延迟 */
-        reconnect_delay = s_ctx->config.reconnect_interval_ms;
+        reconnect_delay = ctx->config.reconnect_interval_ms;
         
         /* 建立 WebSocket 连接 */
         char ws_url[256];
         snprintf(ws_url, sizeof(ws_url),
                  "ws://%s:%d/socket.io/?EIO=4&transport=websocket&sid=%s",
-                 s_ctx->config.server_ip, s_ctx->config.server_port,
-                 s_ctx->session_id);
+                 ctx->config.server_ip, ctx->config.server_port,
+                 ctx->session_id);
         
         ESP_LOGI(TAG, "Connecting WebSocket: %s", ws_url);
         
@@ -1024,58 +1075,59 @@ static void compute_monitor_task(void *arg)
             .ping_interval_sec = 0,  /* 禁用 WebSocket ping，使用 Socket.IO ping */
         };
         
-        s_ctx->ws_client = esp_websocket_client_init(&ws_cfg);
-        if (s_ctx->ws_client == NULL) {
+        ctx->ws_client = esp_websocket_client_init(&ws_cfg);
+        if (ctx->ws_client == NULL) {
             set_error("WebSocket init failed");
             set_status(TS_COMPUTE_STATUS_RECONNECTING);
-            s_ctx->total_reconnects++;
-            vTaskDelay(pdMS_TO_TICKS(reconnect_delay));
+            ctx->total_reconnects++;
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(reconnect_delay));
             continue;
         }
         
-        esp_websocket_register_events(s_ctx->ws_client, 
+        esp_websocket_register_events(ctx->ws_client,
                                       WEBSOCKET_EVENT_ANY,
                                       websocket_event_handler, 
                                       NULL);
         
-        if (esp_websocket_client_start(s_ctx->ws_client) != ESP_OK) {
+        if (esp_websocket_client_start(ctx->ws_client) != ESP_OK) {
             set_error("WebSocket start failed");
-            esp_websocket_client_destroy(s_ctx->ws_client);
-            s_ctx->ws_client = NULL;
+            esp_websocket_client_destroy(ctx->ws_client);
+            ctx->ws_client = NULL;
             set_status(TS_COMPUTE_STATUS_RECONNECTING);
-            s_ctx->total_reconnects++;
-            vTaskDelay(pdMS_TO_TICKS(reconnect_delay));
+            ctx->total_reconnects++;
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(reconnect_delay));
             continue;
         }
         
         /* 等待连接建立（最多 5 秒） */
         int wait_count = 50;
-        while (!s_ctx->ws_connected && wait_count > 0 && !s_ctx->should_stop) {
+        while (!ctx->ws_connected && wait_count > 0 && !ctx->should_stop) {
             vTaskDelay(pdMS_TO_TICKS(100));
             wait_count--;
         }
         
-        if (!s_ctx->ws_connected) {
+        if (!ctx->ws_connected && !ctx->should_stop) {
             ESP_LOGW(TAG, "WebSocket connection timeout");
-            esp_websocket_client_stop(s_ctx->ws_client);
-            esp_websocket_client_destroy(s_ctx->ws_client);
-            s_ctx->ws_client = NULL;
+            esp_websocket_client_stop(ctx->ws_client);
+            esp_websocket_client_destroy(ctx->ws_client);
+            ctx->ws_client = NULL;
             set_status(TS_COMPUTE_STATUS_RECONNECTING);
-            s_ctx->total_reconnects++;
-            vTaskDelay(pdMS_TO_TICKS(reconnect_delay));
+            ctx->total_reconnects++;
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(reconnect_delay));
             continue;
         }
         
         /* 主循环：使用我们自己维护的 ws_connected 标志，而非 esp_websocket_client_is_connected() */
-        while (!s_ctx->should_stop && s_ctx->ws_connected) {
+        while (!ctx->should_stop && ctx->ws_connected) {
             vTaskDelay(pdMS_TO_TICKS(100));
             
+            if (ctx->should_stop) break;
             /* 检查心跳超时 */
-            if (s_ctx->upgrade_complete) {
+            if (ctx->upgrade_complete) {
                 uint64_t now = esp_timer_get_time();
-                uint64_t age = now - s_ctx->last_message_time;
-                if (s_ctx->last_message_time > 0 && 
-                    age > (uint64_t)s_ctx->config.heartbeat_timeout_ms * 1000) {
+                uint64_t age = now - ctx->last_message_time;
+                if (ctx->last_message_time > 0 &&
+                    age > (uint64_t)ctx->config.heartbeat_timeout_ms * 1000) {
                     ESP_LOGW(TAG, "Heartbeat timeout (%llu ms), reconnecting...", age / 1000);
                     break;
                 }
@@ -1083,20 +1135,22 @@ static void compute_monitor_task(void *arg)
         }
         
         /* 清理 WebSocket */
-        esp_websocket_client_stop(s_ctx->ws_client);
-        esp_websocket_client_destroy(s_ctx->ws_client);
-        s_ctx->ws_client = NULL;
-        s_ctx->ws_connected = false;
-        s_ctx->upgrade_complete = false;
+        esp_websocket_client_stop(ctx->ws_client);
+        esp_websocket_client_destroy(ctx->ws_client);
+        ctx->ws_client = NULL;
+        ctx->ws_connected = false;
+        ctx->upgrade_complete = false;
         
-        if (!s_ctx->should_stop) {
+        if (!ctx->should_stop) {
             set_status(TS_COMPUTE_STATUS_RECONNECTING);
-            s_ctx->total_reconnects++;
-            vTaskDelay(pdMS_TO_TICKS(reconnect_delay));
+            ctx->total_reconnects++;
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(reconnect_delay));
         }
     }
     
     ESP_LOGI(TAG, "Monitor task exiting");
-    s_ctx->task_handle = NULL;
+    xSemaphoreTake(ctx->data_mutex, portMAX_DELAY);
+    xSemaphoreGive(ctx->exit_done);
+    xSemaphoreGive(ctx->data_mutex); /* Last context access. */
     vTaskDelete(NULL);
 }

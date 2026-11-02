@@ -109,6 +109,7 @@ static struct {
 
 /* 当前加载的图像（用于持续显示） */
 static ts_led_image_t s_current_image = NULL;
+static ts_led_layer_t s_current_image_layer = NULL;
 
 /*===========================================================================*/
 /*                          Command: led --status                             */
@@ -266,9 +267,10 @@ static int do_led_clear(const char *device_name)
     }
     
     /* Free current image if any */
-    if (s_current_image) {
+    if (s_current_image && s_current_image_layer == layer) {
         ts_led_image_free(s_current_image);
         s_current_image = NULL;
+        s_current_image_layer = NULL;
     }
     
     /* Clear image path record */
@@ -293,10 +295,6 @@ static int do_led_clear(const char *device_name)
 /*===========================================================================*/
 /*                         Command: led --effect                              */
 /*===========================================================================*/
-
-/* 静态存储用于特效颜色参数（因为特效使用指针） */
-static ts_led_rgb_t s_effect_color;
-static bool s_effect_color_valid = false;
 
 static int do_led_effect(const char *device_name, const char *effect_name, int speed, const char *color_str)
 {
@@ -332,16 +330,18 @@ static int do_led_effect(const char *device_name, const char *effect_name, int s
         return 1;
     }
     
+    ts_led_rgb_t effect_color;
+    bool effect_color_valid = false;
     // 解析颜色参数（用于传递给特效）
     if (color_str) {
-        if (ts_led_parse_color(color_str, &s_effect_color) == ESP_OK) {
-            s_effect_color_valid = true;
+        if (ts_led_parse_color(color_str, &effect_color) == ESP_OK) {
+            effect_color_valid = true;
         } else {
             ts_console_error("Invalid color: %s\n", color_str);
             return 1;
         }
     } else {
-        s_effect_color_valid = false;
+        effect_color_valid = false;
     }
     
     // 创建修改后的动画（速度和/或颜色）
@@ -355,8 +355,8 @@ static int do_led_effect(const char *device_name, const char *effect_name, int s
     }
     
     // 如果有颜色参数，传递给特效
-    if (s_effect_color_valid) {
-        modified_effect.user_data = &s_effect_color;
+    if (effect_color_valid) {
+        modified_effect.user_data = &effect_color;
     }
     
     // 启动动画
@@ -373,12 +373,14 @@ static int do_led_effect(const char *device_name, const char *effect_name, int s
     ts_led_preset_clear_current_image(device_name);
     
     // 记录颜色（如果有）
-    if (s_effect_color_valid) {
-        ts_led_preset_set_current_color(device_name, s_effect_color);
+    if (effect_color_valid) {
+        ts_led_preset_set_current_color(device_name, effect_color);
     } else {
         ts_led_preset_clear_current_color(device_name);
     }
     
+    ts_led_device_set_enabled(dev, true);
+
     if (speed > 0 && color_str) {
         ts_console_success("Effect '%s' started on '%s' (speed=%d, color=%s)\n", effect_name, device_name, speed, color_str);
     } else if (speed > 0) {
@@ -648,6 +650,7 @@ static int do_led_filter(const char *device_name, const char *filter_name, int s
     
     // 记录当前 filter（供保存用）
     ts_led_preset_set_current_filter(internal_name, filter_name, speed > 0 ? speed : 50);
+    ts_led_preset_set_current_filter_config(internal_name, &config);
     
     if (speed > 0) {
         ts_console_success("Filter '%s' applied on '%s' (speed=%d)\n", filter_name, device_name, speed);
@@ -751,13 +754,23 @@ static int do_led_on(const char *device_name, const char *color_str)
         }
     }
     
-    // 直接填充设备 framebuffer（绕过 layer 系统）
-    esp_err_t ret = ts_led_device_fill(dev, color);
+    ts_led_layer_t layer = ts_led_layer_get(dev, 0);
+    if (!layer) {
+        ts_console_error("Failed to get layer\n");
+        return 1;
+    }
+    ts_led_animation_stop(layer);
+    esp_err_t ret = ts_led_fill(layer, color);
     if (ret != ESP_OK) {
         ts_console_error("Failed to fill color\n");
         return 1;
     }
     
+    ts_led_preset_set_current_animation(device_name, "solid", 50);
+    ts_led_preset_set_current_color(device_name, color);
+    ts_led_device_set_enabled(dev, true);
+    // Preserve the immediate refresh as well as the persistent layer content.
+    ts_led_device_fill(dev, color);
     // 立即刷新到硬件
     ret = ts_led_device_refresh(dev);
     if (ret != ESP_OK) {
@@ -772,7 +785,21 @@ static int do_led_on(const char *device_name, const char *color_str)
 
 static int do_led_off(const char *device_name)
 {
-    return do_led_clear(device_name);
+    if (!device_name) {
+        ts_console_error("--device required\n");
+        return 1;
+    }
+    ts_led_device_t dev = ts_led_device_get(resolve_device_name(device_name));
+    if (!dev) {
+        ts_console_error("Device '%s' not found\n", device_name);
+        return 1;
+    }
+    if (ts_led_device_set_enabled(dev, false) != ESP_OK) {
+        ts_console_error("Failed to turn off LED\n");
+        return 1;
+    }
+    ts_console_success("LED '%s' off\n", device_name);
+    return 0;
 }
 
 /*===========================================================================*/
@@ -1119,6 +1146,7 @@ static int do_led_test(const char *device_name, int mode)
         }
     }
     
+    ts_led_device_set_enabled(dev, true);
     ts_led_device_refresh(dev);
     
     const char *mode_desc[] = {
@@ -1172,6 +1200,7 @@ static int do_led_image(const char *device_name, const char *file_path, const ch
     if (s_current_image) {
         ts_led_image_free(s_current_image);
         s_current_image = NULL;
+        s_current_image_layer = NULL;
     }
     
     // 加载图像
@@ -1182,6 +1211,8 @@ static int do_led_image(const char *device_name, const char *file_path, const ch
         return 1;
     }
     
+    s_current_image_layer = layer;
+
     // 获取图像信息
     ts_led_image_info_t info;
     ts_led_image_get_info(s_current_image, &info);
@@ -1225,6 +1256,7 @@ static int do_led_image(const char *device_name, const char *file_path, const ch
     
     // 记录当前图像路径（供 --save 使用）
     ts_led_preset_set_current_image(device_name, file_path);
+    ts_led_device_set_enabled(dev, true);
     
     return 0;
 }
@@ -1653,6 +1685,8 @@ static int do_led_draw_text(const char *device_name, const char *text,
         return 1;
     }
     
+    ts_led_device_set_enabled(ts_led_device_get(resolve_device_name(device_name)), true);
+
     ts_console_success("Text displayed on '%s' (Layer 1)\n", device_name);
     ts_console_printf("  Font: %s (%ux%u)\n", font_name, 
                       s_current_font->header.width,
@@ -1773,6 +1807,11 @@ static int do_led_qrcode(const char *device_name, const char *text,
         return 1;
     }
     
+    ts_led_preset_set_current_qrcode(device_name, text);
+    ts_led_preset_set_current_qrcode_bg(device_name, bg_image_path);
+    ts_led_preset_set_current_color(device_name, config.fg_color);
+    ts_led_device_set_enabled(ts_led_device_get(internal_name), true);
+
     ts_console_success("QR code v%d (%dx%d) displayed, ECC=%s\n", 
                        result.version, result.size, result.size,
                        ts_led_qr_ecc_name(ecc));

@@ -150,7 +150,8 @@ esp_err_t ts_drivers_init(void)
 esp_err_t ts_drivers_deinit(void)
 {
     /* 停止算力设备监控 */
-    ts_compute_monitor_deinit();
+    esp_err_t ret = ts_compute_monitor_deinit();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return ret;
     
 #ifdef CONFIG_TS_DRIVERS_USB_MUX_ENABLE
     ts_usb_mux_deinit();

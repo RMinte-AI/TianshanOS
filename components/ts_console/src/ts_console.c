@@ -20,6 +20,8 @@
 #include "freertos/semphr.h"
 #include "driver/uart.h"
 #include <string.h>
+#include <stdatomic.h>
+#include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -27,6 +29,14 @@
 
 /* 保存当前执行的原始命令行，用于需要原始 UTF-8 文本的命令 */
 static char s_raw_cmdline[512] = {0};
+static SemaphoreHandle_t s_exec_mutex;
+static _Atomic(TaskHandle_t) s_exec_owner;
+static const ts_console_exec_context_t *s_exec_context;
+const ts_console_exec_context_t *ts_console_current_context(void)
+{
+    return atomic_load(&s_exec_owner) == xTaskGetCurrentTaskHandle() ? s_exec_context : NULL;
+}
+
 
 /*===========================================================================*/
 /*                          Category Names                                    */
@@ -61,10 +71,13 @@ typedef struct cmd_entry {
 
 static struct {
     bool initialized;
-    bool running;
+    atomic_bool running;
     ts_console_config_t config;
     TaskHandle_t task_handle;
     SemaphoreHandle_t mutex;
+    SemaphoreHandle_t exit_done;
+    TaskHandle_t control_owner;
+    bool command_active;
     cmd_entry_t *cmd_list;
     size_t cmd_count;
     ts_console_output_cb_t output_cb;
@@ -81,12 +94,13 @@ static struct {
 
 bool ts_console_interrupted(void)
 {
-    return s_console.interrupt_requested;
+    const ts_console_exec_context_t *ctx = ts_console_current_context();
+    return ctx && ctx->cancelled ? ctx->cancelled(ctx->user_data) : s_console.interrupt_requested;
 }
 
 void ts_console_clear_interrupt(void)
 {
-    s_console.interrupt_requested = false;
+    if (!ts_console_current_context()) s_console.interrupt_requested = false;
 }
 
 void ts_console_request_interrupt(void)
@@ -96,14 +110,14 @@ void ts_console_request_interrupt(void)
 
 void ts_console_begin_interruptible(void)
 {
-    s_console.interrupt_requested = false;
+    ts_console_clear_interrupt();
     s_console.interruptible_mode = true;
 }
 
 void ts_console_end_interruptible(void)
 {
     s_console.interruptible_mode = false;
-    s_console.interrupt_requested = false;
+    ts_console_clear_interrupt();
 }
 
 /**
@@ -132,6 +146,22 @@ static void check_for_interrupt(void)
 /*                          Private Functions                                 */
 /*===========================================================================*/
 
+static ssize_t console_read(int fd, void *buffer, size_t size)
+{
+    (void)fd;
+    while (s_console.running) {
+        int count = uart_read_bytes(CONFIG_ESP_CONSOLE_UART_NUM, buffer, size, pdMS_TO_TICKS(50));
+        if (!s_console.running) return -1;
+        if (count > 0) {
+            for (int i = 0; i < count; i++) {
+                if (((char *)buffer)[i] == '\r') ((char *)buffer)[i] = '\n';
+            }
+            return count;
+        }
+    }
+    return -1;
+}
+
 static void console_task(void *arg)
 {
     TS_LOGI(TAG, "Console task started");
@@ -139,6 +169,7 @@ static void console_task(void *arg)
     /* Configure linenoise */
     linenoiseSetMultiLine(0);  /* Single line mode works better in dumb mode */
     linenoiseSetDumbMode(1);   /* Use dumb mode for serial monitor compatibility */
+    if (s_console.config.output == TS_CONSOLE_OUTPUT_UART) linenoiseSetReadFunction(console_read);
     linenoiseHistorySetMaxLen(s_console.config.max_history);
     
     /* Load history if available */
@@ -151,27 +182,31 @@ static void console_task(void *arg)
         char *line = linenoise(s_console.prompt);
         
         if (line == NULL) {
+            if (!s_console.running) break;
             /* EOF, error, or Ctrl+C - add small delay before retry */
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
         
+        xSemaphoreTake(s_console.mutex, portMAX_DELAY);
+        if (!s_console.running || (s_console.control_owner &&
+            s_console.control_owner != xTaskGetCurrentTaskHandle())) {
+            xSemaphoreGive(s_console.mutex);
+            linenoiseFree(line);
+            break;
+        }
+        s_console.command_active = true;
+        xSemaphoreGive(s_console.mutex);
+
         /* Only process non-empty lines */
         if (strlen(line) > 0) {
             /* Add to history */
             linenoiseHistoryAdd(line);
             
-            /* 保存原始命令行，供命令处理函数使用 */
-            strncpy(s_raw_cmdline, line, sizeof(s_raw_cmdline) - 1);
-            s_raw_cmdline[sizeof(s_raw_cmdline) - 1] = '\0';
-            
-            /* Execute command */
-            int ret;
-            esp_err_t err = esp_console_run(line, &ret);
-            
-            /* 清除原始命令行 */
-            s_raw_cmdline[0] = '\0';
-            
+            ts_cmd_result_t result;
+            esp_err_t err = ts_console_exec(line, &result);
+            int ret = result.code;
+
             if (err == ESP_ERR_NOT_FOUND) {
                 ts_console_error("Unknown command: %s\n", line);
             } else if (err == ESP_ERR_INVALID_ARG) {
@@ -185,6 +220,9 @@ static void console_task(void *arg)
         /* For empty lines, just free and loop - linenoise handles prompt */
         
         linenoiseFree(line);
+        xSemaphoreTake(s_console.mutex, portMAX_DELAY);
+        s_console.command_active = false;
+        xSemaphoreGive(s_console.mutex);
     }
     
     /* Save history before exit */
@@ -193,6 +231,11 @@ static void console_task(void *arg)
 #endif
     
     TS_LOGI(TAG, "Console task stopped");
+    xSemaphoreTake(s_console.mutex, portMAX_DELAY);
+    s_console.task_handle = NULL;
+    xSemaphoreGive(s_console.exit_done);
+    if (s_console.control_owner == xTaskGetCurrentTaskHandle()) s_console.control_owner = NULL;
+    xSemaphoreGive(s_console.mutex);
     vTaskDelete(NULL);
 }
 
@@ -270,6 +313,14 @@ esp_err_t ts_console_init(const ts_console_config_t *config)
         return ESP_ERR_NO_MEM;
     }
     
+    s_console.exit_done = xSemaphoreCreateBinary();
+    if (!s_console.exit_done) {
+        vSemaphoreDelete(s_console.mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    s_exec_mutex = xSemaphoreCreateRecursiveMutex();
+    if (!s_exec_mutex) { vSemaphoreDelete(s_console.exit_done); vSemaphoreDelete(s_console.mutex); s_console.mutex = NULL; return ESP_ERR_NO_MEM; }
+
     /* Set prompt */
     strncpy(s_console.prompt, s_console.config.prompt, TS_CONSOLE_MAX_PROMPT_LENGTH - 1);
     s_console.prompt[TS_CONSOLE_MAX_PROMPT_LENGTH - 1] = '\0';
@@ -284,7 +335,9 @@ esp_err_t ts_console_init(const ts_console_config_t *config)
     
     esp_err_t ret = esp_console_init(&console_config);
     if (ret != ESP_OK) {
+        vSemaphoreDelete(s_console.exit_done);
         vSemaphoreDelete(s_console.mutex);
+        vSemaphoreDelete(s_exec_mutex); s_exec_mutex = NULL;
         return ret;
     }
     
@@ -324,88 +377,99 @@ esp_err_t ts_console_init(const ts_console_config_t *config)
     return ESP_OK;
 }
 
+/* Claim this input lifecycle without holding the mutex while waiting for its reader. */
+static esp_err_t stop_console(bool keep_control)
+{
+    TaskHandle_t caller = xTaskGetCurrentTaskHandle();
+    xSemaphoreTake(s_console.mutex, portMAX_DELAY);
+    if ((s_console.control_owner && s_console.control_owner != caller) ||
+        (s_console.command_active && s_console.task_handle != caller) ||
+        (keep_control && s_console.task_handle == caller)) {
+        xSemaphoreGive(s_console.mutex);
+        return ESP_ERR_NOT_FINISHED;
+    }
+    s_console.control_owner = caller;
+    s_console.running = false;
+    TaskHandle_t reader = s_console.task_handle;
+    xSemaphoreGive(s_console.mutex);
+
+    if (reader && reader != caller) xSemaphoreTake(s_console.exit_done, portMAX_DELAY);
+    if (reader != caller) {
+        xSemaphoreTake(s_console.mutex, portMAX_DELAY);
+        if (!keep_control) s_console.control_owner = NULL;
+        xSemaphoreGive(s_console.mutex);
+    }
+    return ESP_OK;
+}
+
 esp_err_t ts_console_deinit(void)
 {
-    if (!s_console.initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    /* Stop if running */
-    if (s_console.running) {
-        ts_console_stop();
-    }
-    
-    /* Free command registry */
+    if (!s_console.initialized) return ESP_ERR_INVALID_STATE;
+    if (atomic_load(&s_exec_owner)) return ESP_ERR_INVALID_STATE;
+    esp_err_t ret = stop_console(true);
+    if (ret != ESP_OK) return ret;
     free_cmd_registry();
-    
-    /* Deinitialize esp_console */
     esp_console_deinit();
-    
-    /* Restore UART to non-driver mode and uninstall driver */
     if (s_console.config.output == TS_CONSOLE_OUTPUT_UART) {
+        linenoiseSetReadFunction(read);
         uart_vfs_dev_use_nonblocking(CONFIG_ESP_CONSOLE_UART_NUM);
         uart_driver_delete(CONFIG_ESP_CONSOLE_UART_NUM);
     }
-    
-    /* Free mutex */
-    if (s_console.mutex) {
-        vSemaphoreDelete(s_console.mutex);
-        s_console.mutex = NULL;
-    }
-    
+    vSemaphoreDelete(s_console.exit_done);
+    s_console.exit_done = NULL;
+    vSemaphoreDelete(s_console.mutex);
+    s_console.mutex = NULL;
+    if (s_exec_mutex) { vSemaphoreDelete(s_exec_mutex); s_exec_mutex = NULL; }
     s_console.initialized = false;
-    TS_LOGI(TAG, "Console deinitialized");
-    
+    s_console.control_owner = NULL;
     return ESP_OK;
 }
 
 esp_err_t ts_console_start(void)
 {
-    if (!s_console.initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (!s_console.initialized) return ESP_ERR_INVALID_STATE;
+    TaskHandle_t caller = xTaskGetCurrentTaskHandle();
+    xSemaphoreTake(s_console.mutex, portMAX_DELAY);
+    if (s_console.control_owner) {
+        if (s_console.control_owner == caller && s_console.task_handle == caller) {
+            s_console.running = true;
+            s_console.control_owner = NULL;
+            ts_console_clear_interrupt();
+            xSemaphoreGive(s_console.mutex);
+            return ESP_OK;
+        }
+        xSemaphoreGive(s_console.mutex);
+        return ESP_ERR_NOT_FINISHED;
     }
-    
     if (s_console.running) {
+        xSemaphoreGive(s_console.mutex);
         return ESP_OK;
     }
-    
+    if (s_console.task_handle) {
+        xSemaphoreGive(s_console.mutex);
+        return ESP_ERR_NOT_FINISHED;
+    }
+    xSemaphoreTake(s_console.exit_done, 0);
     s_console.running = true;
-    
-    BaseType_t ret = xTaskCreate(
-        console_task,
-        "ts_console",
-        s_console.config.task_stack_size,
-        NULL,
-        s_console.config.task_priority,
-        &s_console.task_handle
-    );
-    
+    BaseType_t ret = xTaskCreate(console_task, "ts_console", s_console.config.task_stack_size,
+                                NULL, s_console.config.task_priority, &s_console.task_handle);
     if (ret != pdPASS) {
         s_console.running = false;
-        return ESP_ERR_NO_MEM;
+        s_console.task_handle = NULL;
     }
-    
-    TS_LOGI(TAG, "Console started");
-    return ESP_OK;
+    xSemaphoreGive(s_console.mutex);
+    return ret == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t ts_console_stop(void)
 {
-    if (!s_console.running) {
-        return ESP_OK;
-    }
-    
-    s_console.running = false;
-    
-    /* Wait for task to exit */
-    if (s_console.task_handle) {
-        /* Give it some time */
-        vTaskDelay(pdMS_TO_TICKS(100));
-        s_console.task_handle = NULL;
-    }
-    
-    TS_LOGI(TAG, "Console stopped");
-    return ESP_OK;
+    if (!s_console.initialized) return ESP_OK;
+    return stop_console(false);
+}
+
+bool ts_console_is_initialized(void)
+{
+    return s_console.initialized;
 }
 
 bool ts_console_is_running(void)
@@ -509,23 +573,32 @@ size_t ts_console_get_cmds_by_category(ts_cmd_category_t category,
 /*                      Command Execution                                     */
 /*===========================================================================*/
 
+esp_err_t ts_console_exec_with_context(const char *cmdline, ts_cmd_result_t *result,
+                                     const ts_console_exec_context_t *context)
+{
+    if (result) *result = (ts_cmd_result_t){.code = -1};
+    if (!cmdline) return ESP_ERR_INVALID_ARG;
+    if (!s_exec_mutex || xSemaphoreTakeRecursive(s_exec_mutex, 0) != pdTRUE) return ESP_ERR_INVALID_STATE;
+    bool outer = atomic_load(&s_exec_owner) == NULL;
+    char previous[sizeof(s_raw_cmdline)];
+    memcpy(previous, s_raw_cmdline, sizeof(previous));
+    if (outer) {
+        s_exec_context = context;
+        s_console.interrupt_requested = false;
+        atomic_store(&s_exec_owner, xTaskGetCurrentTaskHandle());
+    }
+    snprintf(s_raw_cmdline, sizeof(s_raw_cmdline), "%s", cmdline);
+    int code = -1;
+    esp_err_t err = ts_console_interrupted() ? ESP_ERR_TIMEOUT : esp_console_run(cmdline, &code);
+    if (result) result->code = err == ESP_OK ? code : -1;
+    memcpy(s_raw_cmdline, previous, sizeof(previous));
+    if (outer) { atomic_store(&s_exec_owner, NULL); s_exec_context = NULL; }
+    xSemaphoreGiveRecursive(s_exec_mutex);
+    return err;
+}
 esp_err_t ts_console_exec(const char *cmdline, ts_cmd_result_t *result)
 {
-    if (cmdline == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    int ret;
-    esp_err_t err = esp_console_run(cmdline, &ret);
-    
-    if (result) {
-        result->code = (err == ESP_OK) ? ret : -1;
-        result->message = NULL;
-        result->data = NULL;
-        result->data_size = 0;
-    }
-    
-    return err;
+    return ts_console_exec_with_context(cmdline, result, NULL);
 }
 
 esp_err_t ts_console_exec_cmd(const char *cmd_name, int argc, char **argv,
@@ -564,9 +637,10 @@ static int do_printf(const char *prefix, const char *fmt, va_list args)
     len += vsnprintf(buf + len, sizeof(buf) - len, fmt, args);
     
     /* Custom output callback */
-    if (s_console.output_cb) {
-        s_console.output_cb(buf, len, s_console.output_user_data);
-    }
+    const ts_console_exec_context_t *ctx = ts_console_current_context();
+    size_t written = strnlen(buf, sizeof(buf));
+    if (ctx && ctx->output) ctx->output(buf, written, ctx->user_data);
+    else if (s_console.output_cb) s_console.output_cb(buf, written, s_console.output_user_data);
     
     /* Standard output */
     return printf("%s", buf);

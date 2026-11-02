@@ -203,6 +203,8 @@ esp_err_t ts_led_qrcode_show(ts_led_layer_t layer,
         ESP_LOGI(TAG, "Using background image: %dx%d", bg_info.width, bg_info.height);
     }
     
+    // Successful QR generation takes over this layer only; overlays are independent.
+    ts_led_animation_stop(layer);
     // Clear layer with background color
     ts_led_fill(layer, config->bg_color);
     

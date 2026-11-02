@@ -587,6 +587,13 @@ static esp_err_t read_rest_source(ts_auto_source_t *src, ts_auto_value_t *value)
         // 调用本地 API
         ts_api_result_t api_result = {0};
         cJSON *api_params = cJSON_CreateObject();
+        const char *query = strchr(api_path, '?');
+        if (query) {
+            char *copy = strdup(query + 1);
+            if (!copy) { cJSON_Delete(api_params);return ESP_ERR_NO_MEM; }
+            ts_api_parse_query(api_params, copy);
+            free(copy);
+        }
 
         ret = ts_api_call(api_name, api_params, &api_result);
         cJSON_Delete(api_params);
@@ -961,6 +968,8 @@ static esp_err_t poll_instance(const char *id, uint64_t expected)
     ++ts_source_runtime.stats.total_polls;
     if (copy->type == TS_AUTO_SRC_REST) ++ts_source_runtime.stats.rest_requests;
     index = current_source_index(id, copy->instance);
+    if (index >= 0 && copy->type == TS_AUTO_SRC_REST)
+        ts_source_runtime.sources[index].last_attempt_ms = esp_timer_get_time() / 1000;
     if (ret == ESP_OK && index >= 0) {
         ts_source_runtime.sources[index].last_value = value;
         ts_source_runtime.sources[index].last_update_ms = esp_timer_get_time() / 1000;
@@ -987,8 +996,9 @@ int ts_source_poll_all(void)
     xSemaphoreTake(ts_source_runtime.mutex, portMAX_DELAY);
     for (int i = 0; ts_source_runtime.running && i < ts_source_runtime.count; ++i) {
         const ts_auto_source_t *source = &ts_source_runtime.sources[i];
+        int64_t last_poll = source->type == TS_AUTO_SRC_REST ? source->last_attempt_ms : source->last_update_ms;
         if (!source->enabled || source->type == TS_AUTO_SRC_SOCKETIO || source->type == TS_AUTO_SRC_WEBSOCKET ||
-            (source->poll_interval_ms && now - source->last_update_ms < source->poll_interval_ms)) continue;
+            (source->poll_interval_ms && now - last_poll < source->poll_interval_ms)) continue;
         strcpy(ids[count], source->id);instances[count++] = source->instance;
     }
     xSemaphoreGive(ts_source_runtime.mutex);
@@ -1326,10 +1336,6 @@ static void sio_websocket_event_handler(void *arg, esp_event_base_t event_base,
                             ESP_LOGD(TAG, "SIO [%s] probe response, sending upgrade", conn->source_id);
                             esp_websocket_client_send_text(conn->client, SIO_UPGRADE_MSG,
                                                            strlen(SIO_UPGRADE_MSG), portMAX_DELAY);
-                        }
-                        else if (strcmp(msg, "6") == 0) {
-                            // 收到 NOOP (6) 表示升级完成，发送 CONNECT 到默认命名空间
-                            ESP_LOGD(TAG, "SIO [%s] upgrade ack, sending CONNECT", conn->source_id);
                             esp_websocket_client_send_text(conn->client, "40", 2, portMAX_DELAY);
                         }
                         else if (strncmp(msg, "40{", 3) == 0 || strcmp(msg, "40") == 0) {

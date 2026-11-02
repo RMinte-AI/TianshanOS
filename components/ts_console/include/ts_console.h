@@ -164,6 +164,9 @@ esp_err_t ts_console_stop(void);
  */
 bool ts_console_is_running(void);
 
+/** Check whether console resources and command registration are initialized. */
+bool ts_console_is_initialized(void);
+
 /*===========================================================================*/
 /*                           Command Registration                             */
 /*===========================================================================*/
@@ -233,6 +236,19 @@ size_t ts_console_get_cmds_by_category(ts_cmd_category_t category,
  * @return ESP_OK on success
  */
 esp_err_t ts_console_exec(const char *cmdline, ts_cmd_result_t *result);
+
+/* Borrowed only for the duration of exec_with_context; callbacks belong to the
+ * executing task, never to an unrelated UART/API producer. */
+typedef struct {
+    bool remote;
+    bool (*cancelled)(void *);
+    ts_console_output_cb_t output;
+    void *user_data;
+} ts_console_exec_context_t;
+esp_err_t ts_console_exec_with_context(const char *cmdline, ts_cmd_result_t *result,
+                                     const ts_console_exec_context_t *context);
+const ts_console_exec_context_t *ts_console_current_context(void);
+
 
 /**
  * @brief Execute a command with arguments

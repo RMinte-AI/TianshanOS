@@ -30,7 +30,9 @@ async function otaPage(language, mode, run) {
             case 'ota/upgrade_url':
             case 'ota/upgrade_file': state.app = 'writing'; return {code: 0, data: {status: 'started'}};
             case 'storage/info': return {code: 0, data: {type: 'file'}};
-            case 'ota/abort': state.app = 'idle'; return {code: 0};
+            case 'ota/abort':
+                if (state.abortRefused) return {code: 7, message: 'SD OTA cannot be cancelled'};
+                state.app = 'idle'; return {code: 0};
             case 'ota/firmware':
                 state.firmwareWritten = true;
                 state.app = 'pending_reboot';
@@ -362,6 +364,99 @@ for (const language of ['zh-CN', 'en-US']) {
             assert.match(await page.locator('#ota-message').textContent(), /0\.6\.2\+target/);
             await page.locator('#ota-message [onclick="window.location.reload()"]', {strict: true}).waitFor();
             await kit.toastIs(page, 'warning');
+        });
+    });
+}
+
+
+for (const language of ['zh-CN', 'en-US']) {
+    for (const source of ['URL', 'SD card']) {
+        test(`${language}: real ${source} controls retain B through companion retries and select C for the next attempt`, async () => {
+            await otaPage(language, 'manual-source-snapshot', async ({page, calls, state}) => {
+                await manualInput(page, source, true);
+                const url = source === 'URL';
+                const selector = url ? '#ota-url-input' : '#ota-file-input';
+                const action = url ? 'otaFromUrl()' : 'otaFromFile()';
+                const appEndpoint = url ? 'ota/upgrade_url' : 'ota/upgrade_file';
+                const wwwEndpoint = url ? 'ota/www/start' : 'ota/www/start_sdcard';
+                const field = url ? 'url' : 'file';
+                const selected = url ? 'https://ota.fixture.invalid/B/firmware.bin' : '/sdcard/B/TianShanOS.bin';
+                const next = url ? 'https://ota.fixture.invalid/C/firmware.bin' : '/sdcard/C/TianShanOS.bin';
+                await page.locator(selector).fill(selected);
+                await page.locator('#ota-url-skip-verify').setChecked(true);
+                await page.locator(`[onclick="${action}"]`).click();
+                await page.waitForFunction(() => otaUpgrade?.phase === 'app');
+                assert.equal(calls.find(call => call.endpoint === appEndpoint).params[field], selected);
+                await page.locator(selector).fill(next);
+                await page.locator('#ota-server-input').fill('https://ota.fixture.invalid/C');
+                await page.locator('#ota-url-skip-verify').setChecked(false);
+                state.wwwStart = 7; state.app = 'pending_reboot';
+                await page.evaluate(() => refreshOtaProgress());
+                await page.locator('[onclick="startWwwOta()"]').click();
+                await page.waitForFunction(() => otaUpgrade?.phase === 'done');
+                state.wwwStart = 0;
+                await page.locator('[onclick="startWwwOta()"]').click();
+                await page.waitForFunction(() => otaUpgrade?.phase === 'www');
+                const starts = calls.filter(call => call.endpoint === wwwEndpoint);
+                assert.equal(starts.length, 3);
+                for (const call of starts) {
+                    assert.equal(call.params[field], url ? 'https://ota.fixture.invalid/B/www.bin' : '/sdcard/B/www.bin');
+                    if (url) assert.equal(call.params.skip_verify, true);
+                }
+                assert.equal(calls.filter(call => call.endpoint === 'system/reboot').length, 0);
+                state.www = 'completed'; state.wwwBusy = false;
+                await page.evaluate(() => refreshOtaProgress());
+                await page.waitForFunction(() => otaUpgrade?.phase === 'done');
+                // Keep C's first progress request in flight: a second refresh
+                // coalesces rather than promising the companion has started.
+                const progressStarted = page.waitForRequest('**/api/v1/ota/progress');
+                const companionCompleted = page.waitForResponse(response =>
+                    new URL(response.url()).pathname === `/api/v1/${wwwEndpoint}`);
+                const progressRelease = deferred();
+                await page.route('**/api/v1/ota/progress', async route => {
+                    await progressRelease.promise;
+                    await route.fallback();
+                }, {times: 1});
+                try {
+                    await page.locator(`[onclick="${action}"]`).click();
+                    await page.waitForFunction(() => otaUpgrade?.phase === 'app');
+                    const apps = calls.filter(call => call.endpoint === appEndpoint);
+                    assert.equal(apps.length, 2); assert.equal(apps[1].params[field], next);
+                    await progressStarted;
+                    state.app = 'pending_reboot';
+                    await page.evaluate(() => refreshOtaProgress());
+                } finally { progressRelease.resolve(); }
+                await companionCompleted;
+                await page.waitForFunction(() => otaUpgrade?.phase === 'www');
+                const completedStarts = calls.filter(call => call.endpoint === wwwEndpoint);
+                assert.equal(completedStarts.length, 4);
+                const last = completedStarts.at(-1);
+                assert.equal(last.params[field], url ? 'https://ota.fixture.invalid/C/www.bin' : '/sdcard/C/www.bin');
+                if (url) assert.equal(last.params.skip_verify, false);
+            });
+        });
+    }
+    test(`${language}: refusing SD abort through the real confirmation keeps progress and normal completion`, async () => {
+        await otaPage(language, 'manual-sd-refuse', async ({page, calls, state}) => {
+            await manualInput(page, 'SD card', true);
+            state.abortRefused = true;
+            await page.locator('[onclick="otaFromFile()"]').click();
+            await page.waitForFunction(() => otaUpgrade?.phase === 'app');
+            await page.locator('#ota-abort-btn').click();
+            await kit.confirmSheet(page);
+            await page.waitForFunction(() => otaUpgrade?.phase === 'app');
+            assert.equal(calls.filter(call => call.endpoint === 'ota/abort').length, 1);
+            assert.equal(await page.locator('#ota-progress-section').isVisible(), true);
+            assert.equal(await page.evaluate(() => refreshInterval !== null), true);
+            await kit.toastIs(page, 'error');
+            assert.notEqual(await kit.toastText(page), await page.evaluate(() => t('toast.upgradeAborted')));
+            state.app = 'pending_reboot';
+            await page.evaluate(() => refreshOtaProgress());
+            assert.equal(calls.filter(call => call.endpoint === 'ota/www/start_sdcard').length, 1);
+            state.www = 'completed'; state.wwwBusy = false;
+            await page.evaluate(() => refreshOtaProgress());
+            assert.equal(calls.filter(call => call.endpoint === 'system/reboot').length, 1);
+            await page.waitForFunction(() => otaUpgrade?.phase === 'done');
         });
     });
 }

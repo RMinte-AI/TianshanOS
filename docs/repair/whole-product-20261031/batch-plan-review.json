@@ -1,0 +1,464 @@
+{
+  "reviewed_at": "2026-10-31T22:41:59.029350+08:00",
+  "source_commit": "2844de64e08c7a7c95f740a17ed937a7635da825",
+  "plan_before_archive": "/Users/massif/.codex/visualizations/2026/10/29/01a188dc-bc0c-7031-9d67-965a00ac9c59/whole-product-audit-20261030/repair-plan-review-20261031/before",
+  "scope": "23批设计/26条正常验收；聚焦关键交叉追源，不是重新完成全仓源码扫描",
+  "independent_reviewers": false,
+  "note": "同一对话以不同视角复核，不能冒称多个独立Reviewer；条目未细化/未实现不代表已证明无回归。",
+  "passes": [
+    "需求和用户目标：检查是否修真实问题，保留已接受行为与排除项",
+    "正常连续操作：以合法用户使用和旧公式实证找反例",
+    "执行与状态交叉：检查客户端/服务端、编解码、窗口归属及三对话启动",
+    "对修订方案再反查：去掉过强验收、重复框架和与实现无关的门槛，核对记录一致性"
+  ],
+  "batches": [
+    {
+      "batch": "A01",
+      "finding_ids": [
+        "F02",
+        "F04"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向；用户选择已确认",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "正常五次失败/五分钟限制、重启清临时锁定；不改账号口令",
+        "scope": "局部凭据校验与日志；不建立跨重启时钟/新认证平台",
+        "user_experience": "正常五次失败/五分钟限制、重启清临时锁定；不改账号口令",
+        "existing_correct_use": "正常五次失败/五分钟限制、重启清临时锁定；不改账号口令"
+      },
+      "source_check_extent": "基线报告和已确认需求，未重新审读全部认证实现",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "A02",
+      "finding_ids": [
+        "F03"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "具体设计已闭合，等待用户确认后实施",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "合法Root升级/Shell和私有输出可用；公开遥测、后台执行与匹配保留",
+        "scope": "同时修实际浏览器载体，限六组入口及既定角色，不加创建者专属规则",
+        "user_experience": "合法Root升级/Shell和私有输出可用；公开遥测、后台执行与匹配保留",
+        "existing_correct_use": "合法Root升级/Shell和私有输出可用；公开遥测、后台执行与匹配保留"
+      },
+      "source_check_extent": "本轮追踪HTTP升级fetch、普通文件上传、SSH/terminal消息及服务端入口",
+      "implementation_verified": false,
+      "prior_review_decision": "修订方向，需先闭合WS身份合同",
+      "contract_reference": "five-designs.txt 第一节"
+    },
+    {
+      "batch": "A03",
+      "finding_ids": [
+        "F46",
+        "F52"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "具体设计已闭合，等待用户确认后实施",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "11条基线数学/文本表达式、Admin编辑、原图标/单位/布局保持",
+        "scope": "局部受限求值和展示转义；不做全站模板重写、通用JS引擎或限制为Root",
+        "user_experience": "11条基线数学/文本表达式、Admin编辑、原图标/单位/布局保持",
+        "existing_correct_use": "11条基线数学/文本表达式、Admin编辑、原图标/单位/布局保持"
+      },
+      "source_check_extent": "实际基线函数隔离运行11条；未验证新求值实现/浏览器",
+      "implementation_verified": false,
+      "prior_review_decision": "修订兼容验收，需先明确受限语法",
+      "contract_reference": "five-designs.txt 第二节"
+    },
+    {
+      "batch": "A04",
+      "finding_ids": [
+        "F08"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "确认A/B后后来勾C不删除；取消无副作用",
+        "scope": "固定这次名单，不重修原七项配置删除问题",
+        "user_experience": "确认A/B后后来勾C不删除；取消无副作用",
+        "existing_correct_use": "确认A/B后后来勾C不删除；取消无副作用"
+      },
+      "source_check_extent": "设计/验收反证核对，沿用基线源证据",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "A05",
+      "finding_ids": [
+        "F16",
+        "F65",
+        "F64"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "关闭转发后可再次建立，四类临时任务实际释放",
+        "scope": "允许核定后局部增栈，不强制堆缓冲池/全局锁/清理框架",
+        "user_experience": "关闭转发后可再次建立，四类临时任务实际释放",
+        "existing_correct_use": "关闭转发后可再次建立，四类临时任务实际释放"
+      },
+      "source_check_extent": "设计/验收及随包SDK静态证据，未运行真实转发",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "A06",
+      "finding_ids": [
+        "F01",
+        "F18",
+        "F66"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "具体设计已闭合，等待用户确认后实施",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "原可重启LED/power/console恢复工作，保护再次启用；不能以拒绝结案",
+        "scope": "对应适配器/局部退出；不能全局init返回成功、强删持锁者或重写控制台",
+        "user_experience": "原可重启LED/power/console恢复工作，保护再次启用；不能以拒绝结案",
+        "existing_correct_use": "原可重启LED/power/console恢复工作，保护再次启用；不能以拒绝结案"
+      },
+      "source_check_extent": "本轮复查console init/阻塞读/stop及服务回调；LED/power细链沿用基线报告",
+      "implementation_verified": false,
+      "prior_review_decision": "收紧成功标准，console退出设计待细化",
+      "contract_reference": "five-designs.txt 第三节"
+    },
+    {
+      "batch": "A07",
+      "finding_ids": [
+        "F29",
+        "F30"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "正常字体/GIF切换与其他设备独立；字体失败允许安全停显报错",
+        "scope": "仅真实读者交接与资源释放，不要求双份字体或失败回滚",
+        "user_experience": "正常字体/GIF切换与其他设备独立；字体失败允许安全停显报错",
+        "existing_correct_use": "正常字体/GIF切换与其他设备独立；字体失败允许安全停显报错"
+      },
+      "source_check_extent": "设计/正常流程反证核对，沿用基线源证据",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "A08",
+      "finding_ids": [
+        "F22"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "旧monitor手动受控启动后可停止，重连中同样退出",
+        "scope": "只修退出，不启用已停用功能、不重新立F21",
+        "user_experience": "旧monitor手动受控启动后可停止，重连中同样退出",
+        "existing_correct_use": "旧monitor手动受控启动后可停止，重连中同样退出"
+      },
+      "source_check_extent": "设计/验收反证核对，沿用基线源证据",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "A09",
+      "finding_ids": [
+        "F53"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "普通内存详情可用，0/1项快照不越界",
+        "scope": "局部排序边界，不增加采样重试或全任务注册系统",
+        "user_experience": "普通内存详情可用，0/1项快照不越界",
+        "existing_correct_use": "普通内存详情可用，0/1项快照不越界"
+      },
+      "source_check_extent": "设计/验收及SDK摘录核对，未做新运行验收",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B01",
+      "finding_ids": [
+        "F11",
+        "F43",
+        "F49"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留三个小修；修正F43单独交接条件",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "合法模块/SECURITY分类及GPIO48可查询，接线不变",
+        "scope": "F43先交即解锁A02，不等待F11/F49、不建兜底名称表",
+        "user_experience": "合法模块/SECURITY分类及GPIO48可查询，接线不变",
+        "existing_correct_use": "合法模块/SECURITY分类及GPIO48可查询，接线不变"
+      },
+      "source_check_extent": "本轮复查ts_api.h枚举、ts_api.c分类表/get_info/category_name与webui鉴权前读取链；F43为实际前置依赖，F11/F49沿用基线证据。",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B02",
+      "finding_ids": [
+        "F05"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "加号/百分号/中文/空格普通文件名称往返对应原对象",
+        "scope": "修各入口编码层级，保留受保护配置目录规则",
+        "user_experience": "加号/百分号/中文/空格普通文件名称往返对应原对象",
+        "existing_correct_use": "加号/百分号/中文/空格普通文件名称往返对应原对象"
+      },
+      "source_check_extent": "设计/文件正向流程核对，未在真实设备新增文件",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B03",
+      "finding_ids": [
+        "F12",
+        "F13",
+        "F14",
+        "F15"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "指定密钥、可信主机、最后一条公钥撤销可用",
+        "scope": "前缀/计数/参数传递；全局清空仅隔离存储，不改真实信任规则",
+        "user_experience": "指定密钥、可信主机、最后一条公钥撤销可用",
+        "existing_correct_use": "指定密钥、可信主机、最后一条公钥撤销可用"
+      },
+      "source_check_extent": "设计/正常流程反证核对，沿用基线源证据",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B04",
+      "finding_ids": [
+        "F19",
+        "F67",
+        "F68"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "原方向保留；明确API预检位置",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "合法局部设置不动其他阈值；已知非法保持时间先拒绝",
+        "scope": "沿用1–300及底层setter原校验，不新建通用事务/公共校验API",
+        "user_experience": "合法局部设置不动其他阈值；已知非法保持时间先拒绝",
+        "existing_correct_use": "合法局部设置不动其他阈值；已知非法保持时间先拒绝"
+      },
+      "source_check_extent": "本轮复查API先阈值后保持时间、setter范围和现有HTML min=1",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B05",
+      "finding_ids": [
+        "F20",
+        "F24"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "原方向保留；明确应用仍切curve",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "修改同一节点；应用曲线仍启用curve，取消不改；保存失败准确提示",
+        "scope": "不回滚已应用硬件、不改变TTI/保护算法",
+        "user_experience": "修改同一节点；应用曲线仍启用curve，取消不改；保存失败准确提示",
+        "existing_correct_use": "修改同一节点；应用曲线仍启用curve，取消不改；保存失败准确提示"
+      },
+      "source_check_extent": "本轮复查applyFanCurve的limits→curve→mode及驱动保存边界",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B06",
+      "finding_ids": [
+        "F61"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "具体设计已闭合，等待用户确认后实施",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "旧打开/迟到结果不覆盖新窗口；未改字段真值保持",
+        "scope": "初次加载局部等待且可取消，不做全站dirty合并/自动重试；不能跳过整份数据再保存默认",
+        "user_experience": "旧打开/迟到结果不覆盖新窗口；未改字段真值保持",
+        "existing_correct_use": "旧打开/迟到结果不覆盖新窗口；未改字段真值保持"
+      },
+      "source_check_extent": "本轮复查两窗口加载、失败默认、保存读取字段及关机DOM复用",
+      "implementation_verified": false,
+      "prior_review_decision": "补具体局部加载策略后实施",
+      "contract_reference": "five-designs.txt 第四节"
+    },
+    {
+      "batch": "B07",
+      "finding_ids": [
+        "F26",
+        "F27",
+        "F28",
+        "F31",
+        "F32"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "各组颜色独立，关灯真关闭，单层/文字各按原入口语义",
+        "scope": "保留偏好与当前内容恢复；不把所有clear重定义或要求新增网页按钮",
+        "user_experience": "各组颜色独立，关灯真关闭，单层/文字各按原入口语义",
+        "existing_correct_use": "各组颜色独立，关灯真关闭，单层/文字各按原入口语义"
+      },
+      "source_check_extent": "设计/正常流程反证核对，沿用基线源证据",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B08",
+      "finding_ids": [
+        "F33"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "原支持的正常图片/GIF继续播放，坏图准确失败",
+        "scope": "只核对声明范围/固定字典边界，不加格式政策、自动修图或换库",
+        "user_experience": "原支持的正常图片/GIF继续播放，坏图准确失败",
+        "existing_correct_use": "原支持的正常图片/GIF继续播放，坏图准确失败"
+      },
+      "source_check_extent": "设计/正常格式正向约束核对，未送坏图到真实板",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B09",
+      "finding_ids": [
+        "F55",
+        "F57",
+        "F58"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "具体设计已闭合，等待用户确认后实施",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "默认白QR、明确黑色/背景、auto_pos缺省自动与显式手动、无卡CC保存",
+        "scope": "复用已有RGB/图像/codec，必要缺省信息有据保留，不建平行配置或迁移框架",
+        "user_experience": "默认白QR、明确黑色/背景、auto_pos缺省自动与显式手动、无卡CC保存",
+        "existing_correct_use": "默认白QR、明确黑色/背景、auto_pos缺省自动与显式手动、无卡CC保存"
+      },
+      "source_check_extent": "本轮复查QR UI/API字段、codec恒写color、执行RGB零值及auto_pos缺失",
+      "implementation_verified": false,
+      "prior_review_decision": "边界原已正确，需字段往返表后实施",
+      "contract_reference": "five-designs.txt 第五节"
+    },
+    {
+      "batch": "B10",
+      "finding_ids": [
+        "F34",
+        "F36"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "选择的本轮固件/www来源不串；不能取消阶段可准确拒绝",
+        "scope": "不强杀刷写、不造备用源/取消平台；登录客户端契约由A02覆盖",
+        "user_experience": "选择的本轮固件/www来源不串；不能取消阶段可准确拒绝",
+        "existing_correct_use": "选择的本轮固件/www来源不串；不能取消阶段可准确拒绝"
+      },
+      "source_check_extent": "设计反证和升级客户端交点；取消任务内部沿用基线证据，未写Flash",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B11",
+      "finding_ids": [
+        "F41",
+        "F42",
+        "F63"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "正常Socket.IO序列、原采样间隔、成功时间和合法本机查询",
+        "scope": "不新增退避/TTL体系，不借代理绕目标权限",
+        "user_experience": "正常Socket.IO序列、原采样间隔、成功时间和合法本机查询",
+        "existing_correct_use": "正常Socket.IO序列、原采样间隔、成功时间和合法本机查询"
+      },
+      "source_check_extent": "设计/连续数据源流程核对，未连接模型或真实源",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B12",
+      "finding_ids": [
+        "F48",
+        "F51"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "配置正常完整往返，迟到A动作不混入B窗口",
+        "scope": "复用B09后的同一完整codec；保留包签名/用途及普通上传不应用限制",
+        "user_experience": "配置正常完整往返，迟到A动作不混入B窗口",
+        "existing_correct_use": "配置正常完整往返，迟到A动作不混入B窗口"
+      },
+      "source_check_extent": "设计/跨批字段链及正常编辑流程核对，未导入真实配置",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B13",
+      "finding_ids": [
+        "F44"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "原上限内JSON/文本完整，接着短命令仍可用",
+        "scope": "准确长度，不假截断成功、不取消上限或重做终端",
+        "user_experience": "原上限内JSON/文本完整，接着短命令仍可用",
+        "existing_correct_use": "原上限内JSON/文本完整，接着短命令仍可用"
+      },
+      "source_check_extent": "设计/正常长短输出链核对，未将源码阅读称运行通过",
+      "before_coding": null,
+      "implementation_verified": false
+    },
+    {
+      "batch": "B14",
+      "finding_ids": [
+        "F50"
+      ],
+      "review_status": "DESIGN_AND_NORMAL_JOURNEY_REVIEWED",
+      "decision": "保留方向",
+      "five_dimensions": {
+        "design_defect": "按本行裁定及v3已闭合合同实施；设计结论不代替实现验证",
+        "regression": "重连恢复当前有效主题/参数，切页不带回旧主题",
+        "scope": "沿现有连接回调，不加轮询或第二重连器",
+        "user_experience": "重连恢复当前有效主题/参数，切页不带回旧主题",
+        "existing_correct_use": "重连恢复当前有效主题/参数，切页不带回旧主题"
+      },
+      "source_check_extent": "本轮复查WS连接回调交点；主题状态实现沿用基线证据，未做新浏览器断连验收",
+      "before_coding": null,
+      "implementation_verified": false
+    }
+  ],
+  "plan_revision": "v3",
+  "design_closure_record": "five-design-closure.json",
+  "approval_ref": "approval-local-phase.json",
+  "execution_phase": "LOCAL_VALIDATION_AND_BUILD"
+}

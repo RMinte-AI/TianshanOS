@@ -1,0 +1,26 @@
+{
+  "checked_at": "2026-11-01T00:52:33.856330+08:00",
+  "skill": "/Users/massif/.codex/skills/final-pr-commit/SKILL.md",
+  "decision": "可以推送",
+  "meaning": "仅此方案/授权记录可离开编辑阶段并作本地提交，用户未授权推送；不表示48项实现完成或发布就绪",
+  "delivery_boundary": "LOCAL_COMMIT_ONLY",
+  "baseline": "2844de64e08c7a7c95f740a17ed937a7635da825",
+  "current_branch": "massif/whole-product-v3-local-20261101",
+  "intended_files": "docs/repair/whole-product-20261031 only",
+  "production_diff": "",
+  "invariants": [
+    "包含2844de64，不回退已有六文件修复",
+    "原48项/23批/16与32归属不变",
+    "实际用户消息可核对授权，只批准本地",
+    "构建/测试不代表实机/发布",
+    "运行状态在仓库外，不把自身提交SHA写进提交"
+  ],
+  "validation": [
+    "原v3的37文件SHA256已全部匹配后才添加审批记录",
+    "全部JSON解析、scope和DAG已核对",
+    "待提交只含方案和证据，无生产代码",
+    "staged whitespace check found only document excerpt trailing spaces; presentation whitespace normalized, source files untouched",
+    "all staged paths remain within approved plan directory"
+  ],
+  "residual": "全部新修复/构建/实机仍未完成；此审查仅针对文档提交"
+}

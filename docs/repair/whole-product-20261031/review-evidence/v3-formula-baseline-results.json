@@ -1,0 +1,328 @@
+{
+  "kind": "BENIGN_BASELINE_COMPATIBILITY_PROBE_ONLY",
+  "source": "components/ts_webui/web/js/app.js",
+  "source_sha256": "7aa884935f38ce706d2eb8857eaea483dee5d17cbefcd6cf30b9fc4f89c93771",
+  "cases": [
+    {
+      "id": "direct",
+      "expression": "${temp}",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 42.36,
+      "kind": "baseline_compatibility",
+      "actual": 42.36,
+      "matches": true
+    },
+    {
+      "id": "zero",
+      "expression": "${used}",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 0,
+      "kind": "baseline_compatibility",
+      "actual": 0,
+      "matches": true
+    },
+    {
+      "id": "convert",
+      "expression": "${temp} * 1.8 + 32",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 108.248,
+      "kind": "baseline_compatibility",
+      "actual": 108.248,
+      "matches": true
+    },
+    {
+      "id": "round",
+      "expression": "Math.round(${temp} * 10) / 10",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 42.4,
+      "kind": "baseline_compatibility",
+      "actual": 42.4,
+      "matches": true
+    },
+    {
+      "id": "clamp",
+      "expression": "Math.min(100, Math.max(0, ${temp}))",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": 42.36,
+      "kind": "baseline_compatibility",
+      "actual": 42.36,
+      "matches": true
+    },
+    {
+      "id": "fixed",
+      "expression": "(${temp}).toFixed(1)",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "42.4",
+      "kind": "baseline_compatibility",
+      "actual": "42.4",
+      "matches": true
+    },
+    {
+      "id": "condition",
+      "expression": "${temp} > 40 ? \"偏热\" : \"正常\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "偏热",
+      "kind": "baseline_compatibility",
+      "actual": "偏热",
+      "matches": true
+    },
+    {
+      "id": "boolean",
+      "expression": "${enabled} && ${temp} >= 40 ? \"偏热\" : \"正常\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "偏热",
+      "kind": "baseline_compatibility",
+      "actual": "偏热",
+      "matches": true
+    },
+    {
+      "id": "unit",
+      "expression": "${temp} + \" °C\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "42.36 °C",
+      "kind": "baseline_compatibility",
+      "actual": "42.36 °C",
+      "matches": true
+    },
+    {
+      "id": "label",
+      "expression": "${name} + \" \" + Math.round(${temp}) + \" °C\"",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": "GPU 42 °C",
+      "kind": "baseline_compatibility",
+      "actual": "GPU 42 °C",
+      "matches": true
+    },
+    {
+      "id": "negative",
+      "expression": "(-${temp} + 2) / 2",
+      "variables": {
+        "temp": 42.36,
+        "used": 0,
+        "name": "GPU",
+        "enabled": true
+      },
+      "expected": -20.18,
+      "kind": "baseline_compatibility",
+      "actual": -20.18,
+      "matches": true
+    },
+    {
+      "id": "quoted-numeric",
+      "expression": "\"${temp} °C\"",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": "42.36 °C",
+      "kind": "baseline_compatibility",
+      "actual": "42.36 °C",
+      "matches": true
+    },
+    {
+      "id": "power-right",
+      "expression": "2 ** 3 ** 2",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": 512,
+      "kind": "baseline_compatibility",
+      "actual": 512,
+      "matches": true
+    },
+    {
+      "id": "negative-group",
+      "expression": "(-2) ** 2",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": 4,
+      "kind": "baseline_compatibility",
+      "actual": 4,
+      "matches": true
+    },
+    {
+      "id": "negative-power-right",
+      "expression": "2 ** -2",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": 0.25,
+      "kind": "baseline_compatibility",
+      "actual": 0.25,
+      "matches": true
+    },
+    {
+      "id": "lazy-branch",
+      "expression": "${temp} > 0 ? (${temp}).toFixed(1) : (0).toFixed(101)",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": "42.4",
+      "kind": "baseline_compatibility",
+      "actual": "42.4",
+      "matches": true
+    },
+    {
+      "id": "numeric-convert",
+      "expression": "Number(${numericText}) + 1",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": 42,
+      "kind": "baseline_compatibility",
+      "actual": 42,
+      "matches": true
+    },
+    {
+      "id": "parse-reading",
+      "expression": "parseFloat(${reading})",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": 42.5,
+      "kind": "baseline_compatibility",
+      "actual": 42.5,
+      "matches": true
+    },
+    {
+      "id": "bit-math",
+      "expression": "(${flags} & 255) >> 1",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": 0,
+      "kind": "baseline_compatibility",
+      "actual": 0,
+      "matches": true
+    },
+    {
+      "id": "math-constant",
+      "expression": "Math.PI",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": 3.141592653589793,
+      "kind": "baseline_compatibility",
+      "actual": 3.141592653589793,
+      "matches": true
+    },
+    {
+      "id": "single-quote",
+      "expression": "${name} + ' ready'",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": "GPU ready",
+      "kind": "baseline_compatibility",
+      "actual": "GPU ready",
+      "matches": true
+    },
+    {
+      "id": "exp-format",
+      "expression": "(42).toExponential(1)",
+      "variables": {
+        "temp": 42.36,
+        "name": "GPU",
+        "numericText": "41",
+        "reading": "42.5°C",
+        "flags": 513
+      },
+      "expected": "4.2e+1",
+      "kind": "baseline_compatibility",
+      "actual": "4.2e+1",
+      "matches": true
+    }
+  ],
+  "all_match": true,
+  "not_executed": "Blocked expressions and targeted corrections; no repaired code, firmware or device execution"
+}

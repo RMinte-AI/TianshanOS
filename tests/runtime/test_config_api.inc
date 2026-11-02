@@ -324,3 +324,73 @@ static void reference_origin_api_cases(void)
     lifecycle_seed();
     puts("PASS review scenarios: short variable replacement, output reader closure, rooted cycles, independent surviving roots and persisted results");
 }
+
+static char *exported_content(bool source,const char *id,bool specified)
+{
+    cJSON *params=api_params("{}");cJSON_AddStringToObject(params,"id",id);
+    if(specified)cJSON_AddStringToObject(params,"recipient_cert","fixture-recipient-cert");
+    ts_api_result_t result={0};
+    assert((source?api_automation_sources_export(params,&result):api_automation_actions_export(params,&result))==ESP_OK&&result.code==TS_API_OK);
+    const cJSON *bytes=cJSON_GetObjectItemCaseSensitive(result.data,"tscfg"),*filename=cJSON_GetObjectItemCaseSensitive(result.data,"filename");
+    assert(cJSON_IsString(bytes)&&cJSON_IsString(filename));char expected[96];snprintf(expected,sizeof(expected),"%s_%s.tscfg",source?"source":"action",id);assert(!strcmp(filename->valuestring,expected));
+    char *content=strdup(bytes->valuestring);assert(content);free_api(&result);cJSON_Delete(params);return content;
+}
+static void import_exported(bool source,const char *content)
+{
+    cJSON *params=import_params(content);ts_api_result_t result={0};
+    assert((source?api_automation_sources_import(params,&result):api_automation_actions_import(params,&result))==ESP_OK&&result.code==TS_API_OK);
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result.data,"valid")));
+    import_preview_params(params,&result);free_api(&result);cJSON_AddBoolToObject(params,"overwrite",true);
+    assert((source?api_automation_sources_import(params,&result):api_automation_actions_import(params,&result))==ESP_OK&&result.code==TS_API_OK);
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result.data,"saved"))&&cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result.data,"imported")));
+    free_api(&result);cJSON_Delete(params);
+}
+static bool fail_export_json;
+static void *export_json_malloc(size_t n){if(fail_export_json){fail_export_json=false;return NULL;}return malloc(n);}
+static void export_roundtrip_cases(void)
+{
+    lifecycle_seed();
+    assert(write_object(TS_AUTO_CONFIG_VARIABLE,"{\"name\":\"roundtrip.value\",\"source_id\":\"user\",\"value_type\":2,\"value\":0}",NULL,NULL)==ESP_OK);
+    const char *templates[]={
+      "{\"id\":\"round_set\",\"name\":\"Set value\",\"enabled\":true,\"type\":\"set_var\",\"set_var\":{\"variable\":\"roundtrip.value\",\"value_type\":2,\"value\":17}}",
+      "{\"id\":\"round_qr_default\",\"name\":\"QR default\",\"enabled\":true,\"type\":\"led\",\"led\":{\"device\":\"led_matrix\",\"ctrl_type\":\"qrcode\",\"qr_text\":\"fixture\",\"qr_ecc\":\"M\"}}",
+      "{\"id\":\"round_qr_black\",\"name\":\"QR black\",\"enabled\":true,\"type\":\"led\",\"led\":{\"device\":\"led_matrix\",\"ctrl_type\":\"qrcode\",\"qr_text\":\"fixture\",\"qr_ecc\":\"Q\",\"color\":\"#000000\",\"qr_color_set\":true}}",
+      "{\"id\":\"round_image\",\"name\":\"Bitmap image\",\"enabled\":true,\"type\":\"led\",\"led\":{\"device\":\"led_matrix\",\"ctrl_type\":\"image\",\"image_path\":\"/sdcard/图像.bmp\"}}",
+      "{\"id\":\"round_text_auto\",\"name\":\"Text auto\",\"enabled\":true,\"type\":\"led\",\"led\":{\"device\":\"led_matrix\",\"ctrl_type\":\"text\",\"text\":\"Auto\",\"font\":\"default\",\"align\":\"center\",\"center\":true,\"manual_position\":false,\"x\":5,\"y\":7}}",
+      "{\"id\":\"round_text_zero\",\"name\":\"Text origin\",\"enabled\":true,\"type\":\"led\",\"led\":{\"device\":\"led_matrix\",\"ctrl_type\":\"text\",\"text\":\"Zero\",\"manual_position\":true,\"x\":0,\"y\":0}}",
+      "{\"id\":\"round_text_xy\",\"name\":\"Text manual\",\"enabled\":true,\"type\":\"led\",\"led\":{\"device\":\"led_matrix\",\"ctrl_type\":\"text\",\"text\":\"Manual\",\"manual_position\":true,\"x\":5,\"y\":7,\"loop\":true,\"scroll\":\"left\"}}"
+    };
+    for(unsigned i=0;i<sizeof(templates)/sizeof(*templates);++i){
+        assert(write_object(TS_AUTO_CONFIG_ACTION,templates[i],NULL,NULL)==ESP_OK);
+        cJSON *row=cJSON_Parse(templates[i]);const char *id=cJSON_GetObjectItemCaseSensitive(row,"id")->valuestring;
+        ts_action_template_t before,after;assert(ts_action_template_get(id,&before)==ESP_OK);char *expected=ts_action_template_encode(&before);assert(expected);
+        for(int specified=0;specified<2;++specified){
+            char *content=exported_content(false,id,specified);cJSON *envelope=cJSON_Parse(content);assert(!strcmp(cJSON_GetObjectItemCaseSensitive(envelope,"type")->valuestring,"action_template"));cJSON_Delete(envelope);
+            strcpy(before.name,"Changed after export");assert(ts_action_template_update(before.id,&before)==ESP_OK);
+            import_exported(false,content);free(content);assert(ts_action_template_get(id,&after)==ESP_OK);
+            char *actual=ts_action_template_encode(&after);assert(actual&&!strcmp(actual,expected));free(actual);
+            if(after.action.type==TS_AUTO_ACT_SET_VAR){
+                assert(ts_variable_set_int("roundtrip.value",0)==ESP_OK);ts_action_result_t outcome={0};
+                assert(ts_action_exec_set_var(&after.action.set_var,&outcome)==ESP_OK&&outcome.status==TS_ACTION_STATUS_SUCCESS);
+                ts_auto_value_t value;assert(ts_variable_get("roundtrip.value",&value)==ESP_OK&&value.type==TS_AUTO_VAL_INT&&value.int_val==17);
+            }
+            before=after;
+        }
+        free(expected);cJSON_Delete(row);
+    }
+    const char *source_json="{\"id\":\"round_source\",\"label\":\"SSH variable\",\"type\":4,\"enabled\":true,\"poll_interval_ms\":60000,\"auto_discover\":false,\"var_name\":\"roundtrip.value\",\"var_prefix\":\"cmd.fixture.\",\"var_watch_all\":true,\"ssh_host_id\":\"host\",\"ssh_command\":\"printf synthetic\",\"expect_pattern\":\"READY\",\"fail_pattern\":\"ERROR\",\"extract_pattern\":\"value=([0-9]+)\",\"timeout_sec\":47,\"mappings\":[{\"path\":\"value\",\"var\":\"round_source.value\",\"transform\":\"x*2\"}]}";
+    assert(write_object(TS_AUTO_CONFIG_SOURCE,source_json,NULL,NULL)==ESP_OK);ts_auto_source_t original,restored;assert(ts_source_get_copy("round_source",&original)==ESP_OK);char *expected=ts_source_config_encode(&original);assert(expected);
+    for(int specified=0;specified<2;++specified){
+        char *content=exported_content(true,original.id,specified);strcpy(original.label,"Changed after export");original.variable.timeout_sec=1;
+        assert(ts_source_register(&original)==ESP_OK);import_exported(true,content);free(content);
+        assert(ts_source_get_copy(original.id,&restored)==ESP_OK);char *actual=ts_source_config_encode(&restored);assert(actual&&!strcmp(actual,expected));free(actual);original=restored;
+        assert(!strcmp(restored.variable.expect_pattern,"READY")&&!strcmp(restored.variable.fail_pattern,"ERROR")&&!strcmp(restored.variable.extract_pattern,"value=([0-9]+)")&&restored.variable.timeout_sec==47&&restored.mapping_count==1);
+    }
+    free(expected);
+    int count=cJSON_GetArraySize(export_records);cJSON *params=api_params("{\"id\":\"round_source\"}");ts_api_result_t failure={0};
+    export_allowed=false;assert(api_automation_sources_export(params,&failure)==ESP_OK&&failure.code==TS_API_ERR_NO_PERMISSION&&cJSON_GetArraySize(export_records)==count);free_api(&failure);export_allowed=true;
+    cJSON_Hooks hooks={export_json_malloc,free};fail_export_json=true;cJSON_InitHooks(&hooks);
+    assert(api_automation_sources_export(params,&failure)==ESP_ERR_NO_MEM&&failure.code!=TS_API_OK);cJSON_InitHooks(NULL);free_api(&failure);cJSON_Delete(params);assert(cJSON_GetArraySize(export_records)==count);
+    const char *path=getenv("CONFIG_EXPORT_PAYLOADS");assert(path);FILE *file=fopen(path,"wb");assert(file);char *records=cJSON_PrintUnformatted(export_records);assert(records&&fwrite(records,1,strlen(records),file)==strlen(records)&&!fclose(file));free(records);cJSON_Delete(export_records);export_records=NULL;
+    lifecycle_seed();puts("PASS actual export payload/codec/import owner roundtrip: SET_VAR actual variable write, SSH fields/mapping, QR default/black/image, text auto/manual0/5/7; pack boundary captured exact records (not crypto)");
+}

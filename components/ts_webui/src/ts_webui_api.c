@@ -174,30 +174,10 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
                 req->method, uri, api_name);
     }
     
-    /* Respect the endpoint's registered policy, irrespective of HTTP method:
-     * the browser also uses POST for several public reads. */
-    cJSON *info = ts_api_get_info(api_name);
-    if (!info) return ts_http_send_error(req, 404, "API not found");
-    const cJSON *auth_required = cJSON_GetObjectItemCaseSensitive(info, "requires_auth");
-    if (!cJSON_IsBool(auth_required)) {
-        cJSON_Delete(info);
-        return ts_http_send_error(req, 500, "API policy unavailable");
-    }
-    bool needs_auth = cJSON_IsTrue(auth_required);
-    cJSON_Delete(info);
     uint32_t session_id = 0;
-    /* Configuration is root-only; signed-in users retain homepage execution
-     * and independent service controls. */
-    bool root_only = needs_auth && !strncmp(api_name, "automation.", 11) &&
-        strcmp(api_name, "automation.actions.execute") &&
-        strcmp(api_name, "automation.rules.trigger") &&
-        strcmp(api_name, "automation.services.list") &&
-        strcmp(api_name, "automation.services.status") &&
-        strcmp(api_name, "automation.services.stop");
-    if (needs_auth && check_auth(req, &session_id, root_only ? TS_PERM_ROOT : TS_PERM_READ) != ESP_OK)
-        return ts_http_send_error(req, 401, "Unauthorized");
-    bool source_secrets = check_auth(req, &session_id, TS_PERM_ROOT) == ESP_OK;
-    
+    /* Only verified request headers supply the C session identity. */
+    check_auth(req, &session_id, TS_PERM_NONE);
+
     bool key_generation = strcmp(api_name, "key.generate") == 0;
     bool rule_import = strcmp(api_name,"automation.rules.import")==0;
     if(rule_import&&(!is_binary_upload_complete(req)||!req->body||httpd_req_get_url_query_len(req->req)>0))
@@ -220,58 +200,7 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
         char *query_buf = TS_API_MALLOC(query_len + 1);
         if (query_buf) {
             if (httpd_req_get_url_query_str(req->req, query_buf, query_len + 1) == ESP_OK) {
-                // Parse query string parameters
-                char *saveptr = NULL;
-                char *pair = strtok_r(query_buf, "&", &saveptr);
-                while (pair) {
-                    char *eq = strchr(pair, '=');
-                    if (eq) {
-                        *eq = '\0';
-                        char *key = pair;
-                        char *value = eq + 1;
-                        
-                        // URL decode the value
-                        char *src = value;
-                        char *dst = value;
-                        while (*src) {
-                            if (*src == '%' && src[1] && src[2]) {
-                                int high = src[1];
-                                int low = src[2];
-                                // Convert hex
-                                if (high >= '0' && high <= '9') high -= '0';
-                                else if (high >= 'A' && high <= 'F') high = high - 'A' + 10;
-                                else if (high >= 'a' && high <= 'f') high = high - 'a' + 10;
-                                else { *dst++ = *src++; continue; }
-                                
-                                if (low >= '0' && low <= '9') low -= '0';
-                                else if (low >= 'A' && low <= 'F') low = low - 'A' + 10;
-                                else if (low >= 'a' && low <= 'f') low = low - 'a' + 10;
-                                else { *dst++ = *src++; continue; }
-                                
-                                *dst++ = (char)((high << 4) | low);
-                                src += 3;
-                            } else if (*src == '+') {
-                                *dst++ = ' ';
-                                src++;
-                            } else {
-                                *dst++ = *src++;
-                            }
-                        }
-                        *dst = '\0';
-                        
-                        // Try to parse as number first
-                        char *endptr;
-                        long num = strtol(value, &endptr, 10);
-                        if (*endptr == '\0' && value[0] != '\0') {
-                            // It's a number
-                            cJSON_AddNumberToObject(request, key, num);
-                        } else {
-                            // It's a string
-                            cJSON_AddStringToObject(request, key, value);
-                        }
-                    }
-                    pair = strtok_r(NULL, "&", &saveptr);
-                }
+                ts_api_parse_query(request, query_buf);
             }
             free(query_buf);
         }
@@ -305,26 +234,16 @@ static esp_err_t api_handler(ts_http_request_t *req, void *user_data)
         }
         TS_LOGI(TAG, "key.generate request=%s arrived", key_request_id);
     }
-    /* The managed automation document contains source credentials. Its file
-     * can also be read through the general storage API. */
-    if (!strcmp(api_name, "storage.read")) {
-        const cJSON *path = cJSON_GetObjectItem(request, "path");
-        if (cJSON_IsString(path) && ts_storage_check_write_path(path->valuestring, false) != ESP_OK && !source_secrets) {
-            cJSON_Delete(request);
-            return ts_http_send_error(req, 401, "Unauthorized");
-        }
-    }
-    // Call API
     ts_api_result_t result = {0};
-    esp_err_t ret = ts_api_call(api_name, request, &result);
-    if (!strcmp(api_name, "automation.sources.list") && !source_secrets && result.data) {
-        cJSON *source;
-        cJSON_ArrayForEach(source, cJSON_GetObjectItemCaseSensitive(result.data, "sources")) {
-            cJSON_DeleteItemFromObjectCaseSensitive(source, "rest_auth");
-            cJSON_DeleteItemFromObjectCaseSensitive(source, "auth_header");
-        }
+    esp_err_t ret = !strcmp(api_name, "automation.proxy.fetch") ?
+        ts_api_automation_proxy_fetch_for_session(request, session_id, &result) :
+        ts_api_call_for_session(api_name, request, session_id, &result);
+    if (ret == ESP_ERR_NOT_ALLOWED && result.code == TS_API_ERR_AUTH) {
+        cJSON_Delete(request);
+        ts_api_result_free(&result);
+        return ts_http_send_error(req, 401, "Unauthorized");
     }
-    
+
     // API 结果日志使用 DEBUG 级别
     if (strncmp(api_name, "log.", 4) != 0) {
         TS_LOGD(TAG, "API call result: api=%s ret=%d code=%d msg=%s", 
@@ -515,42 +434,6 @@ static esp_err_t options_handler(ts_http_request_t *req, void *user_data)
 /*===========================================================================*/
 
 /**
- * @brief URL decode a string in place
- */
-static void url_decode(char *str)
-{
-    char *src = str;
-    char *dst = str;
-    
-    while (*src) {
-        if (*src == '%' && src[1] && src[2]) {
-            int high = src[1];
-            int low = src[2];
-            
-            // Convert hex chars to int
-            if (high >= '0' && high <= '9') high -= '0';
-            else if (high >= 'A' && high <= 'F') high = high - 'A' + 10;
-            else if (high >= 'a' && high <= 'f') high = high - 'a' + 10;
-            else { *dst++ = *src++; continue; }
-            
-            if (low >= '0' && low <= '9') low -= '0';
-            else if (low >= 'A' && low <= 'F') low = low - 'A' + 10;
-            else if (low >= 'a' && low <= 'f') low = low - 'a' + 10;
-            else { *dst++ = *src++; continue; }
-            
-            *dst++ = (char)((high << 4) | low);
-            src += 3;
-        } else if (*src == '+') {
-            *dst++ = ' ';
-            src++;
-        } else {
-            *dst++ = *src++;
-        }
-    }
-    *dst = '\0';
-}
-
-/**
  * @brief Handle file download request
  * GET /api/v1/file/download?path=/sdcard/xxx
  */
@@ -569,8 +452,7 @@ static esp_err_t file_download_handler(ts_http_request_t *req, void *user_data)
         return ts_http_send_error(req, 400, "Missing 'path' parameter");
     }
     
-    // URL decode path
-    url_decode(path);
+    // ts_http_get_query_param already decodes the query value once.
     TS_LOGD(TAG, "Download request: %s", path);
     
     // 安全检查：只允许访问 /sdcard 和 /spiffs
@@ -617,8 +499,7 @@ static esp_err_t file_upload_handler(ts_http_request_t *req, void *user_data)
         return ts_http_send_error(req, 400, "Missing 'path' parameter");
     }
     
-    // URL 解码路径
-    url_decode(path);
+    // ts_http_get_query_param already decodes the query value once.
     TS_LOGD(TAG, "Upload request: path=%s, body_len=%d", path, (int)(req->body_len));
     
     // 安全检查：只允许写入 /sdcard
@@ -936,7 +817,7 @@ esp_err_t ts_webui_api_init(void)
         .uri = API_PREFIX "/file/upload",
         .method = TS_HTTP_POST,
         .handler = file_upload_handler,
-        .requires_auth = false,
+        .requires_auth = true,
         .user_data = NULL
     };
     ts_http_server_register_route(&file_upload);
@@ -946,7 +827,7 @@ esp_err_t ts_webui_api_init(void)
         .uri = API_PREFIX "/ota/firmware",
         .method = TS_HTTP_POST,
         .handler = ota_firmware_upload_handler,
-        .requires_auth = false,  // TODO: 生产环境应设为 true
+        .requires_auth = true,
         .user_data = NULL
     };
     ts_http_server_register_route(&ota_firmware);
@@ -956,7 +837,7 @@ esp_err_t ts_webui_api_init(void)
         .uri = API_PREFIX "/ota/www",
         .method = TS_HTTP_POST,
         .handler = ota_www_upload_handler,
-        .requires_auth = false,  // TODO: 生产环境应设为 true
+        .requires_auth = true,
         .user_data = NULL
     };
     ts_http_server_register_route(&ota_www);
@@ -969,7 +850,7 @@ esp_err_t ts_webui_api_init(void)
             .uri = API_PREFIX "/*",
             .method = methods[i],
             .handler = api_handler,
-            .requires_auth = true,
+            .requires_auth = false,
             .user_data = NULL
         };
         esp_err_t ret = ts_http_server_register_route(&route);

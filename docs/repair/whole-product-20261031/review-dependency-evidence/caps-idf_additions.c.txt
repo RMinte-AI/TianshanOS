@@ -1,0 +1,168 @@
+source=/Users/massif/esp/v5.5.2/esp-idf/components/freertos/esp_additions/idf_additions.c
+sha256=799b7f52daea5ea1f3ea446b9e5c77e73a795529b1cf2bf9aa14c1d40f0ab1a9
+25: /* -------------------------------------------- Creation With Memory Caps ------------------------------------------- */
+26:
+27: /* ---------------------------------- Tasks --------------------------------- */
+28:
+29: #if ( configSUPPORT_STATIC_ALLOCATION == 1 )
+30:
+31:     BaseType_t xTaskCreatePinnedToCoreWithCaps( TaskFunction_t pvTaskCode,
+32:                                                 const char * const pcName,
+33:                                                 const configSTACK_DEPTH_TYPE usStackDepth,
+34:                                                 void * const pvParameters,
+35:                                                 UBaseType_t uxPriority,
+36:                                                 TaskHandle_t * const pvCreatedTask,
+37:                                                 const BaseType_t xCoreID,
+38:                                                 UBaseType_t uxMemoryCaps )
+39:     {
+40:         TaskHandle_t xHandle;
+41:         StaticTask_t * pxTaskBuffer;
+42:         StackType_t * pxStack;
+43:
+44:         /* Allocate memory for the task's TCB. We use pvPortMalloc() here as the
+45:          * TCB must be in internal memory. */
+46:         pxTaskBuffer = pvPortMalloc( sizeof( StaticTask_t ) );
+47:
+48:         /* Allocate memory for the task's stack using the provided memory caps
+49:          * */
+50:         pxStack = heap_caps_malloc( ( ( size_t ) usStackDepth ) * sizeof( StackType_t ), ( uint32_t ) uxMemoryCaps );
+51:
+52:         if( ( pxTaskBuffer == NULL ) || ( pxStack == NULL ) )
+53:         {
+54:             goto err;
+55:         }
+56:
+57:         /* Create the task using static creation API*/
+58:         xHandle = xTaskCreateStaticPinnedToCore( pvTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxStack, pxTaskBuffer, xCoreID );
+59:
+60:         if( xHandle == NULL )
+61:         {
+62:             /* Failed to create task */
+63:             goto err;
+64:         }
+65:         else if( pvCreatedTask != NULL )
+66:         {
+67:             /* Task created successfully. Return the task handle */
+68:             *pvCreatedTask = xHandle;
+69:         }
+70:
+71:         return pdPASS;
+72:
+73: err:
+74:         heap_caps_free( pxStack );
+75:         vPortFree( pxTaskBuffer );
+76:         return pdFAIL;
+77:     }
+78:
+79: #endif /* if ( configSUPPORT_STATIC_ALLOCATION == 1 ) */
+80: /*----------------------------------------------------------*/
+81:
+82: #if ( configSUPPORT_STATIC_ALLOCATION == 1 )
+83:
+84:     static void prvTaskDeleteWithCaps( TaskHandle_t xTaskToDelete )
+85:     {
+86:         /* Return value unused if asserts are disabled */
+87:         BaseType_t __attribute__( ( unused ) ) xResult;
+88:         StaticTask_t * pxTaskBuffer;
+89:         StackType_t * puxStackBuffer;
+90:
+91:         /* The task to be deleted must not be running.
+92:          * So we suspend the task before deleting it. */
+93:         vTaskSuspend( xTaskToDelete );
+94:
+95:         /* Wait for the task to be suspended */
+96:         while( eRunning == eTaskGetState( xTaskToDelete ) )
+97:         {
+98:             taskYIELD();
+99:         }
+100:
+101:         configASSERT( eRunning != eTaskGetState( xTaskToDelete ) );
+102:
+103:         /* We can delete the task and free the memory buffers.
+104:          * First, we must call `vTaskDelete` so that the port task delete callback is called.
+105:          * On targets that have coprocessors, it may be possible that the stack pointer is modified (restored)
+106:          * during this phase, hence, it must be done before getting the statuc buffers out of the task. */
+107:         vTaskDelete( xTaskToDelete );
+108:
+109:         /* Free the memory buffers */
+110:         xResult = xTaskGetStaticBuffers( xTaskToDelete, &puxStackBuffer, &pxTaskBuffer );
+111:         configASSERT( xResult == pdTRUE );
+112:         configASSERT( puxStackBuffer != NULL );
+113:         configASSERT( pxTaskBuffer != NULL );
+114:
+115:         heap_caps_free( puxStackBuffer );
+116:         vPortFree( pxTaskBuffer );
+117:     }
+118:
+119:     static void prvTaskDeleteWithCapsTask( void * pvParameters )
+120:     {
+121:         TaskHandle_t xTaskToDelete = ( TaskHandle_t ) pvParameters;
+122:
+123:         /* Delete the WithCaps task */
+124:         prvTaskDeleteWithCaps( xTaskToDelete );
+125:
+126:         /* Delete the temporary clean up task */
+127:         vTaskDelete( NULL );
+128:     }
+129:
+130:     void vTaskDeleteWithCaps( TaskHandle_t xTaskToDelete )
+131:     {
+132:         /* THIS FUNCTION SHOULD NOT BE CALLED FROM AN INTERRUPT CONTEXT. */
+133:         /* TODO: Update it to use portASSERT_IF_IN_ISR() instead. (IDF-10540) */
+134:         vPortAssertIfInISR();
+135:
+136:         TaskHandle_t xCurrentTaskHandle = xTaskGetCurrentTaskHandle();
+137:         configASSERT( xCurrentTaskHandle != NULL );
+138:
+139:         if( ( xTaskToDelete == NULL ) || ( xTaskToDelete == xCurrentTaskHandle ) )
+140:         {
+141:             /* The WithCaps task is deleting itself. While, the task can put itself on the
+142:              * xTasksWaitingTermination list via the vTaskDelete() call, the idle
+143:              * task will not free the task TCB and stack memories we created statically
+144:              * during xTaskCreateWithCaps() or xTaskCreatePinnedToCoreWithCaps(). This
+145:              * task will never be rescheduled once it is on the xTasksWaitingTermination
+146:              * list and will not be able to clear the memories. Therefore, it will leak memory.
+147:              *
+148:              * To avoid this, we create a new "temporary clean up" task to delete the current task.
+149:              * This task is created at the priority of the task to be deleted with the same core
+150:              * affitinty. Its limited purpose is to delete the self-deleting task created WithCaps.
+151:              *
+152:              * This approach has the following problems -
+153:              * 1. Once a WithCaps task deletes itself via vTaskDeleteWithCaps(), it may end up in the
+154:              *    suspended tasks lists for a short time before being deleted. This can give an incorrect
+155:              *    picture about the system state.
+156:              *
+157:              * 2. This approach is wasteful and can be error prone. The temporary clean up task will need
+158:              *    system resources to get scheduled and cleanup the WithCaps task. It can be a problem if the system
+159:              *    has several self-deleting WithCaps tasks.
+160:              *
+161:              * TODO: A better approach could be either -
+162:              *
+163:              * 1. Delegate memory management to the application/user. This way the kernel needn't bother about freeing
+164:              *    the memory (like other static memory task creation APIs like xTaskCreateStatic()) (IDF-10521)
+165:              *
+166:              * 2. Have a post deletion hook/callback from the IDLE task to notify higher layers when it is safe to
+167:              *    perform activities such as clearing up the TCB and stack memories. (IDF-10522) */
+168:             if( xTaskCreatePinnedToCore( ( TaskFunction_t ) prvTaskDeleteWithCapsTask, "prvTaskDeleteWithCapsTask", configMINIMAL_STACK_SIZE, xCurrentTaskHandle, uxTaskPriorityGet( xTaskToDelete ), NULL, xPortGetCoreID() ) != pdFAIL )
+169:             {
+170:                 /* Although the current task should get preemted immediately when prvTaskDeleteWithCapsTask is created,
+171:                  * for safety, we suspend the current task and wait for prvTaskDeleteWithCapsTask to delete it. */
+172:                 vTaskSuspend( xTaskToDelete );
+173:
+174:                 /* Should never reach here */
+175:                 ESP_LOGE( "freertos_additions", "%s: Failed to suspend the task to be deleted", __func__ );
+176:                 abort();
+177:             }
+178:             else
+179:             {
+180:                 /* Failed to create the task to delete the current task. */
+181:                 ESP_LOGE( "freertos_additions", "%s: Failed to create the task to delete the current task", __func__ );
+182:                 abort();
+183:             }
+184:         }
+185:
+186:         /* Delete the WithCaps task */
+187:         prvTaskDeleteWithCaps( xTaskToDelete );
+188:     }
+189:
+190: #endif /* if ( configSUPPORT_STATIC_ALLOCATION == 1 ) */

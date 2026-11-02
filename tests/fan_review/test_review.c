@@ -40,6 +40,9 @@ static float output[TS_FAN_MAX];
 static esp_err_t hal_result;
 static fan_nvs_config_t saved;
 static bool have_saved, check;
+static esp_err_t nvs_open_result, nvs_commit_result, module_result;
+static unsigned blob_calls, commit_calls, close_calls, module_calls, fail_blob_call;
+static bool module_registered = true;
 static int64_t esp_timer_get_time(void) {return now_ms*1000;}
 static uint32_t xTaskGetTickCount(void) {return now_ms;}
 int16_t ts_temp_get_effective(ts_temp_data_t *data) {*data=input;return input.value;}
@@ -56,21 +59,27 @@ static void ts_gpio_configure(ts_gpio_handle_t g,const ts_gpio_config_t *cfg) {}
 static void ts_gpio_set_isr_callback(ts_gpio_handle_t g,void (*fn)(ts_gpio_handle_t,void*),void *arg) {}
 static void ts_gpio_intr_enable(ts_gpio_handle_t g) {}
 static void tach_isr_callback(ts_gpio_handle_t g,void *arg) {}
-static esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *nvs) {*nvs=1;return ESP_OK;}
-static esp_err_t nvs_set_blob(nvs_handle_t nvs,const char *key,const void *data,size_t len) {saved=*(const fan_nvs_config_t *)data;have_saved=true;return ESP_OK;}
+static esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *nvs) {*nvs=1;return nvs_open_result;}
+static esp_err_t nvs_set_blob(nvs_handle_t nvs,const char *key,const void *data,size_t len) {
+    ++blob_calls;if (fail_blob_call == blob_calls) return ESP_FAIL;
+    saved=*(const fan_nvs_config_t *)data;have_saved=true;return ESP_OK;
+}
 static esp_err_t nvs_get_blob(nvs_handle_t nvs,const char *key,void *data,size_t *len) {
     if(!have_saved||strcmp(key,"fan0"))return ESP_ERR_NOT_FOUND;
     memcpy(data,&saved,sizeof(saved));return ESP_OK;
 }
-static esp_err_t nvs_commit(nvs_handle_t nvs) {return ESP_OK;}
-static void nvs_close(nvs_handle_t nvs) {}
+static esp_err_t nvs_commit(nvs_handle_t nvs) {++commit_calls;return nvs_commit_result;}
+static void nvs_close(nvs_handle_t nvs) {++close_calls;}
 static esp_err_t update_pwm(fan_instance_t *f,uint8_t duty);
 #include "fan_core.inc"
 #define TS_API_ERR_INVALID_ARG 1
 #define TS_API_ERR_HARDWARE 9
 typedef struct {int code;cJSON *data;const char *message;} ts_api_result_t;
-static void ts_api_result_error(ts_api_result_t *r,int code,const char *message) {r->code=code;}
+static void ts_api_result_error(ts_api_result_t *r,int code,const char *message) {r->code=code;r->message=message;}
 static void ts_api_result_ok(ts_api_result_t *r,cJSON *data) {r->code=0;r->data=data;}
+#define TS_CONFIG_MODULE_FAN 5
+static bool ts_config_module_is_registered(int module) {assert(module==TS_CONFIG_MODULE_FAN);return module_registered;}
+static esp_err_t ts_config_module_persist(int module) {assert(module==TS_CONFIG_MODULE_FAN);++module_calls;return module_registered?module_result:ESP_ERR_NOT_FOUND;}
 #include "api_core.inc"
 #include "device_core.inc"
 #define TS_API_OK 0
@@ -87,6 +96,8 @@ static void ts_api_result_free(ts_api_result_t *result){}
 
 static void setup(int duty) {
     memset(s_fans,0,sizeof(s_fans));now_ms=100000;hal_result=ESP_OK;have_saved=false;
+    nvs_open_result=nvs_commit_result=module_result=ESP_OK;
+    blob_calls=commit_calls=close_calls=module_calls=fail_blob_call=0;module_registered=true;
     fan_instance_t *f=&s_fans[0];f->initialized=f->enabled=true;f->pwm=(void *)1;f->mode=TS_FAN_MODE_AUTO;
     f->current_duty=duty;output[0]=duty;f->temperature=488;
     f->config.gpio_pwm=0;f->config.gpio_tach=-1;f->config.min_duty=10;f->config.max_duty=100;
@@ -96,6 +107,69 @@ static void setup(int duty) {
     update_pwm(f,duty); /* Establish successful output through the real writer. */
     input=(ts_temp_data_t){.value=488,.guard_value=488,.valid=true,.guard_valid=true,
         .source=TS_TEMP_SOURCE_VARIABLE,.timestamp_ms=now_ms,.bound_valid_count=1,.bound_total_count=1};
+}
+static void check_save_results(void) {
+    esp_err_t (*handlers[])(const cJSON*,ts_api_result_t*) = {api_fan_mode,api_fan_limits,api_fan_curve};
+    const char *bodies[] = {"{\"id\":0,\"mode\":\"manual\"}","{\"id\":0,\"min_duty\":20,\"max_duty\":80}",
+        "{\"id\":0,\"curve\":[{\"temp\":30,\"duty\":30},{\"temp\":70,\"duty\":100}],\"hysteresis\":3,\"min_interval\":2000}"};
+    for (int which=0;which<3;which++) for (int failure=0;failure<5;failure++) {
+        if (which==0 && failure==3) continue; /* mode has no schema save */
+        setup(37);
+        if(failure==0)nvs_open_result=ESP_FAIL;
+        if(failure==1)fail_blob_call=1;
+        if(failure==2)nvs_commit_result=ESP_FAIL;
+        if(failure==3)module_result=ESP_FAIL;
+        cJSON *params=cJSON_Parse(bodies[which]);ts_api_result_t result={0};
+        esp_err_t ret=handlers[which](params,&result);
+        if(failure<4){
+            assert(ret==ESP_FAIL&&result.code!=0);
+            assert(!strcmp(result.message,"fan_config_save_failed"));
+        } else assert(ret==ESP_OK&&result.code==0);
+        assert(cJSON_IsTrue(cJSON_GetObjectItem(result.data,"applied")));
+        assert(cJSON_IsTrue(cJSON_GetObjectItem(result.data,"persisted"))==(failure==4));
+        assert(cJSON_GetObjectItem(result.data,"id")->valueint==0);
+        if(which==0){assert(s_fans[0].mode==TS_FAN_MODE_MANUAL);assert(!strcmp(cJSON_GetObjectItem(result.data,"mode")->valuestring,"manual"));}
+        if(which==1){assert(s_fans[0].config.min_duty==20&&s_fans[0].config.max_duty==80);assert(cJSON_GetObjectItem(result.data,"min_duty")->valueint==20&&cJSON_GetObjectItem(result.data,"max_duty")->valueint==80);}
+        if(which==2){assert(s_fans[0].config.curve_points==2&&s_fans[0].config.curve[0].temp==300&&s_fans[0].config.curve[0].duty==30);assert(s_fans[0].config.hysteresis==30&&s_fans[0].config.min_interval==2000);assert(cJSON_GetObjectItem(result.data,"points")->valueint==2);}
+        assert(output[0]==37); /* persistence errors never rewind the runtime writer */
+        cJSON_Delete(params);cJSON_Delete(result.data);
+    }
+    /* Missing optional schema must not turn successful fan persistence into failure. */
+    for(int which=1;which<3;which++){
+        setup(37);module_registered=false;cJSON *params=cJSON_Parse(bodies[which]);ts_api_result_t result={0};
+        assert(handlers[which](params,&result)==ESP_OK&&result.code==0&&module_calls==0&&have_saved);
+        assert(cJSON_IsTrue(cJSON_GetObjectItem(result.data,"persisted")));
+        cJSON_Delete(params);cJSON_Delete(result.data);
+    }
+    const char *modes[]={"off","manual","auto","curve"};
+    for(unsigned i=0;i<sizeof(modes)/sizeof(modes[0]);i++){
+        setup(37);cJSON *params=cJSON_CreateObject();cJSON_AddNumberToObject(params,"id",0);cJSON_AddStringToObject(params,"mode",modes[i]);ts_api_result_t result={0};
+        assert(api_fan_mode(params,&result)==ESP_OK&&result.code==0&&have_saved);
+        assert(!strcmp(cJSON_GetObjectItem(result.data,"mode")->valuestring,modes[i]));
+        assert(cJSON_IsTrue(cJSON_GetObjectItem(result.data,"applied"))&&cJSON_IsTrue(cJSON_GetObjectItem(result.data,"persisted")));
+        cJSON_Delete(params);cJSON_Delete(result.data);
+    }
+    setup(37);hal_result=ESP_ERR_INVALID_STATE;cJSON *failed_mode=cJSON_Parse("{\"id\":0,\"mode\":\"off\"}");ts_api_result_t failed_result={0};
+    assert(api_fan_mode(failed_mode,&failed_result)==ESP_ERR_INVALID_STATE&&failed_result.code!=0&&!blob_calls);
+    assert(!cJSON_HasObjectItem(failed_result.data,"applied"));cJSON_Delete(failed_mode);cJSON_Delete(failed_result.data);
+    for(int all=0;all<2;all++)for(int failure=0;failure<5;failure++){
+        setup(37);if(all)s_fans[1]=s_fans[0];
+        if(failure==0)nvs_open_result=ESP_FAIL;
+        if(failure==1)fail_blob_call=1;
+        if(failure==2)nvs_commit_result=ESP_FAIL;
+        if(failure==3)module_result=ESP_FAIL;
+        cJSON *params=cJSON_Parse(all?"{}":"{\"id\":0}");ts_api_result_t result={0};
+        esp_err_t ret=api_fan_save(params,&result);
+        if(failure<4)assert(ret==ESP_FAIL&&result.code!=0);
+        else {assert(ret==ESP_OK&&result.code==0);assert(!strcmp(cJSON_GetObjectItem(result.data,"status")->valuestring,"saved"));}
+        assert(!cJSON_HasObjectItem(result.data,"applied"));
+        if(all&&failure==1)assert(blob_calls==2&&commit_calls==1&&close_calls==1);
+        assert(output[0]==37&&s_fans[0].mode==TS_FAN_MODE_AUTO);
+        cJSON_Delete(params);cJSON_Delete(result.data);
+    }
+    setup(37);module_registered=false;cJSON *params=cJSON_Parse("{}");ts_api_result_t result={0};
+    assert(api_fan_save(params,&result)==ESP_OK&&module_calls==0);
+    cJSON_Delete(params);cJSON_Delete(result.data);
 }
 static void tick(int64_t time,int temperature,bool fresh) {
     now_ms=time;input.value=input.guard_value=temperature;
@@ -150,6 +224,7 @@ int main(int argc,char **argv) {
         record("R1_configured_cadence",0);return 0;
     }
     check=argc>1&&!strcmp(argv[1],"check");
+    if(check)check_save_results();
     setup(37);tick(100000,950,true);tick(101000,890,true);tick(161000,890,true);
     record("R1_gap60",0);if(check)assert(s_fans[0].guard_active&&output[0]==100);
     /* Cached reads are valid observations, not fictitious new sensor reports. */

@@ -155,6 +155,12 @@ static esp_err_t api_power_protection_set(const cJSON *params, ts_api_result_t *
         new_fan_delay = (uint32_t)fan_stop_delay->valueint;
     }
     
+    /* Reject the known invalid hold range before changing any setting. */
+    if (cJSON_IsNumber(recovery_hold) && (new_recovery_hold < 1 || new_recovery_hold > 300)) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Recovery hold time must be 1-300 seconds");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     /* Update thresholds */
     esp_err_t ret = ts_power_policy_set_thresholds(new_low, new_recovery);
     if (ret != ESP_OK) {

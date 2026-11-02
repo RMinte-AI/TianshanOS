@@ -222,11 +222,18 @@ static esp_err_t api_fan_mode(const cJSON *params, ts_api_result_t *result)
     }
     
     // 自动保存模式变更到 NVS
-    ts_fan_save_full_config(fan_id);
+    ret = ts_fan_save_full_config(fan_id);
     
     cJSON *data = cJSON_CreateObject();
     cJSON_AddNumberToObject(data, "id", fan_id);
     cJSON_AddStringToObject(data, "mode", mode_to_string(mode));
+    cJSON_AddBoolToObject(data, "applied", true);
+    cJSON_AddBoolToObject(data, "persisted", ret == ESP_OK);
+    if (ret != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_HARDWARE, "fan_config_save_failed");
+        result->data = data;
+        return ret;
+    }
     
     ts_api_result_ok(result, data);
     return ESP_OK;
@@ -320,14 +327,22 @@ static esp_err_t api_fan_limits(const cJSON *params, ts_api_result_t *result)
         return ret;
     }
     
-    // 自动保存到 NVS + SD 卡
-    ts_fan_save_full_config(fan_id);
-    ts_config_module_persist(TS_CONFIG_MODULE_FAN);
+    // 保存风扇配置及已注册的模块配置
+    ret = ts_fan_save_full_config(fan_id);
+    if (ret == ESP_OK && ts_config_module_is_registered(TS_CONFIG_MODULE_FAN))
+        ret = ts_config_module_persist(TS_CONFIG_MODULE_FAN);
     
     cJSON *data = cJSON_CreateObject();
     cJSON_AddNumberToObject(data, "id", fan_id);
     cJSON_AddNumberToObject(data, "min_duty", min_duty);
     cJSON_AddNumberToObject(data, "max_duty", max_duty);
+    cJSON_AddBoolToObject(data, "applied", true);
+    cJSON_AddBoolToObject(data, "persisted", ret == ESP_OK);
+    if (ret != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_HARDWARE, "fan_config_save_failed");
+        result->data = data;
+        return ret;
+    }
     
     ts_api_result_ok(result, data);
     return ESP_OK;
@@ -411,13 +426,21 @@ static esp_err_t api_fan_curve(const cJSON *params, ts_api_result_t *result)
         }
     }
     
-    // 自动保存到 NVS + SD 卡
-    ts_fan_save_full_config(fan_id);
-    ts_config_module_persist(TS_CONFIG_MODULE_FAN);
+    // 保存风扇配置及已注册的模块配置
+    ret = ts_fan_save_full_config(fan_id);
+    if (ret == ESP_OK && ts_config_module_is_registered(TS_CONFIG_MODULE_FAN))
+        ret = ts_config_module_persist(TS_CONFIG_MODULE_FAN);
     
     cJSON *data = cJSON_CreateObject();
     cJSON_AddNumberToObject(data, "id", fan_id);
     cJSON_AddNumberToObject(data, "points", count);
+    cJSON_AddBoolToObject(data, "applied", true);
+    cJSON_AddBoolToObject(data, "persisted", ret == ESP_OK);
+    if (ret != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_HARDWARE, "fan_config_save_failed");
+        result->data = data;
+        return ret;
+    }
     
     ts_api_result_ok(result, data);
     return ESP_OK;
@@ -444,8 +467,9 @@ static esp_err_t api_fan_save(const cJSON *params, ts_api_result_t *result)
         ret = ts_fan_save_config();
     }
     
-    // 同步到 SD 卡
-    ts_config_module_persist(TS_CONFIG_MODULE_FAN);
+    // 保存已注册的模块配置
+    if (ret == ESP_OK && ts_config_module_is_registered(TS_CONFIG_MODULE_FAN))
+        ret = ts_config_module_persist(TS_CONFIG_MODULE_FAN);
     
     if (ret != ESP_OK) {
         ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to save fan config");
@@ -454,6 +478,7 @@ static esp_err_t api_fan_save(const cJSON *params, ts_api_result_t *result)
     
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "status", "saved");
+    cJSON_AddBoolToObject(data, "persisted", true);
     ts_api_result_ok(result, data);
     return ESP_OK;
 }

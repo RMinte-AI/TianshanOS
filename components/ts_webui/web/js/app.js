@@ -554,6 +554,7 @@ class SubscriptionManager {
     constructor(ws) {
         this.ws = ws;
         this.subscriptions = new Map(); // topic -> Set(callbacks)
+        this.subscriptionParams = new Map();
         this.activeSubs = new Set();    // 已激活的 topic
     }
 
@@ -567,6 +568,7 @@ class SubscriptionManager {
         // 添加回调
         if (!this.subscriptions.has(topic)) {
             this.subscriptions.set(topic, new Set());
+            this.subscriptionParams.set(topic, params);
         }
         this.subscriptions.get(topic).add(callback);
 
@@ -601,6 +603,7 @@ class SubscriptionManager {
         // 如果没有回调了，发送取消订阅消息
         if (this.subscriptions.get(topic).size === 0) {
             this.subscriptions.delete(topic);
+            this.subscriptionParams.delete(topic);
             if (this.activeSubs.has(topic)) {
                 this.ws.send({
                     type: 'unsubscribe',
@@ -610,6 +613,12 @@ class SubscriptionManager {
                 console.log(`[SubscriptionMgr] Unsubscribed from: ${topic}`);
             }
         }
+    }
+
+    restore() {
+        this.subscriptions.forEach((callbacks, topic) => {
+            this.ws.send({type: 'subscribe', topic, params: this.subscriptionParams.get(topic)});
+        });
     }
 
     /**
@@ -651,6 +660,7 @@ class SubscriptionManager {
             this.ws.send({ type: 'unsubscribe', topic });
         });
         this.subscriptions.clear();
+        this.subscriptionParams.clear();
         this.activeSubs.clear();
         console.log('[SubscriptionMgr] Cleared all subscriptions');
     }
@@ -729,6 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // =========================================================================
 
 window.addEventListener('authExpired', () => {
+    window.destroyWebTerminal?.();
     updateAuthUI();
     showLoginModal();
 });
@@ -810,6 +821,7 @@ document.getElementById('login-form')?.addEventListener('submit', async (e) => {
             }
 
             router.navigate();
+            if (ws) ws.connect();
             showToast(t('login.welcomeName', { name: username }), 'success');
         } else {
             // 显示错误信息
@@ -836,7 +848,10 @@ async function logout() {
         showToast(t(result.serverConfirmed ? 'promptRepair.logoutConfirmed' : 'promptRepair.logoutLocal'), result.serverConfirmed ? 'info' : 'warning', 7000);
     } finally {
         updateAuthUI();
-        if (!api.token) router.navigate('/');
+        if (!api.token) {
+            window.destroyWebTerminal?.();
+            router.navigate('/');
+        }
     }
 }
 
@@ -937,10 +952,22 @@ window.addEventListener('languageChanged', () => {
     updateModalWsStatus(webSocketConnected);
 });
 
+let resumeWsAfterPageShow = false;
+window.addEventListener('pagehide', () => {
+    resumeWsAfterPageShow = !!ws?.shouldReconnect;
+    if (ws) ws.disconnect();
+    if (typeof webTerminal !== 'undefined' && webTerminal) webTerminal.disconnect();
+});
+window.addEventListener('pageshow', (event) => {
+    if (!event.persisted || !resumeWsAfterPageShow) return;
+    if (ws) ws.connect();
+    if (typeof webTerminal !== 'undefined' && webTerminal && !webTerminal.destroyed) webTerminal.connect();
+});
+
 function setupWebSocket() {
     ws = new TianShanWS(
         (msg) => handleEvent(msg),
-        () => renderWsStatus(true),
+        () => { renderWsStatus(true); subscriptionManager?.restore(); },
         () => renderWsStatus(false)
     );
     ws.connect();
@@ -954,6 +981,10 @@ function setupWebSocket() {
 }
 
 function handleEvent(msg) {
+    if (msg.type === 'connection_busy') {
+        showToast(t('terminal.connectionBusy'), 'warning', 7000);
+        return;
+    }
     // console.log('Event:', msg);
 
     // 处理订阅管理器消息 (subscribed/unsubscribed/data)
@@ -1424,7 +1455,7 @@ async function refreshSystemPageOnce() {
         const protStatus = await api.powerProtectionStatus();
         if (!pageCurrent()) return;
         if (protStatus.data) {
-            const running = protStatus.data.running || protStatus.data.initialized;
+            const running = protStatus.data.running;
             updateProtectionUI(running);
         }
     } catch (e) {
@@ -1539,7 +1570,7 @@ async function toggleProtection() {
     let currentRunning = false;
     try {
         const protStatus = await api.powerProtectionStatus();
-        currentRunning = protStatus.data?.running || protStatus.data?.initialized || false;
+        currentRunning = protStatus.data?.running || false;
     } catch (e) {
         console.error('Failed to get protection status:', e);
     }
@@ -1910,12 +1941,14 @@ function updatePowerInfo(data) {
     if (!data) return;
 
     // 输入电压：来自电源芯片 (GPIO47 UART)
-    const inputVoltage = data.power_chip?.voltage_v;
+    const chip = data.power_chip;
+    const chipValid = chip?.valid === true && chip?.crc_valid === true;
+    const inputVoltage = chipValid ? chip.voltage_v : undefined;
     // 内部电压：来自 ADC 监控 (GPIO18 ADC)
     const internalVoltage = data.voltage?.supply_v;
 
-    const current = data.power_chip?.current_a || data.current?.value_a;
-    const power = data.power_chip?.power_w || data.power?.value_w;
+    const current = chip ? (chipValid ? chip.current_a : undefined) : data.current?.value_a;
+    const power = chip ? (chipValid ? chip.power_w : undefined) : data.power?.value_w;
 
     // 显示输入电压（主电压）
     document.getElementById('voltage').textContent =
@@ -2245,8 +2278,81 @@ let fanCurveConfig = {
 /**
  * 显示风扇曲线管理模态框
  */
-async function showFanCurveModal(fanId = 0) {
+let fanCurveModalOwner = null;
+let fanCurveDraftSource = null; // null: original defaults; otherwise the fan whose draft is displayed.
+
+function fanCurveModalCurrent(owner) {
+    return owner && fanCurveModalOwner === owner && owner.phase !== 'closed' &&
+        owner.modal.isConnected && owner.pageCurrent();
+}
+
+function fanCurveReadCurrent(owner, group, request) {
+    return fanCurveModalCurrent(owner) && owner[group] === request;
+}
+
+function updateFanCurveControls(owner) {
+    if (!fanCurveModalCurrent(owner)) return;
+    const writing = owner.phase === 'writing';
+    for (const control of owner.modal.querySelectorAll('[data-fan-curve-controls] input, [data-fan-curve-controls] select, [data-fan-curve-controls] button')) {
+        control.disabled = writing || owner.curveLoading;
+    }
+    for (const control of owner.modal.querySelectorAll('[data-fan-binding-controls] input, [data-fan-binding-controls] select, [data-fan-binding-controls] button')) {
+        control.disabled = writing || owner.bindingLoading || owner.bindingWriting;
+    }
+    owner.modal.querySelector('#fan-curve-fan-select').disabled = writing;
+    owner.modal.querySelector('[onclick="applyFanCurve()"]').disabled = writing || owner.curveLoading;
+}
+
+function fanCurveDraftNotice() {
+    return fanCurveDraftSource === null ? t('modalSettings.defaults') :
+        t('modalSettings.fanDraft', { id: fanCurveDraftSource });
+}
+
+async function loadFanCurveConfig(owner, fanId) {
+    if (!fanCurveModalCurrent(owner)) return;
+    const request = owner.curveRequest = Symbol('curve');
+    owner.fileRequest = null;
+    owner.curveLoading = true;
+    owner.phase = 'loading';
     fanCurveConfig.fanId = fanId;
+    const status = owner.modal.querySelector('#fan-curve-load-status');
+    status.textContent = t('modalSettings.loading');
+    updateFanCurveControls(owner);
+    try {
+        const result = await api.call('fan.config', { id: fanId });
+        if (!fanCurveReadCurrent(owner, 'curveRequest', request)) return;
+        if (result.code !== 0 || !result.data) {
+            status.textContent = fanCurveDraftNotice();
+            return;
+        }
+        const cfg = result.data;
+        if (cfg.curve && cfg.curve.length >= 2) fanCurveConfig.curve = cfg.curve;
+        if (typeof cfg.hysteresis === 'number') fanCurveConfig.hysteresis = cfg.hysteresis;
+        if (typeof cfg.min_interval === 'number') fanCurveConfig.minInterval = cfg.min_interval;
+        if (typeof cfg.min_duty === 'number') fanCurveConfig.minDuty = cfg.min_duty;
+        if (typeof cfg.max_duty === 'number') fanCurveConfig.maxDuty = cfg.max_duty;
+        owner.modal.querySelector('#fan-curve-hysteresis').value = fanCurveConfig.hysteresis;
+        owner.modal.querySelector('#fan-curve-interval').value = fanCurveConfig.minInterval;
+        owner.modal.querySelector('#fan-curve-min-duty').value = fanCurveConfig.minDuty;
+        owner.modal.querySelector('#fan-curve-max-duty').value = fanCurveConfig.maxDuty;
+        fanCurveDraftSource = fanId;
+        refreshCurveEditor();
+        status.textContent = '';
+    } catch (error) {
+        if (!fanCurveReadCurrent(owner, 'curveRequest', request)) return;
+        console.warn('加载风扇配置失败:', error);
+        status.textContent = fanCurveDraftNotice();
+    } finally {
+        if (fanCurveReadCurrent(owner, 'curveRequest', request)) {
+            owner.curveLoading = false;
+            owner.phase = 'ready';
+            updateFanCurveControls(owner);
+        }
+    }
+}
+
+async function showFanCurveModal(fanId = 0) {
+    closeFanCurveModal();
 
     const modal = document.createElement('div');
     modal.id = 'fan-curve-modal';
@@ -2257,6 +2363,8 @@ async function showFanCurveModal(fanId = 0) {
     const num = (id, w, val, attrs) => inp(id, w, '', 'num', `type="number" value="${val}" ${attrs}`);
     modal.innerHTML = sheet(660, t('fanPage.curveManagement'), `
         ${grp(row(t('fanPage.fanRow'), `<select class="field" id="fan-curve-fan-select" style="width:120px" onchange="updateFanCurvePreview()">${fanOpts}</select>`))}
+        <div id="fan-curve-load-status" class="t-note" aria-live="polite"></div>
+        <div data-fan-binding-controls>
         ${gt(t('fanPage.tempVarBindingTitle'))}
         <div class="grp">
             <div class="row"><div class="rl">${t('common.status')}</div><div class="rc"><span id="fan-curve-temp-current" class="t-note">--°C</span><span id="variable-bind-status" class="state">${t('fanPage.unbound')}</span></div></div>
@@ -2266,6 +2374,8 @@ async function showFanCurveModal(fanId = 0) {
         <div id="temp-var-formula" class="t-note" style="display:none;margin:6px 4px 0"></div>
         <div id="temp-var-weight-warn" class="t-note warn-t" style="display:none;margin:6px 4px 0"></div>
         <div id="temp-source-hint" class="t-note" style="margin:6px 4px 0">${t('fanPage.selectVariableWeightHint')}</div>
+        </div>
+        <div data-fan-curve-controls>
         <div class="sec-h" style="margin:18px 4px 6px"><span class="t-label">${t('fanPage.curveNodes')}</span><span class="acts"><button class="btn sm" onclick="importFanCurveConfig()"><svg class="i"><use href="#ri-upload-line"/></svg>${t('fan.importConfig')}</button><button class="btn sm" onclick="exportFanCurveConfig()"><svg class="i"><use href="#ri-download-line"/></svg>${t('fan.exportConfig')}</button><button class="btn sm" onclick="addCurvePoint()"><svg class="i"><use href="#ri-add-line"/></svg>${t('fanPage.addNode')}</button></span></div>
         <div class="grp" id="fan-curve-points">${renderCurvePoints()}</div>
         <div class="t-note" style="margin:6px 4px 0">${t('fanPage.curveHint')}</div>
@@ -2276,44 +2386,31 @@ async function showFanCurveModal(fanId = 0) {
             row(t('fanPage.minSpeed'), num('fan-curve-min-duty', 90, fanCurveConfig.minDuty, 'min="0" max="100" step="1"') + unit('%'), '', t('fanPage.minDutyHint')) +
             row(t('fanPage.maxSpeed'), num('fan-curve-max-duty', 90, fanCurveConfig.maxDuty, 'min="0" max="100" step="1"') + unit('%'), '', t('fanPage.maxDutyHint')) +
             row(t('fanPage.tempDiff'), num('fan-curve-hysteresis', 90, fanCurveConfig.hysteresis, 'min="0" max="20" step="0.5"') + unit('°C'), '', t('fanPage.hysteresisHint')) +
-            row(t('fanPage.minIntervalShort'), num('fan-curve-interval', 90, fanCurveConfig.minInterval, 'min="500" max="30000" step="100"') + unit('ms'), '', t('fanPage.intervalHint')))}`,
+            row(t('fanPage.minIntervalShort'), num('fan-curve-interval', 90, fanCurveConfig.minInterval, 'min="500" max="30000" step="100"') + unit('ms'), '', t('fanPage.intervalHint')))}</div>`,
         `<button class="btn lg" onclick="closeFanCurveModal()">${t('fanPage.cancel')}</button><button class="btn lg primary" onclick="applyFanCurve()">${t('fanPage.saveCurve')}</button>`);
 
     document.body.appendChild(modal);
 
     document.getElementById('fan-curve-fan-select').value = fanId;
 
-    loadTempSourceStatus();
-    setTimeout(() => drawCurvePreview(), 50);
-
-    // 异步加载设备配置并更新 UI（不阻塞 modal 显示）
-    api.call('fan.config', { id: fanId }).then(result => {
-        if (result.code === 0 && result.data) {
-            const cfg = result.data;
-            if (cfg.curve && cfg.curve.length >= 2) fanCurveConfig.curve = cfg.curve;
-            if (typeof cfg.hysteresis === 'number') fanCurveConfig.hysteresis = cfg.hysteresis;
-            if (typeof cfg.min_interval === 'number') fanCurveConfig.minInterval = cfg.min_interval;
-            if (typeof cfg.min_duty === 'number') fanCurveConfig.minDuty = cfg.min_duty;
-            if (typeof cfg.max_duty === 'number') fanCurveConfig.maxDuty = cfg.max_duty;
-            const hEl = document.getElementById('fan-curve-hysteresis');
-            const iEl = document.getElementById('fan-curve-interval');
-            const minEl = document.getElementById('fan-curve-min-duty');
-            const maxEl = document.getElementById('fan-curve-max-duty');
-            if (hEl) hEl.value = fanCurveConfig.hysteresis;
-            if (iEl) iEl.value = fanCurveConfig.minInterval;
-            if (minEl) minEl.value = fanCurveConfig.minDuty;
-            if (maxEl) maxEl.value = fanCurveConfig.maxDuty;
-            refreshCurveEditor();
-        }
-    }).catch(e => console.warn('从设备加载配置失败，使用默认值:', e));
+    const owner = fanCurveModalOwner = { modal, phase: 'loading', pageCurrent: capturePageValidity(),
+        curveLoading: true, bindingLoading: true, bindingWriting: false };
+    if (typeof router !== 'undefined') router.navigation?.onDispose(() => closeFanCurveModal(owner));
+    updateFanCurveControls(owner);
+    loadTempSourceStatus(owner);
+    loadFanCurveConfig(owner, fanId);
+    const drawRequest = owner.curveRequest;
+    setTimeout(() => { if (fanCurveReadCurrent(owner, 'curveRequest', drawRequest)) drawCurvePreview(); }, 50);
 }
 
 /**
  * 关闭风扇曲线模态框
  */
-function closeFanCurveModal() {
-    const modal = document.getElementById('fan-curve-modal');
-    if (modal) modal.remove();
+function closeFanCurveModal(owner = fanCurveModalOwner) {
+    if (!owner) return;
+    owner.phase = 'closed';
+    owner.modal.remove();
+    if (fanCurveModalOwner === owner) fanCurveModalOwner = null;
 }
 
 /**
@@ -2534,8 +2631,6 @@ function removeCurvePoint(index) {
  */
 function updateCurvePoint(index, field, value) {
     fanCurveConfig.curve[index][field] = parseFloat(value);
-    // 排序（按温度升序）
-    fanCurveConfig.curve.sort((a, b) => a.temp - b.temp);
     drawCurvePreview();
 }
 
@@ -2635,9 +2730,17 @@ function drawCurvePreview() {
 /**
  * 加载温度源状态
  */
-async function loadTempSourceStatus() {
+async function loadTempSourceStatus(owner = fanCurveModalOwner) {
+    if (!fanCurveModalCurrent(owner)) return;
+    const request = owner.bindingRequest = Symbol('binding');
+    owner.bindingLoading = true;
+    owner.bindingError = false;
+    owner.modal.querySelector('#temp-source-hint').textContent = t('modalSettings.loading');
+    updateFanCurveControls(owner);
     try {
         const result = await api.call('temp.status');
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        if (result.code !== 0 || !result.data) owner.bindingError = true;
         if (result.code === 0 && result.data) {
             const data = result.data;
             const tempEl = document.getElementById('fan-curve-temp-current');
@@ -2648,6 +2751,8 @@ async function loadTempSourceStatus() {
             }
         }
     } catch (e) {
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        owner.bindingError = true;
         console.error('获取温度源状态失败:', e);
         const tempEl = document.getElementById('fan-curve-temp-current');
         if (tempEl) {
@@ -2655,19 +2760,28 @@ async function loadTempSourceStatus() {
             tempEl.style.color = 'var(--bad)';
         }
     }
-    await loadVariableBindStatus();
+    if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+    await loadVariableBindStatus(owner, request);
+    if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+    owner.bindingLoading = false;
+    owner.modal.querySelector('#temp-source-hint').textContent = owner.bindingError ?
+        t('modalSettings.bindingDraft') : t('fanPage.selectVariableWeightHint');
+    updateFanCurveControls(owner);
 }
 
 /**
  * 加载变量绑定状态和变量列表
  */
-async function loadVariableBindStatus() {
+async function loadVariableBindStatus(owner, request) {
+    if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
     // 两个 API 调用独立 try-catch，互不阻塞
     try {
         const varsResult = await api.call('automation.variables.list', {
             include_value: true,
             include_meta: false
         });
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        if (varsResult.code !== 0 || !varsResult.data?.variables) owner.bindingError = true;
         if (varsResult.code === 0 && varsResult.data?.variables) {
             const tempVars = varsResult.data.variables.filter(v => {
                 const name = (v.name || '').toLowerCase();
@@ -2683,11 +2797,15 @@ async function loadVariableBindStatus() {
             );
         }
     } catch (e) {
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        owner.bindingError = true;
         console.warn('加载变量列表失败:', e.message);
     }
 
     try {
         const bindResult = await api.call('temp.bind');
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        if (bindResult.code !== 0 || !bindResult.data) owner.bindingError = true;
         const statusEl = document.getElementById('variable-bind-status');
 
         if (bindResult.code === 0 && bindResult.data) {
@@ -2775,16 +2893,20 @@ async function loadVariableBindStatus() {
             }
         }
     } catch (e) {
+        if (!fanCurveReadCurrent(owner, 'bindingRequest', request)) return;
+        owner.bindingError = true;
         console.warn('加载绑定状态失败:', e.message);
     }
 
-    renderTempVarBindings();
+    if (fanCurveReadCurrent(owner, 'bindingRequest', request)) renderTempVarBindings();
 }
 
 /**
  * 绑定温度变量
  */
 async function bindTempVariable() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase === 'writing' || owner.bindingLoading || owner.bindingWriting) return;
     const validBindings = tempVarBindings.filter(b => b.name && b.name.trim() !== '');
 
     if (validBindings.length === 0) {
@@ -2792,6 +2914,9 @@ async function bindTempVariable() {
         return;
     }
 
+    const request = owner.bindingRequest = Symbol('binding-write');
+    owner.bindingWriting = true;
+    updateFanCurveControls(owner);
     try {
         const variables = validBindings.map(b => ({
             name: b.name,
@@ -2805,13 +2930,18 @@ async function bindTempVariable() {
 
             showToast(t('fanPage.tempBoundWeighted', { count: variables.length }), 'success');
 
-            await loadTempSourceStatus();
+            if (fanCurveReadCurrent(owner, 'bindingRequest', request)) await loadTempSourceStatus(owner);
         } else {
             reportFailure({ op: 'fanpage.bind', result, write: true });
         }
     } catch (e) {
         console.error('绑定温度变量失败:', e);
         reportFailure({ op: 'fanpage.bind', error: e, write: true });
+    } finally {
+        if (fanCurveModalCurrent(owner)) {
+            owner.bindingWriting = false;
+            updateFanCurveControls(owner);
+        }
     }
 }
 
@@ -2819,20 +2949,30 @@ async function bindTempVariable() {
  * 解绑温度变量
  */
 async function unbindTempVariable() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase === 'writing' || owner.bindingLoading || owner.bindingWriting) return;
+    const request = owner.bindingRequest = Symbol('binding-write');
+    owner.bindingWriting = true;
+    updateFanCurveControls(owner);
     try {
         const result = await api.call('temp.bind', { variables: [] });
 
         if (result.code === 0) {
-            tempVarBindings = [];
+            if (fanCurveReadCurrent(owner, 'bindingRequest', request)) tempVarBindings = [];
             showToast(t('fanPage.unbindSuccess'), 'success');
 
-            await loadTempSourceStatus();
+            if (fanCurveReadCurrent(owner, 'bindingRequest', request)) await loadTempSourceStatus(owner);
         } else {
             reportFailure({ op: 'fanpage.unbind', result, write: true });
         }
     } catch (e) {
         console.error('解绑温度变量失败:', e);
         reportFailure({ op: 'fanpage.unbind', error: e, write: true });
+    } finally {
+        if (fanCurveModalCurrent(owner)) {
+            owner.bindingWriting = false;
+            updateFanCurveControls(owner);
+        }
     }
 }
 
@@ -2840,6 +2980,8 @@ async function unbindTempVariable() {
  * 应用风扇曲线
  */
 async function applyFanCurve() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
     const fanId = parseInt(document.getElementById('fan-curve-fan-select').value);
     const hysteresis = parseFloat(document.getElementById('fan-curve-hysteresis').value);
     const minInterval = parseInt(document.getElementById('fan-curve-interval').value);
@@ -2869,8 +3011,11 @@ async function applyFanCurve() {
     }
 
     // 排序曲线点
-    const sortedCurve = [...fanCurveConfig.curve].sort((a, b) => a.temp - b.temp);
+    const sortedCurve = fanCurveConfig.curve.map(point => ({temp: point.temp, duty: point.duty})).sort((a, b) => a.temp - b.temp);
 
+    owner.fileRequest = null;
+    owner.phase = 'writing';
+    updateFanCurveControls(owner);
     try {
         // 1. 设置占空比限制
         const limitsResult = await api.call('fan.limits', {
@@ -2900,14 +3045,19 @@ async function applyFanCurve() {
         requireApiSuccess(modeResult, 'fan.mode');
 
         showToast(typeof t === 'function' ? t('fanPage.curveApplied', { id: fanId }) : `风扇 ${fanId} 曲线已应用并保存`, 'success');
-        closeFanCurveModal();
+        if (fanCurveModalCurrent(owner)) closeFanCurveModal(owner);
 
         // 刷新风扇状态
-        await refreshFans();
+        if (owner.pageCurrent()) await refreshFans();
 
     } catch (e) {
         console.error('应用曲线失败:', e);
         reportFailure({ op: 'fanpage.applycurve', error: e, write: true });
+    } finally {
+        if (fanCurveModalCurrent(owner)) {
+            owner.phase = 'ready';
+            updateFanCurveControls(owner);
+        }
     }
 }
 
@@ -2915,6 +3065,8 @@ async function applyFanCurve() {
  * 导出风扇曲线配置到本地 JSON 文件，并同时保存到 SD 卡 /sdcard/config
  */
 async function exportFanCurveConfig() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
     const fanId = parseInt(document.getElementById('fan-curve-fan-select').value);
     const hysteresis = parseFloat(document.getElementById('fan-curve-hysteresis').value);
     const minInterval = parseInt(document.getElementById('fan-curve-interval').value);
@@ -2926,7 +3078,7 @@ async function exportFanCurveConfig() {
         version: 1,
         type: 'fan_curve_config',
         fan_id: fanId,
-        curve: [...fanCurveConfig.curve].sort((a, b) => a.temp - b.temp),
+        curve: fanCurveConfig.curve.map(point => ({temp: point.temp, duty: point.duty})).sort((a, b) => a.temp - b.temp),
         hysteresis: hysteresis,
         min_interval: minInterval,
         min_duty: minDuty,
@@ -2961,16 +3113,21 @@ async function exportFanCurveConfig() {
  * 导入风扇曲线配置（从本地 JSON 文件）
  */
 function importFanCurveConfig() {
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
 
     input.onchange = async (e) => {
+        if (!fanCurveModalCurrent(owner) || owner.phase !== 'ready' || owner.curveLoading) return;
+        const request = owner.fileRequest = Symbol('file');
         const file = e.target.files[0];
         if (!file) return;
 
         try {
             const text = await file.text();
+            if (!fanCurveReadCurrent(owner, 'fileRequest', request)) return;
             const config = JSON.parse(text);
 
             // 验证配置格式
@@ -2991,6 +3148,8 @@ function importFanCurveConfig() {
                 }
             }
 
+            fanCurveDraftSource = fanCurveConfig.fanId;
+            owner.modal.querySelector('#fan-curve-load-status').textContent = '';
             // 应用配置到当前界面
             fanCurveConfig.curve = config.curve.sort((a, b) => a.temp - b.temp);
 
@@ -3017,6 +3176,7 @@ function importFanCurveConfig() {
 
             showToast(typeof t === 'function' ? t('fanPage.configImported', { name: file.name }) : `已导入配置文件: ${file.name}`, 'success');
         } catch (err) {
+            if (!fanCurveReadCurrent(owner, 'fileRequest', request)) return;
             console.error('导入配置失败:', err);
             reportFailure({ op: 'fanpage.importcurve', error: err, write: true });
         }
@@ -3029,44 +3189,11 @@ function importFanCurveConfig() {
  * 更新曲线预览（风扇选择变化时）
  */
 async function updateFanCurvePreview() {
-    const newFanId = parseInt(document.getElementById('fan-curve-fan-select').value);
-
-    // 如果切换了风扇，重新加载该风扇的配置
-    if (newFanId !== fanCurveConfig.fanId) {
-        fanCurveConfig.fanId = newFanId;
-
-        try {
-            const result = await api.call('fan.config', { id: newFanId });
-            if (result.code === 0 && result.data) {
-                const cfg = result.data;
-                if (cfg.curve && cfg.curve.length >= 2) {
-                    fanCurveConfig.curve = cfg.curve;
-                }
-                if (typeof cfg.hysteresis === 'number') {
-                    fanCurveConfig.hysteresis = cfg.hysteresis;
-                    document.getElementById('fan-curve-hysteresis').value = cfg.hysteresis;
-                }
-                if (typeof cfg.min_interval === 'number') {
-                    fanCurveConfig.minInterval = cfg.min_interval;
-                    document.getElementById('fan-curve-interval').value = cfg.min_interval;
-                }
-                if (typeof cfg.min_duty === 'number') {
-                    fanCurveConfig.minDuty = cfg.min_duty;
-                    document.getElementById('fan-curve-min-duty').value = cfg.min_duty;
-                }
-                if (typeof cfg.max_duty === 'number') {
-                    fanCurveConfig.maxDuty = cfg.max_duty;
-                    document.getElementById('fan-curve-max-duty').value = cfg.max_duty;
-                }
-                // 刷新曲线点编辑器
-                refreshCurveEditor();
-            }
-        } catch (e) {
-            console.warn('加载风扇配置失败:', e);
-        }
-    }
-
-    drawCurvePreview();
+    const owner = fanCurveModalOwner;
+    if (!fanCurveModalCurrent(owner) || owner.phase === 'writing') return;
+    const fanId = parseInt(owner.modal.querySelector('#fan-curve-fan-select').value);
+    if (fanId !== fanCurveConfig.fanId) await loadFanCurveConfig(owner, fanId);
+    else drawCurvePreview();
 }
 
 async function serviceAction(name, action) {
@@ -3470,6 +3597,28 @@ function generateWidgetId() {
     return 'w_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
 }
 
+// Formula names resolve only through these local tables, never through input data.
+const widgetExpressionFunctions = Object.freeze({
+    ...Object.fromEntries(('abs acos acosh asin asinh atan atan2 atanh cbrt ceil clz32 cos cosh exp expm1 floor fround hypot imul log log10 log1p log2 max min pow random round sign sin sinh sqrt tan tanh trunc')
+        .split(' ').map(name => ['Math.' + name, Math[name]])),
+    Number, String, Boolean, parseFloat, parseInt, isNaN, isFinite
+});
+const widgetExpressionConstants = Object.freeze({
+    true: true, false: false, null: null, NaN, Infinity,
+    ...Object.fromEntries('E LN10 LN2 LOG10E LOG2E PI SQRT1_2 SQRT2'.split(' ').map(name => ['Math.' + name, Math[name]]))
+});
+const widgetExpressionFormats = Object.freeze({
+    toFixed: Number.prototype.toFixed,
+    toPrecision: Number.prototype.toPrecision,
+    toExponential: Number.prototype.toExponential
+});
+const widgetExpressionPrecedence = Object.freeze({
+    '??': 1, '||': 2, '&&': 3, '|': 4, '^': 5, '&': 6,
+    '==': 7, '!=': 7, '===': 7, '!==': 7,
+    '<': 8, '<=': 8, '>': 8, '>=': 8, '<<': 9, '>>': 9, '>>>': 9,
+    '+': 10, '-': 10, '*': 11, '/': 11, '%': 11, '**': 12
+});
+
 /**
  * 计算表达式值
  * 支持: ${var}, 数学运算, 文本拼接
@@ -3479,30 +3628,230 @@ function generateWidgetId() {
  */
 function evaluateExpression(expression, variables) {
     if (!expression) return null;
-    
-    // 替换所有 ${varName} 为实际值
-    let evalStr = expression.replace(/\$\{([^}]+)\}/g, (match, varName) => {
-        const val = variables[varName.trim()];
-        if (val === undefined || val === null) return 'null';
-        if (typeof val === 'string') return `"${val}"`;
-        return val;
-    });
-    
-    // 如果只是单个变量引用，直接返回
-    if (expression.match(/^\$\{[^}]+\}$/)) {
-        const varName = expression.slice(2, -1).trim();
-        return variables[varName];
-    }
-    
-    // 安全计算表达式
+    const own = (object, name) => Object.prototype.hasOwnProperty.call(object, name);
+    const direct = expression.match(/^\$\{([^}]+)\}$/);
+    if (direct) return own(variables, direct[1].trim()) ? variables[direct[1].trim()] : undefined;
+
     try {
-        // 只允许基本数学运算和字符串操作
-        if (evalStr.includes('null')) return null;
-        // eslint-disable-next-line no-new-func
-        const result = new Function('return ' + evalStr)();
-        return result;
-    } catch (e) {
-        console.warn('表达式计算失败:', expression, e);
+        let position = 0, token, missing = false;
+        const invalid = () => { throw new SyntaxError('Unsupported formula'); };
+        const variable = () => {
+            const end = expression.indexOf('}', position + 2);
+            if (end <= position + 2) return null;
+            const name = expression.slice(position + 2, end).trim();
+            position = end + 1;
+            const value = own(variables, name) ? variables[name] : undefined;
+            if (value === undefined || value === null) missing = true;
+            return {kind: 'value', value};
+        };
+        const string = () => {
+            const quote = expression[position++], parts = [];
+            let text = '';
+            while (position < expression.length) {
+                const char = expression[position++];
+                if (char === quote) {
+                    parts.push({kind: 'value', value: text});
+                    return {kind: 'string', parts};
+                }
+                if (char === '$' && expression[position] === '{') {
+                    --position;
+                    const binding = variable();
+                    if (binding) {
+                        parts.push({kind: 'value', value: text}, binding);
+                        text = '';
+                        continue;
+                    }
+                    ++position;
+                }
+                if (char === '\\') {
+                    if (position >= expression.length) invalid();
+                    const escaped = expression[position++];
+                    const simple = {b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '0': '\0'};
+                    if (own(simple, escaped)) {
+                        if (escaped === '0' && /[0-9]/.test(expression[position] || '')) invalid();
+                        text += simple[escaped];
+                    } else if (escaped === 'x' || escaped === 'u') {
+                        let digits;
+                        if (escaped === 'u' && expression[position] === '{') {
+                            const end = expression.indexOf('}', ++position);
+                            if (end < 0) invalid();
+                            digits = expression.slice(position, end);
+                            if (!/^[0-9a-fA-F]{1,6}$/.test(digits)) invalid();
+                            position = end + 1;
+                        } else {
+                            const count = escaped === 'x' ? 2 : 4;
+                            digits = expression.slice(position, position + count);
+                            if (digits.length !== count || !/^[0-9a-fA-F]+$/.test(digits)) invalid();
+                            position += count;
+                        }
+                        text += String.fromCodePoint(parseInt(digits, 16));
+                    } else if (escaped === '\n' || escaped === '\r') {
+                        if (escaped === '\r' && expression[position] === '\n') ++position;
+                    } else {
+                        if (/[1-9]/.test(escaped)) invalid();
+                        text += escaped;
+                    }
+                } else {
+                    if (quote !== '`' && (char === '\n' || char === '\r')) invalid();
+                    if (quote === '`' && char === '\r') {
+                        if (expression[position] === '\n') ++position;
+                        text += '\n';
+                    } else text += char;
+                }
+            }
+            invalid();
+        };
+        const next = () => {
+            while (/\s/.test(expression[position] || '') && position < expression.length) ++position;
+            if (position === expression.length) return token = {kind: 'end'};
+            const char = expression[position];
+            if (char === '$' && expression[position + 1] === '{') {
+                token = variable();
+                if (!token) invalid();
+                return token;
+            }
+            if (char === '"' || char === "'" || char === '`') return token = string();
+            const rest = expression.slice(position);
+            const number = rest.match(/^(?:0[xX][\da-fA-F]+|0[bB][01]+|0[oO][0-7]+|(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)/);
+            if (number) {
+                position += number[0].length;
+                return token = {kind: 'value', value: Number(number[0])};
+            }
+            const name = rest.match(/^[a-zA-Z_$][\w$]*/);
+            if (name) {
+                position += name[0].length;
+                return token = {kind: 'name', name: name[0]};
+            }
+            const operator = rest.match(/^(?:===|!==|>>>|\+\+|--|\*\*|\?\?|\|\||&&|==|!=|<=|>=|<<|>>|[+\-*/%<>&|^!~?:(),.])/);
+            if (!operator) invalid();
+            position += operator[0].length;
+            return token = {kind: 'operator', op: operator[0]};
+        };
+        const is = op => token.kind === 'operator' && token.op === op;
+        const take = op => { if (!is(op)) invalid(); next(); };
+        const argumentsList = () => {
+            take('(');
+            const args = [];
+            if (!is(')')) {
+                for (;;) {
+                    args.push(parse(0));
+                    if (!is(',')) break;
+                    next();
+                    if (is(')')) break;
+                }
+            }
+            take(')');
+            return args;
+        };
+        const primary = () => {
+            let node;
+            if (token.kind === 'value' || token.kind === 'string') {
+                node = token; next();
+            } else if (is('(')) {
+                next(); node = {kind: 'group', value: parse(0)}; take(')');
+            } else if (token.kind === 'name') {
+                let name = token.name; next();
+                if (name === 'Math') {
+                    take('.');
+                    if (token.kind !== 'name') invalid();
+                    name += '.' + token.name; next();
+                }
+                if (own(widgetExpressionConstants, name)) node = {kind: 'value', value: widgetExpressionConstants[name]};
+                else if (own(widgetExpressionFunctions, name)) node = {kind: 'call', fn: widgetExpressionFunctions[name], args: argumentsList()};
+                else invalid();
+            } else invalid();
+            while (is('.')) {
+                next();
+                if (token.kind !== 'name' || !own(widgetExpressionFormats, token.name)) invalid();
+                const fn = widgetExpressionFormats[token.name]; next();
+                node = {kind: 'format', fn, value: node, args: argumentsList()};
+            }
+            return node;
+        };
+        const parse = minimum => {
+            let left;
+            if (token.kind === 'operator' && ['+', '-', '!', '~'].includes(token.op)) {
+                const op = token.op; next();
+                left = {kind: 'unary', op, value: parse(13)};
+            } else left = primary();
+            while (token.kind === 'operator' && own(widgetExpressionPrecedence, token.op) && widgetExpressionPrecedence[token.op] >= minimum) {
+                const op = token.op, precedence = widgetExpressionPrecedence[op]; next();
+                const right = parse(precedence + (op === '**' ? 0 : 1));
+                if (op === '**' && left.kind === 'unary') invalid();
+                const logical = node => node.kind === 'binary' && ['&&', '||'].includes(node.op);
+                const coalesce = node => node.kind === 'binary' && node.op === '??';
+                if ((op === '??' && (logical(left) || logical(right))) ||
+                    (['&&', '||'].includes(op) && (coalesce(left) || coalesce(right)))) invalid();
+                left = {kind: 'binary', op, left, right};
+            }
+            if (minimum === 0 && is('?')) {
+                next(); const yes = parse(0); take(':');
+                left = {kind: 'conditional', condition: left, yes, no: parse(0)};
+            }
+            return left;
+        };
+        next();
+        const tree = parse(0);
+        if (token.kind !== 'end') invalid();
+        if (missing) return null;
+        // Parsing validates every branch before any allowed native function runs.
+        const calculate = node => {
+            switch (node.kind) {
+                case 'value': return node.value;
+                case 'string': return node.parts.map(part => String(calculate(part))).join('');
+                case 'group': return calculate(node.value);
+                case 'call': return node.fn(...node.args.map(calculate));
+                case 'format': {
+                    const value = calculate(node.value);
+                    if (typeof value !== 'number') invalid();
+                    return node.fn.apply(value, node.args.map(calculate));
+                }
+                case 'conditional': return calculate(node.condition) ? calculate(node.yes) : calculate(node.no);
+                case 'unary': {
+                    const value = calculate(node.value);
+                    switch (node.op) {
+                        case '+': return +value;
+                        case '-': return -value;
+                        case '!': return !value;
+                        case '~': return ~value;
+                    }
+                    break;
+                }
+                case 'binary': {
+                    const left = calculate(node.left);
+                    if (node.op === '&&') return left && calculate(node.right);
+                    if (node.op === '||') return left || calculate(node.right);
+                    if (node.op === '??') return left ?? calculate(node.right);
+                    const right = calculate(node.right);
+                    switch (node.op) {
+                        case '+': return left + right;
+                        case '-': return left - right;
+                        case '*': return left * right;
+                        case '/': return left / right;
+                        case '%': return left % right;
+                        case '**': return left ** right;
+                        case '|': return left | right;
+                        case '^': return left ^ right;
+                        case '&': return left & right;
+                        case '==': return left == right;
+                        case '!=': return left != right;
+                        case '===': return left === right;
+                        case '!==': return left !== right;
+                        case '<': return left < right;
+                        case '<=': return left <= right;
+                        case '>': return left > right;
+                        case '>=': return left >= right;
+                        case '<<': return left << right;
+                        case '>>': return left >> right;
+                        case '>>>': return left >>> right;
+                    }
+                }
+            }
+            invalid();
+        };
+        return calculate(tree);
+    } catch (error) {
+        console.warn('表达式计算失败:', expression, error);
         return null;
     }
 }
@@ -3739,7 +4088,7 @@ async function refreshDataWidgets() {
         });
 
         // 一次 API 调用获取全部变量（替代 N 次 variables.get）
-        const variables = {};
+        const variables = Object.create(null);
         if (varNames.size > 0) {
             try {
                 const resp = await api.call('automation.variables.list', { include_meta: false });
@@ -5032,7 +5381,7 @@ async function allLedsOff() {
     let success = 0; const failures = [];
     for (const dev of devices) {
         try {
-            requireApiSuccess(await api.ledClear(dev.name), 'ledClear');
+            requireApiSuccess(await api.call('led.clear', {device: dev.name, off: true}), 'ledClear');
             success++;
             ledStates[dev.name] = false;
             updateLedCardState(dev.name, false);
@@ -5412,7 +5761,7 @@ async function generateQrCodeFromModal() {
     }
     
     try {
-        requireApiSuccess(await api.call('led.qrcode', { device: 'matrix', text, ecc, fg_color: fg, bg_image: bgImage || undefined }), 'call');
+        requireApiSuccess(await api.call('led.qrcode', { device: 'matrix', text, ecc, color: fg, bg_image: bgImage || undefined }), 'call');
         showToast((typeof t === 'function' ? t('toast.qrGenerated') : 'QR 码已生成'), 'success');
     } catch (e) {
         reportFailure({ op: 'led.qr', error: e, write: true });
@@ -5714,8 +6063,6 @@ async function applyColorCorrection() {
         // 先应用配置
         const result = await api.ledColorCorrectionSet(config);
         if (result.code === 0) {
-            // 导出到 NVS（通过 export 保存）
-            requireApiSuccess(await api.ledColorCorrectionExport(), 'ledColorCorrectionExport');
             // 更新初始配置为当前配置
             ccInitialConfig = JSON.parse(JSON.stringify(config));
             showToast(t('ledPage.ccApplySuccess'), 'success');
@@ -5842,7 +6189,7 @@ async function toggleLed(device) {
     try {
         if (isOn) {
             // 当前是开启状态，关闭它
-            requireApiSuccess(await api.ledClear(device), 'ledClear');
+            requireApiSuccess(await api.call('led.clear', {device, off: true}), 'ledClear');
             ledStates[device] = false;
             updateLedCardState(device, false);
             showToast(typeof t === 'function' ? t('toast.ledTurnedOff', { device: getDeviceDescription(device) }) : `${device} 已关闭`, 'success');
@@ -7285,7 +7632,8 @@ async function batchDelete() {
         return;
     }
     
-    const count = selectedFiles.size;
+    const paths = Array.from(selectedFiles);
+    const count = paths.length;
     if (!await confirmAction(typeof t === 'function' ? t('ui.confirmDeleteFiles', { count }) : `确定要删除选中的 ${count} 个文件/文件夹吗？此操作不可撤销！`, { primary: t('common.delete'), tone: 'danger' })) {
         return;
     }
@@ -7295,7 +7643,7 @@ async function batchDelete() {
     let successCount = 0;
     const failures = [];
     
-    for (const path of selectedFiles) {
+    for (const path of paths) {
         try {
             requireApiSuccess(await api.storageDelete(path), 'storageDelete');
             successCount++;
@@ -8181,6 +8529,7 @@ async function loadCommandsPage() {
     // 加载主机列表
     await loadHostSelector();
     if (!pageCurrent()) return;
+    restoreExecResult();
     
 
 }
@@ -9010,6 +9359,8 @@ let currentExecSessionId = null;
 let execDisplayOwner = null;
 function releaseExecDisplay() {
     if (execDisplayOwner) {
+        execDisplayOwner.identityWait?.abort();
+        clearTimeout(execDisplayOwner.statusTimer);
         execDisplayOwner.messages=[];
         delete execDisplayOwner.element.dataset.serviceRun;
         delete execDisplayOwner.element.dataset.operationId;
@@ -9019,7 +9370,7 @@ function releaseExecDisplay() {
 }
 function claimExecDisplay(kind, element) {
     releaseExecDisplay();
-    const owner = {kind, element, sessionId: null, finished: false, messages: [], bytes: 0};
+    const owner = {kind, element, sessionId: null, finished: false, messages: [], bytes: 0, outputOffset: 0, logGap: false, decoders: [new TextDecoder(),new TextDecoder()]};
     execDisplayOwner = owner;
     delete element.dataset.serviceRun;
     delete element.dataset.operationId;
@@ -9040,6 +9391,57 @@ function acknowledgeExecSession(owner, sessionId) {
     owner.bytes = 0;
     if (owner.overflow) owner.element.textContent += '\n' + runtimeText('outcomeUnknown') + '\n';
     for (const message of buffered) handleSshExecMessage(message);
+}
+
+// One initiation receipt per tab. It carries no command/password and is cleared
+// on logout/expiry. Reopening this page queries the same invocation; never runs it.
+const SSH_PENDING_RESULT = 'ts_ssh_pending_result';
+function rememberExecReceipt(owner, data) {
+    if (!/^[a-f0-9]{32}$/.test(data.boot_id || '') || !/^[a-f0-9]{32}$/.test(data.result_key || '')) return;
+    owner.receipt = {session_id:data.session_id,boot_id:data.boot_id,result_key:data.result_key};
+    try {sessionStorage.setItem(SSH_PENDING_RESULT,JSON.stringify(owner.receipt));} catch (_) {}
+}
+function pollExecResult(owner) {
+    if (!ownsExecDisplay(owner) || owner.finished || !owner.receipt) return;
+    clearTimeout(owner.statusTimer);
+    owner.statusTimer=setTimeout(async()=>{
+        if (!ownsExecDisplay(owner) || owner.finished) return;
+        if (document.hidden) {pollExecResult(owner);return;}
+        owner.statusAttempts=(owner.statusAttempts || 0)+1;
+        try {
+            const result=await api.call('ssh.exec_status',owner.receipt,'POST');
+            if (!ownsExecDisplay(owner) || owner.finished) return;
+            if (result.code===0 && result.data?.session_id===owner.sessionId) {
+                if (result.data.type!=='ssh_exec_running') {handleSshExecMessage(result.data);return;}
+            } else if (result.code===2 || result.code===11 || result.httpStatus===401) {
+                owner.element.textContent+='\n'+t('promptRepair.sshResultUnavailable')+'\n';
+                return;
+            }
+        } catch (_) { /* A failed observation does not finish or repeat the command. */ }
+        if (owner.statusAttempts<150) pollExecResult(owner);
+        else owner.element.textContent+='\n'+t('promptRepair.sshQueryPaused')+'\n';
+    },2000);
+}
+function restoreExecResult() {
+    let receipt;try {receipt=JSON.parse(sessionStorage.getItem(SSH_PENDING_RESULT));} catch (_) {return;}
+    const element=document.getElementById('exec-result');
+    if (!element || !Number.isInteger(receipt?.session_id) || !api.token) return;
+    const owner=claimExecDisplay('ssh',element);rememberExecReceipt(owner,receipt);
+    if (!owner.receipt) return;
+    document.getElementById('exec-result-section').style.display='';
+    document.getElementById('cancel-exec-btn').style.display='';
+    owner.sessionId=receipt.session_id;currentExecSessionId=receipt.session_id;
+    element.textContent=t('promptRepair.sshRecovering')+'\n';pollExecResult(owner);
+}
+function finishExecObservation(owner,msg) {
+    clearTimeout(owner.statusTimer);
+    for (const decoder of owner.decoders) owner.element.textContent+=decoder.decode();
+    if (Number.isFinite(msg.output_bytes) && msg.output_bytes!==owner.outputOffset) owner.logGap=true;
+    if (owner.logGap || owner.overflow || msg.output_incomplete) owner.element.textContent+='\n'+t('promptRepair.sshLogGap')+'\n';
+    if (msg.collection_truncated) owner.element.textContent+='\n'+t('promptRepair.sshCollectionTruncated')+'\n';
+    if (msg.execution_status==='success') owner.element.textContent+=t('promptRepair.sshExecutionConfirmed')+'\n';
+    else if (msg.execution_status==='unknown') owner.element.textContent+=t('promptRepair.sshExecutionUnknown')+'\n';
+    owner.finished=true;
 }
 
 /* nohup 相关状态（用于快捷按钮） */
@@ -9114,21 +9516,50 @@ async function executeCommand(idx) {
     if (cmd.varName) params.var_name=cmd.varName;
     if (cmd.timeout) params.timeout=cmd.timeout*1000;
     if (cmd.stopOnMatch) params.stop_on_match=true;
+    const submittedToken = api.token, pageCurrent = capturePageValidity();
+    owner.identityWait = new AbortController();
+    owner.preparingIdentity = true;
+    const identityChanged = () => { owner.identityChanged = true; owner.identityWait.abort(); };
+    window.addEventListener('authChanged', identityChanged, {once: true});
     try {
+        const outputReady = await ws?.prepareOutputIdentity(owner.identityWait.signal);
+        owner.preparingIdentity = false;
+        window.removeEventListener('authChanged', identityChanged);
+        if (owner.identityChanged || !ownsExecDisplay(owner) || !pageCurrent() || owner.cancelled || api.token !== submittedToken) {
+            if (ownsExecDisplay(owner)) { owner.finished = true; cancel.style.display = 'none'; }
+            return;
+        }
         const result=requireApiSuccess(await api.call('ssh.exec_stream',params),'ssh.exec_stream');
         if (!Number.isInteger(result.data?.session_id)) throw new ApiOperationError({},'ssh.exec_stream',{kind:'format',uncertain:true});
         if (!ownsExecDisplay(owner)) return;
         output.textContent+=t('promptRepair.sessionWaiting',{id:result.data.session_id});
+        rememberExecReceipt(owner,result.data);
         acknowledgeExecSession(owner,result.data.session_id);
+        if (!outputReady) {
+            const message = runtimeText('output_not_connected');
+            output.textContent += '\n' + message;
+            showToast(message, 'warning');
+        }
+        pollExecResult(owner);
     } catch (error) {
         if (!ownsExecDisplay(owner)) return;
         owner.finished=true;owner.messages=[];cancel.style.display='none';currentExecSessionId=null;
         const failure=describeFailure({op:'ssh.run',params:owner.target,error,endpoint:'ssh.exec_stream',write:true});
         output.textContent+='\n'+failure.message;showFailureToast(failure.message,failure.details,{type:failure.uncertain?'warning':'error'});
+    } finally {
+        owner.preparingIdentity = false;
+        window.removeEventListener('authChanged', identityChanged);
     }
 }
 
 async function cancelExecution() {
+    if (execDisplayOwner?.preparingIdentity) {
+        execDisplayOwner.cancelled = true;
+        execDisplayOwner.finished = true;
+        execDisplayOwner.identityWait.abort();
+        document.getElementById('cancel-exec-btn').style.display = 'none';
+        return;
+    }
     if (!currentExecSessionId) {
         showToast((typeof t === 'function' ? t('toast.noRunningCommand') : '没有正在执行的命令'), 'info');
         return;
@@ -9154,6 +9585,8 @@ async function cancelExecution() {
 
 /* 处理 SSH Exec WebSocket 消息 */
 function sshTerminalResult(msg) {
+    if (msg.conditions_complete === false) return {key:'sshConditionsUnknown',type:'warning'};
+    if (msg.execution_status === 'unknown') return {key:'sshExecutionUnknown',type:'warning'};
     const known = ['success', 'match_success', 'failed', 'match_failed', 'timeout', 'cancelled'];
     if (!known.includes(msg.status)) return {key: 'sshUnknown', type: 'warning'};
     const positive = msg.status === 'success' || msg.status === 'match_success';
@@ -9187,7 +9620,7 @@ function handleSshExecMessage(msg) {
         return;
     }
     if (msg.session_id !== owner.sessionId) return;
-    if (['ssh_exec_done', 'ssh_exec_error', 'ssh_exec_cancelled'].includes(msg.type)) owner.finished = true;
+    if (['ssh_exec_done', 'ssh_exec_error', 'ssh_exec_cancelled'].includes(msg.type)) finishExecObservation(owner,msg);
     
     switch (msg.type) {
         case 'ssh_exec_start':
@@ -9210,12 +9643,16 @@ function handleSshExecMessage(msg) {
                     currentExecSessionId = msg.session_id;
                     console.log('[SSH] Session ID from ssh_exec_output:', currentExecSessionId);
                 }
-                // 追加输出
-                if (msg.is_stderr) {
-                    resultPre.textContent += msg.data;
-                } else {
-                    resultPre.textContent += msg.data;
-                }
+                if (typeof msg.data_b64==='string') {
+                    try {
+                        const raw=Uint8Array.from(atob(msg.data_b64),c=>c.charCodeAt(0));
+                        if (msg.output_offset!==owner.outputOffset || msg.output_length!==raw.length) {
+                            owner.logGap=true;owner.decoders=[new TextDecoder(),new TextDecoder()];
+                        }
+                        owner.outputOffset=msg.output_offset+raw.length;
+                        resultPre.textContent+=owner.decoders[msg.is_stderr?1:0].decode(raw,{stream:true});
+                    } catch (_) {owner.logGap=true;}
+                } else resultPre.textContent+=msg.data || '';
                 // 自动滚动到底部
                 resultPre.scrollTop = resultPre.scrollHeight;
             }
@@ -9261,12 +9698,12 @@ function handleSshExecMessage(msg) {
                 }
                 
                 // 显示期望模式匹配结果
-                if (msg.expect_matched !== undefined) {
+                if (msg.conditions_complete !== false && msg.expect_matched !== undefined) {
                     resultPre.textContent += t('sshPage.expectMatch') + ': ' + t(msg.expect_matched ? 'common.yes' : 'common.no') + '\n';
                 }
                 
                 // 显示失败模式匹配结果
-                if (msg.fail_matched !== undefined) {
+                if (msg.conditions_complete !== false && msg.fail_matched !== undefined) {
                     resultPre.textContent += t('sshPage.failMatch') + ': ' + t(msg.fail_matched ? 'common.yes' : 'common.no') + '\n';
                 }
                 
@@ -9346,7 +9783,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
     // 更新成功匹配结果
     const expectResult = document.getElementById('match-expect-result');
     if (expectResult) {
-        if (msg.expect_matched !== undefined) {
+        if (msg.conditions_complete !== false && msg.expect_matched !== undefined) {
             expectResult.textContent = t(msg.expect_matched ? 'common.yes' : 'common.no');
             expectResult.className = `match-value ${msg.expect_matched ? 'true' : 'false'}`;
         } else {
@@ -9358,7 +9795,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
     // 更新失败匹配结果
     const failResult = document.getElementById('match-fail-result');
     if (failResult) {
-        if (msg.fail_matched !== undefined) {
+        if (msg.conditions_complete !== false && msg.fail_matched !== undefined) {
             failResult.textContent = msg.fail_matched ? (typeof t === 'function' ? t('sshPage.failMatchedTrue') : 'true (检测到错误)') : (typeof t === 'function' ? t('sshPage.failMatchedFalse') : 'false');
             failResult.className = `match-value ${msg.fail_matched ? 'false' : 'true'}`;
         } else {
@@ -9388,6 +9825,7 @@ function updateMatchResultPanel(msg, isExtractOnly = false) {
 }
 
 function clearExecResult() {
+    sessionStorage.removeItem(SSH_PENDING_RESULT);
     releaseExecDisplay();
     document.getElementById('exec-result-section').style.display = 'none';
     document.getElementById('exec-result').textContent = '';
@@ -12830,8 +13268,6 @@ async function refreshOtaInfo() {
 // OTA 两步升级状态
 let otaStep = 'idle'; // 'idle' | 'app' | 'www'
 let wwwOtaEnabled = true;  // 是否启用 WebUI 升级
-let sdcardOtaSource = '';  // SD卡升级时的文件路径，用于推导 www.bin 路径
-let sdcardWwwSource = '';  // SD卡升级时实际匹配到的 www.bin 路径
 // Keep the last attempt until a new one starts, so late replies cannot belong to
 // a later upgrade (or overwrite a finished upgrade's outcome).
 let otaUpgrade = null;
@@ -12847,8 +13283,6 @@ function beginOtaUpgrade(mode) {
     clearInterval(rebootCheckInterval);
     rebootCheckInterval = null;
     otaStep = 'idle';
-    sdcardOtaSource = '';
-    sdcardWwwSource = '';
     otaUpgrade = { mode, phase: 'app', firmwareWritten: false, target: null };
     return otaUpgrade;
 }
@@ -12876,6 +13310,15 @@ function showOtaUpgradeFailure(upgrade, spec, title = '') {
     const abortBtn = document.getElementById('ota-abort-btn');
     if (abortBtn) abortBtn.style.display = 'none';
     finishOtaUpgrade(upgrade);
+}
+
+function inferUrlWwwSource(serverUrl) {
+    if (!serverUrl) return '';
+    if (serverUrl.includes('firmware.bin') || serverUrl.includes('TianshanOS.bin')) {
+        return serverUrl.replace(/firmware\.bin|TianshanOS\.bin/gi, 'www.bin');
+    }
+    if (serverUrl.match(/\.bin$/i)) return serverUrl.replace(/[^\/]+\.bin$/i, 'www.bin');
+    return serverUrl.endsWith('/') ? serverUrl + 'www.bin' : serverUrl + '/www.bin';
 }
 
 function inferSdcardWwwPath(source) {
@@ -13051,53 +13494,28 @@ async function refreshOtaProgress() {
 
 // 启动 WWW OTA（第二步）
 async function startWwwOta() {
-    let upgrade = otaUpgrade?.phase !== 'done' ? otaUpgrade : null;
+    const sourceAttempt = otaUpgrade;
+    let upgrade = sourceAttempt?.phase !== 'done' ? sourceAttempt : null;
     if (upgrade && (upgrade.mode !== 'device' || upgrade.phase !== 'app')) return;
     try {
-        let wwwSource = '';
-        let isFromSdcard = false;
-        
-        // 判断来源：SD卡 或 HTTP URL
-        if (sdcardOtaSource) {
-            // SD卡升级：推导 www.bin 路径
-            isFromSdcard = true;
-            wwwSource = sdcardWwwSource || inferSdcardWwwPath(sdcardOtaSource);
-        } else {
-            // HTTP 升级：从服务器 URL 推导
-            const serverUrl = document.getElementById('ota-server-input').value.trim() ||
-                              document.getElementById('ota-url-input').value.trim();
-            
-            if (serverUrl) {
-                // 尝试多种方式推导 www.bin URL
-                if (serverUrl.includes('firmware.bin') || serverUrl.includes('TianshanOS.bin')) {
-                    wwwSource = serverUrl.replace(/firmware\.bin|TianshanOS\.bin/gi, 'www.bin');
-                } else if (serverUrl.match(/\.bin$/i)) {
-                    wwwSource = serverUrl.replace(/[^\/]+\.bin$/i, 'www.bin');
-                } else if (serverUrl.endsWith('/')) {
-                    wwwSource = serverUrl + 'www.bin';
-                } else {
-                    wwwSource = serverUrl + '/www.bin';
-                }
-            }
-        }
-        
+        const wwwSource = sourceAttempt?.wwwSource || '';
+        const isFromSdcard = !!sourceAttempt?.fromSdcard;
         if (!wwwSource) {
             console.log('No www source configured, skipping WebUI upgrade');
             wwwOtaEnabled = false;
-            sdcardOtaSource = '';  // 重置
-            sdcardWwwSource = '';
             return;
         }
 
-        // A retry keeps the previously selected source, but owns a new attempt.
+        // An explicit retry gets a new owner with the same selected sources.
         if (!upgrade) {
-            const firmwareSource = sdcardOtaSource;
             upgrade = beginOtaUpgrade('device');
             if (!upgrade) return;
-            if (isFromSdcard) {
-                sdcardOtaSource = firmwareSource;
-                sdcardWwwSource = wwwSource;
-            }
+            Object.assign(upgrade, {
+                firmwareSource: sourceAttempt.firmwareSource,
+                wwwSource,
+                fromSdcard: isFromSdcard,
+                skipVerify: sourceAttempt.skipVerify
+            });
         }
         upgrade.firmwareWritten = true;
         upgrade.phase = 'www';
@@ -13117,10 +13535,9 @@ async function startWwwOta() {
             });
         } else {
             // HTTP 方式
-            const skipVerify = document.getElementById('ota-url-skip-verify')?.checked || false;
             result = await api.call('ota.www.start', {
                 url: wwwSource,
-                skip_verify: skipVerify
+                skip_verify: upgrade.skipVerify
             });
         }
         if (otaUpgrade !== upgrade || upgrade.phase !== 'www') return;
@@ -13138,8 +13555,6 @@ async function startWwwOta() {
             return;
         }
 
-        sdcardOtaSource = '';  // 重置
-        sdcardWwwSource = '';
         if (!refreshInterval) {
             refreshInterval = setInterval(refreshOtaProgress, 1000);
         }
@@ -13289,6 +13704,12 @@ async function otaFromUrl() {
     };
     const upgrade = beginOtaUpgrade('device');
     if (!upgrade) return;
+    Object.assign(upgrade, {
+        firmwareSource: url,
+        wwwSource: inferUrlWwwSource(url),
+        fromSdcard: false,
+        skipVerify
+    });
     
     // 设置 OTA 步骤
     otaStep = 'app';
@@ -13357,8 +13778,12 @@ async function otaFromFile() {
     // 设置 OTA 步骤
     otaStep = 'app';
     wwwOtaEnabled = includeWww;  // 根据用户选择决定是否升级 www
-    sdcardOtaSource = paths.firmware;  // 保存 SD 卡路径用于推导 www.bin 路径
-    sdcardWwwSource = paths.www;
+    Object.assign(upgrade, {
+        firmwareSource: paths.firmware,
+        wwwSource: paths.www,
+        fromSdcard: true,
+        skipVerify: false
+    });
     
     // 立即显示进度区域
     const progressSection = document.getElementById('ota-progress-section');
@@ -13922,7 +14347,7 @@ async function uploadImageToDevice(url, body, operation) {
     try {
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/octet-stream' },
+            headers: { 'Content-Type': 'application/octet-stream', ...(api.token ? {Authorization: `Bearer ${api.token}`} : {}) },
             body
         });
         const result = await response.json();
@@ -14552,17 +14977,17 @@ function formatVariableValue(value, type) {
     } else if (type === 'string') {
         const str = String(value);
         if (str.length > 50) {
-            return `<span class="string-value" title="${str}">"${str.substring(0, 47)}..."</span>`;
+            return `<span class="string-value" title="${escapeHtml(str)}">"${escapeHtml(str.substring(0, 47))}..."</span>`;
         }
-        return `<span class="string-value">"${str}"</span>`;
+        return `<span class="string-value">"${escapeHtml(str)}"</span>`;
     }
     
     // 默认：JSON 格式
     const str = JSON.stringify(value);
     if (str.length > 60) {
-        return `<code title="${str}">${str.substring(0, 57)}...</code>`;
+        return `<code title="${escapeHtml(str)}">${escapeHtml(str.substring(0, 57))}...</code>`;
     }
-    return `<code>${str}</code>`;
+    return `<code>${escapeHtml(str)}</code>`;
 }
 
 /**
@@ -14895,8 +15320,9 @@ async function submitAction(originalId = null) {
                         return;
                     }
                     data.led.qr_ecc = document.getElementById('action-led-qr-ecc')?.value || 'M';
-                    data.led.qr_fg = document.getElementById('action-led-qr-fg')?.value || '#FFFFFF';
-                    data.led.qr_bg_image = document.getElementById('action-led-qr-bg')?.value || '';
+                    data.led.color = document.getElementById('action-led-qr-fg')?.value || '#FFFFFF';
+                    data.led.qr_color_set = true;
+                    data.led.image_path = document.getElementById('action-led-qr-bg')?.value || '';
                     break;
                 case 'filter':
                     data.led.filter = document.getElementById('action-led-filter')?.value;
@@ -15785,6 +16211,12 @@ async function editAction(id) {
                                     const alignEl = document.getElementById('action-led-align');
                                     if (alignEl) alignEl.value = tpl.led.align;
                                 }
+                                const autoPosEl = document.getElementById('action-led-auto-pos');
+                                if (autoPosEl) autoPosEl.checked = tpl.led.auto_pos !== false;
+                                const xEl = document.getElementById('action-led-x');
+                                const yEl = document.getElementById('action-led-y');
+                                if (xEl) xEl.value = tpl.led.x ?? 0;
+                                if (yEl) yEl.value = tpl.led.y ?? 0;
                                 break;
                             case 'image':
                                 if (tpl.led.image_path) {
@@ -15805,10 +16237,12 @@ async function editAction(id) {
                                     const eccEl = document.getElementById('action-led-qr-ecc');
                                     if (eccEl) eccEl.value = tpl.led.qr_ecc;
                                 }
-                                if (tpl.led.color) {
-                                    const fgEl = document.getElementById('action-led-qr-fg');
-                                    if (fgEl) fgEl.value = tpl.led.color;
-                                }
+                                const fgEl = document.getElementById('action-led-qr-fg');
+                                const qrColor = tpl.led.color || '#FFFFFF';
+                                if (fgEl) fgEl.value = tpl.led.qr_color_set || qrColor.toLowerCase() !== '#000000'
+                                    ? qrColor : '#FFFFFF';
+                                const bgEl = document.getElementById('action-led-qr-bg');
+                                if (bgEl) bgEl.value = tpl.led.image_path || '';
                                 break;
                             case 'filter':
                                 if (tpl.led.filter) {
@@ -15953,7 +16387,32 @@ function closeSourceVariablesModal() {
 /**
  * 显示关机设置模态框
  */
+let shutdownSettingsOwner = null;
+const shutdownSettingsDefaults = { low_threshold: 12.6, recovery_threshold: 18.0,
+    shutdown_delay: 60, recovery_hold: 5, fan_stop_delay: 60 };
+
+function shutdownSettingsCurrent(owner) {
+    return owner && shutdownSettingsOwner === owner && owner.phase !== 'closed' &&
+        owner.modal.isConnected && !owner.modal.classList.contains('hidden') && owner.pageCurrent();
+}
+
+function updateShutdownSettingsControls(owner) {
+    if (!shutdownSettingsCurrent(owner)) return;
+    for (const control of owner.modal.querySelectorAll('input, .sf button:not([onclick="closeShutdownSettingsModal()"])')) {
+        control.disabled = owner.phase !== 'ready';
+    }
+}
+
+function fillShutdownSettings(owner, config) {
+    owner.modal.querySelector('#ss-low-voltage').value = config.low_threshold;
+    owner.modal.querySelector('#ss-recovery-voltage').value = config.recovery_threshold;
+    owner.modal.querySelector('#ss-shutdown-delay').value = config.shutdown_delay;
+    owner.modal.querySelector('#ss-recovery-hold').value = config.recovery_hold;
+    owner.modal.querySelector('#ss-fan-stop-delay').value = config.fan_stop_delay;
+}
+
 async function showShutdownSettingsModal() {
+    closeShutdownSettingsModal();
     const modal = document.getElementById('shutdown-settings-modal');
     if (!modal) return;
     
@@ -15965,46 +16424,66 @@ async function showShutdownSettingsModal() {
             row(t('system.shutdownDelayLabel'), num('ss-shutdown-delay', '60', 'step="1" min="10" max="600"') + unit(t('common.seconds')), t('system.shutdownDelayNote')) +
             row(t('system.recoveryHoldLabel'), num('ss-recovery-hold', '5', 'step="1" min="1" max="300"') + unit(t('common.seconds')), '', t('system.recoveryHoldHint')) +
             row(t('system.fanStopDelayLabel'), num('ss-fan-stop-delay', '60', 'step="1" min="10" max="600"') + unit(t('common.seconds')), '', t('system.fanStopDelayHint'))) +
-        '<div id="shutdown-settings-error" class="form-error hidden"></div>',
+        '<div id="shutdown-settings-load-status" class="t-note" aria-live="polite"></div><div id="shutdown-settings-error" class="form-error hidden"></div>',
         `<button class="btn lg" onclick="resetShutdownSettings()">${t('system.restoreDefaults')}</button><button class="btn lg" onclick="closeShutdownSettingsModal()">${t('common.cancel')}</button><button class="btn lg primary" onclick="saveShutdownSettings()">${t('common.save')}</button>`);
     
     // 显示模态框
     modal.classList.remove('hidden');
     
-    // 加载当前配置
+    const owner = shutdownSettingsOwner = { modal, phase: 'loading', pageCurrent: capturePageValidity() };
+    if (typeof router !== 'undefined') router.navigation?.onDispose(() => closeShutdownSettingsModal(owner));
+    const request = owner.readRequest = Symbol('settings');
+    const current = () => shutdownSettingsCurrent(owner) && owner.readRequest === request;
+    const status = modal.querySelector('#shutdown-settings-load-status');
+    fillShutdownSettings(owner, shutdownSettingsDefaults);
+    status.textContent = t('modalSettings.loading');
+    updateShutdownSettingsControls(owner);
     try {
         const result = await api.powerProtectionConfig();
-        if (result.code === 0 && result.data) {
-            const config = result.data;
-            document.getElementById('ss-low-voltage').value = config.low_voltage_threshold || 12.6;
-            document.getElementById('ss-recovery-voltage').value = config.recovery_voltage_threshold || 18.0;
-            document.getElementById('ss-shutdown-delay').value = config.shutdown_delay_sec || 60;
-            document.getElementById('ss-recovery-hold').value = config.recovery_hold_sec || 5;
-            document.getElementById('ss-fan-stop-delay').value = config.fan_stop_delay_sec || 60;
+        if (!current()) return;
+        if (result.code !== 0 || !result.data) {
+            status.textContent = t('modalSettings.defaults');
+            return;
         }
-    } catch (e) {
-        console.error('Failed to load shutdown settings:', e);
-        // 使用默认值
-        document.getElementById('ss-low-voltage').value = 12.6;
-        document.getElementById('ss-recovery-voltage').value = 18.0;
-        document.getElementById('ss-shutdown-delay').value = 60;
-        document.getElementById('ss-recovery-hold').value = 5;
-        document.getElementById('ss-fan-stop-delay').value = 60;
+        const config = result.data;
+        fillShutdownSettings(owner, {
+            low_threshold: config.low_voltage_threshold ?? shutdownSettingsDefaults.low_threshold,
+            recovery_threshold: config.recovery_voltage_threshold ?? shutdownSettingsDefaults.recovery_threshold,
+            shutdown_delay: config.shutdown_delay_sec ?? shutdownSettingsDefaults.shutdown_delay,
+            recovery_hold: config.recovery_hold_sec ?? shutdownSettingsDefaults.recovery_hold,
+            fan_stop_delay: config.fan_stop_delay_sec ?? shutdownSettingsDefaults.fan_stop_delay
+        });
+        status.textContent = '';
+    } catch (error) {
+        if (!current()) return;
+        console.error('Failed to load shutdown settings:', error);
+        status.textContent = t('modalSettings.defaults');
+    } finally {
+        if (current()) {
+            owner.phase = 'ready';
+            updateShutdownSettingsControls(owner);
+        }
     }
 }
 
 /**
  * 关闭关机设置模态框
  */
-function closeShutdownSettingsModal() {
-    const modal = document.getElementById('shutdown-settings-modal');
-    if (modal) modal.classList.add('hidden');
+function closeShutdownSettingsModal(owner = shutdownSettingsOwner) {
+    if (!owner) return;
+    owner.phase = 'closed';
+    if (shutdownSettingsOwner === owner) {
+        owner.modal.classList.add('hidden');
+        shutdownSettingsOwner = null;
+    }
 }
 
 /**
  * 保存关机设置
  */
 async function saveShutdownSettings() {
+    const owner = shutdownSettingsOwner;
+    if (!shutdownSettingsCurrent(owner) || owner.phase !== 'ready') return;
     const errorDiv = document.getElementById('shutdown-settings-error');
     
     const config = {
@@ -16029,18 +16508,32 @@ async function saveShutdownSettings() {
         return;
     }
     
+    owner.phase = 'writing';
+    updateShutdownSettingsControls(owner);
+    errorDiv.classList.add('hidden');
     try {
         const result = await api.powerProtectionSet(config);
         if (result.code === 0) {
             showToast(typeof t === 'function' ? t('toast.shutdownSettingsSaved') : '关机设置已保存', 'success');
-            closeShutdownSettingsModal();
-        } else {
+            if (shutdownSettingsCurrent(owner)) closeShutdownSettingsModal(owner);
+        } else if (shutdownSettingsCurrent(owner)) {
             errorDiv.textContent = failureText({ op: 'system.saveshutdown', result, write: false });
             errorDiv.classList.remove('hidden');
+        } else {
+            reportFailure({ op: 'system.saveshutdown', result, write: true });
         }
     } catch (e) {
+        if (!shutdownSettingsCurrent(owner)) {
+            reportFailure({ op: 'system.saveshutdown', error: e, write: true });
+            return;
+        }
         errorDiv.textContent = failureText({ op: 'system.saveshutdown', error: e, endpoint: 'system.shutdown.set', write: true });
         errorDiv.classList.remove('hidden');
+    } finally {
+        if (shutdownSettingsCurrent(owner)) {
+            owner.phase = 'ready';
+            updateShutdownSettingsControls(owner);
+        }
     }
 }
 
@@ -16048,32 +16541,28 @@ async function saveShutdownSettings() {
  * 恢复默认关机设置
  */
 async function resetShutdownSettings() {
-    if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRestoreDefaults') : '确认恢复默认设置？', { primary: t('system.restoreDefaults'), tone: 'neutral' })) return;
-    
-    const config = {
-        low_threshold: 12.6,
-        recovery_threshold: 18.0,
-        shutdown_delay: 60,
-        recovery_hold: 5,
-        fan_stop_delay: 60,
-        persist: true
-    };
-    
+    const owner = shutdownSettingsOwner;
+    if (!shutdownSettingsCurrent(owner) || owner.phase !== 'ready') return;
+    owner.phase = 'writing';
+    updateShutdownSettingsControls(owner);
     try {
+        if (!await confirmAction(typeof t === 'function' ? t('ui.confirmRestoreDefaults') : '确认恢复默认设置？', { primary: t('system.restoreDefaults'), tone: 'neutral' })) return;
+        if (!shutdownSettingsCurrent(owner)) return;
+        const config = { ...shutdownSettingsDefaults, persist: true };
         const result = await api.powerProtectionSet(config);
         if (result.code === 0) {
-            // 更新界面
-            document.getElementById('ss-low-voltage').value = 12.6;
-            document.getElementById('ss-recovery-voltage').value = 18.0;
-            document.getElementById('ss-shutdown-delay').value = 60;
-            document.getElementById('ss-recovery-hold').value = 5;
-            document.getElementById('ss-fan-stop-delay').value = 60;
+            if (shutdownSettingsCurrent(owner)) fillShutdownSettings(owner, config);
             showToast(typeof t === 'function' ? t('toast.defaultsRestored') : '已恢复默认设置', 'success');
         } else {
             reportFailure({ op: 'system.resetshutdown', result, write: true });
         }
     } catch (e) {
         reportFailure({ op: 'system.resetshutdown', error: e, write: true });
+    } finally {
+        if (shutdownSettingsCurrent(owner)) {
+            owner.phase = 'ready';
+            updateShutdownSettingsControls(owner);
+        }
     }
 }
 
@@ -16902,7 +17391,7 @@ function showAddRuleModal(ruleData = null) {
         `<button class="btn lg" onclick="closeModal('add-rule-modal')">${t('common.cancel')}</button><button class="btn lg primary" onclick="${isEdit ? configurationHandler('submitAddRule', ruleData.id) : 'submitAddRule()'}">${isEdit ? t('automationPage.saveRuleChanges') : t('automation.addRule')}</button>`);
     
     document.body.appendChild(modal);
-    bindConfigurationEditor(modal, 'rules', ruleData?.active_version);
+    const context = bindConfigurationEditor(modal, 'rules', ruleData?.active_version);
     setTimeout(() => modal.classList.add('show'), 10);
     
     // 如果是编辑模式，填充现有数据
@@ -16951,6 +17440,7 @@ function showAddRuleModal(ruleData = null) {
             modal.dataset.loading = 'true';
             (async () => {
                 try { for (const act of ruleData.actions) {
+                    if (!context.current()) return;
                     await addActionTemplateRow(
                         act.template_id, 
                         act.delay_ms || 0,

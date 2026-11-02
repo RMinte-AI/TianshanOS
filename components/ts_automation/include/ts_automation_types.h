@@ -196,6 +196,7 @@ typedef struct {
     ts_auto_value_t last_value;          /**< Last received value (deprecated) */
     int64_t last_update_ms;              /**< Last update timestamp */
     uint64_t instance;                   /**< Runtime identity; never persisted */
+    int64_t last_attempt_ms;             /**< REST attempt completion; never persisted */
 } ts_auto_source_t;
 
 /*===========================================================================*/
@@ -341,6 +342,8 @@ typedef struct {
     char scroll[16];                     /**< Scroll direction: none/left/right/up/down */
     char align[16];                      /**< Text alignment: left/center/right */
     int16_t x, y;                        /**< Position offset */
+    bool qr_color_set;                   /**< Explicit QR color, including black. */
+    bool manual_position;                /**< Explicit text coordinates, including 0/0. */
 } ts_auto_action_led_t;
 
 /**

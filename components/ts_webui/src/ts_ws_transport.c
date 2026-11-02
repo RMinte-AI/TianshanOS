@@ -21,10 +21,12 @@ static struct {
     ts_ws_closed_t closed;
 } s_server;
 static ts_ws_peer_t s_peers[TS_WS_CONNECTIONS];
+static uint32_t s_peer_sessions[TS_WS_CONNECTIONS];
+static bool s_peer_bound[TS_WS_CONNECTIONS];
 static int s_log_levels[TS_WS_CONNECTIONS];
 static uint64_t s_log_revisions[TS_WS_CONNECTIONS];
 typedef enum {MSG_ORDINARY, MSG_TOPIC, MSG_RESULT, MSG_POWER, MSG_POWER_TICK} message_kind_t;
-struct ts_ws_message { unsigned refs; char *text; size_t len, capacity; message_kind_t kind; };
+struct ts_ws_message { unsigned refs; char *text; size_t len, capacity; message_kind_t kind; ts_perm_level_t required_level; };
 static char s_power_payloads[TS_WS_POWER_SLOTS][TS_WS_POWER_BYTES];
 static unsigned s_power_bytes;
 static ts_ws_transport_stats_t s_tx_stats;
@@ -91,6 +93,68 @@ bool ts_ws_peer_get(httpd_handle_t server, int fd, ts_ws_peer_t *peer)
     portEXIT_CRITICAL(&s_lock);
     return found;
 }
+esp_err_t ts_ws_peer_bind_session(ts_ws_peer_t peer, uint32_t session_id)
+{
+    if (!session_id) return ESP_ERR_INVALID_ARG;
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s_lock);
+    for (unsigned i=0; i<TS_WS_CONNECTIONS; ++i) {
+        if (!s_peers[i].connection || !ts_ws_peer_equal(s_peers[i], peer)) continue;
+        if (!s_peer_bound[i] || s_peer_sessions[i] == session_id) {
+            s_peer_sessions[i] = session_id;
+            s_peer_bound[i] = true;
+            ret = ESP_OK;
+        } else ret = ESP_ERR_NOT_ALLOWED;
+        break;
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return ret;
+}
+bool ts_ws_peer_authorized(ts_ws_peer_t peer, ts_perm_level_t required)
+{
+    uint32_t session_id = 0;
+    bool valid = false;
+    portENTER_CRITICAL(&s_lock);
+    for (unsigned i=0; i<TS_WS_CONNECTIONS; ++i) {
+        if (s_peers[i].connection && ts_ws_peer_equal(s_peers[i], peer)) {
+            valid = true;
+            session_id = s_peer_sessions[i];
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_lock);
+    if (!valid) return false;
+#ifdef CONFIG_TS_WEBUI_AUTH_REQUIRED
+    if (required == TS_PERM_NONE) return true;
+    ts_session_t session;
+    if (session_id && ts_security_validate_session(session_id, &session) == ESP_OK)
+        return session.level >= required;
+    /* Only HTTPD mutates connection identity and emits the one expiry notice. */
+    if (session_id && ts_ws_transport_in_context()) {
+        bool cleared = false;
+        portENTER_CRITICAL(&s_lock);
+        for (unsigned i=0; i<TS_WS_CONNECTIONS; ++i) {
+            if (s_peers[i].connection && ts_ws_peer_equal(s_peers[i], peer) &&
+                s_peer_sessions[i] == session_id) {
+                s_peer_sessions[i] = 0;
+                cleared = true;
+                break;
+            }
+        }
+        portEXIT_CRITICAL(&s_lock);
+        if (cleared) {
+            const char *text = "{\"type\":\"auth_error\",\"reason\":\"session_expired\",\"message\":\"Session expired\"}";
+            httpd_ws_frame_t frame = {.type=HTTPD_WS_TYPE_TEXT, .payload=(uint8_t *)text, .len=strlen(text)};
+            httpd_ws_send_frame_async(peer.server, peer.fd, &frame);
+        }
+    }
+    return false;
+#else
+    (void)session_id;
+    (void)required;
+    return true;
+#endif
+}
 void ts_ws_peer_close(ts_ws_peer_t peer)
 {
     ts_ws_closed_t closed = NULL;
@@ -98,6 +162,8 @@ void ts_ws_peer_close(ts_ws_peer_t peer)
     for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i) {
         if (s_peers[i].connection && ts_ws_peer_equal(s_peers[i], peer)) {
             s_peers[i].connection = 0;
+            s_peer_sessions[i] = 0;
+            s_peer_bound[i] = false;
             closed = s_server.closed;
             break;
         }
@@ -123,7 +189,8 @@ esp_err_t ts_ws_peer_open(httpd_req_t *req, ts_ws_peer_t *peer)
     if (!s_server.stopping && req->handle == s_server.handle && s_sequence != UINT64_MAX) {
         for (unsigned i = 0; i < TS_WS_CONNECTIONS; ++i) if (!s_peers[i].connection) {
             *ctx = (ts_ws_peer_t){req->handle, s_server.epoch, ++s_sequence, httpd_req_to_sockfd(req)};
-            s_peers[i] = *ctx; s_log_levels[i] = -1; s_log_revisions[i] = 0; *peer = *ctx; ret = ESP_OK; break;
+            s_peers[i] = *ctx; s_peer_sessions[i] = 0; s_peer_bound[i] = false;
+            s_log_levels[i] = -1; s_log_revisions[i] = 0; *peer = *ctx; ret = ESP_OK; break;
         }
     }
     portEXIT_CRITICAL(&s_lock);
@@ -142,7 +209,7 @@ static ts_ws_message_t *message_alloc(size_t capacity, message_kind_t kind)
     size_t used=kind>=MSG_POWER ? s_power_bytes : s_tx_stats.bytes-s_power_bytes;
     size_t limit=kind>=MSG_POWER ? TS_WS_POWER_BUDGET : TS_WS_TOTAL_BYTES-TS_WS_POWER_BUDGET;
     for (unsigned i=begin; capacity <= limit-used && i<end; ++i) if (!s_messages[i].refs) {
-        m = &s_messages[i]; m->refs = 1; m->capacity = capacity; m->kind=kind;
+        m = &s_messages[i]; m->refs = 1; m->capacity = capacity; m->kind=kind; m->required_level=TS_PERM_NONE;
         if(kind>=MSG_POWER)s_power_bytes+=capacity;
         s_tx_stats.bytes += capacity;
         if(s_tx_stats.bytes > s_tx_stats.bytes_high) s_tx_stats.bytes_high=s_tx_stats.bytes;
@@ -191,6 +258,10 @@ ts_ws_message_t *ts_ws_message_text(const char *text, size_t len)
     if (m) { memcpy(m->text, text, len); m->text[len] = 0; m->len = len; }
     return m;
 }
+void ts_ws_message_require(ts_ws_message_t *message, ts_perm_level_t required)
+{
+    if (message) message->required_level = required;
+}
 ts_ws_message_t *ts_ws_message_json(const char *topic, const cJSON *data, int64_t timestamp)
 {
     ts_ws_message_t *m = message_alloc(TS_WS_FRAME_BYTES, true);
@@ -238,7 +309,7 @@ static void settle(delivery_t *d, esp_err_t result)
     bool power=d->message->kind>=MSG_POWER;
     if(power){s_tx_stats.power_settled++;if(result!=ESP_OK)s_tx_stats.power_failed++;}
     portEXIT_CRITICAL(&s_lock);
-    if(d->message->kind>=MSG_RESULT && result!=ESP_OK)ESP_LOGW("ws_tx","Critical notification target failed: class=%d fd=%d result=%d",d->message->kind,d->peer.fd,result);
+    if(d->message->kind>=MSG_RESULT && result!=ESP_OK && result!=ESP_ERR_NOT_ALLOWED)ESP_LOGW("ws_tx","Critical notification target failed: class=%d fd=%d result=%d",d->message->kind,d->peer.fd,result);
     if(d->done)d->done(d->revision,d->delivery,result);
 }
 static void deliver(void *arg)
@@ -254,21 +325,25 @@ static void deliver(void *arg)
      * on this same task. The stop owner keeps the server alive until refs drain. */
     if (valid && (!d->check || d->check(d->revision, d->delivery)) &&
         httpd_ws_get_fd_info(d->peer.server, d->peer.fd) == HTTPD_WS_CLIENT_WEBSOCKET) {
-        httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT,
-            .payload = (uint8_t *)d->message->text, .len = d->message->len};
-        int64_t start = esp_timer_get_time();
-        ret = httpd_ws_send_frame_async(d->peer.server, d->peer.fd, &frame);
-        int64_t elapsed = esp_timer_get_time() - start;
-        portENTER_CRITICAL(&s_lock);
-        s_tx_stats.attempts++;
-        if(ret==ESP_OK) s_tx_stats.success++; else s_tx_stats.failed++;
-        if(elapsed>s_tx_stats.max_send_us) s_tx_stats.max_send_us=elapsed;
-        portEXIT_CRITICAL(&s_lock);
-        if (ret != ESP_OK) {
-            /* Owner context: invalidate this socket without taking over close()
-             * ownership. HTTPD will observe EOF and invoke the session hook. */
-            shutdown(d->peer.fd, SHUT_RDWR);
-            ts_ws_peer_close(d->peer);
+        if (!ts_ws_peer_authorized(d->peer, d->message->required_level)) {
+            ret = ESP_ERR_NOT_ALLOWED;
+        } else {
+            httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT,
+                .payload = (uint8_t *)d->message->text, .len = d->message->len};
+            int64_t start = esp_timer_get_time();
+            ret = httpd_ws_send_frame_async(d->peer.server, d->peer.fd, &frame);
+            int64_t elapsed = esp_timer_get_time() - start;
+            portENTER_CRITICAL(&s_lock);
+            s_tx_stats.attempts++;
+            if(ret==ESP_OK) s_tx_stats.success++; else s_tx_stats.failed++;
+            if(elapsed>s_tx_stats.max_send_us) s_tx_stats.max_send_us=elapsed;
+            portEXIT_CRITICAL(&s_lock);
+            if (ret != ESP_OK) {
+                /* Owner context: invalidate this socket without taking over close()
+                 * ownership. HTTPD will observe EOF and invoke the session hook. */
+                shutdown(d->peer.fd, SHUT_RDWR);
+                ts_ws_peer_close(d->peer);
+            }
         }
     } else {
         portENTER_CRITICAL(&s_lock); s_tx_stats.stale++; portEXIT_CRITICAL(&s_lock);
@@ -382,6 +457,22 @@ esp_err_t ts_ws_transport_send(httpd_handle_t server, int fd, const httpd_ws_fra
     if (!m) return ESP_ERR_NO_MEM;
     esp_err_t ret = ts_ws_transport_submit(peer, m, 0, 0, NULL, NULL);
     ts_ws_message_release(m);
+    return ret;
+}
+esp_err_t ts_ws_transport_send_private(ts_ws_peer_t peer, const httpd_ws_frame_t *frame,
+                                      ts_perm_level_t required)
+{
+    ts_ws_peer_t current;
+    if (!ts_ws_peer_get(peer.server, peer.fd, &current) || !ts_ws_peer_equal(current, peer))
+        return ESP_ERR_INVALID_STATE;
+    if (!ts_ws_peer_authorized(peer, required)) return ESP_ERR_NOT_ALLOWED;
+    if (ts_ws_transport_in_context())
+        return httpd_ws_send_frame_async(peer.server, peer.fd, (httpd_ws_frame_t *)frame);
+    ts_ws_message_t *message = ts_ws_message_text((const char *)frame->payload, frame->len);
+    if (!message) return ESP_ERR_NO_MEM;
+    ts_ws_message_require(message, required);
+    esp_err_t ret = ts_ws_transport_submit(peer, message, 0, 0, NULL, NULL);
+    ts_ws_message_release(message);
     return ret;
 }
 esp_err_t ts_ws_transport_stop(httpd_handle_t server, uint32_t timeout_ms)
@@ -517,6 +608,13 @@ unsigned ts_ws_peer_snapshot(ts_ws_peer_t *peers, unsigned capacity)
         if(s_peers[i].connection) peers[n++]=s_peers[i];
     portEXIT_CRITICAL(&s_lock);
     return n;
+}
+unsigned ts_ws_peer_snapshot_for_level(ts_ws_peer_t *peers, unsigned capacity, ts_perm_level_t required)
+{
+    unsigned count = ts_ws_peer_snapshot(peers, capacity), kept = 0;
+    for (unsigned i=0; i<count; ++i)
+        if (ts_ws_peer_authorized(peers[i], required)) peers[kept++] = peers[i];
+    return kept;
 }
 static esp_err_t reserve_kind(const ts_ws_peer_t *peers, unsigned count, message_kind_t kind,
                         size_t bytes, ts_ws_reservation_t *r)

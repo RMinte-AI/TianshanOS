@@ -46,8 +46,6 @@ typedef struct {
     ts_led_layer_t layer;
 } ts_led_anim_ctx_t;
 
-/* Global animation context (one per layer max for simplicity) */
-static ts_led_anim_ctx_t *s_anim_ctx = NULL;
 
 /* Forward declarations */
 static void gif_animation_effect(ts_led_layer_t layer, uint32_t time_ms, void *user_data);
@@ -65,23 +63,42 @@ static ts_led_image_format_t detect_format(const uint8_t *data, size_t size)
     return TS_LED_IMG_FMT_RAW;
 }
 
+static uint16_t read_le16(const uint8_t *p)
+{
+    return p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t read_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
 /* Simple BMP loader for 24-bit uncompressed BMP */
 static esp_err_t load_bmp(const uint8_t *data, size_t size, ts_led_image_t *out)
 {
     if (size < 54) return ESP_ERR_INVALID_SIZE;
     
-    uint32_t offset = *(uint32_t *)(data + 10);
-    int32_t width = *(int32_t *)(data + 18);
-    int32_t height = *(int32_t *)(data + 22);
-    uint16_t bpp = *(uint16_t *)(data + 28);
+    uint32_t offset = read_le32(data + 10);
+    int32_t width = (int32_t)read_le32(data + 18);
+    int32_t signed_height = (int32_t)read_le32(data + 22);
+    uint16_t bpp = read_le16(data + 28);
     
     if (bpp != 24) {
         TS_LOGE(TAG, "Only 24-bit BMP supported");
         return ESP_ERR_NOT_SUPPORTED;
     }
     
-    bool flip = height > 0;
-    if (height < 0) height = -height;
+    if (width <= 0 || signed_height == 0 || offset > size ||
+        (size_t)width > (SIZE_MAX - 3) / 3) return ESP_ERR_INVALID_SIZE;
+    bool flip = signed_height > 0;
+    size_t height = signed_height < 0 ? -(int64_t)signed_height : signed_height;
+    size_t row_bytes = (size_t)width * 3;
+    size_t row_size = (row_bytes + 3) & ~(size_t)3;
+    size_t available = size - offset;
+    /* Only bytes actually read are required; final-row padding is unused. */
+    if (row_bytes > available || height - 1 > (available - row_bytes) / row_size)
+        return ESP_ERR_INVALID_SIZE;
     
     struct ts_led_image *img = TS_CALLOC_PSRAM(1, sizeof(struct ts_led_image));
     if (!img) return ESP_ERR_NO_MEM;
@@ -91,20 +108,19 @@ static esp_err_t load_bmp(const uint8_t *data, size_t size, ts_led_image_t *out)
     img->format = TS_LED_IMG_FMT_BMP;
     img->frame_count = 1;
     
-    img->pixels = TS_CALLOC_PSRAM(width * height, sizeof(ts_led_rgb_t));
+    img->pixels = TS_CALLOC_PSRAM((size_t)width * height, sizeof(ts_led_rgb_t));
     if (!img->pixels) {
         free(img);
         return ESP_ERR_NO_MEM;
     }
     
-    int row_size = ((width * 3 + 3) / 4) * 4;
     const uint8_t *px = data + offset;
     
-    for (int y = 0; y < height; y++) {
-        int dst_y = flip ? (height - 1 - y) : y;
+    for (size_t y = 0; y < height; y++) {
+        size_t dst_y = flip ? (height - 1 - y) : y;
         for (int x = 0; x < width; x++) {
-            int src_idx = y * row_size + x * 3;
-            int dst_idx = dst_y * width + x;
+            size_t src_idx = y * row_size + (size_t)x * 3;
+            size_t dst_idx = dst_y * width + x;
             img->pixels[dst_idx].b = px[src_idx];
             img->pixels[dst_idx].g = px[src_idx + 1];
             img->pixels[dst_idx].r = px[src_idx + 2];
@@ -462,9 +478,16 @@ static esp_err_t load_jpg(const uint8_t *data, size_t size, ts_led_image_t *out)
 
 /* Simple GIF decoder - single frame support */
 
-static uint16_t read_le16(const uint8_t *p)
+static bool gif_skip_sub_blocks(const uint8_t **ptr_io, const uint8_t *end)
 {
-    return p[0] | ((uint16_t)p[1] << 8);
+    const uint8_t *ptr = *ptr_io;
+    while (ptr < end) {
+        uint8_t length = *ptr++;
+        if (length == 0) { *ptr_io = ptr; return true; }
+        if ((size_t)(end - ptr) < length) return false;
+        ptr += length;
+    }
+    return false;
 }
 
 /* LZW 解码器 */
@@ -479,6 +502,7 @@ static int lzw_decode(const uint8_t *data, size_t size, const uint8_t **ptr_io,
 {
     const uint8_t *ptr = *ptr_io;
     const uint8_t *data_end = data + size;
+    if (min_code_size < 2 || min_code_size > 8) return -ESP_ERR_INVALID_SIZE;
     
     int code_size = min_code_size + 1;
     int clear_code = 1 << min_code_size;
@@ -492,7 +516,7 @@ static int lzw_decode(const uint8_t *data, size_t size, const uint8_t **ptr_io,
     if (!table || !stack) {
         free(table);
         free(stack);
-        return -1;
+        return -ESP_ERR_NO_MEM;
     }
     
     /* Initialize base table */
@@ -515,9 +539,9 @@ static int lzw_decode(const uint8_t *data, size_t size, const uint8_t **ptr_io,
         while (bits_in_buffer < code_size) {
             /* Get next byte from sub-block */
             if (block_pos >= block_size) {
-                if (ptr >= data_end) goto done;
+                if (ptr >= data_end) goto invalid;
                 block_size = *ptr++;
-                if (block_size == 0) goto done;
+                if (block_size == 0 || (size_t)(data_end - ptr) < (size_t)block_size) goto invalid;
                 block_ptr = ptr;
                 block_pos = 0;
                 ptr += block_size;  /* Skip to next block header */
@@ -526,7 +550,7 @@ static int lzw_decode(const uint8_t *data, size_t size, const uint8_t **ptr_io,
                 bit_buffer |= ((uint32_t)block_ptr[block_pos++]) << bits_in_buffer;
                 bits_in_buffer += 8;
             } else {
-                goto done;
+                goto invalid;
             }
         }
         
@@ -549,18 +573,20 @@ static int lzw_decode(const uint8_t *data, size_t size, const uint8_t **ptr_io,
         int cur = code;
         
         if (cur >= next_code) {
+            if (cur != next_code || prev_code < 0) goto invalid;
             /* Special case: code not yet in table */
-            if (prev_code < 0) goto done;
             stack[stack_top++] = table[prev_code].first;
             cur = prev_code;
         }
         
-        while (cur >= clear_code && stack_top < 4096) {
+        while (cur >= clear_code) {
+            if (cur >= next_code || stack_top >= 4096) goto invalid;
             stack[stack_top++] = table[cur].suffix;
             cur = table[cur].prefix;
-            if (cur == 0xFFFF) break;
+            if (cur == 0xFFFF) goto invalid;
         }
         if (cur < clear_code) {
+            if (stack_top >= 4096) goto invalid;
             stack[stack_top++] = cur;
         }
         
@@ -586,19 +612,17 @@ static int lzw_decode(const uint8_t *data, size_t size, const uint8_t **ptr_io,
         prev_code = code;
     }
     
-done:
     /* Skip remaining sub-blocks */
-    while (ptr < data_end && *ptr != 0) {
-        int skip = *ptr + 1;
-        if (ptr + skip > data_end) break;
-        ptr += skip;
-    }
-    if (ptr < data_end && *ptr == 0) ptr++;  /* Skip block terminator */
+    if (out_pos != out_size || !gif_skip_sub_blocks(&ptr, data_end)) goto invalid;
     
     *ptr_io = ptr;
     free(table);
     free(stack);
     return (int)out_pos;
+invalid:
+    free(table);
+    free(stack);
+    return -ESP_ERR_INVALID_SIZE;
 }
 
 /* Maximum memory for GIF frames (leave room for other allocations) */
@@ -614,17 +638,20 @@ static esp_err_t load_gif(const uint8_t *data, size_t size, ts_led_image_t *out)
     
     uint16_t orig_width = read_le16(data + 6);
     uint16_t orig_height = read_le16(data + 8);
+    if (orig_width == 0 || orig_height == 0) return ESP_ERR_INVALID_SIZE;
     uint8_t flags = data[10];
     uint8_t bg_index = data[11];
     bool has_gct = (flags & 0x80) != 0;
     int gct_size = has_gct ? (1 << ((flags & 0x07) + 1)) : 0;
     
     const uint8_t *ptr = data + 13;
+    const uint8_t *end = data + size;
     
     /* Read global color table */
     ts_led_rgb_t gct[256] = {0};
     if (has_gct) {
-        for (int i = 0; i < gct_size && ptr + 3 <= data + size; i++) {
+        if ((size_t)(end - ptr) < (size_t)gct_size * 3) return ESP_ERR_INVALID_SIZE;
+        for (int i = 0; i < gct_size; i++) {
             gct[i].r = ptr[0];
             gct[i].g = ptr[1];
             gct[i].b = ptr[2];
@@ -635,32 +662,28 @@ static esp_err_t load_gif(const uint8_t *data, size_t size, ts_led_image_t *out)
     /* First pass: count frames */
     int frame_count = 0;
     const uint8_t *scan = ptr;
-    while (scan < data + size) {
+    while (scan < end) {
         if (*scan == 0x2C) {  /* Image Descriptor */
-            frame_count++;
             scan++;
-            if (scan + 9 > data + size) break;
+            if ((size_t)(end - scan) < 9) return ESP_ERR_INVALID_SIZE;
             uint8_t img_flags = scan[8];
             scan += 9;
             /* Skip local color table */
             if (img_flags & 0x80) {
                 int lct_size = 1 << ((img_flags & 0x07) + 1);
+                if ((size_t)(end - scan) < (size_t)lct_size * 3) return ESP_ERR_INVALID_SIZE;
                 scan += lct_size * 3;
             }
             /* Skip LZW data */
-            if (scan < data + size) scan++;  /* LZW min code size */
-            while (scan < data + size && *scan != 0) {
-                scan += *scan + 1;
-            }
-            if (scan < data + size) scan++;
+            if (scan >= end || *scan < 2 || *scan > 8) return ESP_ERR_INVALID_SIZE;
+            scan++;  /* LZW min code size */
+            if (!gif_skip_sub_blocks(&scan, end)) return ESP_ERR_INVALID_SIZE;
+            frame_count++;
         } else if (*scan == 0x21) {  /* Extension */
             scan++;
-            if (scan >= data + size) break;
+            if (scan >= end) return ESP_ERR_INVALID_SIZE;
             scan++;  /* extension type */
-            while (scan < data + size && *scan != 0) {
-                scan += *scan + 1;
-            }
-            if (scan < data + size) scan++;
+            if (!gif_skip_sub_blocks(&scan, end)) return ESP_ERR_INVALID_SIZE;
         } else if (*scan == 0x3B) {  /* Trailer */
             break;
         } else {
@@ -767,10 +790,13 @@ static esp_err_t load_gif(const uint8_t *data, size_t size, ts_led_image_t *out)
         canvas[p] = gct[bg_index];
     }
     
-    while (ptr < data + size && current_frame < frame_count) {
+    ts_led_rgb_t *lct = NULL;
+    uint8_t *indices = NULL;
+    esp_err_t error = ESP_ERR_INVALID_SIZE;
+    while (ptr < end && current_frame < frame_count) {
         if (*ptr == 0x2C) {  /* Image Descriptor */
             ptr++;
-            if (ptr + 9 > data + size) break;
+            if ((size_t)(end - ptr) < 9) goto invalid_gif;
             
             uint16_t left = read_le16(ptr);
             uint16_t top = read_le16(ptr + 2);
@@ -781,96 +807,94 @@ static esp_err_t load_gif(const uint8_t *data, size_t size, ts_led_image_t *out)
             
             /* Local color table */
             ts_led_rgb_t *palette = gct;
-            ts_led_rgb_t *lct = NULL;
+            int palette_size = 256;
             if (img_flags & 0x80) {
                 int lct_size = 1 << ((img_flags & 0x07) + 1);
+                if ((size_t)(end - ptr) < (size_t)lct_size * 3) goto invalid_gif;
                 lct = TS_MALLOC_PSRAM(lct_size * sizeof(ts_led_rgb_t));
-                if (lct) {
-                    for (int i = 0; i < lct_size && ptr + 3 <= data + size; i++) {
-                        lct[i].r = ptr[0];
-                        lct[i].g = ptr[1];
-                        lct[i].b = ptr[2];
-                        ptr += 3;
-                    }
-                    palette = lct;
+                if (!lct) { error = ESP_ERR_NO_MEM; goto invalid_gif; }
+                for (int i = 0; i < lct_size; i++) {
+                    lct[i].r = ptr[0];
+                    lct[i].g = ptr[1];
+                    lct[i].b = ptr[2];
+                    ptr += 3;
                 }
+                palette = lct;
+                palette_size = lct_size;
             }
             
             /* LZW minimum code size */
-            if (ptr >= data + size) { if (lct) free(lct); break; }
+            if (ptr >= end) goto invalid_gif;
             uint8_t lzw_min = *ptr++;
             
             /* Decode LZW data */
             size_t pixel_count = (size_t)img_width * img_height;
-            uint8_t *indices = TS_MALLOC_PSRAM(pixel_count);
-            if (indices) {
-                int decoded = lzw_decode(data, size, &ptr, indices, pixel_count, lzw_min);
-                if (decoded > 0) {
-                    /* Handle disposal of previous frame */
-                    if (current_frame > 0 && disposal == 2) {
-                        /* Restore to background */
-                        for (size_t p = 0; p < orig_canvas_size; p++) {
-                            canvas[p] = gct[bg_index];
-                        }
-                    }
-                    /* disposal == 1: leave in place, disposal == 3: restore to previous (not impl) */
-                    
-                    /* Decode indices to canvas (original size) */
-                    bool interlaced = (img_flags & 0x40) != 0;
-                    int pass_start[] = {0, 4, 2, 1};
-                    int pass_step[] = {8, 8, 4, 2};
-                    
-                    int src_idx = 0;
-                    for (int pass = 0; pass < (interlaced ? 4 : 1); pass++) {
-                        int y_start = interlaced ? pass_start[pass] : 0;
-                        int y_step = interlaced ? pass_step[pass] : 1;
-                        
-                        for (int y = y_start; y < img_height && src_idx < decoded; y += y_step) {
-                            for (int x = 0; x < img_width && src_idx < decoded; x++) {
-                                int dst_x = left + x;
-                                int dst_y = top + y;
-                                if (dst_x < orig_width && dst_y < orig_height) {
-                                    int dst_idx = dst_y * orig_width + dst_x;
-                                    int color_idx = indices[src_idx];
-                                    
-                                    if (color_idx != transparent_index) {
-                                        canvas[dst_idx] = palette[color_idx];
-                                    }
-                                }
-                                src_idx++;
+            if (pixel_count == 0) goto invalid_gif;
+            indices = TS_MALLOC_PSRAM(pixel_count);
+            if (!indices) { error = ESP_ERR_NO_MEM; goto invalid_gif; }
+            int decoded = lzw_decode(data, size, &ptr, indices, pixel_count, lzw_min);
+            if (decoded < 0) { error = -decoded; goto invalid_gif; }
+            if ((size_t)decoded != pixel_count) goto invalid_gif;
+            /* Handle disposal of previous frame */
+            if (current_frame > 0 && disposal == 2) {
+                /* Restore to background */
+                for (size_t p = 0; p < orig_canvas_size; p++) {
+                    canvas[p] = gct[bg_index];
+                }
+            }
+            /* disposal == 1: leave in place, disposal == 3: restore to previous (not impl) */
+
+            /* Decode indices to canvas (original size) */
+            bool interlaced = (img_flags & 0x40) != 0;
+            int pass_start[] = {0, 4, 2, 1};
+            int pass_step[] = {8, 8, 4, 2};
+
+            int src_idx = 0;
+            for (int pass = 0; pass < (interlaced ? 4 : 1); pass++) {
+                int y_start = interlaced ? pass_start[pass] : 0;
+                int y_step = interlaced ? pass_step[pass] : 1;
+
+                for (int y = y_start; y < img_height && src_idx < decoded; y += y_step) {
+                    for (int x = 0; x < img_width && src_idx < decoded; x++) {
+                        int dst_x = left + x;
+                        int dst_y = top + y;
+                        if (dst_x < orig_width && dst_y < orig_height) {
+                            int dst_idx = dst_y * orig_width + dst_x;
+                            int color_idx = indices[src_idx];
+
+                            if (color_idx != transparent_index) {
+                                if (color_idx >= palette_size) goto invalid_gif;
+                                canvas[dst_idx] = palette[color_idx];
                             }
                         }
-                    }
-                    
-                    /* Scale canvas to frame (if needed) */
-                    if (scale == 1) {
-                        memcpy(img->frames[current_frame], canvas, frame_size * sizeof(ts_led_rgb_t));
-                    } else {
-                        /* Nearest-neighbor downscale */
-                        for (int dy = 0; dy < height; dy++) {
-                            for (int dx = 0; dx < width; dx++) {
-                                int sx = dx * scale;
-                                int sy = dy * scale;
-                                img->frames[current_frame][dy * width + dx] = canvas[sy * orig_width + sx];
-                            }
-                        }
-                    }
-                    
-                    img->frame_delays[current_frame] = delay_cs * 10;  /* Convert to ms */
-                    if (img->frame_delays[current_frame] < 20) {
-                        img->frame_delays[current_frame] = 100;  /* Min 100ms for very fast GIFs */
+                        src_idx++;
                     }
                 }
-                free(indices);
+            }
+
+            /* Scale canvas to frame (if needed) */
+            if (scale == 1) {
+                memcpy(img->frames[current_frame], canvas, frame_size * sizeof(ts_led_rgb_t));
             } else {
-                /* Out of memory, skip LZW data */
-                while (ptr < data + size && *ptr != 0) {
-                    ptr += *ptr + 1;
+                /* Nearest-neighbor downscale */
+                for (int dy = 0; dy < height; dy++) {
+                    for (int dx = 0; dx < width; dx++) {
+                        int sx = dx * scale;
+                        int sy = dy * scale;
+                        img->frames[current_frame][dy * width + dx] = canvas[sy * orig_width + sx];
+                    }
                 }
-                if (ptr < data + size) ptr++;
             }
             
-            if (lct) free(lct);
+            img->frame_delays[current_frame] = delay_cs * 10;  /* Convert to ms */
+            if (img->frame_delays[current_frame] < 20) {
+                img->frame_delays[current_frame] = 100;  /* Min 100ms for very fast GIFs */
+            }
+            free(indices);
+            indices = NULL;
+
+            free(lct);
+            lct = NULL;
             
             /* Reset per-frame state */
             transparent_index = -1;
@@ -880,29 +904,22 @@ static esp_err_t load_gif(const uint8_t *data, size_t size, ts_led_image_t *out)
         }
         else if (*ptr == 0x21) {  /* Extension */
             ptr++;
-            if (ptr >= data + size) break;
+            if (ptr >= end) goto invalid_gif;
             uint8_t ext_type = *ptr++;
             
-            if (ext_type == 0xF9 && ptr < data + size) {
+            if (ext_type == 0xF9 && ptr < end) {
                 /* Graphic Control Extension */
-                int block_size = *ptr++;
-                if (block_size >= 4 && ptr + 4 <= data + size) {
-                    uint8_t gce_flags = ptr[0];
-                    delay_cs = read_le16(ptr + 1);
+                int block_size = *ptr;
+                if (block_size >= 4 && (size_t)(end - ptr) >= 5) {
+                    uint8_t gce_flags = ptr[1];
+                    delay_cs = read_le16(ptr + 2);
                     disposal = (gce_flags >> 2) & 0x07;
                     if (gce_flags & 0x01) {
-                        transparent_index = ptr[3];
+                        transparent_index = ptr[4];
                     }
                 }
-                ptr += block_size;
-                if (ptr < data + size) ptr++;
-            } else {
-                /* Skip other extensions */
-                while (ptr < data + size && *ptr != 0) {
-                    ptr += *ptr + 1;
-                }
-                if (ptr < data + size) ptr++;
             }
+            if (!gif_skip_sub_blocks(&ptr, end)) goto invalid_gif;
         }
         else if (*ptr == 0x3B) {  /* Trailer */
             break;
@@ -933,6 +950,12 @@ static esp_err_t load_gif(const uint8_t *data, size_t size, ts_led_image_t *out)
     TS_LOGI(TAG, "GIF loaded: %ux%u, %d frame(s)%s", width, height, frame_count,
             img->has_alpha ? " (with transparency)" : "");
     return ESP_OK;
+invalid_gif:
+    free(lct);
+    free(indices);
+    free(canvas);
+    ts_led_image_free(img);
+    return error;
 }
 
 #endif /* TS_LED_IMAGE_GIF_SUPPORT */
@@ -1467,7 +1490,6 @@ esp_err_t ts_led_image_animate_start(ts_led_layer_t layer, ts_led_image_t image,
     ctx->last_frame_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
     ctx->layer = layer;
     
-    s_anim_ctx = ctx;
     
     /* Display first frame */
     ts_led_image_display_frame(layer, image, 0, &ctx->options);
@@ -1483,7 +1505,6 @@ esp_err_t ts_led_image_animate_start(ts_led_layer_t layer, ts_led_image_t image,
     esp_err_t ret = ts_led_animation_start(layer, &anim_def);
     if (ret != ESP_OK) {
         free(ctx);
-        s_anim_ctx = NULL;
         return ret;
     }
     
@@ -1491,21 +1512,26 @@ esp_err_t ts_led_image_animate_start(ts_led_layer_t layer, ts_led_image_t image,
     return ESP_OK;
 }
 
+void ts_led_image_release_animation(ts_led_layer_t layer)
+{
+    ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
+    if (l->anim_fn == gif_animation_effect) {
+        free(l->anim_data);
+        l->anim_data = NULL;
+    }
+}
+
 esp_err_t ts_led_image_animate_stop(ts_led_layer_t layer)
 {
-    if (!layer) return ESP_ERR_INVALID_ARG;
-    
-    ts_led_animation_stop(layer);
-    
-    if (s_anim_ctx) {
-        free(s_anim_ctx);
-        s_anim_ctx = NULL;
-    }
-    
-    return ESP_OK;
+    return ts_led_animation_stop(layer);
 }
 
 bool ts_led_image_is_playing(ts_led_layer_t layer)
 {
-    return s_anim_ctx != NULL && s_anim_ctx->layer == layer;
+    if (!layer) return false;
+    ts_led_layer_impl_t *l = (ts_led_layer_impl_t *)layer;
+    xSemaphoreTake(l->device->mutex, portMAX_DELAY);
+    bool playing = l->anim_fn == gif_animation_effect && l->anim_data != NULL;
+    xSemaphoreGive(l->device->mutex);
+    return playing;
 }
