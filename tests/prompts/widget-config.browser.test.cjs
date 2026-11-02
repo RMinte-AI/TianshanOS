@@ -2,6 +2,118 @@ const {test}=require('node:test'),assert=require('node:assert/strict');
 const kit=require('./pagekit.cjs');
 kit.install();
 
+// F47 drives refreshDataWidgets through the real variables API and reads the DOM.
+async function dualPage(language,{create=false,width=1280,extra=[]}={}) {
+ let widgets=create?[]:[{id:'dual-probe',type:'dual',label:'Dual',decimals:1,expression:'${main}',expression2:'${sub}',layout:'auto'}],values={};
+ widgets.push(...extra);const writes=[];
+ const fixture=await kit.open(language,({endpoint,params})=>{
+  if(endpoint==='auth/login')return {code:0,data:{token:'widget-session',username:'admin',level:'admin',expires_in:3600,password_changed:true}};
+  if(endpoint==='auth/status')return {code:0,data:{valid:true}};
+  if(endpoint==='ui/widgets/get')return {code:0,data:{widgets,refresh_interval:0,source:'nvs'}};
+  if(endpoint==='ui/widgets/set'){widgets=structuredClone(params.widgets);writes.push(structuredClone(params));return {code:0,data:{nvs_saved:true}};}
+  if(endpoint==='automation/variables/list')return {code:0,data:{variables:Object.entries(values).map(([name,value])=>({name,value}))}};
+  if(endpoint==='automation/variables/get')return {code:0,data:{value:'line one\nline two'}};
+  return {code:0,data:{}};
+ },{viewport:{width,height:1000}});
+ const {page}=fixture;
+ page.setDefaultTimeout(5000);
+ try {
+ await page.waitForFunction(()=>router.appReady);
+ await page.evaluate(()=>showLoginModal());await page.locator('#username').fill('admin');await page.locator('#password').fill('local-test-password');
+ await page.locator('#login-form button[type="submit"]').click();
+ await page.waitForFunction(()=>document.getElementById('data-widgets-grid'));
+ await page.evaluate(()=>initDataWidgets());await page.waitForFunction(()=>!dataWidgetsRefreshing);
+ await page.evaluate(()=>stopDataWidgetsAutoRefresh());
+ } catch(error) {
+  console.log('F47 setup failure',await page.evaluate(()=>({token:api.token,username:api.username,error:document.getElementById('login-error').textContent,loaded:dataWidgetsLoaded,refreshing:dataWidgetsRefreshing,grid:!!document.getElementById('data-widgets-grid')})));
+  await fixture.close();throw error;
+ }
+ return {...fixture,writes,stored:()=>structuredClone(widgets),refresh:async next=>{
+  values=next;await page.evaluate(()=>refreshDataWidgets());
+  return page.evaluate(()=>{const w=dataWidgets.find(w=>w.type==='dual');return w?[document.getElementById(`dw-${w.id}-value`).textContent,document.getElementById(`dw-${w.id}-sub`).textContent]:null;});
+ }};
+}
+async function createDual(page) {
+ await page.evaluate(()=>showAddWidgetPanel());
+ await page.locator('[onclick="createNewWidget(\'dual\')"]').click();
+ const id=await page.evaluate(()=>dataWidgets.find(w=>w.type==='dual').id);
+ await page.locator('#edit-label').fill('Live dual');await page.locator('#edit-expression').fill('${main}');
+ await page.locator('#edit-expression2').fill('${sub}');await page.locator('#edit-decimals').fill('1');
+ await page.locator('#widget-edit-modal button[onclick^="saveWidgetEdit"]').click();
+ await page.waitForFunction(()=>document.getElementById('widget-edit-modal')?.dataset.configurationClosed==='true'&&!dataWidgetsRefreshing);
+ return id;
+}
+for(const language of ['zh-CN','en-US']) {
+ test(`F47 normal: create save edit cancel and reload configuration ${language}`,async()=>{
+  const f=await dualPage(language,{create:true});const {page}=f;try{
+   const id=await createDual(page);assert.equal(f.stored().find(w=>w.id===id).expression2,'${sub}');
+   await page.evaluate(id=>showWidgetEditPanel(id),id);await page.locator('#edit-expression2').fill('${other}');
+   await page.locator('#widget-edit-modal button[onclick^="saveWidgetEdit"]').click();
+   await page.waitForFunction(()=>document.getElementById('widget-edit-modal')?.dataset.configurationClosed==='true'&&!dataWidgetsRefreshing);
+   await page.reload();await page.waitForFunction(()=>dataWidgetsLoaded&&!dataWidgetsRefreshing);
+   assert.equal(f.stored().find(w=>w.id===id).expression2,'${other}');
+   await page.evaluate(id=>showWidgetEditPanel(id),id);await page.locator('#edit-expression2').fill('${cancelled}');
+   await page.locator('#widget-edit-modal button[onclick="closeModal(\'widget-edit-modal\')"]').click();
+   await page.evaluate(()=>loadDataWidgets());assert.equal(await page.evaluate(id=>dataWidgets.find(w=>w.id===id).expression2,id),'${other}');
+   assert.equal(f.stored().find(w=>w.id===id).expression2,'${other}');assert(f.writes.length>=3);assert.deepEqual(f.errors,[]);
+  }finally{await f.close();}
+ });
+ test(`F47 defect: created dual displays both values in each response ${language}`,async()=>{
+  const f=await dualPage(language,{create:true});try{
+   await createDual(f.page);const actual=[];
+   actual.push(await f.refresh({main:10,sub:20}));actual.push(await f.refresh({main:11,sub:21}));
+   console.log(JSON.stringify({case:'F47 two rounds',language,actual}));
+   assert.deepEqual(actual,[['10.0','20.0'],['11.0','21.0']]);assert.deepEqual(f.errors,[]);
+  }finally{await f.close();}
+ });
+ const samples=[
+  ['main-missing',{sub:31},['-','31.0']],['sub-missing',{main:12},['12.0','-']],
+  ['both-missing',{},['-','-']],['nulls',{main:null,sub:null},['-','-']],
+  ['zeros',{main:0,sub:0},['0.0','0.0']],['decimals',{main:1.25,sub:2.75},['1.3','2.8']],
+  ['text',{main:'Ready',sub:'Standby'},['Ready','Standby']]
+ ];
+ for(const [name,values,expected] of samples)test(`F47 defect: independent ${name} and recovery ${language}`,async()=>{
+  const f=await dualPage(language);try{
+   await f.refresh({main:10,sub:20});await f.refresh({main:10,sub:20});
+   const actual=await f.refresh(values),recovered=await f.refresh({main:11,sub:21});
+   console.log(JSON.stringify({case:`F47 ${name}`,language,actual,recovered}));
+   assert.deepEqual({actual,recovered},{actual:expected,recovered:['11.0','21.0']});assert.deepEqual(f.errors,[]);
+  }finally{await f.close();}
+ });
+ test(`F47 defect: saved secondary expression and removal clear old display ${language}`,async()=>{
+  const f=await dualPage(language),{page}=f;try{
+   await f.refresh({main:10,sub:20,other:42});await f.refresh({main:10,sub:20,other:42});
+   await page.evaluate(()=>showWidgetEditPanel('dual-probe'));await page.locator('#edit-expression2').fill('${other}');
+   await page.locator('#widget-edit-modal button[onclick^="saveWidgetEdit"]').click();
+   await page.waitForFunction(()=>document.getElementById('widget-edit-modal')?.dataset.configurationClosed==='true'&&!dataWidgetsRefreshing);
+   await page.locator('.nav-link[href="#/network"]').click();await page.waitForFunction(()=>!!document.querySelector('.page-network'));
+   await page.locator('.nav-link[href="#/"]').click();await page.waitForFunction(()=>!!document.getElementById('dw-dual-probe-sub')&&!dataWidgetsRefreshing);
+   const changed=await f.refresh({main:11,sub:21,other:43});
+   await page.evaluate(()=>showWidgetEditPanel('dual-probe'));await page.locator('#edit-expression2').fill('');
+   await page.locator('#widget-edit-modal button[onclick^="saveWidgetEdit"]').click();
+   await page.waitForFunction(()=>document.getElementById('widget-edit-modal')?.dataset.configurationClosed==='true'&&!dataWidgetsRefreshing);
+   const removed=await f.refresh({main:12,sub:22,other:44});
+   console.log(JSON.stringify({case:'F47 secondary edit/remove',language,changed,removed}));
+   assert.deepEqual({changed,removed},{changed:['11.0','43.0'],removed:['12.0','-']});assert.deepEqual(f.errors,[]);
+  }finally{await f.close();}
+ });
+ for(const width of [390,1440])test(`F47 normal: other components and dual layout ${language} ${width}`,async()=>{
+  const extra=['number','temp','ring','status','log'].map(type=>({id:`probe-${type}`,type,label:type,decimals:1,expression:'${main}',layout:type==='log'?'full':'auto',min:0,max:100}));
+  const f=await dualPage(language,{width,extra}),{page}=f;try{
+   await f.refresh({main:25,sub:50});await f.refresh({main:25,sub:50});
+   const actual=await page.evaluate(()=>({number:document.getElementById('dw-probe-number-value').textContent,temp:document.getElementById('dw-probe-temp-value').textContent,
+    ring:document.getElementById('dw-probe-ring-value').textContent,status:document.getElementById('dw-probe-status-value').textContent,
+    expectedStatus:t('dataWidget.statusNormal'),log:document.getElementById('dw-probe-log-log').textContent.trim(),expectedLog:t('dataWidget.clickToRead'),
+    cards:[...document.querySelectorAll('#data-widgets-grid .dw-card')].map(e=>{const r=e.getBoundingClientRect();return {type:e.dataset.type,width:r.width,right:r.right};})}));
+   assert.equal(actual.number,'25.0');assert.equal(actual.temp,'25');assert.equal(actual.ring,'25.0%');assert.equal(actual.status,actual.expectedStatus);assert.equal(actual.log,actual.expectedLog);
+   await page.locator('#dw-probe-log-collapse').click();
+   await page.evaluate(()=>refreshLogOnce('probe-log'));assert.match(await page.locator('#dw-probe-log-log').innerText(),/line one/);
+   assert.equal(actual.cards.length,6);for(const card of actual.cards)assert(card.width>0&&card.right<=width,JSON.stringify(card));
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.close();}
+ });
+}
+
 for(const language of ['zh-CN','en-US'])test(`${language}: widget read failure cannot migrate or overwrite browser data`,async()=>{
  let mode='failure';
  const respond=({endpoint})=>{

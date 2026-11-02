@@ -80,7 +80,7 @@ static void print_status(bool json_format)
     /* JSON 模式通过 API 获取 */
     if (json_format) {
         ts_api_result_t result;
-        esp_err_t ret = ts_api_call("power.protection_status", NULL, &result);
+        esp_err_t ret = ts_api_call("power.protection.status", NULL, &result);
         
         if (ret == ESP_OK && result.code == TS_API_OK && result.data) {
             char *json_str = cJSON_Print(result.data);
@@ -167,29 +167,28 @@ static void print_status(bool json_format)
  */
 static void print_config(void)
 {
-    float low_threshold, recovery_threshold;
-    ts_power_policy_get_thresholds(&low_threshold, &recovery_threshold);
-    
-    /* 获取当前状态以显示实际配置 */
-    ts_power_policy_status_t status;
-    ts_power_policy_get_status(&status);
+    ts_power_policy_config_t config;
+    if (ts_power_policy_get_config(&config) != ESP_OK) {
+        ts_console_printf("错误: 无法获取配置\n");
+        return;
+    }
     
     ts_console_printf("\n╔══════════════════════════════════════════════════════════════╗\n");
     ts_console_printf("║              ⚙️  电压保护配置                                 ║\n");
     ts_console_printf("╠══════════════════════════════════════════════════════════════╣\n");
     ts_console_printf("║ 电压阈值:                                                    ║\n");
     ts_console_printf("║   低电压阈值:       %.2f V  (默认: %.1f V)                  ║\n",
-           low_threshold, TS_POWER_POLICY_LOW_VOLTAGE_DEFAULT);
+           config.low_voltage_threshold, TS_POWER_POLICY_LOW_VOLTAGE_DEFAULT);
     ts_console_printf("║   恢复电压阈值:     %.2f V  (默认: %.1f V)                  ║\n",
-           recovery_threshold, TS_POWER_POLICY_RECOVERY_VOLTAGE_DEFAULT);
+           config.recovery_voltage_threshold, TS_POWER_POLICY_RECOVERY_VOLTAGE_DEFAULT);
     ts_console_printf("╠══════════════════════════════════════════════════════════════╣\n");
     ts_console_printf("║ 时间配置:                                                    ║\n");
     ts_console_printf("║   关机倒计时:       %u 秒   (默认: %u 秒)                    ║\n",
-           TS_POWER_POLICY_SHUTDOWN_DELAY_DEFAULT, TS_POWER_POLICY_SHUTDOWN_DELAY_DEFAULT);
+           config.shutdown_delay_sec, TS_POWER_POLICY_SHUTDOWN_DELAY_DEFAULT);
     ts_console_printf("║   恢复稳定等待:     %u 秒   (默认: %u 秒)                     ║\n",
-           TS_POWER_POLICY_RECOVERY_HOLD_DEFAULT, TS_POWER_POLICY_RECOVERY_HOLD_DEFAULT);
+           config.recovery_hold_sec, TS_POWER_POLICY_RECOVERY_HOLD_DEFAULT);
     ts_console_printf("║   风扇关闭延迟:     %u 秒   (默认: %u 秒)                    ║\n",
-           TS_POWER_POLICY_FAN_STOP_DELAY_DEFAULT, TS_POWER_POLICY_FAN_STOP_DELAY_DEFAULT);
+           config.fan_stop_delay_sec, TS_POWER_POLICY_FAN_STOP_DELAY_DEFAULT);
     ts_console_printf("╠══════════════════════════════════════════════════════════════╣\n");
     ts_console_printf("║ 修改配置:                                                    ║\n");
     ts_console_printf("║   voltprot -c --low <V>        设置低电压阈值                ║\n");

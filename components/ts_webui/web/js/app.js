@@ -746,9 +746,11 @@ window.addEventListener('authExpired', () => {
 
 async function validateStoredSession() {
     if (!api.isLoggedIn()) return;
+    const token = api.token;
 
     try {
         const status = await api.checkAuthStatus();
+        if (api.token !== token) return;
         if (!status || !status.valid) {
             api.clearAuth();
             updateAuthUI();
@@ -3972,6 +3974,13 @@ function updateWidgetValue(widget, value) {
     const el = (suffix) => document.getElementById(`dw-${id}-${suffix}`);
     const valueEl = el('value');
     const setRing = (arc, percent, len) => { if (arc) arc.setAttribute('stroke-dasharray', `${(percent * len / 100).toFixed(1)} ${len}`); };
+
+    if (type === 'dual') {
+        const subEl = el('sub');
+        const subValue = widget.subValue;
+        if (subEl) subEl.textContent = subValue === null || subValue === undefined ? '-' :
+            typeof subValue === 'number' ? subValue.toFixed(decimals) : subValue;
+    }
     
     // 处理空值
     if (value === null || value === undefined) {
@@ -4025,11 +4034,6 @@ function updateWidgetValue(widget, value) {
         }
         case 'dual': {
             if (valueEl) valueEl.textContent = num(decimals);
-            const subEl = el('sub');
-            // 副值需要从 expression2 获取
-            if (subEl && widget.subValue !== undefined) {
-                subEl.textContent = typeof widget.subValue === 'number' ? widget.subValue.toFixed(decimals) : widget.subValue;
-            }
             break;
         }
         case 'log':
@@ -4110,15 +4114,12 @@ async function refreshDataWidgets() {
         for (const widget of dataWidgets) {
             if (widget.type === 'log') {
                 continue;
-            } else if (widget.expression) {
-                const value = evaluateExpression(widget.expression, variables);
-                updateWidgetValue(widget, value);
-                if (widget.expression2) {
-                    widget.subValue = evaluateExpression(widget.expression2, variables);
-                }
-            } else {
-                updateWidgetValue(widget, null);
             }
+            const value = widget.expression ? evaluateExpression(widget.expression, variables) : null;
+            if (widget.type === 'dual') {
+                widget.subValue = widget.expression2 ? evaluateExpression(widget.expression2, variables) : undefined;
+            }
+            updateWidgetValue(widget, value);
         }
     } finally {
         if (pageCurrent()) dataWidgetsRefreshing = false;
