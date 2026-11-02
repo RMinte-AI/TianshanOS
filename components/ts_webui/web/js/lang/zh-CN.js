@@ -3886,7 +3886,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('zh-CN', {
         taskStackUsage: '任务栈使用',
         taskStackTotal: '任务栈总分配（估算）',
         totalTaskCount: '任务总数',
-        stackHint: '分配量、已用量及使用率为估算；剩余栈为任务运行以来测得的最低剩余量。',
+        stackHint: '分配量、已用量及使用率为估算；剩余栈为任务运行以来测得的最低剩余量。剩余栈 &lt;256B 为危险区域，&lt;512B 为警告区域。',
         state: '状态',
         cpu: 'CPU',
         runtimeStats: '运行时统计',

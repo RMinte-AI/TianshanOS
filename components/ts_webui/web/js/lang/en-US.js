@@ -3924,7 +3924,7 @@ if (typeof i18n !== 'undefined') i18n.registerLanguage('en-US', {
         taskStackUsage: 'Task Stack Usage',
         taskStackTotal: 'Total Stack Allocated (est.)',
         totalTaskCount: 'Total Tasks',
-        stackHint: 'Allocation, used stack and usage are estimates. Remaining stack is the measured minimum since task start.',
+        stackHint: 'Allocation, used stack and usage are estimates. Remaining stack is the measured minimum since task start. Remaining stack &lt;256B is danger zone, &lt;512B is warning zone.',
         state: 'State',
         cpu: 'CPU',
         runtimeStats: 'Runtime Statistics',

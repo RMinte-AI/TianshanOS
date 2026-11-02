@@ -470,11 +470,10 @@ static int cmd_net(int argc, char **argv)
         ts_console_printf("  --save              Save configuration to NVS\n");
         ts_console_printf("  --load              Load configuration from NVS\n");
         ts_console_printf("  --reset             Reset to default configuration\n");
-        ts_console_printf("  --ip                Show IP address (quick view)\n");
+        ts_console_printf("  --ip                Show IP; use --set --ip <addr> to set it\n");
         ts_console_printf("\n");
         ts_console_printf("Parameters:\n");
         ts_console_printf("  --iface <if>        Interface: eth, wifi (default: eth)\n");
-        ts_console_printf("  --ip <addr>         IP address (e.g., 192.168.1.100)\n");
         ts_console_printf("  --netmask <mask>    Netmask (e.g., 255.255.255.0)\n");
         ts_console_printf("  --gateway <addr>    Gateway address\n");
         ts_console_printf("  --dns <addr>        DNS server address\n");

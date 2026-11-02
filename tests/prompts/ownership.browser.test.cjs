@@ -919,6 +919,7 @@ for(const language of ['zh-CN','en-US']){
    for(const key of ['stack_alloc','stack_used','stack_usage_pct'])assert.match(await page.locator(`th[data-sort="${key}"]`).innerText(),language==='zh-CN'?/估算/:/est\./);
    assert.doesNotMatch(await page.locator('th[data-sort="stack_hwm"]').innerText(),/估算|est\./);
    assert.match(await modal.innerText(),language==='zh-CN'?/测得的最低剩余量/:/measured minimum/);
+   assert.match(await modal.innerText(),language==='zh-CN'?/剩余栈 <256B 为危险区域，<512B 为警告区域/:/Remaining stack <256B is danger zone, <512B is warning zone/);
    const row=name=>page.locator('#task-table-body tr').filter({has:page.locator('td:first-child',{hasText:new RegExp('^'+name+'$')})});
    assert.deepEqual(await row('missing').locator('td').allTextContents().then(c=>c.slice(1,5)),['-','-','333 B','-']);
    assert.deepEqual(await row('zero').locator('td').allTextContents().then(c=>c.slice(1,5)),['0 B','0 B','600 B','0%']);
