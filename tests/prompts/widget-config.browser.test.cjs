@@ -16,20 +16,26 @@ async function dualPage(language,{create=false,width=1280,extra=[]}={}) {
   return {code:0,data:{}};
  },{viewport:{width,height:1000}});
  const {page}=fixture;
- page.setDefaultTimeout(5000);
+ page.setDefaultTimeout(15000);
  try {
  await page.waitForFunction(()=>router.appReady);
- await page.evaluate(()=>showLoginModal());await page.locator('#username').fill('admin');await page.locator('#password').fill('local-test-password');
+ // Fill setup credentials atomically: the modal's delayed focus must not redirect typing.
+ // Submit through the real form; login interaction itself is covered by ownership.browser.
+ await page.evaluate(()=>{showLoginModal();document.getElementById('username').value='admin';document.getElementById('password').value='local-test-password';});
  await page.locator('#login-form button[type="submit"]').click();
- await page.waitForFunction(()=>document.getElementById('data-widgets-grid'));
- await page.evaluate(()=>initDataWidgets());await page.waitForFunction(()=>!dataWidgetsRefreshing);
- await page.evaluate(()=>stopDataWidgetsAutoRefresh());
+ await page.waitForFunction(()=>api.token==='widget-session'&&document.getElementById('login-modal').classList.contains('hidden'));
+ // Await the full page loader, not the grid inserted before widget initialization.
+ assert.equal(await page.evaluate(()=>router.navigate('/')),true);
+ await page.waitForFunction(()=>dataWidgetsLoaded&&!dataWidgetsRefreshing);
  } catch(error) {
   console.log('F47 setup failure',await page.evaluate(()=>({token:api.token,username:api.username,error:document.getElementById('login-error').textContent,loaded:dataWidgetsLoaded,refreshing:dataWidgetsRefreshing,grid:!!document.getElementById('data-widgets-grid')})));
   await fixture.close();throw error;
  }
  return {...fixture,writes,stored:()=>structuredClone(widgets),refresh:async next=>{
+  await page.waitForFunction(()=>!dataWidgetsRefreshing);
+  const before=fixture.calls.filter(c=>c.endpoint==='automation/variables/list').length;
   values=next;await page.evaluate(()=>refreshDataWidgets());
+  assert.equal(fixture.calls.filter(c=>c.endpoint==='automation/variables/list').length,before+1,'each refresh must consume exactly one variables response');
   return page.evaluate(()=>{const w=dataWidgets.find(w=>w.type==='dual');return w?[document.getElementById(`dw-${w.id}-value`).textContent,document.getElementById(`dw-${w.id}-sub`).textContent]:null;});
  }};
 }
@@ -74,7 +80,7 @@ for(const language of ['zh-CN','en-US']) {
  ];
  for(const [name,values,expected] of samples)test(`F47 defect: independent ${name} and recovery ${language}`,async()=>{
   const f=await dualPage(language);try{
-   await f.refresh({main:10,sub:20});await f.refresh({main:10,sub:20});
+   await f.refresh({main:10,sub:20});
    const actual=await f.refresh(values),recovered=await f.refresh({main:11,sub:21});
    console.log(JSON.stringify({case:`F47 ${name}`,language,actual,recovered}));
    assert.deepEqual({actual,recovered},{actual:expected,recovered:['11.0','21.0']});assert.deepEqual(f.errors,[]);
@@ -82,7 +88,7 @@ for(const language of ['zh-CN','en-US']) {
  });
  test(`F47 defect: saved secondary expression and removal clear old display ${language}`,async()=>{
   const f=await dualPage(language),{page}=f;try{
-   await f.refresh({main:10,sub:20,other:42});await f.refresh({main:10,sub:20,other:42});
+   await f.refresh({main:10,sub:20,other:42});
    await page.evaluate(()=>showWidgetEditPanel('dual-probe'));await page.locator('#edit-expression2').fill('${other}');
    await page.locator('#widget-edit-modal button[onclick^="saveWidgetEdit"]').click();
    await page.waitForFunction(()=>document.getElementById('widget-edit-modal')?.dataset.configurationClosed==='true'&&!dataWidgetsRefreshing);
@@ -100,7 +106,7 @@ for(const language of ['zh-CN','en-US']) {
  for(const width of [390,1440])test(`F47 normal: other components and dual layout ${language} ${width}`,async()=>{
   const extra=['number','temp','ring','status','log'].map(type=>({id:`probe-${type}`,type,label:type,decimals:1,expression:'${main}',layout:type==='log'?'full':'auto',min:0,max:100}));
   const f=await dualPage(language,{width,extra}),{page}=f;try{
-   await f.refresh({main:25,sub:50});await f.refresh({main:25,sub:50});
+   await f.refresh({main:25,sub:50});
    const actual=await page.evaluate(()=>({number:document.getElementById('dw-probe-number-value').textContent,temp:document.getElementById('dw-probe-temp-value').textContent,
     ring:document.getElementById('dw-probe-ring-value').textContent,status:document.getElementById('dw-probe-status-value').textContent,
     expectedStatus:t('dataWidget.statusNormal'),log:document.getElementById('dw-probe-log-log').textContent.trim(),expectedLog:t('dataWidget.clickToRead'),

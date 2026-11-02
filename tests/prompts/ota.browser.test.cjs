@@ -384,7 +384,11 @@ for (const language of ['zh-CN', 'en-US']) {
                 const next = url ? 'https://ota.fixture.invalid/C/firmware.bin' : '/sdcard/C/TianShanOS.bin';
                 await page.locator(selector).fill(selected);
                 await page.locator('#ota-url-skip-verify').setChecked(true);
+                // The UI enters 'app' before the start request reaches the fixture.
+                const appStarted = page.waitForResponse(response =>
+                    new URL(response.url()).pathname === `/api/v1/${appEndpoint}`);
                 await page.locator(`[onclick="${action}"]`).click();
+                await appStarted;
                 await page.waitForFunction(() => otaUpgrade?.phase === 'app');
                 assert.equal(calls.find(call => call.endpoint === appEndpoint).params[field], selected);
                 await page.locator(selector).fill(next);
@@ -418,7 +422,10 @@ for (const language of ['zh-CN', 'en-US']) {
                     await route.fallback();
                 }, {times: 1});
                 try {
+                    const nextAppStarted = page.waitForResponse(response =>
+                        new URL(response.url()).pathname === `/api/v1/${appEndpoint}`);
                     await page.locator(`[onclick="${action}"]`).click();
+                    await nextAppStarted;
                     await page.waitForFunction(() => otaUpgrade?.phase === 'app');
                     const apps = calls.filter(call => call.endpoint === appEndpoint);
                     assert.equal(apps.length, 2); assert.equal(apps[1].params[field], next);
