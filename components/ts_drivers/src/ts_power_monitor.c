@@ -476,8 +476,16 @@ static esp_err_t read_power_chip_packet(ts_power_chip_data_t *data)
     uint8_t current_raw = buffer[2];
     uint8_t received_crc = buffer[3];
     
-    /* 计算简单 CRC（前 3 字节之和） */
-    uint8_t calculated_crc = (buffer[0] + buffer[1] + buffer[2]) & 0xFF;
+    /* CRC-8/MAXIM: init=0, LSB first, reflected polynomial 0x8C.
+     * Covers the header, voltage and current bytes. FF 1C 32 -> 71. */
+    uint8_t calculated_crc = 0;
+    for (size_t i = 0; i < TS_POWER_CHIP_PACKET_SIZE - 1; i++) {
+        calculated_crc ^= buffer[i];
+        for (int bit = 0; bit < 8; bit++) {
+            calculated_crc = (calculated_crc & 1)
+                ? (calculated_crc >> 1) ^ 0x8C : calculated_crc >> 1;
+        }
+    }
     
     bool crc_valid = (calculated_crc == received_crc);
     
