@@ -12541,10 +12541,14 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
     clearTimeout(toastTimer);
     const ui = (key, fallback) => (typeof i18n !== 'undefined' && i18n.complete(key, {}) ? t(key) : fallback);
     toast.textContent = '';
+    const header = document.createElement('div');
+    header.className = 'toast-header';
+    toast.appendChild(header);
     const text = document.createElement('span');
     text.className = 'toast-msg';
+    text.tabIndex = 0;
     text.textContent = String(message ?? '');
-    toast.appendChild(text);
+    header.appendChild(text);
     let inside = false, expanded = false, held = false, remaining = duration, armedAt = 0, detailBox = null;
     const hide = () => { clearTimeout(toastTimer); toast.classList.remove('show'); toastDeadline = 0; };
     const arm = ms => { clearTimeout(toastTimer); armedAt = Date.now(); remaining = ms; toastDeadline = armedAt + ms; toastTimer = setTimeout(hide, ms); };
@@ -12558,6 +12562,9 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
         more.setAttribute('aria-expanded', 'false');
         more.textContent = ui('failure.details.show', 'Details');
         pre.className = 'toast-detail';
+        pre.tabIndex = 0;
+        pre.setAttribute('role', 'region');
+        pre.setAttribute('aria-label', ui('failure.details.show', 'Details'));
         pre.hidden = true;
         pre.textContent = details;
         more.onclick = () => {
@@ -12567,7 +12574,7 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
             more.textContent = expanded ? ui('failure.details.hide', 'Hide') : ui('failure.details.show', 'Details');
             sync();
         };
-        toast.appendChild(more);
+        header.appendChild(more);
         detailBox = pre;
     }
     const close = document.createElement('button');
@@ -12576,7 +12583,7 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
     close.textContent = '×';
     close.setAttribute('aria-label', ui('failure.details.close', 'Close'));
     close.onclick = hide;
-    toast.appendChild(close);
+    header.appendChild(close);
     if (detailBox) toast.appendChild(detailBox);   // the details take their own row under the buttons
     toast.onmouseenter = toast.onfocusin = () => { inside = true; sync(); };
     toast.onmouseleave = toast.onfocusout = () => { inside = false; sync(); };
