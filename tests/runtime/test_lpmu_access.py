@@ -215,6 +215,11 @@ static void check_case(const char *out,const char *err,int exit,int transport,bo
     int before=secret_wipes;start_run();finish_run();assert(secret_wipes==before+1);
     assert(s_status.stage==(success?LPMU_STAGE_SUCCESS:LPMU_STAGE_FAILED));
     ts_api_result_t r={0};assert(api_lpmu_access_status(NULL,&r)==ESP_OK);
+    const char *reason=cJSON_GetObjectItem(r.data,"reason")->valuestring;
+    const char *phase=cJSON_GetObjectItem(r.data,"failure_stage")->valuestring;
+    if(success){assert(!reason[0] && !phase[0] && !s_status.reason);}
+    else {assert(reason[0] && phase[0]);assert(!strcmp(reason,s_status.reason));
+        assert(!strcmp(phase,lpmu_stage_str(s_status.failure_stage)));}
     char *json=cJSON_PrintUnformatted(r.data);assert(!strstr(json,secret));free(json);ts_api_result_free(&r);
     char *log=read_log(s_status.run_id);
     assert(!strstr(log,secret));
@@ -237,6 +242,9 @@ int main(void) {
     int wipes=secret_wipes;assert(api_lpmu_access_start(p,&r)==ESP_ERR_NO_MEM);assert(secret_wipes==wipes+1 && !secret_buffer);
     assert(s_status.stage==LPMU_STAGE_FAILED && !s_status.running && !s_lpmu_task && (intptr_t)s_run_log==-1);
     assert(s_status.stack_min_free_bytes==UINT32_MAX);
+    assert(!strcmp(s_status.reason,"access_task_unavailable") && s_status.failure_stage==LPMU_STAGE_QUEUED);
+    assert(!strcmp(cJSON_GetObjectItem(r.data,"reason")->valuestring,s_status.reason));
+    assert(!strcmp(r.message,"Failed to create LPMU access task"));
     ts_api_result_free(&r);cJSON_Delete(p);task_failure=false;
     check_case(both,NULL,0,ESP_OK,true,1); // split every UTF-8 byte
     assert(uploads==0); // Existing project must not be replaced.
@@ -246,6 +254,7 @@ int main(void) {
     check_case("ordinary stdout\n",both,0,ESP_OK,false,512); // stderr cannot confirm stdout
     check_case(both,NULL,1,ESP_OK,false,512);
     check_case(both,NULL,0,ESP_ERR_TIMEOUT,false,512);
+    assert(!strcmp(s_status.reason,"access_script_result_unavailable"));
     check_case(NULL,"Sorry, try again.\nsudo: no password was provided\n",1,ESP_OK,false,512);
     assert(strstr(s_status.output_tail,"Sorry, try again."));
     char long_output[4096];snprintf(long_output,sizeof(long_output),"✓ 互联网连接正常！\n");
@@ -267,9 +276,11 @@ int main(void) {
         script_stdout=both;script_stderr=NULL;script_exit=script_error=0;start_run();finish_run();
         assert(s_status.stage==LPMU_STAGE_FAILED && script_runs==runs);
         assert(strstr(s_status.last_error,failure==0?"SCP upload":failure==1?"remote extract":"remote chmod"));
+        assert(!strcmp(s_status.reason,failure==0?"access_upload_failed":failure==1?"access_unpack_failed":"access_chmod_failed"));
+        assert(s_status.failure_stage==(failure==0?LPMU_STAGE_UPLOADING:failure==1?LPMU_STAGE_EXTRACTING:LPMU_STAGE_CHMOD));
         missing_project=false;upload_error=remote_extract_exit=remote_chmod_exit=0;
     }
-    connection_error=ESP_FAIL;int runs=script_runs;check_case(NULL,NULL,-1,ESP_OK,false,512);assert(script_runs==runs);connection_error=0;
+    connection_error=ESP_FAIL;int runs=script_runs;check_case(NULL,NULL,-1,ESP_OK,false,512);assert(script_runs==runs);assert(!strcmp(s_status.reason,"access_ssh_connect_failed"));connection_error=0;
     host_status=TS_HOST_VERIFY_MISMATCH;check_case(NULL,NULL,-1,ESP_OK,false,512);assert(script_runs==runs);host_status=TS_HOST_VERIFY_OK;
     host_status=TS_HOST_VERIFY_NOT_FOUND;check_case(NULL,NULL,-1,ESP_OK,false,512);assert(script_runs==runs);host_status=TS_HOST_VERIFY_OK;
     script_stdout=both;script_exit=script_error=0;start_run();

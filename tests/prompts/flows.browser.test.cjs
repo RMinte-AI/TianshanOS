@@ -143,7 +143,14 @@ function scenarioTests(file, scenarios) {
                     checkSentence(language, seen.text, scenario.id);
                     if (seen.title) checkSentence(language, seen.title, scenario.id + ' (title)');
                     // the folded details are for whoever looks into it: they carry the machine words the sentence must not
-                    if (seen.details) assert(/(原因代号|Reason code)[:：]/.test(seen.details), `${scenario.id}: details without the reason code`);
+                    if (scenario.rawOutput !== undefined) {
+                        assert.equal(seen.type, 'success');
+                        assert(seen.details.endsWith('\n' + scenario.rawOutput));
+                        assert.equal(await page.locator('.toast-detail').isVisible(), false);
+                        await page.locator('.toast-more').click();
+                        assert.equal(await page.locator('.toast-detail').isVisible(), true);
+                        assert.equal(await page.locator('.toast-detail').textContent(), seen.details);
+                    } else if (seen.details) assert(/(原因代号|Reason code)[:：]/.test(seen.details), `${scenario.id}: details without the reason code`);
                     if (scenario.verify) await scenario.verify({page, calls, seen, language});
                     if (UPDATE) {
                         const entry = produced.get(file) ?? produced.set(file, {}).get(file);
@@ -266,7 +273,7 @@ scenarioTests('automation', [
      act: p => p.evaluate(() => submitAction()), device: {'automation/actions/add': DROP}},
     {id: 'action.save.missing-id', setup: p => p.evaluate(() => { showAddActionModal(); }), act: p => p.evaluate(() => submitAction()), show: {field: 'action-id'}},
     {id: 'action.save.missing-command', setup: p => p.evaluate(() => { showAddActionModal(); document.getElementById('action-id').value = 'restart-agx'; }), act: p => p.evaluate(() => submitAction()), show: {field: 'action-cli-command'}},
-    {id: 'action.test.ok', setup: (p, c) => p.evaluate(n => actionNames.set('restart-agx', n), c.action), act: p => p.evaluate(() => testAction('restart-agx')),
+    {id: 'action.test.ok', rawOutput: '0', setup: (p, c) => p.evaluate(n => actionNames.set('restart-agx', n), c.action), act: p => p.evaluate(() => testAction('restart-agx')),
      device: {'automation/actions/execute': '{"code":0,"message":"Action executed successfully","data":{"async":false,"duration_ms":12,"output":"0"}}'}},
     {id: 'action.test.failed', setup: (p, c) => p.evaluate(n => actionNames.set('restart-agx', n), c.action), act: p => p.evaluate(() => testAction('restart-agx')),
      device: {'automation/actions/execute': wire('wire-action-run-failed.json')}},

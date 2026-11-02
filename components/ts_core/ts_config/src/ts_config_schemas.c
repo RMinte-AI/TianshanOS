@@ -380,7 +380,7 @@ static const ts_config_schema_entry_t s_device_schema_entries[] = {
         .key = "agx.auto_power_on",
         .type = TS_CONFIG_TYPE_BOOL,
         .default_bool = true,
-        .description = "系统启动时自动开机 AGX"
+        .description = "系统启动时自动开机 推理计算机"
     },
     {
         .key = "agx.power_on_delay",
@@ -399,7 +399,7 @@ static const ts_config_schema_entry_t s_device_schema_entries[] = {
         .key = "lpmu.auto_config",
         .type = TS_CONFIG_TYPE_BOOL,
         .default_bool = true,
-        .description = "自动配置 LPMU"
+        .description = "自动配置 应用计算机"
     },
     /* USB 切换 */
     {

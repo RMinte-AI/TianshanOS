@@ -1514,7 +1514,16 @@ let usbMuxTarget = 'esp32';
 let usbMuxConfigured = false;
 
 const USB_MUX_TARGETS = ['esp32', 'agx', 'lpmu'];
-const USB_MUX_DISPLAY = { 'esp32': 'ESP', 'agx': 'AGX', 'lpmu': 'LPMU' };
+// Resolve at render time so language changes also update dynamic names.
+function computerDisplayName(device) {
+    return device === 'agx' || device === 'lpmu' ? t('computerNames.' + device) : t('common.unknown');
+}
+
+function usbMuxDisplayName(target) {
+    if (target === 'esp32') return 'ESP';
+    if (target === 'disconnected') return t('system.usbDisconnected');
+    return computerDisplayName(target);
+}
 
 async function refreshUsbMuxStatus() {
     const pageCurrent = capturePageValidity();
@@ -1544,7 +1553,7 @@ function updateUsbMuxButton() {
         return;
     }
 
-    if (targetEl) targetEl.textContent = USB_MUX_DISPLAY[usbMuxTarget] || usbMuxTarget.toUpperCase();
+    if (targetEl) targetEl.textContent = usbMuxDisplayName(usbMuxTarget);
     if (btn) btn.disabled = false;
 }
 
@@ -1613,16 +1622,15 @@ async function toggleUsbMux() {
     const currentIdx = USB_MUX_TARGETS.indexOf(usbMuxTarget);
     const nextIdx = (currentIdx + 1) % USB_MUX_TARGETS.length;
     const newTarget = USB_MUX_TARGETS[nextIdx];
-    const displayName = USB_MUX_DISPLAY[newTarget];
 
     try {
-        showToast(t('system.usbSwitchTo', { name: displayName }), 'info');
+        showToast(t('system.usbSwitchTo', { name: usbMuxDisplayName(newTarget) }), 'info');
         const result = await api.call('device.usb.set', { target: newTarget }, 'POST');
 
         if (result.code === 0) {
             usbMuxTarget = newTarget;
             updateUsbMuxButton();
-            showToast(t('system.usbSwitchedTo', { name: displayName }), 'success');
+            showToast(t('system.usbSwitchedTo', { name: usbMuxDisplayName(newTarget) }), 'success');
         } else {
             reportFailure({ op: 'system.usbmux', result, write: true });
         }
@@ -6630,6 +6638,7 @@ async function loadNetworkPage() {
                     <div class="t-section">${t('networkPage.lpmuAccessTitle')}</div>
                     <div id="network-lpmu-access-current" style="margin-top:4px"><span class="state">${t('networkPage.lpmuAccessIdle')}</span></div>
                     <div id="network-lpmu-access-summary" class="t-note" style="word-break:break-word"></div>
+                    <button type="button" class="btn sm" id="network-lpmu-result-btn" style="margin-top:8px" hidden onclick="showNetworkLpmuAccessResult(networkLpmuAccessLastInfo)">${t('networkPage.lpmuAccessViewResult')}</button>
                 </div>
                 <button class="btn sm lpmu-access-btn" id="network-lpmu-access-btn" onclick="startNetworkLpmuAccess()">${t('networkPage.lpmuAccessBtn')}</button>
             </div>
@@ -6894,14 +6903,18 @@ function showNetworkLpmuAccessResult(info) {
         `<button type="button" class="btn lg primary">${t('networkPage.lpmuAccessResultDone')}</button>`);
     const details = modal.querySelector('details');
     let finished = false, loading = false, offset = 0, text = '';
-    const technicalDetail = info.technicalError ? t('networkPage.lpmuAccessTechnicalDetail', {error: info.technicalError}) + '\n\n' : '';
+    const technicalLines = [
+        info.failureStage ? t('networkPage.lpmuAccessFailureStage', {stage: getNetworkLpmuAccessStageLabel(info.failureStage)}) : '',
+        info.technicalError ? t('networkPage.lpmuAccessTechnicalDetail', {error: info.technicalError}) : ''
+    ].filter(Boolean);
+    const technicalDetail = technicalLines.length ? technicalLines.join('\n') + '\n\n' : '';
     details.ontoggle = async () => {
         if (!modal.isConnected) return;
         modal.querySelector('.sheet').style.width = details.open ? '720px' : '480px';
         if (!details.open || finished || loading) return;
         loading = true;
         const output = modal.querySelector('pre');
-        output.textContent = t('common.loading');
+        output.textContent = technicalDetail + t('common.loading');
         try {
             for (;;) {
                 const result = requireApiSuccess(await api.lpmuAccessLog(info.runId, offset), 'network.lpmu_access.log');
@@ -6922,7 +6935,9 @@ function showNetworkLpmuAccessResult(info) {
             }
         } catch (error) {
             finished = true; // Reopening must not automatically retry an invalid transcript.
-            if (modal.isConnected) output.textContent = failureText({ op: 'network.lpmulog', error, endpoint: 'lpmu.access.log', write: false });
+            if (modal.isConnected) output.textContent = technicalDetail +
+                failureText({ op: 'network.lpmulog', error, endpoint: 'lpmu.access.log', write: false }) +
+                (info.outputTail ? '\n\n' + t('networkPage.lpmuAccessLastOutput', {output: info.outputTail}) : '');
         } finally { loading = false; }
     };
     modal.querySelector('button').onclick = close;
@@ -7048,6 +7063,8 @@ async function refreshNetworkLpmuAccessStatus(notifyResult = true) {
 
 function showNetworkLpmuAccessStatusUnknown(message) {
     networkLpmuAccessUncertain = true;
+    const resultBtn = document.getElementById('network-lpmu-result-btn');
+    if (resultBtn) resultBtn.hidden = true;
     const btn = document.getElementById('network-lpmu-access-btn');
     if (btn) {
         btn.disabled = !!networkLpmuAccessSubmitting;
@@ -7063,19 +7080,22 @@ function renderNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '') {
     const info = normalizeNetworkLpmuAccessStatus(statusData, fallbackMessage);
     networkLpmuAccessLastInfo = info;
     networkLpmuAccessUncertain = false;
+    // Results belong to the confirmed task, independently of its one-time completion notification.
+    const resultBtn = document.getElementById('network-lpmu-result-btn');
+    if (resultBtn) resultBtn.hidden = !(info.success || info.failed) || !!networkLpmuAccessSubmitting;
 
     const btn = document.getElementById('network-lpmu-access-btn');
     if (btn) {
         btn.disabled = !!info.running || !!networkLpmuAccessSubmitting;
         btn.innerHTML = info.running
             ? (typeof t === 'function' ? t('networkPage.lpmuAccessRunning') : '处理中')
-            : (typeof t === 'function' ? t('networkPage.lpmuAccessBtn') : '通过LPMU接入');
+            : (typeof t === 'function' ? t('networkPage.lpmuAccessBtn') : '通过应用计算机接入');
     }
 
     const currentEl = document.getElementById('network-lpmu-access-current');
     if (currentEl) {
         const cls = info.failed ? ' bad' : (info.success ? ' ok' : '');
-        const label = getNetworkLpmuAccessStageLabel(info.stage);
+        const label = getNetworkLpmuAccessStageLabel(info.running ? info.phase : info.stage);
         const text = info.running ? (typeof t === 'function' ? t('networkPage.lpmuAccessRunning') : '处理中') + ': ' + label : label;
         currentEl.innerHTML = '<span class="state' + cls + '">' + escapeHtml(text) + '</span>';
     }
@@ -7110,83 +7130,65 @@ function normalizeNetworkLpmuAccessStatus(statusData = {}, fallbackMessage = '')
     }
     const failed = !running && (stage === 'failed' || !!data.error || !!data.last_error);
     const success = !running && stage === 'success' && !failed;
-    if (running && (stage === 'success' || stage === 'failed')) stage = 'execute';
+    const finishing = running && (stage === 'success' || stage === 'failed');
+    if (finishing) stage = 'execute';
 
     const errorText = data.error || data.last_error || data.stderr;
     const safeFallback = fallbackMessage && fallbackMessage !== 'OK' ? fallbackMessage : '';
     const outputText = data.summary || data.output_tail || data.output || data.stdout || data.message || safeFallback;
-    const unconfirmed = failed && data.exit_code === 0 &&
-        (data.internet_confirmed === false || data.configuration_complete === false);
-    const primaryError = compactNetworkLpmuAccessText(errorText ||
-        (Number.isInteger(data.exit_code) && data.exit_code >= 0 ? t('networkPage.lpmuAccessExitCode', {code: data.exit_code}) : ''));
-    const diagnosis = compactNetworkLpmuAccessOutput(outputText || data.stderr);
-    const scriptFailed = /^setup-smart-route failed \(exit=\d+\): remote script failed$/.test(primaryError);
-    const scriptError = scriptFailed ? extractNetworkLpmuAccessScriptError(outputText) : '';
+    const reason = networkAccessReason(data, String(errorText || '').trim());
+    const unconfirmed = failed && reason === 'access_unconfirmed';
+    const scriptError = reason === 'access_script_failed' ? extractNetworkLpmuAccessScriptError(outputText) : '';
     const summary = success ? t('networkPage.lpmuAccessResultDescription') :
         unconfirmed ? t('networkPage.lpmuAccessUnconfirmed') : failed ?
-        scriptFailed ? (scriptError || diagnosis || t('networkPage.lpmuAccessFailed')) :
-        [primaryError, diagnosis && diagnosis !== primaryError ? t('networkPage.lpmuAccessLastOutput', {output: diagnosis}) : ''].filter(Boolean).join('\n') : '';
+        scriptError || describeFailure({op: 'network.lpmuresult',
+            result: {code: 7, error: String(errorText || ''), data: {reason}}, write: false}).message : '';
 
-    return { stage, running, success, failed, summary, technicalError: failed ? primaryError : '', runId: data.run_id };
+    return { stage, phase: finishing ? stage : (raw || stage), running, success, failed, summary,
+        failureStage: failed && typeof data.failure_stage === 'string' ? data.failure_stage : '',
+        technicalError: failed ? String(errorText || '') : '', outputTail: failed ? String(outputText || '') : '', runId: data.run_id };
 }
 
 function extractNetworkLpmuAccessScriptError(value) {
     const lines = String(value || '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/);
-    // The script explicitly labels its error; route tables printed afterward
-    // are diagnostic context, not the reason for failure.
+    // Only the latest explicit failure marker can explain this execution.
+    // An unfamiliar final error must not revive an earlier known diagnosis.
     for (let i = lines.length - 1; i >= 0; i--) {
-        const match = lines[i].trim().match(/^✗\s*错误[：:]\s*(.+)$/);
-        if (match) return match[1] === '没有找到可用的互联网连接' ?
-            t('networkPage.lpmuAccessNoInternet') : compactNetworkLpmuAccessText(match[1]);
-    }
-    if (lines.some(line => /^sudo: \d+ incorrect password attempts?$/.test(line.trim()))) {
-        return t('networkPage.lpmuAccessPasswordIncorrect');
+        const line = lines[i].trim();
+        const match = line.match(/^✗\s*错误[：:]\s*(.+)$/);
+        if (match) return match[1] === '没有找到可用的互联网连接' ? t('networkPage.lpmuAccessNoInternet') : '';
+        if (/^sudo:/.test(line)) return /^sudo: \d+ incorrect password attempts?$/.test(line) ?
+            t('networkPage.lpmuAccessPasswordIncorrect') : '';
     }
     return '';
 }
 
 function normalizeNetworkLpmuAccessStage(raw, data = {}) {
-    if (!raw && data.running) return 'check';
-    if (!raw) return 'idle';
-    if (raw.includes('fail') || raw.includes('error')) return 'failed';
-    if (raw.includes('success') || raw.includes('done') || raw.includes('complete')) return 'success';
-    if (raw.includes('queue') || raw.includes('find') || raw.includes('load') || raw.includes('connect') || raw.includes('verify')) return 'check';
-    if (raw.includes('upload')) return 'upload';
-    if (raw.includes('unpack') || raw.includes('extract')) return 'unpack';
-    if (raw.includes('chmod') || raw.includes('exec') || raw.includes('run')) return 'execute';
-    if (raw.includes('check') || raw.includes('prepare') || raw.includes('verify')) return 'check';
-    if (raw === 'pending') return data.running ? 'check' : 'idle';
-    if (raw === 'idle') return 'idle';
-    return raw;
+    if (!raw) return data.running ? 'check' : 'idle';
+    // Exact values: "uploading" also contains "load", so substring ordering is unsafe.
+    const stages = {
+        idle: 'idle', queued: 'check', finding_host: 'check', loading_key: 'check',
+        connecting: 'check', verifying_host: 'check', checking_remote: 'check',
+        uploading: 'upload', extracting: 'unpack', chmod: 'execute', running_script: 'execute',
+        success: 'success', failed: 'failed',
+        check: 'check', upload: 'upload', unpack: 'unpack', execute: 'execute',
+        pending: data.running ? 'check' : 'idle', running: 'execute',
+        done: 'success', complete: 'success', error: 'failed'
+    };
+    return Object.hasOwn(stages, raw) ? stages[raw] : 'unknown';
 }
 
 function getNetworkLpmuAccessStageLabel(stage) {
-    const labels = {
-        idle: typeof t === 'function' ? t('networkPage.lpmuAccessIdle') : '未启动',
-        check: typeof t === 'function' ? t('networkPage.lpmuAccessStageCheck') : '检查远端项目',
-        upload: typeof t === 'function' ? t('networkPage.lpmuAccessStageUpload') : '上传项目包',
-        unpack: typeof t === 'function' ? t('networkPage.lpmuAccessStageUnpack') : '解包项目',
-        execute: typeof t === 'function' ? t('networkPage.lpmuAccessStageExecute') : '执行路由脚本',
-        success: typeof t === 'function' ? t('networkPage.lpmuAccessSuccess') : '成功',
-        failed: typeof t === 'function' ? t('networkPage.lpmuAccessFailed') : '失败'
+    const keys = {
+        idle: 'lpmuAccessIdle', pending: 'lpmuAccessStageQueued', running: 'lpmuAccessStageExecute',
+        queued: 'lpmuAccessStageQueued', finding_host: 'lpmuAccessStageHost',
+        loading_key: 'lpmuAccessStageKey', connecting: 'lpmuAccessStageConnect', verifying_host: 'lpmuAccessStageVerify',
+        checking_remote: 'lpmuAccessStageCheck', uploading: 'lpmuAccessStageUpload', extracting: 'lpmuAccessStageUnpack',
+        chmod: 'lpmuAccessStagePermissions', running_script: 'lpmuAccessStageExecute',
+        check: 'lpmuAccessStageCheck', upload: 'lpmuAccessStageUpload', unpack: 'lpmuAccessStageUnpack', execute: 'lpmuAccessStageExecute',
+        success: 'lpmuAccessSuccess', failed: 'lpmuAccessFailed'
     };
-    return labels[stage] || stage || labels.idle;
-}
-
-function compactNetworkLpmuAccessText(value) {
-    if (value === null || value === undefined) return '';
-    const text = String(value).replace(/\s+/g, ' ').trim();
-    if (text.length <= 160) return text;
-    return text.slice(0, 157) + '...';
-}
-
-function compactNetworkLpmuAccessOutput(value) {
-    if (value === null || value === undefined) return '';
-    const text = String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-        .split(/\r?\n/).map(line => line.trim())
-        .filter(line => line && !/^={3,}/.test(line) && !/^\$ /.test(line))
-        .slice(-2).join(' ').replace(/\s+/g, ' ');
-    return text.length <= 160 ? text : '…' + text.slice(-159);
+    return t('networkPage.' + (Object.hasOwn(keys, stage) ? keys[stage] : 'lpmuAccessStageUnknown'));
 }
 
 // 更新接口状态样式
@@ -12530,7 +12532,7 @@ function showToast(message, type = 'info', duration = 3000, attempt = null) {
     toastTimer = setTimeout(() => { toast.classList.remove('show'); toastDeadline = 0; }, duration);
 }
 
-// A failure that needs explaining: stays 8 s (paused while the pointer or focus is on it), can show the technical details on
+// A detailed operation result: stays 8 s (paused while the pointer or focus is on it), can show the technical details on
 // demand and can be dismissed. Used for messages built by describeFailure(); routine messages keep using showToast().
 function showFailureToast(message, details = '', {type = 'error', duration = 8000, attempt = null} = {}) {
     if (attempt && !attempt.isCurrent()) return;
@@ -12540,15 +12542,19 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
         toast.id = 'toast';
         document.body.appendChild(toast);
     }
-    const priority = type === 'error' ? 2 : 1;
+    const priority = type === 'error' ? 2 : type === 'warning' ? 1 : 0;
     if (!attempt && Date.now() < toastDeadline && toastPriority > priority && toastDeadline - Date.now() > duration) return;
     clearTimeout(toastTimer);
     const ui = (key, fallback) => (typeof i18n !== 'undefined' && i18n.complete(key, {}) ? t(key) : fallback);
     toast.textContent = '';
+    const header = document.createElement('div');
+    header.className = 'toast-header';
+    toast.appendChild(header);
     const text = document.createElement('span');
     text.className = 'toast-msg';
+    text.tabIndex = 0;
     text.textContent = String(message ?? '');
-    toast.appendChild(text);
+    header.appendChild(text);
     let inside = false, expanded = false, held = false, remaining = duration, armedAt = 0, detailBox = null;
     const hide = () => { clearTimeout(toastTimer); toast.classList.remove('show'); toastDeadline = 0; };
     const arm = ms => { clearTimeout(toastTimer); armedAt = Date.now(); remaining = ms; toastDeadline = armedAt + ms; toastTimer = setTimeout(hide, ms); };
@@ -12562,6 +12568,9 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
         more.setAttribute('aria-expanded', 'false');
         more.textContent = ui('failure.details.show', 'Details');
         pre.className = 'toast-detail';
+        pre.tabIndex = 0;
+        pre.setAttribute('role', 'region');
+        pre.setAttribute('aria-label', ui('failure.details.show', 'Details'));
         pre.hidden = true;
         pre.textContent = details;
         more.onclick = () => {
@@ -12571,7 +12580,7 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
             more.textContent = expanded ? ui('failure.details.hide', 'Hide') : ui('failure.details.show', 'Details');
             sync();
         };
-        toast.appendChild(more);
+        header.appendChild(more);
         detailBox = pre;
     }
     const close = document.createElement('button');
@@ -12580,12 +12589,12 @@ function showFailureToast(message, details = '', {type = 'error', duration = 800
     close.textContent = '×';
     close.setAttribute('aria-label', ui('failure.details.close', 'Close'));
     close.onclick = hide;
-    toast.appendChild(close);
+    header.appendChild(close);
     if (detailBox) toast.appendChild(detailBox);   // the details take their own row under the buttons
     toast.onmouseenter = toast.onfocusin = () => { inside = true; sync(); };
     toast.onmouseleave = toast.onfocusout = () => { inside = false; sync(); };
     toast.style.whiteSpace = '';
-    toast.setAttribute('role', 'alert');
+    toast.setAttribute('role', priority ? 'alert' : 'status');
     toast.className = `toast toast-${type} show rich`;
     toastPriority = priority;
     arm(duration);
@@ -16025,9 +16034,9 @@ async function testAction(id) {
             const queued=result.data?.async===true||result.data?.status==='queued';
             let msg = queued?configText('actionQueued',params):t('failure.ops.action.test.done', params);
             if (result.data?.output) {
-                msg += '\n' + t('promptRepair.outputPreview', {output: result.data.output.substring(0, 100)});
-            }
-            showToast(msg, queued?'info':'success');
+                showFailureToast(msg, t('promptRepair.commandOutput') + '\n' + result.data.output,
+                    {type: queued ? 'info' : 'success'});
+            } else showToast(msg, queued ? 'info' : 'success');
         } else {
             reportFailure({ op: 'action.test', params, result, endpoint });
         }

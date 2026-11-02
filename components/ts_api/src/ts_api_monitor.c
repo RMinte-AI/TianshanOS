@@ -288,7 +288,7 @@ esp_err_t ts_api_monitor_register(void)
         },
         {
             .name = "monitor.set_server",
-            .description = "Set AGX monitoring server IP and port",
+            .description = "Set compute monitoring server IP and port",
             .category = TS_API_CAT_DEVICE,
             .handler = api_monitor_set_server,
             .requires_auth = true,

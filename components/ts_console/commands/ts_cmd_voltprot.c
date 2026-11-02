@@ -155,9 +155,11 @@ static void print_status(bool json_format)
            (unsigned long)status.uptime_ms);
     ts_console_printf("╠══════════════════════════════════════════════════════════════╣\n");
     ts_console_printf("║ 设备状态:                                                    ║\n");
-    ts_console_printf("║   AGX 电源:  %s    LPMU 电源:  %s    AGX 连接:  %s       ║\n",
-           status.device_status.agx_powered ? "✅" : "❌",
-           status.device_status.lpmu_powered ? "✅" : "❌",
+    ts_console_printf("║   推理计算机电源:  %s                                        ║\n",
+           status.device_status.agx_powered ? "✅" : "❌");
+    ts_console_printf("║   应用计算机电源:  %s                                        ║\n",
+           status.device_status.lpmu_powered ? "✅" : "❌");
+    ts_console_printf("║   推理计算机连接:  %s                                        ║\n",
            status.device_status.agx_connected ? "✅" : "❌");
     ts_console_printf("╚══════════════════════════════════════════════════════════════╝\n");
 }

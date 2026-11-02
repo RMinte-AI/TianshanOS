@@ -77,11 +77,11 @@ static const pin_function_info_t s_function_names[] = {
     { TS_PIN_FUNC_USB_MUX_3, "USB_MUX_3", "USB MUX select 3" },
     
     /* Device Control */
-    { TS_PIN_FUNC_AGX_POWER, "AGX_POWER", "AGX power control" },
-    { TS_PIN_FUNC_AGX_RESET, "AGX_RESET", "AGX reset" },
-    { TS_PIN_FUNC_AGX_FORCE_RECOVERY, "AGX_FORCE_RECOVERY", "AGX force recovery" },
-    { TS_PIN_FUNC_LPMU_POWER, "LPMU_POWER", "LPMU power control" },
-    { TS_PIN_FUNC_LPMU_RESET, "LPMU_RESET", "LPMU reset" },
+    { TS_PIN_FUNC_AGX_POWER, "AGX_POWER", "Inference Computer power control" },
+    { TS_PIN_FUNC_AGX_RESET, "AGX_RESET", "Inference Computer reset" },
+    { TS_PIN_FUNC_AGX_FORCE_RECOVERY, "AGX_FORCE_RECOVERY", "Inference Computer force recovery" },
+    { TS_PIN_FUNC_LPMU_POWER, "LPMU_POWER", "Application Computer power control" },
+    { TS_PIN_FUNC_LPMU_RESET, "LPMU_RESET", "Application Computer reset" },
     { TS_PIN_FUNC_RTL8367_RST, "RTL8367_RST", "RTL8367 switch reset" },
     
     /* Power Monitoring */

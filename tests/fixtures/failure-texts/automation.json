@@ -206,13 +206,13 @@
   "action.test.ok": {
     "zh-CN": {
       "type": "success",
-      "text": "动作模板“重启 AGX”执行成功\n输出：0",
-      "details": null
+      "text": "动作模板“重启 AGX”执行成功",
+      "details": "命令原始输出\n0"
     },
     "en-US": {
       "type": "success",
-      "text": "Action template “Restart AGX” ran successfully\nOutput: 0",
-      "details": null
+      "text": "Action template “Restart AGX” ran successfully",
+      "details": "Original command output\n0"
     }
   },
   "action.test.timeout": {
