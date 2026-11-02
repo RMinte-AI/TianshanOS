@@ -481,15 +481,29 @@ static esp_err_t rmdir_r_unchecked(const char *path)
         return ret;
     }
     
-    ts_file_info_t info;
-    while (ts_storage_dir_next(&iter, &info) == ESP_OK) {
+    struct dirent *entry;
+    while (true) {
+        errno = 0;
+        entry = readdir((DIR *)iter.handle);
+        if (!entry) {
+            ret = errno ? ESP_FAIL : ESP_OK;
+            break;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+
         char full_path[TS_STORAGE_MAX_PATH];
-        snprintf(full_path, sizeof(full_path), "%s/%s", path, info.name);
-        
+        int length = snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
+        if (length < 0 || length >= sizeof(full_path)) {
+            ret = ESP_ERR_INVALID_ARG;
+            break;
+        }
+        ts_file_info_t info;
+        ret = ts_storage_stat(full_path, &info);
+        if (ret != ESP_OK) break;
         ret = info.is_directory ? ts_storage_rmdir_r(full_path) : ts_storage_delete(full_path);
         if (ret != ESP_OK) break;
     }
-    
+
     ts_storage_dir_close(&iter);
     
     return ret == ESP_OK ? ts_storage_rmdir(path) : ret;

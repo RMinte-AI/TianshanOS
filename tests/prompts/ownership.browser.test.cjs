@@ -810,3 +810,147 @@ for (const language of ['zh-CN', 'en-US']) {
   } finally {await context.close();}
  });
 }
+
+// Deferred-eight F62: full production page, only storage/API boundaries delayed.
+async function exportPage(language){
+ const f=await pageFor(language),{page}=f;page.setDefaultTimeout(6000);
+ await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+ await page.evaluate(async()=>{
+  api.token='fixture-token';api.username='root';closeLoginModal();window.exportReads=[];window.exportRequests=[];window.exportHolds=false;window.listHolds=false;window.exportLists=[];
+  const original=api.call.bind(api);
+  api.call=async(name,params,method)=>{
+   if(name==='config.pack.info')return {code:0,data:{can_export:true,device_type:'Developer'}};
+   if(name==='config.pack.export'){exportRequests.push(structuredClone(params));return {code:0,data:{tscfg:'fixture',size:7,filename:'fixture.tscfg'}};}
+   return original(name,params,method);
+  };
+  api.storageList=path=>{
+   const entries=path.endsWith('/sub')?[{name:'D.json',type:'file',size:4}]:[{name:'sub',type:'dir'},...['A','B','C'].map(n=>({name:n+'.json',type:'file',size:4}))];
+   if(listHolds)return new Promise(resolve=>exportLists.push({path,resolve}));
+   return Promise.resolve({code:0,data:{entries}});
+  };
+  api.storageRead=path=>{
+   const entry={path};exportReads.push(entry);
+   if(exportHolds)return new Promise((resolve,reject)=>Object.assign(entry,{resolve,reject}));
+   return Promise.resolve({code:0,data:{content:{file:path}}});
+  };
+  await loadSecurityPage();await refreshConfigPackStatus();
+ });
+ await page.locator('#btn-pack-export').click();await page.getByRole('checkbox',{name:'A.json',exact:true}).waitFor();
+ return f;
+}
+const exportButton=(page,fn)=>page.locator(`#pack-export-modal button[onclick="${fn}()"]`);
+async function flushExport(page,index,{error=false,version='old'}={}){
+ await page.evaluate(({index,error,version})=>{
+  const r=exportReads[index];if(error)r.reject(new Error('old read failed'));else r.resolve({code:0,data:{content:{version,file:r.path}}});
+ },{index,error,version});
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+}
+async function generateExport(page){
+ await page.locator('#pack-export-name').fill('fixture');await page.locator('#pack-export-recipient-cert').fill('fixture recipient certificate');
+ await page.locator('#btn-pack-export-generate').click();await page.waitForFunction(()=>exportRequests.length>0);
+ return page.evaluate(()=>exportRequests.at(-1));
+}
+for(const language of ['zh-CN','en-US']){
+ test(language+': F62 ordinary single/multiple, deselect B, cross-directory accumulation and real export payload',async()=>{
+  const f=await exportPage(language);try{const {page}=f;
+   await page.getByRole('checkbox',{name:'A.json',exact:true}).check();await page.getByRole('checkbox',{name:'B.json',exact:true}).check();
+   await page.getByRole('checkbox',{name:'B.json',exact:true}).uncheck();
+   let request=await generateExport(page);assert.deepEqual(request.content,{file:'/sdcard/config/A.json'});
+   await page.locator('#pack-export-file-list [data-name="sub"]').click();await page.getByRole('checkbox',{name:'D.json',exact:true}).check();
+   request=await generateExport(page);assert.deepEqual(request.content,{_batch:true,_files:{A:{file:'/sdcard/config/A.json'},D:{file:'/sdcard/config/sub/D.json'}}});
+   await exportButton(page,'hideConfigPackExportModal').click();await page.locator('#btn-pack-export').click();
+   assert.equal(await page.getByRole('checkbox',{name:'A.json',exact:true}).isChecked(),false);assert.equal(await page.locator('#btn-pack-export-generate').isDisabled(),true);
+   await exportButton(page,'packExportSelectAll').click();await page.waitForFunction(()=>!document.getElementById('btn-pack-export-generate').disabled);
+   request=await generateExport(page);assert.deepEqual(Object.keys(request.content._files),['A','B','C']);assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ for(const error of [false,true])test(language+': F62 cancelled single read ignores late '+(error?'error':'success'),async()=>{
+  const f=await exportPage(language);try{const {page}=f;await page.evaluate(()=>exportHolds=true);
+   await page.getByRole('checkbox',{name:'A.json',exact:true}).check();await page.waitForFunction(()=>exportReads.length===1);
+   await page.getByRole('checkbox',{name:'A.json',exact:true}).uncheck();await flushExport(page,0,{error});
+   assert.equal(await page.getByRole('checkbox',{name:'A.json',exact:true}).isChecked(),false);
+   assert.equal(await page.locator('#pack-export-selected').isVisible(),false);assert.equal(await page.locator('#btn-pack-export-generate').isDisabled(),true);assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(language+': F62 same-path reselection accepts only the new read, including late failure',async()=>{
+  for(const error of [false,true]){const f=await exportPage(language);try{const {page}=f;await page.evaluate(()=>exportHolds=true);
+   const cb=page.getByRole('checkbox',{name:'A.json',exact:true});await cb.check();await cb.uncheck();await cb.check();await page.waitForFunction(()=>exportReads.length===2);
+   await flushExport(page,1,{version:'new'});await flushExport(page,0,{error});
+   assert.equal(await cb.isChecked(),true);const request=await generateExport(page);assert.equal(request.content.version,'new');assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}}
+ });
+ for(const operation of ['deselect','close','page'])test(language+': F62 select-all stops after '+operation+'; old read cannot affect reopened selection',async()=>{
+  const f=await exportPage(language);try{const {page}=f;await page.evaluate(()=>exportHolds=true);
+   await exportButton(page,'packExportSelectAll').click();await page.waitForFunction(()=>exportReads.length===1);
+   if(operation==='deselect')await exportButton(page,'packExportDeselectAll').click();
+   else {await exportButton(page,'hideConfigPackExportModal').click();if(operation==='page'){
+    await page.locator('a[href="#/files"]').click();await page.waitForFunction(()=>!document.getElementById('pack-export-modal'));
+    await page.locator('a[href="#/security"]').click();await page.waitForFunction(()=>document.getElementById('btn-pack-export')&&!document.getElementById('btn-pack-export').disabled);
+   }await page.locator('#btn-pack-export').click();}
+   await flushExport(page,0);assert.deepEqual(await page.evaluate(()=>exportReads.map(r=>r.path)),['/sdcard/config/A.json']);
+   assert.equal(await page.getByRole('checkbox',{name:'A.json',exact:true}).isChecked(),false);assert.equal(await page.locator('#btn-pack-export-generate').isDisabled(),true);
+   await page.evaluate(()=>exportHolds=false);await page.getByRole('checkbox',{name:'B.json',exact:true}).check();
+   const request=await generateExport(page);assert.deepEqual(request.content,{file:'/sdcard/config/B.json'});assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(language+': F62 select-all snapshots paths while browsing, and stale directory success/error cannot replace current list',async()=>{
+  const f=await exportPage(language);try{const {page}=f;await page.evaluate(()=>exportHolds=true);
+   await exportButton(page,'packExportSelectAll').click();await page.waitForFunction(()=>exportReads.length===1);
+   await page.locator('#pack-export-file-list [data-name="sub"]').click();await page.getByRole('checkbox',{name:'D.json',exact:true}).waitFor();
+   for(let i=0;i<3;i++){await page.waitForFunction(n=>exportReads.length>n,i);await flushExport(page,i);}
+   assert.deepEqual(await page.evaluate(()=>exportReads.map(r=>r.path)),['/sdcard/config/A.json','/sdcard/config/B.json','/sdcard/config/C.json']);
+   const request=await generateExport(page);assert.deepEqual(Object.keys(request.content._files),['A','B','C']);
+   for(const error of [false,true]){
+    await page.evaluate(()=>listHolds=true);await exportButton(page,'packExportBrowseRefresh').click();
+    await page.waitForFunction(()=>exportLists.length>0);
+    await page.evaluate(()=>listHolds=false);await exportButton(page,'packExportBrowseUp').click();await page.getByRole('checkbox',{name:'A.json',exact:true}).waitFor();
+    await page.evaluate(error=>{const old=exportLists.shift();old.resolve(error?{code:7,error:'old list failure'}:{code:0,data:{entries:[{name:'STALE.json',type:'file'}]}});},error);
+    await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+    assert.equal(await page.getByRole('checkbox',{name:'A.json',exact:true}).isVisible(),true);assert.equal(await page.getByText('STALE.json',{exact:true}).count(),0);
+   }
+   assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(language+': F72 memory estimates, real HWM, absent versus numeric zero, sorting and reopening',async()=>{
+  const f=await pageFor(language);try{const {page}=f;await page.goto(base);await page.waitForFunction(()=>i18n.isReady());
+   await page.evaluate(async()=>{closeLoginModal();const original=api.call.bind(api);api.call=(name,...args)=>name==='ui.widgets.get'?Promise.resolve({code:0,data:{widgets:[],source:'sdcard',refresh_interval:5000}}):original(name,...args);window.memoryReads=0;api.getMemoryDetail=async()=>{++memoryReads;return {code:0,data:{stack_allocation_estimated:true,dram:{total:4096,free:1024,used:3072,used_percent:75},tasks:[{name:'missing',stack_hwm:333,priority:1,state:'Ready'},{name:'zero',stack_alloc:0,stack_used:0,stack_usage_pct:0,stack_hwm:600,priority:2,state:'Ready'},{name:'used',stack_alloc:2048,stack_used:1024,stack_usage_pct:50,stack_hwm:1024,priority:3,state:'Blocked'}],total_stack_allocated:2048,task_count:3}};};await loadSystemPage();});
+   const detail=page.locator('button[onclick="showMemoryDetailModal()"]');await detail.click();
+   const modal=page.locator('#memory-detail-modal');await page.locator('#task-memory-table').waitFor();
+   for(const key of ['stack_alloc','stack_used','stack_usage_pct'])assert.match(await page.locator(`th[data-sort="${key}"]`).innerText(),language==='zh-CN'?/估算/:/est\./);
+   assert.doesNotMatch(await page.locator('th[data-sort="stack_hwm"]').innerText(),/估算|est\./);
+   assert.match(await modal.innerText(),language==='zh-CN'?/测得的最低剩余量/:/measured minimum/);
+   assert.match(await modal.innerText(),language==='zh-CN'?/剩余栈 <256B 为危险区域，<512B 为警告区域/:/Remaining stack <256B is danger zone, <512B is warning zone/);
+   const row=name=>page.locator('#task-table-body tr').filter({has:page.locator('td:first-child',{hasText:new RegExp('^'+name+'$')})});
+   assert.deepEqual(await row('missing').locator('td').allTextContents().then(c=>c.slice(1,5)),['-','-','333 B','-']);
+   assert.deepEqual(await row('zero').locator('td').allTextContents().then(c=>c.slice(1,5)),['0 B','0 B','600 B','0%']);
+   await page.locator('th[data-sort="stack_hwm"]').click();assert.match(await modal.innerText(),language==='zh-CN'?/测得的最低剩余量/:/measured minimum/);
+   await modal.locator('button[onclick="hideMemoryDetailModal()"]').click();await detail.click();await page.locator('#task-memory-table').waitFor();assert.equal(await page.evaluate(()=>memoryReads),2);
+   assert.deepEqual(f.errors,[]);
+   if(process.env.TS_TEST_EVIDENCE_DIR){
+    const close=page.locator('#toast .toast-close');if(await close.isVisible())await close.click();
+    await modal.getByText(/测得的最低剩余量|measured minimum/).scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(process.env.TS_TEST_EVIDENCE_DIR,`F72-${language}.png`)});
+   }
+  }finally{await f.context.close();}
+ });
+}
+for(const language of ['zh-CN','en-US']){
+ test(language+': F62 current read errors remain visible; all-failed blocks export and partial success exports only readable content',async()=>{
+  const f=await exportPage(language);try{const {page}=f;await page.evaluate(()=>exportHolds=true);
+   await page.getByRole('checkbox',{name:'A.json',exact:true}).check();await flushExport(page,0,{error:true});
+   assert.equal(await page.getByRole('checkbox',{name:'A.json',exact:true}).isChecked(),true);
+   assert.match(await page.locator('#pack-export-selected').getAttribute('class'),/error/);
+   assert.equal(await page.locator('#btn-pack-export-generate').isDisabled(),true);assert.equal(await page.evaluate(()=>exportRequests.length),0);
+   await page.getByRole('checkbox',{name:'B.json',exact:true}).check();await flushExport(page,1,{version:'readable'});
+   const request=await generateExport(page);assert.deepEqual(request.content,{version:'readable',file:'/sdcard/config/B.json'});assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+ test(language+': F62 cancelled select-directory operation never shows its late completion toast',async()=>{
+  const f=await exportPage(language);try{const {page}=f;await page.evaluate(()=>exportHolds=true);
+   await exportButton(page,'packExportSelectDir').click();await page.waitForFunction(()=>exportReads.length===1);
+   await exportButton(page,'packExportDeselectAll').click();await flushExport(page,0);
+   assert.equal(await page.evaluate(()=>exportReads.length),1);assert.equal(await page.locator('#btn-pack-export-generate').isDisabled(),true);
+   assert.equal(await page.evaluate(()=>(document.getElementById('toast')?.textContent||'').includes(t('toast.selectedJsonFiles'))),false);assert.deepEqual(f.errors,[]);
+  }finally{await f.context.close();}
+ });
+}

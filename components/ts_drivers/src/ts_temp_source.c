@@ -969,48 +969,49 @@ static esp_err_t load_preferred_source_from_nvs(void)
         TS_LOGI(TAG, "Loaded preferred source from NVS: %s",
                 preferred == 0 ? "auto" : ts_temp_source_type_to_str(s_state.preferred_source));
         
-        /* 加载绑定变量：优先新 blob 格式，回退旧 string 格式 */
-        {
-            typedef struct {
-                uint8_t count;
-                ts_temp_bound_var_t vars[TS_TEMP_MAX_BOUND_VARS];
-            } bound_vars_blob_t;
+    } else {
+        TS_LOGD(TAG, "No saved preferred source, using default");
+    }
             
-            bound_vars_blob_t blob = {0};
-            size_t blob_len = sizeof(blob);
-            ret = nvs_get_blob(handle, NVS_KEY_BOUND_VARS, &blob, &blob_len);
-            if (ret == ESP_OK && blob.count > 0 && blob.count <= TS_TEMP_MAX_BOUND_VARS) {
-                s_state.bound_var_count = blob.count;
-                memcpy(s_state.bound_vars, blob.vars, blob.count * sizeof(ts_temp_bound_var_t));
-                for (uint8_t i = 0; i < s_state.bound_var_count; i++) {
-                    s_state.bound_vars[i].weight =
-                        sanitize_bound_weight(s_state.bound_vars[i].weight);
-                }
-                if (!has_positive_bound_weight(s_state.bound_vars, s_state.bound_var_count)) {
-                    TS_LOGW(TAG, "Ignoring persisted bound vars with no positive weights");
-                    s_state.bound_var_count = 0;
-                    memset(s_state.bound_vars, 0, sizeof(s_state.bound_vars));
-                }
-                sync_bound_variable_compat();
-                TS_LOGI(TAG, "Loaded %d weighted bound vars from NVS", s_state.bound_var_count);
+    /* 加载绑定变量：优先新 blob 格式，回退旧 string 格式 */
+    {
+        typedef struct {
+            uint8_t count;
+            ts_temp_bound_var_t vars[TS_TEMP_MAX_BOUND_VARS];
+        } bound_vars_blob_t;
+
+        bound_vars_blob_t blob = {0};
+        size_t blob_len = sizeof(blob);
+        ret = nvs_get_blob(handle, NVS_KEY_BOUND_VARS, &blob, &blob_len);
+        if (ret == ESP_OK && blob.count > 0 && blob.count <= TS_TEMP_MAX_BOUND_VARS) {
+            s_state.bound_var_count = blob.count;
+            memcpy(s_state.bound_vars, blob.vars, blob.count * sizeof(ts_temp_bound_var_t));
+            for (uint8_t i = 0; i < s_state.bound_var_count; i++) {
+                s_state.bound_vars[i].weight =
+                    sanitize_bound_weight(s_state.bound_vars[i].weight);
+            }
+            if (!has_positive_bound_weight(s_state.bound_vars, s_state.bound_var_count)) {
+                TS_LOGW(TAG, "Ignoring persisted bound vars with no positive weights");
+                s_state.bound_var_count = 0;
+                memset(s_state.bound_vars, 0, sizeof(s_state.bound_vars));
+            }
+            sync_bound_variable_compat();
+            TS_LOGI(TAG, "Loaded %d weighted bound vars from NVS", s_state.bound_var_count);
+        } else {
+            size_t len = sizeof(s_state.bound_variable);
+            ret = nvs_get_str(handle, NVS_KEY_BOUND_VAR, s_state.bound_variable, &len);
+            if (ret == ESP_OK && s_state.bound_variable[0] != '\0') {
+                s_state.bound_var_count = 1;
+                strncpy(s_state.bound_vars[0].name, s_state.bound_variable,
+                        sizeof(s_state.bound_vars[0].name) - 1);
+                s_state.bound_vars[0].name[sizeof(s_state.bound_vars[0].name) - 1] = '\0';
+                s_state.bound_vars[0].weight = 1.0f;
+                TS_LOGI(TAG, "Loaded legacy bound variable from NVS: %s", s_state.bound_variable);
             } else {
-                size_t len = sizeof(s_state.bound_variable);
-                ret = nvs_get_str(handle, NVS_KEY_BOUND_VAR, s_state.bound_variable, &len);
-                if (ret == ESP_OK && s_state.bound_variable[0] != '\0') {
-                    s_state.bound_var_count = 1;
-                    strncpy(s_state.bound_vars[0].name, s_state.bound_variable,
-                            sizeof(s_state.bound_vars[0].name) - 1);
-                    s_state.bound_vars[0].name[sizeof(s_state.bound_vars[0].name) - 1] = '\0';
-                    s_state.bound_vars[0].weight = 1.0f;
-                    TS_LOGI(TAG, "Loaded legacy bound variable from NVS: %s", s_state.bound_variable);
-                } else {
-                    s_state.bound_variable[0] = '\0';
-                    s_state.bound_var_count = 0;
-                }
+                s_state.bound_variable[0] = '\0';
+                s_state.bound_var_count = 0;
             }
         }
-    } else {
-        TS_LOGD(TAG, "No saved temp config found, using defaults");
     }
     
     nvs_close(handle);

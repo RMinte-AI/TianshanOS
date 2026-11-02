@@ -279,6 +279,27 @@ static void check_qr_color_restore(void) {
     }
     puts("PASS QR API/CLI/automation color save/reset/load/resave: default, red, white, black; on/off, brightness, animation switch, legacy absent/stale animation color");
 }
+static void check_fades(void) {
+    stop_render();ts_led_layer_t layer=ts_led_layer_get(s_matrix,0);
+    for(int out=0;out<2;out++)for(int remove=0;remove<2;remove++)for(int round=0;round<2;round++) {
+        ts_led_effect_config_t effect={.type=out?TS_LED_EFFECT_FADE_OUT:TS_LED_EFFECT_FADE_IN,
+            .params.fade={.duration_ms=1000,.auto_remove=remove}};
+        assert(ts_led_layer_set_effect(layer,&effect)==ESP_OK);
+        assert(layer->effect_start_time>0);
+        uint32_t start=layer->effect_start_time;
+        for(unsigned elapsed=0;elapsed<=1000;elapsed+=500) {
+            ts_led_rgb_t pixel={255,255,255};
+            ts_led_effect_process(layer,&pixel,1,1,1,(start+elapsed)-start);
+            int expected=elapsed==0?(out?255:0):elapsed==500?(out?128:127):(out?0:255);
+            assert(abs((int)pixel.r-expected)<=1 && pixel.r==pixel.g && pixel.g==pixel.b);
+        }
+        assert(layer->post_effect.type==(remove?TS_LED_EFFECT_NONE:effect.type));
+        effect.params.fade.duration_ms=0;assert(ts_led_layer_set_effect(layer,&effect)==ESP_OK);
+        ts_led_rgb_t pixel={255,255,255};ts_led_effect_process(layer,&pixel,1,1,1,0);
+        assert(abs((int)pixel.r-(out?0:255))<=1);assert(ts_led_layer_clear_effect(layer)==ESP_OK);
+    }
+    puts("PASS F56 production set/process: nonzero uptime, fade in/out start/half/end, reapply, zero duration, auto_remove on/off");
+}
 int main(void) {
     mkdir("images",0700);mkdir("fonts",0700);make_bmp();make_font();FILE *gif_file=fopen("images/normal.gif","wb");assert(gif_file);fwrite(gif_fixture,sizeof(gif_fixture),1,gif_file);fclose(gif_file);action_context.stats_mutex=xSemaphoreCreateMutex();assert(ts_led_cc_get_default_config(&g_config)==ESP_OK);g_config.enabled=true;g_config.white_point.enabled=true;g_config.white_point.red_scale=0.75f;g_config.gamma.enabled=true;g_config.gamma.gamma=1.4f;g_config.saturation.enabled=true;g_config.saturation.factor=0.7f;
     fresh();ts_led_layer_t layers[3]={ts_led_layer_get(s_touch,0),ts_led_layer_get(s_board,0),ts_led_layer_get(s_matrix,0)};
@@ -319,7 +340,7 @@ int main(void) {
     teardown();fresh();assert(ts_led_load_boot_config("matrix")==ESP_OK);frames(s_matrix,4,true);assert(ts_led_get_current_state("matrix",&state)==ESP_OK&&!state.enabled&&!strcmp(state.qrcode_text,"B07")&&!state.image_path[0]&&!state.animation[0]&&state.brightness==149&&state.filter_speed==29);
     assert(do_led_effect("matrix","solid",50,"red")==0);assert(ts_led_save_boot_config("matrix")==ESP_OK&&nvs_find("led.mat.clr")>=0);assert(do_led_effect("matrix","solid",50,NULL)==0);assert(ts_led_save_boot_config("matrix")==ESP_OK&&nvs_find("led.mat.clr")<0);
     teardown();fresh();assert(ts_led_load_boot_config("matrix")==ESP_OK);assert(!((ts_led_layer_impl_t*)ts_led_layer_get(s_matrix,0))->anim_data);
-    check_b09_render();teardown();check_qr_color_restore();free(s_delayed_image_timer);s_delayed_image_timer=NULL;vSemaphoreDelete(action_context.stats_mutex);free(s_anim_state);puts("PASS actual LED controls, independent RGB ownership, composition/CC/driver HAL output gate, QR layer handoff and NVS save/reset/rebuild/load");
+    check_fades();start_render();check_b09_render();teardown();check_qr_color_restore();free(s_delayed_image_timer);s_delayed_image_timer=NULL;vSemaphoreDelete(action_context.stats_mutex);free(s_anim_state);puts("PASS actual LED controls, independent RGB ownership, composition/CC/driver HAL output gate, QR layer handoff and NVS save/reset/rebuild/load");
 }
 '''
 headers = {path.name: path.read_text() for path in Path('components/ts_led/include').glob('*.h')}

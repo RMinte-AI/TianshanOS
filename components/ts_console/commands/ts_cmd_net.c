@@ -41,9 +41,9 @@ static struct {
     struct arg_lit *save;
     struct arg_lit *load;
     struct arg_lit *reset;
-    struct arg_lit *show_ip;     /* --ip: 快速显示IP配置 */
     struct arg_str *iface;
     struct arg_str *ip;
+    struct arg_str *ip_address;  /* Space-separated value of optional --ip. */
     struct arg_str *netmask;
     struct arg_str *gateway;
     struct arg_str *dns;
@@ -452,6 +452,9 @@ static int do_net_reset(void)
 
 static int cmd_net(int argc, char **argv)
 {
+    /* arg_str reset fills prior values with ""; optional omission needs NULL. */
+    s_net_args.ip->count = 0;
+    s_net_args.ip->sval[0] = NULL;
     int nerrors = arg_parse(argc, argv, (void **)&s_net_args);
     
     /* 显示帮助 */
@@ -467,11 +470,10 @@ static int cmd_net(int argc, char **argv)
         ts_console_printf("  --save              Save configuration to NVS\n");
         ts_console_printf("  --load              Load configuration from NVS\n");
         ts_console_printf("  --reset             Reset to default configuration\n");
-        ts_console_printf("  --ip                Show IP address (quick view)\n");
+        ts_console_printf("  --ip                Show IP; use --set --ip <addr> to set it\n");
         ts_console_printf("\n");
         ts_console_printf("Parameters:\n");
         ts_console_printf("  --iface <if>        Interface: eth, wifi (default: eth)\n");
-        ts_console_printf("  --ip <addr>         IP address (e.g., 192.168.1.100)\n");
         ts_console_printf("  --netmask <mask>    Netmask (e.g., 255.255.255.0)\n");
         ts_console_printf("  --gateway <addr>    Gateway address\n");
         ts_console_printf("  --dns <addr>        DNS server address\n");
@@ -499,6 +501,20 @@ static int cmd_net(int argc, char **argv)
     bool json_out = s_net_args.json->count > 0;
     const char *iface_str = s_net_args.iface->count > 0 ? s_net_args.iface->sval[0] : NULL;
     
+    const char *ip = s_net_args.ip->count ? s_net_args.ip->sval[0] : NULL;
+    if (s_net_args.ip_address->count) {
+        if (!s_net_args.set->count || !s_net_args.ip->count || ip) {
+            ts_console_error("Unexpected IP address argument\n");
+            return 1;
+        }
+        ip = s_net_args.ip_address->sval[0];
+    }
+    if (s_net_args.ip->count &&
+        ((s_net_args.set->count && !ip) || (!s_net_args.set->count && ip))) {
+        ts_console_error("Use --ip to query, or --set --ip <address> to set\n");
+        return 1;
+    }
+
     /* 处理各个操作 */
     if (s_net_args.status->count > 0 || argc == 1) {
         return do_net_status(json_out);
@@ -508,14 +524,14 @@ static int cmd_net(int argc, char **argv)
         return do_net_config(iface_str, json_out);
     }
     
-    if (s_net_args.show_ip->count > 0) {
+    if (!s_net_args.set->count && s_net_args.ip->count > 0) {
         return do_net_ip(iface_str, json_out);
     }
     
     if (s_net_args.set->count > 0) {
         return do_net_set(
             iface_str,
-            s_net_args.ip->count > 0 ? s_net_args.ip->sval[0] : NULL,
+            ip,
             s_net_args.netmask->count > 0 ? s_net_args.netmask->sval[0] : NULL,
             s_net_args.gateway->count > 0 ? s_net_args.gateway->sval[0] : NULL,
             s_net_args.dns->count > 0 ? s_net_args.dns->sval[0] : NULL,
@@ -568,9 +584,10 @@ esp_err_t ts_cmd_net_register(void)
     s_net_args.save     = arg_lit0(NULL, "save", "Save configuration to NVS");
     s_net_args.load     = arg_lit0(NULL, "load", "Load configuration from NVS");
     s_net_args.reset    = arg_lit0(NULL, "reset", "Reset to default configuration");
-    s_net_args.show_ip  = arg_lit0(NULL, "ip", "Show IP address (quick view)");
     s_net_args.iface    = arg_str0(NULL, "iface", "<if>", "Interface: eth, wifi");
-    s_net_args.ip       = arg_str0(NULL, "ip", "<addr>", "IP address");
+    s_net_args.ip       = arg_str0(NULL, "ip", "<addr>", "Query IP, or set address with --set");
+    s_net_args.ip->hdr.flag |= ARG_HASOPTVALUE;
+    s_net_args.ip_address = arg_str0(NULL, NULL, "<addr>", "Space-separated --ip address");
     s_net_args.netmask  = arg_str0(NULL, "netmask", "<mask>", "Netmask");
     s_net_args.gateway  = arg_str0(NULL, "gateway", "<addr>", "Gateway address");
     s_net_args.dns      = arg_str0(NULL, "dns", "<addr>", "DNS server");

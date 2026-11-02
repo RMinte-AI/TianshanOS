@@ -34,8 +34,7 @@ static struct {
     struct arg_lit *set;
     struct arg_lit *mode;
     struct arg_lit *providers;
-    struct arg_dbl *value;       // 温度值 (°C)
-    struct arg_str *mode_val;    // auto/manual
+    struct arg_str *value;       // Temperature or auto/manual
     struct arg_lit *json;
     struct arg_lit *help;
     struct arg_end *end;
@@ -267,16 +266,22 @@ static int temp_cmd_handler(int argc, char **argv)
             ts_console_error("--set requires --value <temperature>\n");
             return 1;
         }
-        return do_temp_set(s_temp_args.value->dval[0]);
+        char *end;
+        double value = strtod(s_temp_args.value->sval[0], &end);
+        if (*end != '\0' || end == s_temp_args.value->sval[0]) {
+            ts_console_error("Invalid temperature value\n");
+            return 1;
+        }
+        return do_temp_set(value);
     }
     
     /* temp --mode */
     if (s_temp_args.mode->count > 0) {
-        if (s_temp_args.mode_val->count == 0) {
+        if (s_temp_args.value->count == 0) {
             ts_console_error("--mode requires --value <auto|manual>\n");
             return 1;
         }
-        return do_temp_mode(s_temp_args.mode_val->sval[0]);
+        return do_temp_mode(s_temp_args.value->sval[0]);
     }
     
     /* Default: temp --status */
@@ -293,8 +298,7 @@ esp_err_t ts_cmd_temp_register(void)
     s_temp_args.set       = arg_lit0(NULL, "set", "Set manual temperature");
     s_temp_args.mode      = arg_lit0(NULL, "mode", "Set temperature mode");
     s_temp_args.providers = arg_lit0(NULL, "providers", "List all providers");
-    s_temp_args.value     = arg_dbl0("V", "value", "<°C>", "Temperature value");
-    s_temp_args.mode_val  = arg_str0(NULL, "value", "<mode>", "auto or manual");
+    s_temp_args.value     = arg_str0("V", "value", "<value>", "Temperature or auto/manual");
     s_temp_args.json      = arg_lit0("j", "json", "Output JSON format");
     s_temp_args.help      = arg_lit0("h", "help", "Show help");
     s_temp_args.end       = arg_end(5);

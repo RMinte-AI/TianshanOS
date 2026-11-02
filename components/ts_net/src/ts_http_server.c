@@ -430,9 +430,10 @@ esp_err_t ts_http_send_file(ts_http_request_t *req, const char *filepath)
         }
     } while (read_len == CHUNK_SIZE && ret == ESP_OK);
     
-    /* 发送结束标记（空块） */
+    /* A read failure must abort the response, without a success terminator. */
+    if (ret == ESP_OK && ferror(f)) ret = ESP_FAIL;
     if (ret == ESP_OK) {
-        httpd_resp_send_chunk(req->req, NULL, 0);
+        ret = httpd_resp_send_chunk(req->req, NULL, 0);
     }
     
     free(chunk);

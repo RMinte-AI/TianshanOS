@@ -12,6 +12,9 @@ python3 tests/runtime/test_service_control.py
 python3 tests/runtime/test_sensitive_auth.py
 python3 tests/runtime/test_port_forward.py
 python3 tests/runtime/test_compute_monitor.py
+python3 tests/runtime/test_http_file_stream.py
+python3 tests/runtime/test_sftp_list.py
+python3 tests/runtime/test_cli_option_contract.py
 python3 tests/runtime/test_system_memory.py
 python3 tests/runtime/test_system_reboot.py
 python3 tests/runtime/test_registry_tables.py
