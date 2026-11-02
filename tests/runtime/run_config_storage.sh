@@ -33,7 +33,7 @@ from pathlib import Path
 import re,sys
 out=[]
 for path,names in [
- ('components/ts_drivers/src/ts_temp_source.c',['sanitize_bound_weight','has_positive_bound_weight','sync_bound_variable_compat','ts_temp_source_type_to_str','save_preferred_source_to_nvs','save_bound_vars_to_nvs','load_migrated_temp_config','load_preferred_source_from_nvs']),
+ ('components/ts_drivers/src/ts_temp_source.c',['sanitize_bound_weight','has_positive_bound_weight','sync_bound_variable_compat','ts_temp_source_type_to_str','save_preferred_source_to_nvs','save_bound_vars_to_nvs','load_migrated_temp_config','load_preferred_source_from_nvs','read_variable_temp_snapshot']),
  ('components/ts_drivers/src/ts_power_policy.c',['load_config_values','save_config_values'])]:
  text=Path(path).read_text()
  if 'ts_temp_source' in path:
@@ -41,6 +41,9 @@ for path,names in [
   begin=text.index('typedef struct {\n    ts_temp_source_type_t type;')
   end=text.index('} temp_source_state_t;',begin)+len('} temp_source_state_t;')
   out.append(text[begin:end]);out.append('static temp_source_state_t s_state;')
+  begin=text.index('typedef struct {\n    bool valid;\n    int16_t temp;')
+  end=text.index('} variable_temp_snapshot_t;',begin)+len('} variable_temp_snapshot_t;')
+  out.append(text[begin:end])
  else:
   out.extend(re.findall(r'^#define CONFIG_NAMESPACE.*',text,re.M))
   out.append('static struct { ts_power_policy_config_t config; bool enabled_on_boot; } s_pp;')

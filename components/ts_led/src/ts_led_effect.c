@@ -221,8 +221,7 @@ static void process_blink(ts_led_rgb_t *buffer, size_t count,
 static void process_fade_in(ts_led_layer_t layer, ts_led_rgb_t *buffer, size_t count,
                             const ts_led_effect_config_t *config, uint32_t time_ms)
 {
-    uint32_t start_time = layer->effect_start_time;
-    uint32_t elapsed = time_ms - start_time;
+    uint32_t elapsed = time_ms;  // Renderer already supplies time since effect start.
     uint16_t duration = config->params.fade.duration_ms;
     
     uint8_t level;
@@ -246,8 +245,7 @@ static void process_fade_in(ts_led_layer_t layer, ts_led_rgb_t *buffer, size_t c
 static void process_fade_out(ts_led_layer_t layer, ts_led_rgb_t *buffer, size_t count,
                              const ts_led_effect_config_t *config, uint32_t time_ms)
 {
-    uint32_t start_time = layer->effect_start_time;
-    uint32_t elapsed = time_ms - start_time;
+    uint32_t elapsed = time_ms;  // Renderer already supplies time since effect start.
     uint16_t duration = config->params.fade.duration_ms;
     
     uint8_t level;

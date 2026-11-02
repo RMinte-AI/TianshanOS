@@ -449,6 +449,7 @@ static esp_err_t api_system_memory_detail(const cJSON *params, ts_api_result_t *
         ts_api_result_error(result, TS_API_ERR_NO_MEM, "Memory allocation failed");
         return ESP_ERR_NO_MEM;
     }
+    cJSON_AddBoolToObject(data, "stack_allocation_estimated", true);
     
     /* === Static Memory Sections === */
     cJSON *static_mem = cJSON_AddObjectToObject(data, "static");

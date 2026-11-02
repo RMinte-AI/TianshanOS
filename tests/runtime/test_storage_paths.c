@@ -17,6 +17,10 @@
 static char root[] = "/tmp/tianshan-storage-paths-XXXXXX";
 static unsigned mutations;
 static pthread_mutex_t gate;
+static bool fail_dir_read;
+static unsigned dirs_closed;
+static char removed[16][512];
+static unsigned removed_count;
 static const char *mapped(const char *path)
 {
     static char paths[4][1024];
@@ -32,10 +36,12 @@ static FILE *test_open(const char *path, const char *mode)
 }
 static int test_stat(const char *path, struct stat *out) { return stat(mapped(path), out); }
 static int test_mkdir(const char *path, mode_t mode) { ++mutations;return mkdir(mapped(path), mode); }
-static int test_unlink(const char *path) { ++mutations;return unlink(mapped(path)); }
+static int test_unlink(const char *path) { ++mutations;if(removed_count<16)snprintf(removed[removed_count++],512,"%s",path);return unlink(mapped(path)); }
 static int test_rmdir(const char *path) { ++mutations;return rmdir(mapped(path)); }
 static int test_rename(const char *from, const char *to) { ++mutations;return rename(mapped(from), mapped(to)); }
 static DIR *test_opendir(const char *path) { return opendir(mapped(path)); }
+static struct dirent *test_readdir(DIR *dir) { if(fail_dir_read){errno=EIO;return NULL;}return readdir(dir); }
+static int test_closedir(DIR *dir) { ++dirs_closed;return closedir(dir); }
 
 #define fopen(path, mode) test_open(path, mode)
 #define stat(path, out) test_stat(path, out)
@@ -44,6 +50,8 @@ static DIR *test_opendir(const char *path) { return opendir(mapped(path)); }
 #define rmdir(path) test_rmdir(path)
 #define rename(from, to) test_rename(from, to)
 #define opendir(path) test_opendir(path)
+#define readdir(dir) test_readdir(dir)
+#define closedir(dir) test_closedir(dir)
 #include "../../components/ts_storage/src/ts_storage.c"
 #include "../../components/ts_storage/src/ts_storage_paths.c"
 #undef TAG
@@ -55,6 +63,8 @@ static DIR *test_opendir(const char *path) { return opendir(mapped(path)); }
 #undef rmdir
 #undef rename
 #undef opendir
+#undef readdir
+#undef closedir
 
 void ts_storage_sd_lock(void) { assert(!pthread_mutex_lock(&gate)); }
 void ts_storage_sd_unlock(void) { assert(!pthread_mutex_unlock(&gate)); }
@@ -163,6 +173,37 @@ static void ordinary_names(void)
     puts("PASS seven ordinary names: actual query decode, upload storage and download bytes remain independent");
 }
 
+static void recursive_names(void)
+{
+    assert(ts_storage_mkdir_p("/sdcard/long/sub/empty")==ESP_OK);
+    char name[120],path[256];memset(name,'x',100);name[100]=0;
+    snprintf(path,sizeof(path),"/sdcard/long/sub/%s",name);original_file(path,"long");
+    name[63]=0;snprintf(path,sizeof(path),"/sdcard/long/sub/%s",name);original_file(path,"prefix");
+    original_file("/sdcard/long/普通文件名超过六十三字节仍应完整删除而不是截短名字.json","chinese");
+    original_file("/sdcard/long/short.json","short");
+    assert(ts_storage_mkdir_p("/sdcard/keep")==ESP_OK);original_file("/sdcard/keep/a","keep");
+    removed_count=0;assert(ts_storage_rmdir_r("/sdcard/long")==ESP_OK);
+    bool full_name=false,short_name=false;
+    for(unsigned i=0;i<removed_count;i++){
+        const char *name=strrchr(removed[i],'/')+1;
+        if(strlen(name)==100)full_name=true;if(strlen(name)==63)short_name=true;
+    }
+    assert(full_name&&short_name);
+    assert(!ts_storage_exists("/sdcard/long"));has_text("/sdcard/keep/a","keep");
+    assert(ts_storage_rmdir_r("/sdcard/keep")==ESP_OK);
+    assert(ts_storage_mkdir_p("/sdcard/read-error")==ESP_OK);unsigned closed=dirs_closed;
+    fail_dir_read=true;assert(ts_storage_rmdir_r("/sdcard/read-error")==ESP_FAIL);fail_dir_read=false;
+    assert(dirs_closed==closed+1&&ts_storage_exists("/sdcard/read-error"));
+    errno=EIO;assert(ts_storage_rmdir_r("/sdcard/read-error")==ESP_OK); /* stale errno is not a read error */
+    char deep[256]="/sdcard/",child[512];memset(deep+8,'d',210);deep[218]=0;
+    assert(ts_storage_mkdir_p(deep)==ESP_OK);memset(name,'f',100);name[100]=0;
+    snprintf(child,sizeof(child),"%s/%s",deep,name);original_file(child,"too long as a full storage path");
+    unsigned before=mutations;closed=dirs_closed;
+    assert(ts_storage_rmdir_r(deep)==ESP_ERR_INVALID_ARG&&mutations==before&&dirs_closed==closed+1);
+    assert(!test_unlink(child)&&!test_rmdir(deep));
+    puts("PASS F06 complete long and Chinese names, same short prefix, nested/empty directories; unselected files retained");
+}
+
 static void api_denied(ts_api_handler_t handler,const char *json)
 {
     cJSON *params=cJSON_Parse(json);assert(params);ts_api_result_t result={0};
@@ -255,6 +296,7 @@ int main(void)
     assert(file_download_handler(&managed_read,NULL)==ESP_OK&&mutations==before);
     assert(!strcmp(downloaded_path,"/sdcard/config/automation/state.json")&&downloaded_size==7&&!memcmp(downloaded_body,"current",7));
     ordinary_names();
+    recursive_names();
 
     /* Cleanup through the raw test VFS, since the configuration owner is private. */
     assert(!test_unlink("/sdcard/config/ordinary.json"));assert(!test_unlink("/sdcard/config/automation/state.json"));

@@ -248,6 +248,13 @@ static void xSemaphoreGive(SemaphoreHandle_t s) {(void)s;}
 #define TS_LOGI(...) ((void)0)
 #define TS_LOGW(...) ((void)0)
 #define TS_LOGE(...) ((void)0)
+static unsigned available_variables;
+static bool read_fresh_variable_float(const char *name,int64_t now,double *value,int64_t *updated,bool try_lock)
+{
+    (void)try_lock;unsigned i=!strcmp(name,"second");
+    if(!(available_variables & (1u<<i)))return false;
+    *value=i?50:40;*updated=now-10;return true;
+}
 #include "system_driver_persistence.inc"
 static void driver_storage(void)
 {
@@ -269,6 +276,38 @@ static void driver_storage(void)
     assert(load_preferred_source_from_nvs()==ESP_OK && s_state.preferred_source==TS_TEMP_SOURCE_SENSOR_LOCAL && s_state.bound_var_count==1 && reads==file_reads);
     s_state.bound_var_count=0;sync_bound_variable_compat();assert(save_bound_vars_to_nvs()==ESP_OK);
     memset(&s_state,0,sizeof(s_state));s_state.mutex=(void *)1;assert(load_preferred_source_from_nvs()==ESP_OK && !s_state.bound_var_count);
+    /* Save bindings through the production writer before any preferred key exists. */
+    record_t *preferred=system_record("ts_temp","preferred");assert(preferred);preferred->live=false;
+    memset(&s_state,0,sizeof(s_state));s_state.mutex=(void *)1;
+    s_state.bound_var_count=2;
+    strcpy(s_state.bound_vars[0].name,"not_yet_available");s_state.bound_vars[0].weight=0.7f;
+    strcpy(s_state.bound_vars[1].name,"second");s_state.bound_vars[1].weight=0.3f;
+    sync_bound_variable_compat();assert(save_bound_vars_to_nvs()==ESP_OK);
+    assert(!system_record("ts_temp","preferred"));
+    memset(&s_state,0,sizeof(s_state));s_state.mutex=(void *)1;
+    assert(load_preferred_source_from_nvs()==ESP_OK && s_state.preferred_source==TS_TEMP_SOURCE_DEFAULT);
+    assert(s_state.bound_var_count==2 && !strcmp(s_state.bound_variable,"not_yet_available"));
+    assert(fabsf(s_state.bound_vars[0].weight-0.7f)<0.001f && fabsf(s_state.bound_vars[1].weight-0.3f)<0.001f);
+    assert(!system_record("ts_temp","preferred"));
+    variable_temp_snapshot_t snapshot;
+    available_variables=0;assert(!read_variable_temp_snapshot(&snapshot,1000,false)&&snapshot.valid_count==0);
+    available_variables=3;assert(read_variable_temp_snapshot(&snapshot,1000,false)&&snapshot.temp==430&&snapshot.guard_temp==500&&snapshot.valid_count==2);
+    available_variables=1;assert(!read_variable_temp_snapshot(&snapshot,1000,false)&&snapshot.partial_stale&&snapshot.guard_temp==400);
+    available_variables=3;assert(read_variable_temp_snapshot(&snapshot,1000,false)&&snapshot.temp==430);
+    assert(s_state.preferred_source==TS_TEMP_SOURCE_DEFAULT);
+    assert(save_preferred_source_to_nvs(TS_TEMP_SOURCE_VARIABLE)==ESP_OK);
+    memset(&s_state,0,sizeof(s_state));s_state.mutex=(void *)1;
+    assert(load_preferred_source_from_nvs()==ESP_OK && s_state.preferred_source==TS_TEMP_SOURCE_VARIABLE && s_state.bound_var_count==2);
+    system_record("ts_temp","preferred")->live=false;system_record("ts_temp","bound_vars")->live=false;
+    const char *legacy="legacy_missing_variable";
+    put("nvs","ts_temp","bound_var",NVS_TYPE_STR,legacy,strlen(legacy)+1);
+    memset(&s_state,0,sizeof(s_state));s_state.mutex=(void *)1;
+    assert(load_preferred_source_from_nvs()==ESP_OK && s_state.preferred_source==TS_TEMP_SOURCE_DEFAULT);
+    assert(s_state.bound_var_count==1 && !strcmp(s_state.bound_vars[0].name,legacy) && s_state.bound_vars[0].weight==1.0f);
+    system_record("ts_temp","bound_var")->live=false;
+    memset(&s_state,0,sizeof(s_state));s_state.mutex=(void *)1;
+    assert(load_preferred_source_from_nvs()==ESP_OK && !s_state.bound_var_count && !system_record("ts_temp","preferred"));
+    puts("PASS F76 independently restored blob/legacy/empty bindings; default auto preserved, weights and later variable selection retained");
     puts("PASS system driver storage: selected power migration, actual save failure, one-time temperature conversion, NVS edits and cleared bindings survive restart");
 }
 

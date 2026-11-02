@@ -73,6 +73,7 @@ static void request(unsigned count,unsigned returned,const char **expected){
  assert(api_system_memory_detail(NULL,&result)==ESP_OK&&result.code==TS_API_OK&&result.data);
  /* Assert the serialized API payload, not just intermediate task structs. */
  char *wire=cJSON_PrintUnformatted(result.data);assert(wire);cJSON *data=cJSON_Parse(wire);assert(data);free(wire);cJSON_Delete(result.data);
+ assert(cJSON_IsTrue(get(data,"stack_allocation_estimated")));
  number(get(data,"dram"),"total",4000);number(get(data,"dram"),"free",1000);
  number(get(data,"dram"),"used",3000);number(get(data,"psram"),"total",8000);number(get(data,"psram"),"free",6000);
  number(get(data,"history"),"min_free_heap_ever",555);number(get(data,"nvs"),"used_entries",10);
@@ -89,6 +90,7 @@ static void request(unsigned count,unsigned returned,const char **expected){
    TaskStatus_t *original=NULL;
    for(unsigned j=0;j<returned;j++)if(!strcmp(fixture[j].pcTaskName,expected[i]))original=&fixture[j];
    assert(original);number(task,"stack_hwm",original->usStackHighWaterMark);number(task,"priority",original->uxCurrentPriority);
+   if(!strcmp(expected[i],"main")){number(task,"stack_alloc",4096);number(task,"stack_used",3496);number(task,"stack_usage_pct",85);}
    number(task,"core",original->xCoreID);number(task,"cpu_percent",original->ulRunTimeCounter);
    assert(!strcmp(cJSON_GetStringValue(get(task,"state")),"Ready"));
   }

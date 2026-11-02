@@ -11498,6 +11498,7 @@ let packExportCurrentPath = '/sdcard/config';
 let packExportSelectedFile = null;
 let packExportFileContent = null;
 let packExportSelectedFiles = new Map();  // Map<fullPath, {name, content, status}>
+let packExportBrowseRequest = null;
 let packExportCurrentEntries = [];  // 当前目录的条目缓存
 
 // 配置包：导出弹窗（仅 Developer）
@@ -11517,7 +11518,7 @@ function showConfigPackExportModal() {
     // 重置文件选择状态
     packExportSelectedFile = null;
     packExportFileContent = null;
-    packExportSelectedFiles.clear();
+    packExportSelectedFiles = new Map();
     packExportCurrentEntries = [];
     packExportCurrentPath = '/sdcard/config';
     document.getElementById('pack-export-browse-path').value = packExportCurrentPath;
@@ -11528,6 +11529,8 @@ function showConfigPackExportModal() {
 
 function hideConfigPackExportModal() {
     document.getElementById('pack-export-modal').classList.add('hidden');
+    packExportSelectedFiles = new Map();
+    packExportBrowseRequest = null;
     // 重置按钮状态
     document.getElementById('btn-pack-copy').style.display = 'none';
     document.getElementById('btn-pack-download').style.display = 'none';
@@ -11537,10 +11540,18 @@ function hideConfigPackExportModal() {
 // 文件浏览器：刷新当前目录
 async function packExportBrowseRefresh() {
     const fileList = document.getElementById('pack-export-file-list');
+    packExportCurrentEntries = [];
+    const request = packExportBrowseRequest = {};
+    const path = packExportCurrentPath;
+    const selection = packExportSelectedFiles;
+    const pageCurrent = capturePageValidity();
+    const current = () => pageCurrent() && packExportBrowseRequest === request &&
+        packExportSelectedFiles === selection && !document.getElementById('pack-export-modal').classList.contains('hidden');
     fileList.innerHTML = '<div class="row"><div class="rl t-note">' + t('common.loading') + '</div></div>';
     
     try {
-        const result = await api.storageList(packExportCurrentPath);
+        const result = await api.storageList(path);
+        if (!current()) return;
         requireApiSuccess(result, 'storage.list');
         
         const entries = result.data?.entries || [];
@@ -11567,7 +11578,7 @@ async function packExportBrowseRefresh() {
         
         let html = '';
         for (const entry of filteredEntries) {
-            const fullPath = packExportCurrentPath + '/' + entry.name;
+            const fullPath = path + '/' + entry.name;
             const isSelected = packExportSelectedFiles.has(fullPath);
             // 转义文件名中的特殊字符
             const safeName = escapeHtml(entry.name);
@@ -11586,6 +11597,7 @@ async function packExportBrowseRefresh() {
         packExportUpdateSelectedDisplay();
         
     } catch (e) {
+        if (!current()) return;
         fileList.innerHTML = `<div class="row"><div class="rl"><span class="state bad">${failureNote({ op: 'file.list', error: e, write: false })}</span></div></div>`;
     }
 }
@@ -11611,8 +11623,8 @@ function packExportBrowseUp() {
 }
 
 // 文件浏览器：切换文件选中状态
-async function packExportToggleFile(fileName, checked) {
-    const fullPath = packExportCurrentPath + '/' + fileName;
+async function packExportToggleFile(fileName, checked, directory = packExportCurrentPath) {
+    const fullPath = directory + '/' + fileName;
     
     if (!checked) {
         // 取消选择
@@ -11623,11 +11635,17 @@ async function packExportToggleFile(fileName, checked) {
     }
     
     // 选中文件，读取内容
-    packExportSelectedFiles.set(fullPath, { name: fileName, content: null, status: 'loading' });
+    const selection = packExportSelectedFiles;
+    const entry = { name: fileName, content: null, status: 'loading' };
+    const pageCurrent = capturePageValidity();
+    const current = () => pageCurrent() && packExportSelectedFiles === selection &&
+        selection.get(fullPath) === entry && !document.getElementById('pack-export-modal').classList.contains('hidden');
+    selection.set(fullPath, entry);
     packExportUpdateSelectedDisplay();
     
     try {
         const result = await api.storageRead(fullPath);
+        if (!current()) return;
         requireApiSuccess(result, 'storage.read');
         
         const rawContent = result.data?.content;
@@ -11642,10 +11660,11 @@ async function packExportToggleFile(fileName, checked) {
             try { JSON.parse(contentStr); } catch (_) { throw pageFailure('file_not_json'); }  // 验证
         }
         
-        packExportSelectedFiles.set(fullPath, { name: fileName, content: contentStr, status: 'ok' });
+        Object.assign(entry, { content: contentStr, status: 'ok' });
         
     } catch (e) {
-        packExportSelectedFiles.set(fullPath, { name: fileName, content: null, status: 'error', error: failureText({ op: 'pack.readfile', params: { file: fileName }, error: e, endpoint: 'storage.read', write: false }) });
+        if (!current()) return;
+        Object.assign(entry, { content: null, status: 'error', error: failureText({ op: 'pack.readfile', params: { file: fileName }, error: e, endpoint: 'storage.read', write: false }) });
     }
     
     packExportUpdateSelectedDisplay();
@@ -11700,20 +11719,28 @@ function packExportUpdateSelectedDisplay() {
 
 // 全选当前目录的文件
 async function packExportSelectAll() {
+    const selection = packExportSelectedFiles;
+    const directory = packExportCurrentPath;
+    const pageCurrent = capturePageValidity();
+    const current = () => pageCurrent() && packExportSelectedFiles === selection &&
+        !document.getElementById('pack-export-modal').classList.contains('hidden');
     const files = packExportCurrentEntries.filter(e => e.type === 'file');
     if (files.length === 0) return;
     
     for (const file of files) {
-        const fullPath = packExportCurrentPath + '/' + file.name;
+        if (!current()) return false;
+        const fullPath = directory + '/' + file.name;
         if (!packExportSelectedFiles.has(fullPath)) {
-            await packExportToggleFile(file.name, true);
+            await packExportToggleFile(file.name, true, directory);
+            if (!current()) return false;
         }
     }
+    return current();
 }
 
 // 取消全选
 function packExportDeselectAll() {
-    packExportSelectedFiles.clear();
+    packExportSelectedFiles = new Map();
     packExportUpdateSelectedDisplay();
     packExportBrowseRefresh();
 }
@@ -11721,7 +11748,7 @@ function packExportDeselectAll() {
 // 选择整个目录（当前目录下的所有 JSON 文件）
 async function packExportSelectDir() {
     // 与全选功能相同，但可以在 UI 上有区分
-    await packExportSelectAll();
+    if (!await packExportSelectAll()) return;
     showToast(typeof t === 'function' ? t('toast.selectedJsonFiles') : '已选择当前目录下的所有 JSON 文件', 'success');
 }
 
@@ -14417,19 +14444,19 @@ function userStateLabel(state) {
 function renderTaskRows(tasks, formatBytes) {
     return tasks.map(task => {
         const hwm = task.stack_hwm || 0;
-        const alloc = task.stack_alloc || 0;
-        const used = task.stack_used || 0;
-        const usagePct = task.stack_usage_pct || 0;
+        const alloc = task.stack_alloc;
+        const used = task.stack_used;
+        const usagePct = task.stack_usage_pct;
         const hwmState = hwm < 256 ? 'bad' : hwm < 512 ? 'warn' : '';
         const usageState = usagePct >= 90 ? 'bad' : usagePct >= 75 ? 'warn' : '';
         const stateCls = { 'Running': 'ok', 'Blocked': 'warn', 'Deleted': 'bad' }[task.state] || '';
         return `
         <tr>
             <td class="mono">${task.name}</td>
-            <td>${alloc ? formatBytes(alloc) : '-'}</td>
-            <td>${used ? formatBytes(used) : '-'}</td>
+            <td>${alloc != null ? formatBytes(alloc) : '-'}</td>
+            <td>${used != null ? formatBytes(used) : '-'}</td>
             <td>${hwmState ? `<span class="state ${hwmState}" style="font-size:inherit;font-weight:500">${formatBytes(hwm)}</span>` : `<span style="font-weight:500">${formatBytes(hwm)}</span>`}</td>
-            <td>${usageState ? `<span class="state ${usageState}" style="font-size:inherit">${usagePct}%</span>` : `${usagePct}%`}</td>
+            <td>${usageState ? `<span class="state ${usageState}" style="font-size:inherit">${usagePct}%</span>` : (usagePct != null ? `${usagePct}%` : '-')}</td>
             <td>${task.priority}</td>
             <td><span class="state ${stateCls}" style="font-size:inherit">${userStateLabel(task.state)}</span></td>
             ${task.cpu_percent !== undefined ? `<td>${task.cpu_percent}%</td>` : ''}

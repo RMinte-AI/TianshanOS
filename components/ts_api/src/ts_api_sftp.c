@@ -201,7 +201,7 @@ static esp_err_t api_sftp_ls(const cJSON *params, ts_api_result_t *result)
     cJSON *files = cJSON_CreateArray();
     ts_sftp_dirent_t entry;
     
-    while (ts_sftp_dir_read(dir, &entry) == ESP_OK) {
+    while ((ret = ts_sftp_dir_read(dir, &entry)) == ESP_OK) {
         cJSON *item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "name", entry.name);
         cJSON_AddBoolToObject(item, "is_dir", entry.attrs.is_dir);
@@ -213,7 +213,12 @@ static esp_err_t api_sftp_ls(const cJSON *params, ts_api_result_t *result)
     
     ts_sftp_dir_close(dir);
     close_sftp(ssh, sftp);
-    
+    if (ret != ESP_ERR_NOT_FOUND) {
+        cJSON_Delete(files);
+        ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to read directory");
+        return ret;
+    }
+
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "path", path->valuestring);
     cJSON_AddItemToObject(data, "files", files);
