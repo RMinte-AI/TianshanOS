@@ -61,6 +61,8 @@ typedef struct {
     bool running;
     lpmu_stage_t stage;
     lpmu_stage_t result_stage; /* Published only after run resources are closed. */
+    const char *reason; /* Stable UI reason; original last_error remains diagnostic. */
+    lpmu_stage_t failure_stage;
     esp_err_t esp_error;
     int exit_code;
     uint32_t bytes_transferred;
@@ -159,20 +161,22 @@ static void lpmu_set_stage(lpmu_stage_t stage)
     lpmu_unlock();
 }
 
-static void lpmu_set_error_locked(esp_err_t err, int exit_code, const char *fmt, va_list args)
+static void lpmu_set_error_locked(esp_err_t err, int exit_code, const char *reason, const char *fmt, va_list args)
 {
+    s_status.failure_stage = s_status.stage;
+    s_status.reason = reason;
     s_status.result_stage = LPMU_STAGE_FAILED;
     s_status.esp_error = err;
     s_status.exit_code = exit_code;
     vsnprintf(s_status.last_error, sizeof(s_status.last_error), fmt, args);
 }
 
-static void lpmu_fail(esp_err_t err, int exit_code, const char *fmt, ...)
+static void lpmu_fail(esp_err_t err, int exit_code, const char *reason, const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
     lpmu_lock();
-    lpmu_set_error_locked(err, exit_code, fmt, args);
+    lpmu_set_error_locked(err, exit_code, reason, fmt, args);
     lpmu_unlock();
     va_end(args);
 }
@@ -180,6 +184,8 @@ static void lpmu_fail(esp_err_t err, int exit_code, const char *fmt, ...)
 static void lpmu_success(int exit_code)
 {
     lpmu_lock();
+    s_status.reason = NULL;
+    s_status.failure_stage = LPMU_STAGE_IDLE;
     s_status.result_stage = LPMU_STAGE_SUCCESS;
     s_status.esp_error = ESP_OK;
     s_status.exit_code = exit_code;
@@ -306,7 +312,7 @@ static esp_err_t lpmu_run_command(ts_ssh_session_t session, const char *command,
     return ret;
 }
 
-static bool lpmu_verify_known_host(ts_ssh_session_t session, char *err, size_t err_size)
+static const char *lpmu_verify_known_host(ts_ssh_session_t session, char *err, size_t err_size)
 {
     ts_host_verify_result_t verify_result = TS_HOST_VERIFY_ERROR;
     ts_known_host_t host_info = {0};
@@ -314,21 +320,23 @@ static bool lpmu_verify_known_host(ts_ssh_session_t session, char *err, size_t e
 
     if (ret != ESP_OK) {
         snprintf(err, err_size, "known-host verification failed: %s", esp_err_to_name(ret));
-        return false;
+        return "access_host_verification_failed";
     }
 
     if (verify_result == TS_HOST_VERIFY_OK) {
-        return true;
+        return NULL;
     }
 
     if (verify_result == TS_HOST_VERIFY_NOT_FOUND) {
         snprintf(err, err_size, "known-host missing for %s:%d", LPMU_HOST, LPMU_PORT);
+        return "access_host_untrusted";
     } else if (verify_result == TS_HOST_VERIFY_MISMATCH) {
         snprintf(err, err_size, "known-host mismatch for %s:%d", LPMU_HOST, LPMU_PORT);
+        return "access_host_changed";
     } else {
         snprintf(err, err_size, "known-host verification error for %s:%d", LPMU_HOST, LPMU_PORT);
     }
-    return false;
+    return "access_host_verification_failed";
 }
 
 static void lpmu_task(void *arg)
@@ -358,19 +366,19 @@ static void lpmu_task(void *arg)
     lpmu_set_stage(LPMU_STAGE_FINDING_HOST);
     ret = ts_ssh_hosts_config_find(LPMU_HOST, LPMU_PORT, NULL, &host_cfg);
     if (ret != ESP_OK) {
-        lpmu_fail(ret, -1, "SSH host %s:%d is not configured", LPMU_HOST, LPMU_PORT);
+        lpmu_fail(ret, -1, "access_host_missing", "SSH host %s:%d is not configured", LPMU_HOST, LPMU_PORT);
         goto cleanup;
     }
 
     if (!host_cfg.enabled || host_cfg.auth_type != TS_SSH_HOST_AUTH_KEY || !host_cfg.keyid[0]) {
-        lpmu_fail(ESP_ERR_INVALID_STATE, -1, "SSH host %s:%d must use enabled key auth", LPMU_HOST, LPMU_PORT);
+        lpmu_fail(ESP_ERR_INVALID_STATE, -1, "access_key_auth_required", "SSH host %s:%d must use enabled key auth", LPMU_HOST, LPMU_PORT);
         goto cleanup;
     }
 
     lpmu_set_stage(LPMU_STAGE_LOADING_KEY);
     ret = ts_keystore_load_private_key(host_cfg.keyid, &private_key, &private_key_len);
     if (ret != ESP_OK) {
-        lpmu_fail(ret, -1, "failed to load SSH key '%s': %s", host_cfg.keyid, esp_err_to_name(ret));
+        lpmu_fail(ret, -1, "access_key_unavailable", "failed to load SSH key '%s': %s", host_cfg.keyid, esp_err_to_name(ret));
         goto cleanup;
     }
 
@@ -389,19 +397,20 @@ static void lpmu_task(void *arg)
     lpmu_set_stage(LPMU_STAGE_CONNECTING);
     ret = ts_ssh_session_create(&config, &session);
     if (ret != ESP_OK) {
-        lpmu_fail(ret, -1, "failed to create SSH session: %s", esp_err_to_name(ret));
+        lpmu_fail(ret, -1, "access_ssh_session_failed", "failed to create SSH session: %s", esp_err_to_name(ret));
         goto cleanup;
     }
 
     ret = ts_ssh_connect(session);
     if (ret != ESP_OK) {
-        lpmu_fail(ret, -1, "SSH connect failed: %s", ts_ssh_get_error(session));
+        lpmu_fail(ret, -1, "access_ssh_connect_failed", "SSH connect failed: %s", ts_ssh_get_error(session));
         goto cleanup;
     }
 
     lpmu_set_stage(LPMU_STAGE_VERIFYING_HOST);
-    if (!lpmu_verify_known_host(session, verify_error, sizeof(verify_error))) {
-        lpmu_fail(ESP_ERR_INVALID_STATE, -1, "%s", verify_error);
+    const char *verify_reason = lpmu_verify_known_host(session, verify_error, sizeof(verify_error));
+    if (verify_reason) {
+        lpmu_fail(ESP_ERR_INVALID_STATE, -1, verify_reason, "%s", verify_error);
         goto cleanup;
     }
 
@@ -410,7 +419,7 @@ static void lpmu_task(void *arg)
                            "test -f \"$HOME/lpmu-agx-network-setup/lpmu/setup-smart-route.sh\"",
                            &exit_code);
     if (ret != ESP_OK) {
-        lpmu_fail(ret, exit_code, "remote check failed: %s", ts_ssh_get_error(session));
+        lpmu_fail(ret, exit_code, "access_remote_check_failed", "remote check failed: %s", ts_ssh_get_error(session));
         goto cleanup;
     }
 
@@ -424,7 +433,7 @@ static void lpmu_task(void *arg)
         ret = ts_scp_send_buffer(session, lpmu_archive_start, lpmu_archive_size(),
                                  LPMU_REMOTE_TARBALL, 0644);
         if (ret != ESP_OK) {
-            lpmu_fail(ret, -1, "SCP upload failed: %s", esp_err_to_name(ret));
+            lpmu_fail(ret, -1, "access_upload_failed", "SCP upload failed: %s", esp_err_to_name(ret));
             goto cleanup;
         }
 
@@ -440,7 +449,7 @@ static void lpmu_task(void *arg)
                                &exit_code);
         if (ret != ESP_OK || exit_code != 0) {
             lpmu_fail(ret != ESP_OK ? ret : ESP_FAIL, exit_code,
-                      "remote extract failed (exit=%d): %s", exit_code,
+                      "access_unpack_failed", "remote extract failed (exit=%d): %s", exit_code,
                       ret != ESP_OK ? ts_ssh_get_error(session) : "tar command failed");
             goto cleanup;
         }
@@ -452,7 +461,7 @@ static void lpmu_task(void *arg)
                            &exit_code);
     if (ret != ESP_OK || exit_code != 0) {
         lpmu_fail(ret != ESP_OK ? ret : ESP_FAIL, exit_code,
-                  "remote chmod failed (exit=%d): %s", exit_code,
+                  "access_chmod_failed", "remote chmod failed (exit=%d): %s", exit_code,
                   ret != ESP_OK ? ts_ssh_get_error(session) : "chmod command failed");
         goto cleanup;
     }
@@ -466,6 +475,7 @@ static void lpmu_task(void *arg)
                                   lpmu_output_cb, NULL, &exit_code);
     if (ret != ESP_OK || exit_code != 0) {
         lpmu_fail(ret != ESP_OK ? ret : ESP_FAIL, exit_code,
+                  ret != ESP_OK ? "access_script_result_unavailable" : "access_script_failed",
                   "setup-smart-route failed (exit=%d): %s", exit_code,
                   ret != ESP_OK ? ts_ssh_get_error(session) : "remote script failed");
         goto cleanup;
@@ -476,7 +486,7 @@ static void lpmu_task(void *arg)
     lpmu_unlock();
     if (!confirmed) {
         lpmu_fail(ESP_ERR_INVALID_STATE, exit_code,
-                  "script exited with 0 but did not report Internet connectivity and configuration completion");
+                  "access_unconfirmed", "script exited with 0 but did not report Internet connectivity and configuration completion");
         goto cleanup;
     }
     lpmu_success(exit_code);
@@ -498,18 +508,26 @@ cleanup:
     vTaskDelete(NULL);
 }
 
+static void lpmu_api_error(ts_api_result_t *result, ts_api_result_code_t code,
+                           const char *reason, const char *message)
+{
+    ts_api_result_error(result, code, message);
+    result->data = cJSON_CreateObject();
+    if (result->data) cJSON_AddStringToObject(result->data, "reason", reason);
+}
+
 static esp_err_t api_lpmu_access_start(const cJSON *params, ts_api_result_t *result)
 {
     const cJSON *password = cJSON_GetObjectItemCaseSensitive(params, "sudo_password");
     if (!cJSON_IsString(password) || !password->valuestring[0] ||
         strpbrk(password->valuestring, "\r\n")) {
-        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "A single-line sudo_password is required");
+        lpmu_api_error(result, TS_API_ERR_INVALID_ARG, "access_password_required", "A single-line sudo_password is required");
         return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t ret = lpmu_ensure_mutex();
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_NO_MEM, "Failed to initialize LPMU access state");
+        lpmu_api_error(result, TS_API_ERR_NO_MEM, "access_state_unavailable", "Failed to initialize LPMU access state");
         return ret;
     }
 
@@ -517,19 +535,19 @@ static esp_err_t api_lpmu_access_start(const cJSON *params, ts_api_result_t *res
     lpmu_lock();
     if (s_status.running || s_lpmu_task != NULL) {
         lpmu_unlock();
-        ts_api_result_error(result, TS_API_ERR_BUSY, "LPMU access task is already running");
+        lpmu_api_error(result, TS_API_ERR_BUSY, "access_busy", "LPMU access task is already running");
         return ESP_ERR_INVALID_STATE;
     }
 
     if (!ts_usb_mux_is_configured()) {
         lpmu_unlock();
-        ts_api_result_error(result, TS_API_ERR_HARDWARE, "USB MUX 未配置，无法确认是否已切换到 LPMU");
+        lpmu_api_error(result, TS_API_ERR_HARDWARE, "access_usb_unconfigured", "USB MUX 未配置，无法确认是否已切换到 LPMU");
         return ESP_ERR_INVALID_STATE;
     }
 
     if (ts_usb_mux_get_target() != TS_USB_MUX_LPMU) {
         lpmu_unlock();
-        ts_api_result_error(result, TS_API_ERR_HARDWARE, "请先将 USB 切换到 LPMU 后再接入上层网络");
+        lpmu_api_error(result, TS_API_ERR_HARDWARE, "access_usb_target", "请先将 USB 切换到 LPMU 后再接入上层网络");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -537,7 +555,7 @@ static esp_err_t api_lpmu_access_start(const cJSON *params, ts_api_result_t *res
     char *sudo_input = malloc(password_len + 2);
     if (!sudo_input) {
         lpmu_unlock();
-        ts_api_result_error(result, TS_API_ERR_NO_MEM, "Failed to allocate sudo input");
+        lpmu_api_error(result, TS_API_ERR_NO_MEM, "access_input_unavailable", "Failed to allocate sudo input");
         return ESP_ERR_NO_MEM;
     }
     memcpy(sudo_input, password->valuestring, password_len);
@@ -564,9 +582,9 @@ static esp_err_t api_lpmu_access_start(const cJSON *params, ts_api_result_t *res
     if (task_ret != pdPASS) {
         lpmu_secure_zero(sudo_input, password_len + 1);
         free(sudo_input);
-        lpmu_fail(ESP_ERR_NO_MEM, -1, "failed to create LPMU access task");
+        lpmu_fail(ESP_ERR_NO_MEM, -1, "access_task_unavailable", "failed to create LPMU access task");
         lpmu_finish();
-        ts_api_result_error(result, TS_API_ERR_NO_MEM, "Failed to create LPMU access task");
+        lpmu_api_error(result, TS_API_ERR_NO_MEM, "access_task_unavailable", "Failed to create LPMU access task");
         return ESP_ERR_NO_MEM;
     }
 
@@ -582,7 +600,7 @@ static esp_err_t api_lpmu_access_status(const cJSON *params, ts_api_result_t *re
 {
     esp_err_t ret = lpmu_ensure_mutex();
     if (ret != ESP_OK) {
-        ts_api_result_error(result, TS_API_ERR_NO_MEM, "Failed to initialize LPMU access state");
+        lpmu_api_error(result, TS_API_ERR_NO_MEM, "access_state_unavailable", "Failed to initialize LPMU access state");
         return ret;
     }
 
@@ -602,6 +620,8 @@ static esp_err_t api_lpmu_access_status(const cJSON *params, ts_api_result_t *re
     cJSON_AddBoolToObject(data, "output_truncated", snap.output_bytes >= LPMU_OUTPUT_TAIL_MAX);
     cJSON_AddBoolToObject(data, "internet_confirmed", snap.internet_confirmed);
     cJSON_AddBoolToObject(data, "configuration_complete", snap.configuration_complete);
+    cJSON_AddStringToObject(data, "reason", snap.reason ? snap.reason : "");
+    cJSON_AddStringToObject(data, "failure_stage", snap.reason ? lpmu_stage_str(snap.failure_stage) : "");
     cJSON_AddStringToObject(data, "last_error", snap.last_error);
     cJSON_AddStringToObject(data, "output_tail", snap.output_tail);
     cJSON_AddStringToObject(data, "host", LPMU_HOST);
@@ -729,7 +749,7 @@ static esp_err_t api_lpmu_access_log(const cJSON *params, ts_api_result_t *resul
 static const ts_api_endpoint_t lpmu_access_endpoints[] = {
     {
         .name = "network.lpmu_access.start",
-        .description = "Start LPMU upper-network access setup",
+        .description = "Start application computer upstream-network access setup",
         .category = TS_API_CAT_NETWORK,
         .handler = api_lpmu_access_start,
         .requires_auth = true,
@@ -737,7 +757,7 @@ static const ts_api_endpoint_t lpmu_access_endpoints[] = {
     },
     {
         .name = "network.lpmu_access.status",
-        .description = "Get LPMU upper-network access setup status",
+        .description = "Get application computer upstream-network access setup status",
         .category = TS_API_CAT_NETWORK,
         .handler = api_lpmu_access_status,
         .requires_auth = true,
@@ -745,7 +765,7 @@ static const ts_api_endpoint_t lpmu_access_endpoints[] = {
     },
     {
         .name = "network.lpmu_access.log",
-        .description = "Get the execution log for an LPMU access run",
+        .description = "Get the execution log for an application computer network access run",
         .category = TS_API_CAT_NETWORK,
         .handler = api_lpmu_access_log,
         .requires_auth = true,

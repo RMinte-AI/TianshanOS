@@ -41,7 +41,7 @@
             "sel_gpio": "USB_MUX_0",
             "oe_gpio": "USB_MUX_1",
             "channels": 4,
-            "description": "USB multiplexer for AGX/LPMU switching"
+            "description": "USB multiplexer for Inference Computer/Application Computer switching"
         },
         "ethernet": {
             "type": "w5500",
@@ -112,7 +112,7 @@
             "recovery_gpio": "AGX_FORCE_RECOVERY",
             "power_delay_ms": 100,
             "reset_pulse_ms": 200,
-            "description": "Jetson AGX power and reset control"
+            "description": "Inference computer power and reset control (Jetson AGX)"
         },
         "lpmu_control": {
             "type": "gpio_control",
@@ -120,7 +120,7 @@
             "reset_gpio": "LPMU_RESET",
             "power_delay_ms": 100,
             "reset_pulse_ms": 200,
-            "description": "LPMU power and reset control"
+            "description": "Application Computer power and reset control"
         }
     }
 }

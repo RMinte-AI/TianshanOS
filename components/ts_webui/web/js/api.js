@@ -122,6 +122,36 @@ const FAILURE_LEGACY_TEXT = {   // English texts the device sends without a reas
 };
 const FAILURE_LEGACY_PREFIX = [['AP config requires', 'ap_mode_required'], ['AP stations requires', 'ap_mode_required'], ['WiFi scan requires', 'sta_mode_required'], ['CSR device ID must fit', 'csr_invalid']];
 const legacyToken = raw => FAILURE_LEGACY_TEXT[raw] || (FAILURE_LEGACY_PREFIX.find(([prefix]) => raw.startsWith(prefix)) || [])[1];
+// Compatibility for the network-access API before structured reasons were added.
+// Match only messages emitted by that API; never translate arbitrary script output.
+const NETWORK_ACCESS_LEGACY_REASONS = [
+    [/^A single-line sudo_password is required$/, 'access_password_required'],
+    [/^Failed to initialize LPMU access state$/, 'access_state_unavailable'],
+    [/^LPMU access task is already running$/, 'access_busy'],
+    [/^USB MUX 未配置，无法确认是否已切换到 LPMU$/, 'access_usb_unconfigured'],
+    [/^请先将 USB 切换到 LPMU 后再接入上层网络$/, 'access_usb_target'],
+    [/^Failed to allocate sudo input$/, 'access_input_unavailable'],
+    [/^[Ff]ailed to create LPMU access task$/, 'access_task_unavailable'],
+    [/^SSH host [^\s]+ is not configured$/, 'access_host_missing'],
+    [/^SSH host [^\s]+ must use enabled key auth$/, 'access_key_auth_required'],
+    [/^failed to load SSH key '[^\r\n]*': [^\r\n]+$/, 'access_key_unavailable'],
+    [/^failed to create SSH session: [^\r\n]+$/, 'access_ssh_session_failed'],
+    [/^SSH connect failed: [^\r\n]+$/, 'access_ssh_connect_failed'],
+    [/^known-host missing for [^\s]+$/, 'access_host_untrusted'],
+    [/^known-host mismatch for [^\s]+$/, 'access_host_changed'],
+    [/^known-host verification (?:failed:|error for) [^\r\n]+$/, 'access_host_verification_failed'],
+    [/^remote check failed: [^\r\n]+$/, 'access_remote_check_failed'],
+    [/^SCP upload failed: [^\r\n]+$/, 'access_upload_failed'],
+    [/^remote extract failed \(exit=-?\d+\): [^\r\n]+$/, 'access_unpack_failed'],
+    [/^remote chmod failed \(exit=-?\d+\): [^\r\n]+$/, 'access_chmod_failed'],
+    [/^setup-smart-route failed \(exit=-?\d+\): remote script failed$/, 'access_script_failed'],
+    [/^setup-smart-route failed \(exit=-?\d+\): [^\r\n]+$/, 'access_script_result_unavailable'],
+    [/^script exited with 0 but did not report Internet connectivity and configuration completion$/, 'access_unconfirmed']
+];
+function networkAccessReason(data, raw) {
+    // A future reason must not be reinterpreted using an older English message.
+    return data?.reason || NETWORK_ACCESS_LEGACY_REASONS.find(([pattern]) => pattern.test(raw || ''))?.[1] || null;
+}
 const FAILURE_CODE_TOKEN = {1: 'invalid_request', 2: 'not_found', 3: 'no_permission', 4: 'busy', 5: 'timeout', 6: 'no_memory',
     7: 'no_detail', 8: 'not_supported', 9: 'hardware_failed', 10: 'target_unreachable', 11: 'auth_required'};
 const FAILURE_CODE_NAME = {INVALID_ARG: 1, NOT_FOUND: 2, NO_PERMISSION: 3, BUSY: 4, TIMEOUT: 5, NO_MEM: 6, INTERNAL: 7,
@@ -153,6 +183,8 @@ function describeFailure({op, phase = 'failed', params = {}, result = null, erro
     // A write that ended in an exception without an answer from the device may or may not have happened.
     if (!tok && write && error && !(typeof error.code === 'number' && error.code !== 0)) tok = 'result_unknown';
     if (!tok && pageError) tok = 'page_error';
+    if (!tok && known(body?.reason)) tok = body.reason;
+    if (!tok && op?.startsWith('network.lpmu')) tok = networkAccessReason(body, raw);
     if (!tok && known(raw)) tok = raw;
     if (!tok && known(legacyToken(raw))) tok = legacyToken(raw);
     if (!tok) tok = FAILURE_CODE_TOKEN[numeric] || 'no_detail';

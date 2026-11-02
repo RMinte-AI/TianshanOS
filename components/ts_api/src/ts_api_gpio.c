@@ -25,14 +25,14 @@ typedef struct {
 } gpio_pin_info_t;
 
 static const gpio_pin_info_t s_controllable_pins[] = {
-    {1,  "AGX_RESET",         "AGX reset (HIGH=reset)", 0},
-    {2,  "LPMU_RESET",        "LPMU reset (HIGH=reset)", 0},
-    {3,  "AGX_FORCE_SHUTDOWN", "AGX force shutdown", 0},
+    {1,  "AGX_RESET",         "Inference Computer reset (HIGH=reset)", 0},
+    {2,  "LPMU_RESET",        "Application Computer reset (HIGH=reset)", 0},
+    {3,  "AGX_FORCE_SHUTDOWN", "Inference Computer force shutdown", 0},
     {8,  "USB_MUX_0",         "USB MUX select bit 0", 0},
     {17, "RTL8367_RST",       "Network switch reset", 0},
     {39, "ETH_RST",           "W5500 Ethernet reset (LOW=reset)", 1},
-    {40, "AGX_RECOVERY",      "AGX recovery mode", 0},
-    {46, "LPMU_POWER",        "LPMU power button", 0},
+    {40, "AGX_RECOVERY",      "Inference Computer recovery mode", 0},
+    {46, "LPMU_POWER",        "Application Computer power button", 0},
     {48, "USB_MUX_1",         "USB MUX select bit 1", 0},
 };
 

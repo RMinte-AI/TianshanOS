@@ -12,7 +12,7 @@ TianshanOS is the device management system for RM-01. It runs on the ESP32 out-o
 
 | Feature | What you can do |
 |---|---|
-| Device status and power | Check temperature, voltage, power consumption and system status. Control power to the AGX and LPMU. |
+| Device status and power | Check temperature, voltage, power consumption and system status. Control power to the Inference Computer and Application Computer. |
 | Fans and lighting | Adjust fan speed, configure automatic control and temperature curves, and manage lighting, effects and display content. |
 | Networking and files | Configure Wi-Fi and Ethernet. Browse, upload and download files on the device. |
 | SSH commands | Manage remote hosts and commands, run commands, check service status, and start or stop services. |

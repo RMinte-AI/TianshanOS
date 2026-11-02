@@ -89,7 +89,7 @@ This task covers generating SSH keys from scratch, deploying the public key to a
 | **Key ID** | Yes | A unique identifier for the key, used for future reference. Allowed characters: letters, digits, underscores. Must be unique. | `default`, `agx_key`, `lpmu_prod` |
 | **Key Type** | Yes | Select the algorithm and key length. | See “Key Type Selection” below |
 | **Notes** | No | Describe the key’s purpose for easier recognition later. | `For AGX Orin connection`, `Test environment key` |
-| **Alias** | No | A friendly name displayed instead of the Key ID, useful when “hide key” is enabled. | `AGX Production`, `Main Server Key` |
+| **Alias** | No | A friendly name displayed instead of the Key ID, useful when “hide key” is enabled. | `Inference Computer Production`, `Main Server Key` |
 | **Allow Private Key Export** | No | When checked, the private key can be exported for backup/migration. **Security risk**: leaked private keys allow unauthorized access. | Check only when backup is needed |
 | **Hide Key ID** | No | When enabled, low-privilege users only see the alias or masked string instead of the real Key ID—useful in multi-user environments. | Enable for shared devices |
 
@@ -2524,8 +2524,8 @@ The following docs provide additional technical depth and troubleshooting guidan
 
 | Key ID | Deployed Host | Username | Purpose | Deployment Date | Owner |
 |--------|---------------|----------|---------|-----------------|-------|
-| agx_prod | 192.168.1.100 | nvidia | AGX monitoring | 2026-01-30 | Alice |
-| lpmu_test | 10.10.99.50 | root | LPMU testing | 2026-01-28 | Bob |
+| agx_prod | 192.168.1.100 | nvidia | Inference computer monitoring | 2026-01-30 | Alice |
+| lpmu_test | 10.10.99.50 | root | Application computer testing | 2026-01-28 | Bob |
 
 **Benefits**:
 - Simplifies maintenance and auditing.
@@ -3805,8 +3805,8 @@ The following docs provide additional technical depth and troubleshooting guidan
 
 | Key ID | Deployed Host | Username | Purpose | Deployment Date | Owner |
 |--------|---------------|----------|---------|-----------------|-------|
-| agx_prod | 192.168.1.100 | nvidia | AGX monitoring | 2026-01-30 | Alice |
-| lpmu_test | 10.10.99.50 | root | LPMU testing | 2026-01-28 | Bob |
+| agx_prod | 192.168.1.100 | nvidia | Inference computer monitoring | 2026-01-30 | Alice |
+| lpmu_test | 10.10.99.50 | root | Application computer testing | 2026-01-28 | Bob |
 
 **Benefits**:
 - Simplifies maintenance and auditing.

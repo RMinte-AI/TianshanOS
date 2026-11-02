@@ -202,7 +202,7 @@ for (const language of ['zh-CN', 'en-US']) {
         } finally {await context.close();}
     });
 
-    test(`${language}: logs failure summary shows the last diagnosis and keeps technical status separate`, async () => {
+    test(`${language}: unknown script diagnostics stay out of the localized failure summary`, async () => {
         const {page, context, errors} = await open(language);
         try {
             const result=await page.evaluate(() => {
@@ -210,11 +210,11 @@ for (const language of ['zh-CN', 'en-US']) {
                 const diagnosis='RTNETLINK answers: Network is unreachable';
                 const info=normalizeNetworkLpmuAccessStatus({run_id:35,stage:'failed',running:false,exit_code:1,last_error:error,
                     output_tail:'route diagnostic line '.repeat(80)+'\n\u001b[31m'+diagnosis+'\u001b[0m\n=== 调试结束 ===\n'});
-                const unconfirmed=normalizeNetworkLpmuAccessStatus({stage:'failed',running:false,exit_code:0,internet_confirmed:false,configuration_complete:true,last_error:'confirmation missing'});
+                const unconfirmed=normalizeNetworkLpmuAccessStatus({stage:'failed',running:false,exit_code:0,internet_confirmed:false,configuration_complete:true,last_error:'script exited with 0 but did not report Internet connectivity and configuration completion'});
                 showNetworkLpmuAccessResult(info);
                 return {summary:info.summary,technicalError:info.technicalError,error,diagnosis,unconfirmed,expected:t('networkPage.lpmuAccessUnconfirmed')};
             });
-            assert(!result.summary.includes(result.error));assert(result.summary.includes(result.diagnosis));
+            assert(!result.summary.includes(result.error));assert(!result.summary.includes(result.diagnosis));assert(/脚本|script/.test(result.summary));
             assert.equal(result.technicalError,result.error);
             assert(!result.summary.includes('==='));assert(!result.summary.includes('\u001b'));
             assert.equal(result.unconfirmed.success,false);assert.equal(result.unconfirmed.summary,result.expected);assert.deepEqual(errors,[]);
@@ -236,7 +236,8 @@ for (const language of ['zh-CN', 'en-US']) {
             });
             assert.equal(result.info.summary,result.expected);assert.equal(result.info.success,false);
             assert.equal(result.password.summary,result.passwordExpected);
-            assert(result.transport.summary.startsWith('SSH connect failed: connection timeout'));
+            assert(!result.transport.summary.includes('SSH connect failed: connection timeout'));
+            assert(/SSH/.test(result.transport.summary));assert.equal(result.transport.technicalError,'SSH connect failed: connection timeout');
             assert(!await page.locator('#network-lpmu-result-modal .t-body').textContent().then(s=>s.includes(result.error)));
             await page.locator('#network-lpmu-result-modal summary').click();
             await page.waitForFunction(()=>document.querySelector('#network-lpmu-result-modal pre').textContent.includes('linkdown'));

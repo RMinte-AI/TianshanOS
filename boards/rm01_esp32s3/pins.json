@@ -65,34 +65,34 @@
             "gpio": 3,
             "active_high": true,
             "initial_state": "low",
-            "description": "AGX force shutdown (LOW=allow boot, HIGH=force off)"
+            "description": "Inference Computer force shutdown (LOW=allow boot, HIGH=force off)"
         },
         "AGX_RESET": {
             "gpio": 1,
             "active_high": true,
             "initial_state": "low",
             "pulse_ms": 1000,
-            "description": "AGX power control (LOW=power on, HIGH=power off/reset, pulse for reboot)"
+            "description": "Inference Computer power control (LOW=power on, HIGH=power off/reset, pulse for reboot)"
         },
         "AGX_RECOVERY": {
             "gpio": 40,
             "active_high": true,
             "initial_state": "low",
-            "description": "AGX recovery mode (HIGH=enable recovery, LOW=normal)"
+            "description": "Inference Computer recovery mode (HIGH=enable recovery, LOW=normal)"
         },
         "LPMU_POWER": {
             "gpio": 46,
             "active_high": true,
             "initial_state": "low",
             "pulse_ms": 300,
-            "description": "LPMU power button (pulse HIGH 300ms to toggle)"
+            "description": "Application Computer power button (pulse HIGH 300ms to toggle)"
         },
         "LPMU_RESET": {
             "gpio": 2,
             "active_high": true,
             "initial_state": "low",
             "pulse_ms": 300,
-            "description": "LPMU reset (pulse HIGH 300ms to reset)"
+            "description": "Application Computer reset (pulse HIGH 300ms to reset)"
         },
         "RTL8367_RST": {
             "gpio": 17,
