@@ -63,7 +63,8 @@ http://<服务器IP>:57807
 | `/` | GET | 服务器信息 |
 | `/version` | GET | 固件版本信息（JSON） |
 | `/firmware` | GET | 下载固件文件 |
-| `/www` | GET | 下载 WebUI 文件 |
+| `/www.bin` | GET / HEAD | 下载 WebUI 文件（设备网页使用此地址，支持 Range） |
+| `/www` | GET / HEAD | 同一 WebUI 下载处理器的兼容地址 |
 | `/health` | GET | 健康检查 |
 | `/reload` | POST | 重新加载固件信息 |
 
@@ -195,6 +196,16 @@ WantedBy=multi-user.target
 
 ## 开发
 
+### 离线下载回归
+
+在已安装 requirements.txt 的 Python 环境中，从仓库根目录运行：
+
+```bash
+python3 -m unittest discover -s tools/ota_server -p test_ota_server.py
+```
+
+测试使用临时文件和 Flask 进程内 test_client，覆盖版本、固件、两个 WebUI 地址、HEAD、Range 和缺失网页包；不监听端口、不向设备上传。
+
 ### 测试 API
 
 ```bash
@@ -206,6 +217,9 @@ curl http://localhost:57807/health
 
 # 下载固件（保存到文件）
 curl -o firmware.bin http://localhost:57807/firmware
+
+# 下载网页包（旧地址 /www 仍可用）
+curl -o www.bin http://localhost:57807/www.bin
 
 # 断点续传测试
 curl -H "Range: bytes=0-1023" http://localhost:57807/firmware -o first_1kb.bin

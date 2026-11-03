@@ -6,8 +6,26 @@
 #include "ts_crypto.h"
 #include "ts_cert.h"
 #include "ts_storage.h"
-esp_err_t ts_storage_write_file(const char *path,const void *data,size_t size)
-{ (void)path;(void)data;(void)size;assert(!"unexpected file export in crypto-only test");return ESP_FAIL; }
+#include <sys/stat.h>
+#include <unistd.h>
+#include "ts_api.h"
+static char scratch[512];
+static const char *mapped(const char *path,char out[1024]) {
+ if(!strncmp(path,"/sdcard",7)){assert(scratch[0]);snprintf(out,1024,"%s%s",scratch,path+7);return out;}return path;
+}
+FILE *fixture_fopen(const char *path,const char *mode){char out[1024];return fopen(mapped(path,out),mode);}
+int fixture_stat(const char *path,struct stat *st){char out[1024];return stat(mapped(path,out),st);}
+int fixture_mkdir(const char *path,mode_t mode){char out[1024];return mkdir(mapped(path,out),mode);}
+esp_err_t ts_storage_write_file(const char *path,const void *data,size_t size) {
+ assert(!strncmp(path,"/sdcard/config/",15));FILE *f=fixture_fopen(path,"wb");if(!f)return ESP_FAIL;
+ bool ok=fwrite(data,1,size,f)==size;return fclose(f)==0&&ok?ESP_OK:ESP_FAIL;
+}
+void ts_api_result_error(ts_api_result_t *r,ts_api_result_code_t code,const char *message){r->code=code;r->message=(char*)message;}
+void ts_api_result_ok(ts_api_result_t *r,cJSON *data){r->code=TS_API_OK;r->data=data;}
+#ifndef PACK_BASELINE
+#define PACK_MALLOC malloc
+#include "export_api.inc"
+#endif
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/oid.h"
 #include <time.h>
@@ -16,16 +34,19 @@ time_t time(time_t *out){time_t now=fixture_time?fixture_time:TEST_TIME;if(out)*
 static char *device_key, *device_cert, *ca;
 static uint32_t generation=1;
 static bool trusted_time=true;
+static const char *certificate_after_read;
+static esp_err_t certificate_read_error;
 static char *read_file(const char *dir,const char *name) {
  char path[512];snprintf(path,sizeof path,"%s/%s",dir,name);
  FILE *f=fopen(path,"rb");assert(f);fseek(f,0,SEEK_END);long n=ftell(f);rewind(f);
  char *s=malloc(n+1);assert(fread(s,1,n,f)==(size_t)n);s[n]=0;fclose(f);return s;
 }
 static esp_err_t copy(const char *s,char *out,size_t *n) {
+ if(!s)return ESP_ERR_INVALID_STATE;
  size_t len=strlen(s)+1;if(*n<len)return ESP_ERR_INVALID_SIZE;memcpy(out,s,len);*n=len;return ESP_OK;
 }
 esp_err_t ts_cert_get_private_key(char *s,size_t *n){return copy(device_key,s,n);}
-esp_err_t ts_cert_get_certificate(char *s,size_t *n){return copy(device_cert,s,n);}
+esp_err_t ts_cert_get_certificate(char *s,size_t *n){if(certificate_read_error)return certificate_read_error;int ret=copy(device_cert,s,n);if(ret==ESP_OK&&certificate_after_read){free(device_cert);device_cert=strdup(certificate_after_read);certificate_after_read=NULL;}return ret;}
 esp_err_t ts_cert_get_ca_chain(char *s,size_t *n){return copy(ca,s,n);}
 esp_err_t ts_cert_parse_certificate(const char *s,size_t n,ts_cert_info_t *info) {
  mbedtls_x509_crt c;mbedtls_x509_crt_init(&c);memset(info,0,sizeof *info);
@@ -38,12 +59,72 @@ esp_err_t ts_cert_parse_certificate(const char *s,size_t n,ts_cert_info_t *info)
  }
  mbedtls_x509_crt_free(&c);return ESP_OK;
 }
-esp_err_t ts_cert_get_info(ts_cert_info_t *i){return ts_cert_parse_certificate(device_cert,strlen(device_cert)+1,i);}
+esp_err_t ts_cert_get_info(ts_cert_info_t *i){return device_cert?ts_cert_parse_certificate(device_cert,strlen(device_cert)+1,i):ESP_ERR_INVALID_STATE;}
 esp_err_t ts_cert_get_status(ts_cert_pki_status_t *s){memset(s,0,sizeof *s);s->time_ready=trusted_time;s->generation=generation;return ESP_OK;}
 esp_err_t ts_cert_get_pack_snapshot(ts_cert_snapshot_t *s){
  memset(s,0,sizeof *s);s->key=strdup(device_key);s->certificate=strdup(device_cert);s->ca=strdup(ca);s->generation=generation;return ESP_OK;
 }
 void ts_cert_free_snapshot(ts_cert_snapshot_t *s){if(s->key)memset(s->key,0,strlen(s->key));free(s->key);free(s->certificate);free(s->ca);memset(s,0,sizeof *s);}
+
+#ifndef PACK_BASELINE
+static void expected_fingerprint(const char *pem,char fp[65]) {
+ size_t len=strlen(pem);while(len&&strchr(" \t\r\n",pem[len-1]))--len;
+ unsigned char hash[32];assert(ts_crypto_hash(TS_HASH_SHA256,pem,len,hash,32)==ESP_OK);
+ assert(ts_crypto_hex_encode(hash,32,fp,65)==ESP_OK);
+}
+static void assert_export(const char *pem) {
+ ts_api_result_t response={0};assert(api_config_pack_export_cert(NULL,&response)==ESP_OK&&response.code==TS_API_OK);
+ assert(!strcmp(cJSON_GetObjectItem(response.data,"certificate")->valuestring,pem));
+ char expected[65];expected_fingerprint(pem,expected);
+ assert(!strcmp(cJSON_GetObjectItem(response.data,"fingerprint")->valuestring,expected));cJSON_Delete(response.data);
+}
+static void ordinary_consumers(const char *bytes,size_t size,ts_config_pack_result_t expected,const char *content) {
+ ts_config_pack_t *pack=NULL;assert(ts_config_pack_load_mem(bytes,size,&pack)==expected);
+ if(pack){assert(expected==TS_CONFIG_PACK_OK&&pack->sig_info.valid&&!strcmp(pack->content,content));ts_config_pack_free(pack);}
+ char input[1024];snprintf(input,sizeof(input),"%s/input.tscfg",scratch);FILE *f=fopen(input,"wb");assert(f&&fwrite(bytes,1,size,f)==size);assert(!fclose(f));
+ ts_config_pack_metadata_t metadata={0};assert(ts_config_pack_validate_file(input,&metadata)==expected);
+ char saved[128]={0};assert(ts_config_pack_import(bytes,size,&metadata,saved,sizeof(saved))==expected);
+ if(expected==TS_CONFIG_PACK_OK){assert(metadata.sig_info.valid);ts_config_pack_t *loaded=NULL;assert(ts_config_pack_load(saved,&loaded)==TS_CONFIG_PACK_OK);assert(!strcmp(loaded->content,content));ts_config_pack_free(loaded);}
+ unlink(input);
+}
+static void ordinary_identity_cases(const char *dir,const char *certificate_name,const char *key_name) {
+ char template[]="/tmp/tianshan-ordinary-pack-XXXXXX";assert(mkdtemp(template));strcpy(scratch,template);
+ char *a_cert=strdup(device_cert),*a_key=strdup(device_key),*b_cert=read_file(dir,certificate_name),*b_key=read_file(dir,key_name);
+ const char *content="{\"ordinary\":true,\"value\":23}";
+ char *a_bytes=NULL,*b_bytes=NULL;size_t a_len=0,b_len=0;
+ ts_config_pack_export_opts_t options={.recipient_cert_pem=a_cert,.recipient_cert_len=strlen(a_cert)+1};
+ assert(ts_config_pack_create("ordinary",content,strlen(content),&options,&a_bytes,&a_len)==TS_CONFIG_PACK_OK);
+ ordinary_consumers(a_bytes,a_len,TS_CONFIG_PACK_OK,content);assert_export(a_cert);
+ options.recipient_cert_pem=b_cert;options.recipient_cert_len=strlen(b_cert)+1;
+ assert(ts_config_pack_create("ordinary",content,strlen(content),&options,&b_bytes,&b_len)==TS_CONFIG_PACK_OK);
+ free(device_cert);free(device_key);device_cert=strdup(b_cert);device_key=strdup(b_key);
+ char fp[65],expected[65];expected_fingerprint(b_cert,expected);
+ assert(ts_config_pack_get_cert_fingerprint(fp,sizeof(fp))==ESP_OK&&!strcmp(fp,expected));assert_export(b_cert);
+ ordinary_consumers(b_bytes,b_len,TS_CONFIG_PACK_OK,content);
+ ordinary_consumers(a_bytes,a_len,TS_CONFIG_PACK_ERR_RECIPIENT,content);
+ cJSON *bad=cJSON_Parse(b_bytes);cJSON *signature=cJSON_GetObjectItem(cJSON_GetObjectItem(bad,"signature"),"signature");signature->valuestring[0]=signature->valuestring[0]=='A'?'B':'A';char *invalid=cJSON_PrintUnformatted(bad);
+ ordinary_consumers(invalid,strlen(invalid),TS_CONFIG_PACK_ERR_SIGNATURE,content);free(invalid);cJSON_Delete(bad);
+ /* Import/validate remain signature-only; memory load still performs real decryption. */
+ free(device_key);device_key=read_file(dir,"other.key");ts_config_pack_t *pack=NULL;
+ assert(ts_config_pack_load_mem(b_bytes,b_len,&pack)==TS_CONFIG_PACK_ERR_DECRYPT&&!pack);
+ free(device_key);device_key=strdup(b_key);
+ free(device_cert);device_cert=NULL;assert(ts_config_pack_get_cert_fingerprint(fp,sizeof(fp))!=ESP_OK);
+ ts_api_result_t response={0};assert(api_config_pack_export_cert(NULL,&response)!=ESP_OK&&!response.data);
+ ordinary_consumers(b_bytes,b_len,TS_CONFIG_PACK_ERR_RECIPIENT,content);
+ device_cert=strdup(b_cert);
+ certificate_read_error=ESP_ERR_NO_MEM;assert(ts_config_pack_get_cert_fingerprint(fp,sizeof(fp))==ESP_ERR_NO_MEM);
+ ordinary_consumers(b_bytes,b_len,TS_CONFIG_PACK_ERR_NO_MEM,content);certificate_read_error=ESP_OK;
+ bool old_time=trusted_time;char *old_ca=ca;trusted_time=false;ca=NULL;
+ assert(ts_config_pack_get_cert_fingerprint(fp,sizeof(fp))==ESP_OK);assert_export(b_cert);
+ /* Simulate replacement immediately after the export read: response stays on A. */
+ free(device_cert);device_cert=strdup(a_cert);certificate_after_read=b_cert;assert_export(a_cert);assert_export(b_cert);
+ trusted_time=old_time;ca=old_ca;
+ free(device_key);free(device_cert);device_key=strdup(a_key);device_cert=strdup(a_cert);
+ free(a_cert);free(a_key);free(b_cert);free(b_key);free(a_bytes);free(b_bytes);
+ char path[1024];snprintf(path,sizeof(path),"%s/config/ordinary.tscfg",scratch);assert(!unlink(path));snprintf(path,sizeof(path),"%s/config",scratch);assert(!rmdir(path));assert(!rmdir(scratch));scratch[0]=0;
+ puts("PASS F73 ordinary production load/import/file validation with real signatures/ECDH/AES: A, replacement B, reject old/other identity, bad signature/decryption, delete/reinstall; actual export API same-PEM response, no CA/time gate");
+}
+#endif
 #ifdef PACK_EXPORT_PAYLOADS
 static void export_payload_cases(const char *dir,const char *path)
 {
@@ -82,7 +163,19 @@ int main(int argc,char **argv) {
 #endif
  const char *dir=argv[1];
  device_key=read_file(dir,"developer.key");device_cert=read_file(dir,"developer.pem");ca=read_file(dir,"root.pem");
+#ifdef PACK_BASELINE
  assert(ts_config_pack_init()==ESP_OK);
+#else
+ char *initial=device_cert;device_cert=NULL;assert(ts_config_pack_init()==ESP_OK);
+ char initial_fp[65];assert(ts_config_pack_get_cert_fingerprint(initial_fp,sizeof(initial_fp))!=ESP_OK);
+ device_cert=initial;char expected[65];expected_fingerprint(device_cert,expected);
+ assert(ts_config_pack_get_cert_fingerprint(initial_fp,sizeof(initial_fp))==ESP_OK&&!strcmp(initial_fp,expected));
+ mbedtls_x509_crt identity;mbedtls_x509_crt_init(&identity);assert(!mbedtls_x509_crt_parse(&identity,(unsigned char*)device_cert,strlen(device_cert)+1));
+ unsigned char der_hash[32];char der_fp[65];assert(ts_crypto_hash(TS_HASH_SHA256,identity.raw.p,identity.raw.len,der_hash,32)==ESP_OK);assert(ts_crypto_hex_encode(der_hash,32,der_fp,65)==ESP_OK&&strcmp(initial_fp,der_fp));mbedtls_x509_crt_free(&identity);
+ puts("PASS F73 first certificate after init is current; historical trimmed-PEM identity differs from DER");
+ ordinary_identity_cases(dir,"developer-renewed.pem","developer.key");
+ ordinary_identity_cases(dir,"recipient.pem","recipient.key");
+#endif
 #ifdef PACK_EXPORT_PAYLOADS
  export_payload_cases(dir,argv[2]);free(device_key);free(device_cert);free(ca);return 0;
 #endif
