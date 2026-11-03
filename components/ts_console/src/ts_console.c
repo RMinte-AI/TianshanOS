@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define TAG "ts_console"
 
@@ -625,25 +626,81 @@ esp_err_t ts_console_exec_cmd(const char *cmd_name, int argc, char **argv,
 /*                              Output                                        */
 /*===========================================================================*/
 
+/* One formatted message is kept complete below this bound; longer output is
+ * cut on a UTF-8 boundary and followed by an explicit truncation notice. */
+#define TS_CONSOLE_MAX_OUTPUT 16384
+
+static size_t utf8_complete_prefix(const char *s, size_t n)
+{
+    size_t i = n;
+    while (i > 0 && ((unsigned char)s[i - 1] & 0xC0) == 0x80) i--;
+    if (i == 0) return 0;
+    unsigned char c = (unsigned char)s[i - 1];
+    size_t w = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3
+             : (c & 0xF8) == 0xF0 ? 4 : 1;
+    return n - (i - 1) < w ? i - 1 : n;
+}
+
+static void console_emit(const char *data, size_t len)
+{
+    const ts_console_exec_context_t *ctx = ts_console_current_context();
+    if (ctx && ctx->output) ctx->output(data, len, ctx->user_data);
+    else if (s_console.output_cb) s_console.output_cb(data, len, s_console.output_user_data);
+    fwrite(data, 1, len, stdout);
+}
+
 static int do_printf(const char *prefix, const char *fmt, va_list args)
 {
-    char buf[512];
-    int len = 0;
-    
-    if (prefix) {
-        len = snprintf(buf, sizeof(buf), "%s", prefix);
+    char stack[512];
+    const size_t plen = prefix ? strlen(prefix) : 0;
+
+    va_list probe;
+    va_copy(probe, args);
+    int body = vsnprintf(stack, sizeof(stack), fmt, probe);
+    va_end(probe);
+    if (body < 0) return -1;
+
+    const size_t need = plen + (size_t)body;
+    size_t limit = need < TS_CONSOLE_MAX_OUTPUT ? need : TS_CONSOLE_MAX_OUTPUT;
+    char *buf = stack;
+    if (limit + 1 > sizeof(stack)) {
+        buf = heap_caps_malloc(limit + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!buf) buf = malloc(limit + 1);
+        if (!buf) { buf = stack; limit = sizeof(stack) - 1; }
     }
-    
-    len += vsnprintf(buf + len, sizeof(buf) - len, fmt, args);
-    
-    /* Custom output callback */
-    const ts_console_exec_context_t *ctx = ts_console_current_context();
-    size_t written = strnlen(buf, sizeof(buf));
-    if (ctx && ctx->output) ctx->output(buf, written, ctx->user_data);
-    else if (s_console.output_cb) s_console.output_cb(buf, written, s_console.output_user_data);
-    
-    /* Standard output */
-    return printf("%s", buf);
+
+    size_t off = plen < limit ? plen : limit;
+    if (off) memcpy(buf, prefix, off);
+    bool failed = false;
+    if (off < limit) {
+        va_list build;
+        va_copy(build, args);
+        int w = vsnprintf(buf + off, limit - off + 1, fmt, build);
+        va_end(build);
+        if (w < 0) failed = true;
+        else if (w > 0) off += (size_t)w < limit - off ? (size_t)w : limit - off;
+    }
+
+    const bool cut = need > limit || failed;
+    size_t shown = strnlen(buf, off);  /* keep the old text/NUL contract */
+    if (cut) shown = utf8_complete_prefix(buf, shown);
+    buf[shown] = '\0';
+    console_emit(buf, shown);
+
+    int printed = (int)shown;
+    if (cut) {
+        char notice[96];
+        int n = snprintf(notice, sizeof(notice),
+                         "%s[console output truncated: %u of %u bytes shown]\n",
+                         shown && buf[shown - 1] != '\n' ? "\n" : "",
+                         (unsigned)shown, (unsigned)need);
+        if (n > 0) {
+            console_emit(notice, (size_t)n);
+            printed += n;
+        }
+    }
+    if (buf != stack) free(buf);
+    return printed;
 }
 
 int ts_console_printf(const char *fmt, ...)
