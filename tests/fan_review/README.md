@@ -18,3 +18,5 @@ cJSON 默认使用本地 ESP-IDF；无本地 IDF 时，用 `--cjson-dir /absolut
 `test_ui.cjs` 在生产 JS 和轻量 DOM 替身中消费驱动生成的 JSON；`browser_check.js` 由 Playwright CLI `run-code` 执行，在本地服务的源码 `/` 与编译网页 `/candidate/` 上检查实际 DOM、输入/提交、轮询、明确失败、未知结果、停用设置及390px布局。接口为模拟，外部网络阻断，不是实机或真实用户测试。服务还需 `/evidence/repaired-repro.jsonl` 路由。
 
 27 场景和12假设热模型的完整轨迹仍由 fan_decay 工具独立生成。`compare_replay.py` 只允许预测显示在跨工具链出现≤0.1°C差异，斜率/增益允许1e-6浮点差异；需求、请求、成功输出、保护、失温和其他字段必须一致。它不能把热模型运行完成写成实际散热效果通过。
+
+F69 同风扇交接仍从上述 `--check` 入口执行。FreeRTOS 普通 mutex 由 pthread mutex 模拟；两条真实线程在 AUTO 选定后、HAL 提交前、HAL 返回前暂停，确认手动 60% / OFF / 紧急全速 / 停用 / 保存快照的调用先实际等待再完成，共 15 个顺序案例。正常使用补充 0/60/100、高温手动、返回 AUTO、反相与停用再启用、显式保存载入和 CURVE 温度事件/间隔。NVS 替身断言调用时不持控制锁。线程测试设 30 秒进程超时；这些结果不表示实机转速或调度时延通过。

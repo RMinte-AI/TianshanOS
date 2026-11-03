@@ -13,6 +13,7 @@ typedef void *ts_gpio_handle_t;
 #define TS_LOGI(...) ((void)0)
 #define portTICK_PERIOD_MS 1
 #define CONFIG_TS_DRIVERS_FAN_TEMP_UPDATE_MS 1000
+#include "../fan_review/mutex_host.h"
 #include "fan_types.inc"
 static fan_instance_t s_fans[TS_FAN_MAX];
 static bool s_auto_temp_enabled = true;

@@ -73,15 +73,17 @@ static void *context_alloc(size_t n,size_t size){
 }
 static SemaphoreHandle_t controlled_binary(void){if(fail_binary){fail_binary=false;return NULL;}return xSemaphoreCreateBinary();}
 static void local_delay(unsigned ticks){(void)ticks;vTaskDelay(1);}
+static int nvs_writes;
+static bool saved_config;
 static int nvs_open(const char *ns,int access,nvs_handle_t *h){(void)ns;(void)access;*h=1;return ESP_OK;}
-static int nvs_get_str(nvs_handle_t h,const char *key,char *out,size_t *n){(void)h;(void)key;(void)out;(void)n;return ESP_ERR_NVS_NOT_FOUND;}
-static int nvs_get_u16(nvs_handle_t h,const char *key,uint16_t *out){(void)h;(void)key;(void)out;return ESP_ERR_NVS_NOT_FOUND;}
-static int nvs_set_str(nvs_handle_t h,const char *key,const char *value){(void)h;(void)key;(void)value;return ESP_OK;}
-static int nvs_set_u16(nvs_handle_t h,const char *key,uint16_t value){(void)h;(void)key;(void)value;return ESP_OK;}
+static int nvs_get_str(nvs_handle_t h,const char *key,char *out,size_t *n){(void)h;(void)key;if(saved_config){assert(*n>=strlen("saved.fixture.invalid")+1);strcpy(out,"saved.fixture.invalid");return ESP_OK;}return ESP_ERR_NVS_NOT_FOUND;}
+static int nvs_get_u16(nvs_handle_t h,const char *key,uint16_t *out){(void)h;(void)key;if(saved_config){*out=54321;return ESP_OK;}return ESP_ERR_NVS_NOT_FOUND;}
+static int nvs_set_str(nvs_handle_t h,const char *key,const char *value){(void)h;(void)key;(void)value;++nvs_writes;return ESP_OK;}
+static int nvs_set_u16(nvs_handle_t h,const char *key,uint16_t value){(void)h;(void)key;(void)value;++nvs_writes;return ESP_OK;}
 static int nvs_commit(nvs_handle_t h){(void)h;return ESP_OK;}
 static void nvs_close(nvs_handle_t h){(void)h;}
 static int ts_temp_provider_register(int id,const char *name){(void)id;(void)name;++provider_live;return ESP_OK;}
-static int ts_temp_provider_unregister(int id){(void)id;--provider_live;++provider_removals;return ESP_OK;}
+static int ts_temp_provider_unregister(int id){(void)id;provider_live=0;++provider_removals;return ESP_OK;}
 static int ts_temp_provider_update(int id,int16_t value){(void)id;assert(value==425);return ESP_OK;}
 static int local_post(int base,int event,const void *data,size_t len,unsigned timeout){
  (void)base;(void)data;(void)len;(void)timeout;
@@ -166,8 +168,13 @@ typedef struct {int code;cJSON *data;} ts_api_result_t;
 #define TS_API_OK 0
 static void ts_api_result_init(ts_api_result_t *r){memset(r,0,sizeof(*r));}
 static void ts_api_result_free(ts_api_result_t *r){cJSON_Delete(r->data);}
-static int ts_api_call(const char *name,const cJSON *params,ts_api_result_t *r){(void)name;(void)params;r->code=1;return ESP_FAIL;}
-static void ts_console_printf(const char *fmt,...){(void)fmt;}
+#define TS_API_ERR_NO_MEM 1
+static void ts_api_result_error(ts_api_result_t *r,int code,const char *message){(void)message;r->code=code;}
+static void ts_api_result_ok(ts_api_result_t *r,cJSON *data){r->code=TS_API_OK;r->data=data;}
+static esp_err_t api_monitor_config(const cJSON *,ts_api_result_t *);
+static int ts_api_call(const char *name,const cJSON *params,ts_api_result_t *r){assert(!strcmp(name,"monitor.config"));return api_monitor_config(params,r);}
+static char cli_output[4096];
+static void ts_console_printf(const char *fmt,...){va_list args;va_start(args,fmt);size_t n=strlen(cli_output);vsnprintf(cli_output+n,sizeof(cli_output)-n,fmt,args);va_end(args);}
 static void ts_console_error(const char *fmt,...){(void)fmt;}
 '''
 code += r'''
@@ -176,6 +183,7 @@ static bool cli_query_initialized(void);
 #define ts_compute_monitor_is_running cli_query_running
 #define ts_compute_monitor_is_initialized cli_query_initialized
 '''
+code += body('components/ts_api/src/ts_api_monitor.c', 'api_monitor_config')
 code += body('components/ts_console/commands/ts_cmd_monitor.c', 'do_monitor_config')
 code += '\n#undef ts_compute_monitor_is_running\n#undef ts_compute_monitor_is_initialized\n'
 
@@ -232,6 +240,33 @@ int main(void){
  for(unsigned i=0;i<sizeof(signals)/sizeof(signals[0]);i++)*signals[i]=semaphore(true);
  after_binary_give=tail_gate;
 
+ reset();ts_compute_config_t current=config(12345);
+ strcpy(current.server_ip,"custom.fixture.invalid");current.server_port=23456;
+ current.startup_delay_ms=0;current.heartbeat_timeout_ms=777;current.auto_start=false;current.update_temp_source=false;
+ assert(ts_compute_monitor_init(&current)==ESP_OK);assert(ts_compute_monitor_start()==ESP_OK);WAIT_UNTIL(data_posts>0);
+ int writes=nvs_writes;ts_compute_config_t observed;
+ cli_output[0]=0;assert(do_monitor_config(NULL,0,false)==0);assert(strstr(cli_output,"custom.fixture.invalid")&&strstr(cli_output,"23456"));
+ cli_output[0]=0;assert(do_monitor_config(NULL,0,true)==0);cJSON *query=cJSON_Parse(cli_output);assert(query);
+ assert(!strcmp(cJSON_GetObjectItem(query,"server")->valuestring,current.server_ip));assert(cJSON_GetObjectItem(query,"port")->valueint==23456);cJSON_Delete(query);
+ assert(s_ctx->running&&nvs_writes==writes);assert(ts_compute_monitor_stop()==ESP_OK);join_workers();
+ assert(do_monitor_config(NULL,34567,false)==0);current.server_port=34567;
+ assert(ts_compute_monitor_get_config(&observed)==ESP_OK&&!memcmp(&current,&observed,sizeof(current)));assert(!s_ctx->running&&nvs_writes==writes);
+ assert(ts_compute_monitor_start()==ESP_OK);WAIT_UNTIL(strstr(last_ws_url,"custom.fixture.invalid:34567"));assert(ts_compute_monitor_stop()==ESP_OK);join_workers();
+ assert(do_monitor_config("next.fixture.invalid",0,false)==0);memset(current.server_ip,0,sizeof(current.server_ip));strcpy(current.server_ip,"next.fixture.invalid");
+ assert(ts_compute_monitor_get_config(&observed)==ESP_OK&&!memcmp(&current,&observed,sizeof(current)));
+ assert(do_monitor_config("both.fixture.invalid",45678,false)==0);memset(current.server_ip,0,sizeof(current.server_ip));strcpy(current.server_ip,"both.fixture.invalid");current.server_port=45678;
+ assert(ts_compute_monitor_get_config(&observed)==ESP_OK&&!memcmp(&current,&observed,sizeof(current)));assert(!s_ctx->running&&nvs_writes==writes);
+ assert(ts_compute_monitor_deinit()==ESP_OK);join_workers();
+ saved_config=true;cli_output[0]=0;assert(do_monitor_config(NULL,0,false)==0);assert(strstr(cli_output,"saved.fixture.invalid")&&strstr(cli_output,"54321"));
+ assert(do_monitor_config(NULL,34567,false)==0);assert(!strcmp(s_ctx->config.server_ip,"saved.fixture.invalid")&&s_ctx->config.server_port==34567);
+ assert(ts_compute_monitor_deinit()==ESP_OK);saved_config=false;
+ cli_output[0]=0;assert(do_monitor_config(NULL,0,false)==0);assert(strstr(cli_output,"10.10.99.98")&&strstr(cli_output,"58090"));
+ assert(ts_compute_monitor_init(NULL)==ESP_OK);assert(ts_compute_monitor_start()==ESP_OK);WAIT_UNTIL(strstr(last_ws_url,"10.10.99.98:58090"));
+ assert(ts_compute_monitor_deinit()==ESP_OK);join_workers();assert(nvs_writes==writes);
+ puts("PASS F23 actual CLI text/JSON query, port-only/address-only/both edits, explicit start, saved/default startup; no CLI NVS writes or automatic restart");
+
+
+ provider_removals=0;
  reset();assert(ts_drivers_deinit()==ESP_OK);int cleanup_before=other_cleanup;
  hold_init=true;pthread_t t;assert(!pthread_create(&t,NULL,initialise,NULL));assert(xSemaphoreTake(init_entered,portMAX_DELAY));
  assert(!ts_compute_monitor_is_initialized());assert(ts_drivers_deinit()==ESP_ERR_NOT_FINISHED);

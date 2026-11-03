@@ -352,6 +352,7 @@ class OTAServer:
                 'TianShanOS.bin'
             )
         
+        @self.app.route('/www.bin')
         @self.app.route('/www')
         def www():
             """下载 WebUI 文件（支持断点续传）"""

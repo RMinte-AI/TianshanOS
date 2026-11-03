@@ -618,7 +618,11 @@ static int do_dhcp_bind(ts_dhcp_if_t iface, const char *mac, const char *ip, con
     
     ret = ts_dhcp_server_add_static_binding(iface, &binding);
     if (ret != ESP_OK) {
-        ts_console_printf("Error: Failed to add binding: %s\n", esp_err_to_name(ret));
+        if (ret == ESP_ERR_INVALID_STATE && ts_dhcp_server_is_initialized()) {
+            ts_console_printf("Error: Address reserved or leased to another device; previous bindings unchanged.\n");
+        } else {
+            ts_console_printf("Error: Failed to add binding: %s\n", esp_err_to_name(ret));
+        }
         return 1;
     }
     

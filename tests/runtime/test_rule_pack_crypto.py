@@ -1,6 +1,6 @@
 """Real production pack create/verify/decrypt with SDK Mbed TLS 3.6.5 and disposable PKI."""
 from pathlib import Path
-import os, subprocess, shutil, hashlib, sys, time
+import os, subprocess, shutil, hashlib, sys, time, re
 root = Path(__file__).resolve().parents[2]
 build = Path('/tmp/tianshan-rule-pack-tests')
 build.mkdir(exist_ok=True)
@@ -33,6 +33,10 @@ for name, role in [('developer','Developer'),('recipient','Device'),('other','De
         (pki/'leaf.ext').write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,'+('keyAgreement' if name=='no-sign' else 'digitalSignature,keyAgreement')+'\n'+('extendedKeyUsage=clientAuth,serverAuth\n' if name=='tls-developer' else ''))
         quiet(['x509','-req','-in',pki/(name+'.csr'),'-CA',ca,'-CAkey',pki/'root.key',
                '-CAcreateserial','-out',pki/(name+'.pem'),'-days','3650','-extfile',pki/'leaf.ext'])
+# Renewal keeps the same device key/subject but changes the certificate identity.
+if not (pki/'developer-renewed.pem').exists():
+    quiet(['x509','-req','-in',pki/'developer.csr','-CA',ca,'-CAkey',pki/'root.key',
+           '-set_serial','20261103','-out',pki/'developer-renewed.pem','-days','3650','-extfile',pki/'leaf.ext'])
 if not (pki/'alternate-root.pem').exists():
     quiet(['req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes',
            '-keyout',pki/'alternate-root.key','-out',pki/'alternate-root.pem','-days','3650','-subj','/CN=Unselected root',
@@ -44,7 +48,23 @@ if not (pki/'alternate-root.pem').exists():
            '-CAcreateserial','-out',pki/'alternate-developer.pem','-days','3650','-extfile',pki/'alternate.ext'])
 der = subprocess.check_output([openssl,'x509','-in',str(ca),'-outform','DER'])
 (build/'config.h').write_text('#define TEST_TIME '+str(int(time.time())+2)+'LL\n#define CONFIG_TS_CONFIG_PACK_MAX_SIZE 65536\n#define CONFIG_TS_CONFIG_PACK_SIGNING_ROOT_SHA256 "'+('' if '--unconfigured' in sys.argv else hashlib.sha256(der).hexdigest())+'"\n')
-sources = [root/'tests/runtime/rule_pack/test_crypto.c', root/'components/ts_config_pack/src/ts_config_pack.c',
+# Keep the actual ordinary consumers; map only the /sdcard filesystem boundary.
+(build/'paths.h').write_text(r'''#include <stdio.h>
+#include <sys/stat.h>
+FILE *fixture_fopen(const char *, const char *);
+int fixture_stat(const char *, struct stat *);
+int fixture_mkdir(const char *, mode_t);
+#define fopen fixture_fopen
+#define stat(path, out) fixture_stat(path, out)
+#define mkdir fixture_mkdir
+''')
+pack_source=build/'current_pack.c'
+pack_source.write_text('#include "paths.h"\n'+(root/'components/ts_config_pack/src/ts_config_pack.c').read_text())
+api=(root/'components/ts_api/src/ts_api_config_pack.c').read_text()
+m=re.search(r'^static esp_err_t api_config_pack_export_cert\([^;]*?\)\s*\{',api,re.M)
+assert m
+(build/'export_api.inc').write_text(api[m.start():api.index('\n}',m.end())+2]+'\n')
+sources = [root/'tests/runtime/rule_pack/test_crypto.c', pack_source,
            root/'components/ts_config_pack/src/ts_config_pack_trust.c',root/'components/ts_security/src/ts_crypto.c',
            idf/'components/json/cJSON/cJSON.c']
 if '--baseline' in sys.argv:
@@ -53,7 +73,7 @@ if '--baseline' in sys.argv:
     sources[1] = old
     sources.remove(root/'components/ts_config_pack/src/ts_config_pack_trust.c')
 cmd = ['cc','-std=c11','-D_DEFAULT_SOURCE','-g','-fsanitize=address,undefined','-Wno-deprecated-declarations',
-       '-include',build/'config.h','-I'+str(root/'tests/runtime/rule_pack/stubs'),
+       '-include',build/'config.h','-I'+str(build),'-I'+str(root/'components/ts_api/include'),'-I'+str(root/'tests/runtime/rule_pack/stubs'),
        '-I'+str(root/'components/ts_storage/include'),'-I'+str(root/'components/ts_config_pack/include'),'-I'+str(root/'components/ts_config_pack/src'),
        '-I'+str(root/'components/ts_cert/include'),'-I'+str(root/'components/ts_security/include'),
        '-I'+str(mbed/'include'),'-I'+str(idf/'components/json/cJSON')]

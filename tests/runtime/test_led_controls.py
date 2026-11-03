@@ -129,7 +129,7 @@ void ts_api_result_ok(ts_api_result_t *r,cJSON *data) {r->code=TS_API_OK;r->data
 '''
 for name in ['resolve_device_name','do_led_on','do_led_off','do_led_effect','do_led_image','do_led_qrcode','parse_text_align','extract_param_from_cmdline','extract_text_from_cmdline','parse_escape_sequences','build_font_path','do_led_draw_text','do_led_clear']:
     code += body(CLI,name)
-for name in ['parse_color_param','api_led_fill','api_led_clear','api_led_effect_start','api_led_qrcode','api_led_save']:
+for name in ['parse_color_param','api_led_set','api_led_fill','api_led_clear','api_led_effect_start','api_led_qrcode','api_led_save']:
     code += body(API,name)
 action_header = Path('components/ts_automation/include/ts_action_manager.h').read_text()
 code += action_header[action_header.index('typedef enum {'):action_header.index('} ts_action_status_t;')+len('} ts_action_status_t;')]
@@ -300,9 +300,58 @@ static void check_fades(void) {
     }
     puts("PASS F56 production set/process: nonzero uptime, fade in/out start/half/end, reapply, zero duration, auto_remove on/off");
 }
+
+static void check_single_led_api(void) {
+    fresh();stop_render();
+    ts_led_layer_impl_t *base=ts_led_layer_get(s_matrix,0),*other=ts_led_layer_get(s_board,0);
+    uint16_t n=ts_led_device_get_count(s_matrix);assert(n>10);
+    api(api_led_fill,"{\"device\":\"matrix\",\"color\":\"blue\"}");
+    assert(do_led_effect("board","breathing",50,"green")==0);
+    ts_led_rgb_t other_pixels[1024];memcpy(other_pixels,other->buffer,ts_led_device_get_count(s_board)*sizeof(*other_pixels));
+    ts_led_effect_config_t filter={.type=TS_LED_EFFECT_PULSE,.params.pulse={.frequency=0.7f,.min_level=20,.max_level=255}};
+    assert(ts_led_layer_set_effect(base,&filter)==ESP_OK);
+    assert(do_led_draw_text("matrix","A","normal","white","left",NULL,NULL,0,0,false,false,50)==0);
+    assert(ts_led_text_overlay_is_active("matrix"));
+    api(api_led_set,"{\"device\":\"matrix\",\"index\":9,\"color\":\"red\"}");
+    for(int i=0;i<n;i++)assert(base->buffer[i].r==(i==9?255:0)&&base->buffer[i].b==(i==9?0:255));
+    api(api_led_set,"{\"device\":\"led_matrix\",\"index\":0,\"color\":{\"r\":0,\"g\":255,\"b\":0}}");
+    char json[200];snprintf(json,sizeof(json),"{\"device\":\"matrix\",\"index\":%u,\"color\":\"white\"}",n-1);api(api_led_set,json);
+    api(api_led_set,"{\"device\":\"matrix\",\"index\":4,\"count\":3,\"color\":\"#ffffff\"}");
+    for(int i=0;i<n;i++){
+        ts_led_rgb_t expected=i==0?TS_LED_GREEN:i==9?TS_LED_RED:i==n-1||(i>=4&&i<7)?TS_LED_WHITE:TS_LED_BLUE;
+        assert(!memcmp(&base->buffer[i],&expected,sizeof(expected)));
+    }
+    assert(!memcmp(other_pixels,other->buffer,ts_led_device_get_count(s_board)*sizeof(*other_pixels))&&ts_led_animation_is_running(other));
+    assert(ts_led_text_overlay_is_active("matrix")&&!memcmp(&base->post_effect,&filter,sizeof(filter)));
+    ts_led_boot_config_t choice;assert(ts_led_get_current_state("matrix",&choice)==ESP_OK&&choice.color.b==255&&choice.color.r==0);
+    start_render();frames(s_matrix,3,false);assert(ts_led_text_overlay_is_active("matrix"));assert(ts_led_text_overlay_stop("matrix")==ESP_OK);stop_render();assert(base->buffer[9].r==255&&base->buffer[8].b==255);
+    fake_strip *output=((ts_led_device_impl_t*)s_matrix)->strip_handle;
+    assert(output->pixels[9].r>output->pixels[9].b&&output->pixels[8].b>output->pixels[8].r);
+    api(api_led_effect_start,"{\"device\":\"matrix\",\"effect\":\"breathing\",\"color\":\"green\"}");
+    assert(ts_led_animation_is_running(base));base->anim_fn(base,500,base->anim_data);
+    ts_led_rgb_t before[1024];memcpy(before,base->buffer,n*sizeof(*before));
+    const char *bad[]={"\"index\":-1","\"index\":1.5","\"index\":\"1\"","\"index\":65536","\"count\":0","\"count\":-1","\"count\":1.5","\"count\":\"1\"","\"count\":65536","\"index\":1023,\"count\":2","\"index\":1,\"count\":1024","\"index\":null","\"count\":null"};
+    for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);i++){
+        snprintf(json,sizeof(json),"{\"device\":\"matrix\",%s,\"color\":\"red\"}",bad[i]);api_failure(api_led_set,json);
+        assert(ts_led_animation_is_running(base)&&!memcmp(before,base->buffer,n*sizeof(*before)));
+    }
+    assert(do_led_off("matrix")==0);api(api_led_set,"{\"device\":\"matrix\",\"index\":9,\"color\":\"red\"}");
+    assert(ts_led_device_is_enabled(s_matrix)&&!ts_led_animation_is_running(base)&&base->buffer[9].r==255);
+    assert(ts_led_device_set_brightness(s_matrix,177)==ESP_OK);assert(do_led_off("matrix")==0);start_render();frames(s_matrix,3,true);stop_render();assert(do_led_on("matrix",NULL)==0);
+    api(api_led_set,"{\"device\":\"matrix\",\"count\":2,\"color\":\"blue\"}");assert(base->buffer[0].b==255&&base->buffer[1].b==255&&base->buffer[9].r==255);
+    api(api_led_set,"{\"device\":\"matrix\",\"color\":\"red\"}");
+    for(int i=0;i<n;i++)assert(base->buffer[i].r==255&&base->buffer[i].b==0);
+    assert_choice("matrix","solid",true);assert(ts_led_save_boot_config("matrix")==ESP_OK);
+    teardown();fresh();assert(ts_led_load_boot_config("matrix")==ESP_OK);stop_render();base=ts_led_layer_get(s_matrix,0);assert_choice("matrix","solid",true);
+    base->anim_fn(base,500,base->anim_data);for(int i=0;i<n;i++)assert(base->buffer[i].r==255&&base->buffer[i].b==0);
+    api(api_led_fill,"{\"device\":\"matrix\",\"color\":\"blue\"}");assert(base->buffer[9].b==255);
+    teardown();memset(nvs_values,0,sizeof(nvs_values));
+    puts("PASS F25 actual led.set: range pixels, repeated edits, aliases/colors, animation handoff/restart, other device/text/filter preservation, invalid no mutation, off/brightness/fill and whole-group NVS round trip");
+}
+
 int main(void) {
     mkdir("images",0700);mkdir("fonts",0700);make_bmp();make_font();FILE *gif_file=fopen("images/normal.gif","wb");assert(gif_file);fwrite(gif_fixture,sizeof(gif_fixture),1,gif_file);fclose(gif_file);action_context.stats_mutex=xSemaphoreCreateMutex();assert(ts_led_cc_get_default_config(&g_config)==ESP_OK);g_config.enabled=true;g_config.white_point.enabled=true;g_config.white_point.red_scale=0.75f;g_config.gamma.enabled=true;g_config.gamma.gamma=1.4f;g_config.saturation.enabled=true;g_config.saturation.factor=0.7f;
-    fresh();ts_led_layer_t layers[3]={ts_led_layer_get(s_touch,0),ts_led_layer_get(s_board,0),ts_led_layer_get(s_matrix,0)};
+    check_single_led_api();fresh();ts_led_layer_t layers[3]={ts_led_layer_get(s_touch,0),ts_led_layer_get(s_board,0),ts_led_layer_get(s_matrix,0)};
     stop_render();assert(do_led_effect("touch","breathing",50,"red")==0);assert(do_led_effect("board","breathing",50,"blue")==0);assert(do_led_effect("matrix","breathing",50,"green")==0);
     for(int i=0;i<3;i++){ts_led_layer_impl_t *l=layers[i];assert(l->anim_data==&l->anim_color);l->anim_fn(l,500,l->anim_data);assert((l->buffer[0].r>0)==(i==0)&&(l->buffer[0].b>0)==(i==1)&&(l->buffer[0].g>0)==(i==2));}
     assert(do_led_effect("board","solid",50,"white")==0);assert(((ts_led_layer_impl_t*)layers[0])->anim_color.r==255&&((ts_led_layer_impl_t*)layers[2])->anim_color.g==255);

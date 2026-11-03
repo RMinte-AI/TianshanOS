@@ -8,7 +8,6 @@
 
 typedef void *ts_pwm_handle_t;
 typedef void *ts_gpio_handle_t;
-typedef int SemaphoreHandle_t;
 #define pdTRUE 1
 #define portMAX_DELAY (-1)
 #define portTICK_PERIOD_MS 1
@@ -19,6 +18,7 @@ typedef int SemaphoreHandle_t;
 #define TS_AUTO_VAL_INT 2
 
 #define CONFIG_TS_DRIVERS_FAN_TEMP_UPDATE_MS 1000
+#include "../fan_review/mutex_host.h"
 #include "fan_types.inc"
 #include "temp_types.inc"
 static fan_instance_t s_fans[TS_FAN_MAX];
@@ -36,11 +36,11 @@ static ts_variable_info_t variable;
 
 static int64_t esp_timer_get_time(void) { return now_ms * 1000; }
 static uint32_t xTaskGetTickCount(void) { return (uint32_t)now_ms; }
-static int xSemaphoreTake(int mutex, int ticks) {
+static int temp_mutex_take(SemaphoreHandle_t mutex, int ticks) {
     if (inside_timer) assert(ticks == 0);
     return !temp_mutex_busy;
 }
-static void xSemaphoreGive(int mutex) {}
+static void temp_mutex_give(SemaphoreHandle_t mutex) {}
 static esp_err_t ts_variable_get_info(const char *name, ts_variable_info_t *info) {
     assert(!inside_timer); /* Timer must use the nonblocking variant. */
     *info = variable;
@@ -62,14 +62,18 @@ static esp_err_t save_bound_vars_to_nvs(void){return ESP_OK;}
 static esp_err_t save_bound_variable_to_nvs(const char *name){return ESP_OK;}
 static void export_temp_config_to_sdcard(void){}
 static esp_err_t update_pwm(fan_instance_t *fan, uint8_t duty);
+#define xSemaphoreTake temp_mutex_take
+#define xSemaphoreGive temp_mutex_give
 #include "temp_core.inc"
+#undef xSemaphoreTake
+#undef xSemaphoreGive
 #include "fan_core.inc"
 
 static void setup(ts_fan_mode_t mode) {
     memset(&s_state, 0, sizeof(s_state));
     memset(s_fans, 0, sizeof(s_fans));
     s_state.initialized = true;
-    s_state.mutex = 1;
+    s_state.mutex = (SemaphoreHandle_t)1;
     s_state.bound_var_count = 1;
     strcpy(s_state.bound_vars[0].name, "cpu.temperature");
     s_state.bound_vars[0].weight = 1.0f;

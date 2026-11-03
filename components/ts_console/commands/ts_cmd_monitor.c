@@ -237,7 +237,7 @@ static int do_monitor_stop(void)
 static int do_monitor_config(const char *server, int port, bool json)
 {
     ts_compute_config_t config;
-    ts_compute_monitor_get_default_config(&config);
+    ts_compute_monitor_get_config(&config);
     
     bool changed = false;
     

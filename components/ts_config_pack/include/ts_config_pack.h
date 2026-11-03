@@ -369,13 +369,24 @@ esp_err_t ts_config_pack_export_device_cert(char *cert_pem, size_t *cert_len);
 /**
  * @brief Get device certificate fingerprint
  * 
- * Returns SHA256 fingerprint of device certificate in hex format.
+ * Reads the current device certificate and returns its trimmed-PEM SHA256 in hex format.
  * 
  * @param fingerprint Output buffer (at least 65 bytes for hex + null)
  * @param len Buffer length
  * @return ESP_OK on success
  */
 esp_err_t ts_config_pack_get_cert_fingerprint(char *fingerprint, size_t len);
+
+/**
+ * @brief Hash PEM text using the configuration-pack recipient identity format.
+ * Trailing spaces, tabs, CR/LF and the null terminator are excluded.
+ * @param cert_pem Certificate PEM text
+ * @param cert_len Maximum PEM bytes to read (may include the null terminator)
+ * @param fingerprint Output buffer (at least 65 bytes)
+ * @param fp_len Output buffer size
+ */
+esp_err_t ts_config_pack_fingerprint_certificate(const char *cert_pem, size_t cert_len,
+                                                char *fingerprint, size_t fp_len);
 
 /**
  * @brief Load JSON content with .tscfg priority
