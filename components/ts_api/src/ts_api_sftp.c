@@ -32,9 +32,9 @@
 /**
  * @brief 从参数中配置 SSH
  *
- * 临时候选：不再使用进程级静态缓冲区。host/username/password 直接引用本次
- * params 中的字符串（ts_ssh_session_create() 会在返回前复制它们）；密钥在
- * connect_sftp() 的栈上保管，连接完成后清零释放。
+ * 不使用进程级静态缓冲区：host/username/password 直接引用本次 params 中的
+ * 字符串（ts_ssh_session_create() 会在返回前复制它们）；密钥由
+ * connect_sftp() 在本笔请求内保管，连接完成后清零释放。
  */
 static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t *config)
 {
