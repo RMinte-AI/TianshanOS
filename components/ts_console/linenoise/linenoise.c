@@ -1253,7 +1253,7 @@ static void sanitize(char* src) {
 
 /* The high level function that is the main API of the linenoise library. */
 char *linenoise(const char *prompt) {
-    char *buf = LN_CALLOC(1, max_cmdline_length);
+    char *buf = LN_CALLOC(1, max_cmdline_length + 1);
     int count = 0;
     if (buf == NULL) {
         return NULL;
