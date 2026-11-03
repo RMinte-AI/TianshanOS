@@ -25,71 +25,48 @@
 
 #define TAG "api_sftp"
 
-/* 静态缓冲区用于存储主机、用户名等 */
-static char s_host_buf[64];
-static char s_user_buf[64];
-static char s_pass_buf[128];
-static char *s_key_buf = NULL;
-static size_t s_key_len = 0;
-
 /*===========================================================================*/
 /*                          Helper Functions                                  */
 /*===========================================================================*/
 
 /**
- * @brief 清理密钥缓冲区
- */
-static void cleanup_key_buffer(void)
-{
-    if (s_key_buf) {
-        memset(s_key_buf, 0, s_key_len);
-        free(s_key_buf);
-        s_key_buf = NULL;
-        s_key_len = 0;
-    }
-}
-
-/**
  * @brief 从参数中配置 SSH
+ *
+ * 临时候选：不再使用进程级静态缓冲区。host/username/password 直接引用本次
+ * params 中的字符串（ts_ssh_session_create() 会在返回前复制它们）；密钥在
+ * connect_sftp() 的栈上保管，连接完成后清零释放。
  */
 static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t *config)
 {
     const cJSON *host = cJSON_GetObjectItem(params, "host");
     const cJSON *user = cJSON_GetObjectItem(params, "user");
     const cJSON *port = cJSON_GetObjectItem(params, "port");
-    
+
     if (!host || !cJSON_IsString(host) || !user || !cJSON_IsString(user)) {
         return ESP_ERR_INVALID_ARG;
     }
-    
-    strncpy(s_host_buf, host->valuestring, sizeof(s_host_buf) - 1);
-    s_host_buf[sizeof(s_host_buf) - 1] = '\0';
-    strncpy(s_user_buf, user->valuestring, sizeof(s_user_buf) - 1);
-    s_user_buf[sizeof(s_user_buf) - 1] = '\0';
-    
-    config->host = s_host_buf;
-    config->username = s_user_buf;
+
+    config->host = host->valuestring;
+    config->username = user->valuestring;
     config->port = cJSON_IsNumber(port) ? port->valueint : 22;
-    
+
     const cJSON *password = cJSON_GetObjectItem(params, "password");
     const cJSON *keyid = cJSON_GetObjectItem(params, "keyid");
     const cJSON *keypath = cJSON_GetObjectItem(params, "keypath");
-    
-    cleanup_key_buffer();
-    
+
     if (cJSON_IsString(password) && password->valuestring[0]) {
-        strncpy(s_pass_buf, password->valuestring, sizeof(s_pass_buf) - 1);
-        s_pass_buf[sizeof(s_pass_buf) - 1] = '\0';
         config->auth_method = TS_SSH_AUTH_PASSWORD;
-        config->auth.password = s_pass_buf;
+        config->auth.password = password->valuestring;
     } else if (cJSON_IsString(keyid) && keyid->valuestring[0]) {
-        esp_err_t ret = ts_keystore_load_private_key(keyid->valuestring, &s_key_buf, &s_key_len);
+        char *key_buf = NULL;
+        size_t key_len = 0;
+        esp_err_t ret = ts_keystore_load_private_key(keyid->valuestring, &key_buf, &key_len);
         if (ret != ESP_OK) {
             return ret;
         }
         config->auth_method = TS_SSH_AUTH_PUBLICKEY;
-        config->auth.key.private_key = (const uint8_t *)s_key_buf;
-        config->auth.key.private_key_len = s_key_len;
+        config->auth.key.private_key = (const uint8_t *)key_buf;
+        config->auth.key.private_key_len = key_len;
         config->auth.key.private_key_path = NULL;
         config->auth.key.passphrase = NULL;
     } else if (cJSON_IsString(keypath) && keypath->valuestring[0]) {
@@ -101,7 +78,7 @@ static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t 
     } else {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     return ESP_OK;
 }
 
@@ -111,33 +88,35 @@ static esp_err_t configure_ssh_from_params(const cJSON *params, ts_ssh_config_t 
 static esp_err_t connect_sftp(const cJSON *params, ts_ssh_session_t *ssh_out, ts_sftp_session_t *sftp_out)
 {
     ts_ssh_config_t config = TS_SSH_DEFAULT_CONFIG();
+
     esp_err_t ret = configure_ssh_from_params(params, &config);
     if (ret != ESP_OK) {
         return ret;
     }
-    
+
     ret = ts_ssh_session_create(&config, ssh_out);
     if (ret != ESP_OK) {
-        cleanup_key_buffer();
-        return ret;
+        goto out;
     }
-    
+
     ret = ts_ssh_connect(*ssh_out);
     if (ret != ESP_OK) {
         ts_ssh_session_destroy(*ssh_out);
-        cleanup_key_buffer();
-        return ret;
+        goto out;
     }
-    
+
     ret = ts_sftp_open(*ssh_out, sftp_out);
     if (ret != ESP_OK) {
         ts_ssh_disconnect(*ssh_out);
         ts_ssh_session_destroy(*ssh_out);
-        cleanup_key_buffer();
-        return ret;
     }
-    
-    return ESP_OK;
+
+out:
+    if (config.auth_method == TS_SSH_AUTH_PUBLICKEY && config.auth.key.private_key) {
+        memset((void *)config.auth.key.private_key, 0, config.auth.key.private_key_len);
+        free((void *)config.auth.key.private_key);
+    }
+    return ret;
 }
 
 /**
@@ -152,7 +131,6 @@ static void close_sftp(ts_ssh_session_t ssh, ts_sftp_session_t sftp)
         ts_ssh_disconnect(ssh);
         ts_ssh_session_destroy(ssh);
     }
-    cleanup_key_buffer();
 }
 
 /*===========================================================================*/
