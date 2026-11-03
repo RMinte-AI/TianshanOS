@@ -44,6 +44,7 @@ static struct {
     struct arg_lit *bind;
     struct arg_lit *bindings;
     struct arg_lit *unbind;
+    struct arg_lit *clear_bindings;
     struct arg_lit *save;
     struct arg_lit *reset;
     struct arg_str *iface;
@@ -503,7 +504,7 @@ static int do_dhcp_pool(ts_dhcp_if_t iface,
     /* 检查是否有修改参数 */
     bool has_modify = (start_ip && start_ip[0]) || (end_ip && end_ip[0]) ||
                       (gateway && gateway[0]) || (netmask && netmask[0]) ||
-                      (dns && dns[0]) || (lease > 0);
+                      (dns != NULL) || (lease > 0);
     
     /* 如果指定 all 且没有修改参数，显示所有接口配置 */
     if (iface == TS_DHCP_IF_ALL) {
@@ -531,7 +532,17 @@ static int do_dhcp_pool(ts_dhcp_if_t iface,
     }
     
     ts_dhcp_config_t config;
-    ts_dhcp_server_get_config(iface, &config);
+    esp_err_t config_result = ts_dhcp_server_get_config(iface, &config);
+    if (config_result != ESP_OK) {
+        ts_console_printf("Error: Cannot read configuration: %s\n", esp_err_to_name(config_result));
+        return 1;
+    }
+    if (has_modify && ts_dhcp_server_get_restore_error(iface) != ESP_OK &&
+        !(start_ip && start_ip[0] && end_ip && end_ip[0] && gateway && gateway[0] &&
+          netmask && netmask[0] && dns != NULL && lease > 0)) {
+        ts_console_printf("Error: Recovery incomplete. Retry restore, or supply the full start-ip/end-ip/gateway/netmask/dns/lease configuration. Binding recovery remains separate.\n");
+        return 1;
+    }
     
     bool modified = false;
     
@@ -551,7 +562,7 @@ static int do_dhcp_pool(ts_dhcp_if_t iface,
         strncpy(config.pool.netmask, netmask, TS_DHCP_IP_STR_MAX_LEN - 1);
         modified = true;
     }
-    if (dns && dns[0]) {
+    if (dns) {
         strncpy(config.pool.dns1, dns, TS_DHCP_IP_STR_MAX_LEN - 1);
         modified = true;
     }
@@ -618,10 +629,12 @@ static int do_dhcp_bind(ts_dhcp_if_t iface, const char *mac, const char *ip, con
     
     ret = ts_dhcp_server_add_static_binding(iface, &binding);
     if (ret != ESP_OK) {
-        if (ret == ESP_ERR_INVALID_STATE && ts_dhcp_server_is_initialized()) {
+        if (ts_dhcp_server_get_restore_error(iface) != ESP_OK) {
+            ts_console_printf("Error: DHCP recovery incomplete; retry restore or explicitly clear bindings for this interface before rebuilding them.\n");
+        } else if (ret == ESP_ERR_INVALID_STATE && ts_dhcp_server_is_initialized()) {
             ts_console_printf("Error: Address reserved or leased to another device; previous bindings unchanged.\n");
         } else {
-            ts_console_printf("Error: Failed to add binding: %s\n", esp_err_to_name(ret));
+            ts_console_printf("Error: Failed to add binding: %s. If recovery failed, retry restore or explicitly clear this interface first.\n", esp_err_to_name(ret));
         }
         return 1;
     }
@@ -654,7 +667,8 @@ static int do_dhcp_unbind(ts_dhcp_if_t iface, const char *mac)
     
     ret = ts_dhcp_server_remove_static_binding(iface, mac_arr);
     if (ret != ESP_OK) {
-        ts_console_printf("Error: Binding not found.\n");
+        if (ret == ESP_ERR_NOT_FOUND) ts_console_printf("Error: Binding not found.\n");
+        else ts_console_printf("Error: Cannot remove binding (%s); recovery may be incomplete.\n", esp_err_to_name(ret));
         return 1;
     }
     
@@ -662,8 +676,36 @@ static int do_dhcp_unbind(ts_dhcp_if_t iface, const char *mac)
     return 0;
 }
 
+static int do_dhcp_clear_bindings(ts_dhcp_if_t iface)
+{
+    if (iface != TS_DHCP_IF_AP && iface != TS_DHCP_IF_ETH) {
+        ts_console_printf("Usage: dhcp --clear-bindings --iface <ap|eth>\n");
+        return 1;
+    }
+    esp_err_t ret = ts_dhcp_server_clear_static_bindings(iface);
+    if (ret != ESP_OK) {
+        ts_console_printf("Error: Failed to clear bindings: %s\n", esp_err_to_name(ret));
+        return 1;
+    }
+    ts_console_printf("%s bindings cleared in memory and DHCP table. NVS unchanged; use dhcp --save to persist.\n",
+                      ts_dhcp_if_to_str(iface));
+    return 0;
+}
+
 static int do_dhcp_bindings(ts_dhcp_if_t iface, bool json_output)
 {
+    for (ts_dhcp_if_t check = 0; check < TS_DHCP_IF_MAX; ++check) {
+        if (iface != TS_DHCP_IF_ALL && iface != check) continue;
+        ts_dhcp_static_binding_t probe[TS_DHCP_MAX_STATIC_BINDINGS];
+        size_t count;
+        esp_err_t error = ts_dhcp_server_get_static_bindings(check, probe, TS_DHCP_MAX_STATIC_BINDINGS, &count);
+        if (error != ESP_OK) {
+            ts_console_printf("Error: %s bindings not restored (%s); retry restore or explicitly --clear-bindings --iface %s.\n",
+                              ts_dhcp_if_to_str(check), esp_err_to_name(error), check == TS_DHCP_IF_AP ? "ap" : "eth");
+            return 1;
+        }
+    }
+
     const ts_dhcp_if_t interfaces[] = { TS_DHCP_IF_AP, TS_DHCP_IF_ETH };
     const int num_ifaces = sizeof(interfaces) / sizeof(interfaces[0]);
     
@@ -784,7 +826,8 @@ static int do_dhcp_save(void)
     /* 调用原有保存方法 */
     esp_err_t ret = ts_dhcp_server_save_config();
     if (ret != ESP_OK) {
-        ts_console_error("Failed to save to NVS: %s\n", esp_err_to_name(ret));
+        ts_console_error("DHCP save incomplete: %s.\n", esp_err_to_name(ret));
+        ts_console_printf("Unrestored interfaces were skipped; another interface may have been saved. See per-interface logs.\n");
         return 1;
     }
     
@@ -834,6 +877,7 @@ static int do_cmd_dhcp(int argc, char **argv)
         ts_console_printf("  --bind                   Add static binding (requires --mac, --ip)\n");
         ts_console_printf("  --unbind                 Remove static binding (requires --mac)\n");
         ts_console_printf("  --bindings               List static bindings\n");
+        ts_console_printf("  --clear-bindings         Clear bindings; requires --iface ap|eth; not saved\n");
         ts_console_printf("  --save                   Save configuration to NVS\n");
         ts_console_printf("  --reset                  Reset to default configuration\n");
         ts_console_printf("  --iface <ap|eth|all>     Select interface (default: all)\n");
@@ -844,7 +888,7 @@ static int do_cmd_dhcp(int argc, char **argv)
         ts_console_printf("  --end-ip <ip>            Pool end IP\n");
         ts_console_printf("  --gateway <ip>           Gateway IP\n");
         ts_console_printf("  --netmask <mask>         Subnet mask\n");
-        ts_console_printf("  --dns <ip>               DNS server IP\n");
+        ts_console_printf("  --dns <ip>               DNS server IP (empty string: SDK default)\n");
         ts_console_printf("  --lease <min>            Lease time in minutes\n");
         ts_console_printf("  --mac <addr>             MAC address for binding\n");
         ts_console_printf("  --ip <addr>              IP address for binding\n");
@@ -856,8 +900,8 @@ static int do_cmd_dhcp(int argc, char **argv)
         ts_console_printf("  dhcp --status --iface eth            Show Ethernet DHCP status\n");
         ts_console_printf("  dhcp --clients --iface ap            List WiFi AP clients\n");
         ts_console_printf("  dhcp --start --iface eth             Start Ethernet DHCP server\n");
-        ts_console_printf("  dhcp --pool --iface ap --start-ip 10.10.99.100 --end-ip 10.10.99.200\n");
-        ts_console_printf("  dhcp --bind --iface ap --mac aa:bb:cc:dd:ee:ff --ip 10.10.99.50\n");
+        ts_console_printf("  dhcp --pool --iface ap --start-ip 192.168.4.10 --end-ip 192.168.4.20\n");
+        ts_console_printf("  dhcp --bind --iface ap --mac aa:bb:cc:dd:ee:ff --ip 192.168.4.50\n");
         ts_console_printf("  dhcp --unbind --iface ap --mac aa:bb:cc:dd:ee:ff\n");
         return 0;
     }
@@ -880,6 +924,20 @@ static int do_cmd_dhcp(int argc, char **argv)
         return do_dhcp_list_all(json_output);
     }
     
+    if (s_dhcp_args.clear_bindings->count > 0) {
+        /* This destructive action never inherits parse_iface's default/all aliases. */
+        if (s_dhcp_args.iface->count != 1 ||
+            (strcmp(s_dhcp_args.iface->sval[0], "ap") && strcmp(s_dhcp_args.iface->sval[0], "eth")) ||
+            s_dhcp_args.start->count || s_dhcp_args.stop->count || s_dhcp_args.restart->count ||
+            s_dhcp_args.pool->count || s_dhcp_args.bind->count || s_dhcp_args.unbind->count ||
+            s_dhcp_args.save->count || s_dhcp_args.reset->count || s_dhcp_args.bindings->count ||
+            s_dhcp_args.clients->count || s_dhcp_args.status->count || s_dhcp_args.list->count) {
+            ts_console_printf("Usage: dhcp --clear-bindings --iface <ap|eth>\n");
+            return 1;
+        }
+        return do_dhcp_clear_bindings(iface);
+    }
+
     /* 处理各种命令 */
     if (s_dhcp_args.status->count > 0) {
         return do_dhcp_status(iface, json_output);
@@ -957,6 +1015,7 @@ esp_err_t ts_cmd_dhcp_register(void)
     s_dhcp_args.bind = arg_lit0(NULL, "bind", "Add static binding");
     s_dhcp_args.bindings = arg_lit0(NULL, "bindings", "List static bindings");
     s_dhcp_args.unbind = arg_lit0(NULL, "unbind", "Remove static binding");
+    s_dhcp_args.clear_bindings = arg_lit0(NULL, "clear-bindings", "Clear bindings for explicit ap/eth (not saved)");
     s_dhcp_args.save = arg_lit0(NULL, "save", "Save configuration");
     s_dhcp_args.reset = arg_lit0(NULL, "reset", "Reset to defaults");
     s_dhcp_args.iface = arg_str0(NULL, "iface", "<ap|eth|all>", "Interface (default: all)");

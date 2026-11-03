@@ -38,8 +38,10 @@ def run(output, idf):
 typedef uint8_t u8_t;typedef uint16_t u16_t;typedef uint32_t u32_t;typedef int16_t s16_t;
 typedef struct {uint32_t addr;} ip4_addr_t;
 typedef ip4_addr_t ip_addr_t;
+typedef ip4_addr_t esp_ip4_addr_t;
 struct netif;
 #define ip4_addr_isany(a) ((a)->addr==0)
+#define ip4_addr_isany_val(a) ((a).addr==0)
 #define ipaddr_addr inet_addr
 #define ip4addr_aton(s,a) inet_pton(AF_INET,s,&(a)->addr)
 ''')
@@ -54,13 +56,18 @@ typedef int esp_err_t;
 #define ESP_ERR_NO_MEM 0x101
 #define ESP_ERR_NOT_SUPPORTED 0x106
 #define ESP_ERR_NVS_NOT_FOUND 0x1102
+#define ESP_ERR_NVS_TYPE_MISMATCH 0x1103
 #define ESP_ERR_NVS_INVALID_LENGTH 0x110c
 #define ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED 0x5002
+#define ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED 0x5003
+#define ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED 0x5004
 ''')
     (stubs / 'esp_netif.h').write_text('''#pragma once
 #include "lwip/ip_addr.h"
 typedef struct {ip4_addr_t ip,netmask,gw;} esp_netif_ip_info_t;
-typedef struct esp_netif_obj {struct dhcps_t *dhcps;esp_netif_ip_info_t *ip_info;} esp_netif_t;
+typedef enum {ESP_NETIF_DHCP_INIT=0, ESP_NETIF_DHCP_STARTED, ESP_NETIF_DHCP_STOPPED} esp_netif_dhcp_status_t;
+typedef struct esp_netif_obj {struct dhcps_t *dhcps;esp_netif_ip_info_t *ip_info;esp_netif_dhcp_status_t status;bool up;} esp_netif_t;
+typedef esp_err_t (*esp_netif_callback_fn)(void *);
 ''')
     types = sdk[sdk.index('#define BOOTP_BROADCAST'):sdk.index('static void dhcps_tmr(void* arg);')]
     (output / 'sdk_types.inc').write_text(types)
@@ -68,19 +75,34 @@ typedef struct esp_netif_obj {struct dhcps_t *dhcps;esp_netif_ip_info_t *ip_info
                  'ts_dhcps_replace_bindings', 'ts_dhcps_dynamic_candidate', 'ts_dhcps_is_release',
                  'parse_options', 'parse_msg', 'kill_oldest_dhcps_pool', 'dhcps_tmr']
     (output / 'sdk_core.inc').write_text('\n\n'.join(function(sdk, n) for n in sdk_names))
+    offer = function(sdk, 'dhcps_option_ip') + '\n' + function(sdk, 'add_offer_options')
+    (output / 'sdk_offer.inc').write_text(offer)
+    (output / 'sdk_offer_no_dns.inc').write_text(offer.replace('dhcps_option_ip', 'dhcps_option_ip_no_dns').replace('add_offer_options', 'add_offer_options_no_dns'))
     bridge_names = ['esp_netif_api_cb', 'esp_netif_lwip_ipc_call_msg', 'esp_netif_lwip_ipc_call',
                     'ts_netif_dhcps_replace_bindings_api', 'ts_netif_dhcps_replace_bindings']
     (output / 'bridge_core.inc').write_text('\n\n'.join(function(netif, n) for n in bridge_names))
     state_start = project.index('/** 事件回调节点 */')
     state_end = project.index('static ts_dhcp_module_state_t s_state = {0};')
     defines = '\n'.join(line for line in project.splitlines() if line.startswith('#define NVS_'))
-    (output / 'project_types.inc').write_text(defines + '\n' + project[state_start:state_end])
-    project_names = ['set_default_config', 'get_netif_for_iface', 'apply_config_to_netif', 'install_static_bindings', 'commit_static_bindings', 'restore_static_bindings',
+    event_end = project.index('} dhcp_ip_event_t;') + len('} dhcp_ip_event_t;')
+    event_start = project.rfind('typedef struct {', 0, event_end)
+    (output / 'project_types.inc').write_text(defines + '\n' + project[event_start:event_end] + '\n' + project[state_start:state_end])
+    project_names = ['set_default_config', 'set_interface_defaults', 'same_network_config',
+                     'get_netif_for_iface', 'build_binding_table', 'validate_config', 'validate_network',
+                     'configure_stopped_netif', 'apply_on_tcpip', 'apply_candidate', 'install_static_bindings',
+                     'commit_static_bindings', 'same_bindings', 'interface_error', 'dhcp_nvs_keys', 'read_saved_interface',
                      'ts_dhcp_server_add_static_binding', 'ts_dhcp_server_remove_static_binding', 'ts_dhcp_server_get_static_bindings',
                      'ts_dhcp_server_clear_static_bindings', 'ts_dhcp_server_save_config', 'ts_dhcp_server_load_config',
-                     'ts_dhcp_server_start', 'ts_dhcp_server_stop', 'ts_dhcp_server_is_initialized', 'ts_dhcp_mac_str_to_array']
+                     'ts_dhcp_server_start', 'ts_dhcp_server_stop', 'ts_dhcp_server_restart', 'ts_dhcp_server_set_config',
+                     'ts_dhcp_server_set_pool', 'ts_dhcp_server_set_lease_time', 'ts_dhcp_server_reset_config', 'ts_dhcp_server_get_config', 'ts_dhcp_server_get_status',
+                     'ts_dhcp_server_get_restore_error', 'ts_dhcp_server_get_apply_error', 'client_lease_expiry',
+                     'wifi_event_handler', 'ts_dhcp_mac_array_to_str', 'dhcp_event_task', 'ts_dhcp_server_is_initialized', 'ts_dhcp_mac_str_to_array']
     (output / 'project_core.inc').write_text('\n\n'.join(function(project, n) for n in project_names))
-    (output / 'console_core.inc').write_text(function(console, 'do_dhcp_bind'))
+    (output / 'console_core.inc').write_text(function(console, 'do_dhcp_bind') + '\n' + function(console, 'do_dhcp_clear_bindings') + '\n' + function(console, 'do_dhcp_pool'))
+    args_start = console.index('static struct {')
+    args_end = console.index('} s_dhcp_args;', args_start) + len('} s_dhcp_args;')
+    (output / 'console_args.inc').write_text(console[args_start:args_end])
+    (output / 'console_command.inc').write_text(function(console, 'do_cmd_dhcp'))
     command = ['cc', '-std=c11', '-pthread', '-g', '-Wall', '-Wextra', '-Wno-unused-function', '-Wno-unused-parameter',
                '-fsanitize=address,undefined', '-I' + str(stubs), '-I' + str(output),
                '-I' + str(idf / 'components/lwip/include/apps'), '-I' + str(ROOT / 'components/ts_net/include'),
@@ -90,6 +112,9 @@ typedef struct esp_netif_obj {struct dhcps_t *dhcps;esp_netif_ip_info_t *ip_info
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
     with (output / 'observations.jsonl').open('w') as log, (output / 'stderr.log').open('w') as err:
         subprocess.run([str(output / 'dhcp-bindings')], stdout=log, stderr=err, check=True, timeout=30)
+    assert '#define DHCPS_MAX_LEASE 0x64' in (idf / 'components/lwip/include/apps/dhcpserver/dhcpserver.h').read_text()
+    assert 'range_start_ip = server_ip + 1;' in sdk
+    assert 'range_end_ip = range_start_ip + DHCPS_MAX_LEASE - 1;' in sdk
     # A changed SDK must fail generation explicitly, with no old-source fallback.
     # The last two cases guard dependencies the patches rely on but do not touch.
     drift_results = []
@@ -128,13 +153,85 @@ typedef struct esp_netif_obj {struct dhcps_t *dhcps;esp_netif_ip_info_t *ip_info
     print('PASS F38 generated SDK + project entry points (ASan/UBSan); evidence:', output)
 
 
+def regression_probes(output, idf):
+    """Run one identical boot probe on original P2, f43 P1 and current functions.
+    Optional: requires local Git history; not needed for ordinary offline CI.
+    """
+    harness = (ROOT / 'tests/runtime/dhcp_bindings/test_bindings.c').read_text()
+    prelude = harness[:harness.index('#include "project_core.inc"')]
+    probe = r'''
+int main(void) {
+    s_state.mutex=&project_mutex;s_state.initialized=true;
+    for(unsigned i=0;i<2;i++) {
+        set_default_config(&s_state.iface[i].config);
+        infos[i]=(esp_netif_ip_info_t){.ip={inet_addr(i?"10.10.99.97":"192.168.4.1")},
+            .netmask={inet_addr("255.255.255.0")},.gw={inet_addr(i?"10.10.99.100":"192.168.4.1")}};
+        netifs[i]=(esp_netif_t){.dhcps=&servers[i],.ip_info=&infos[i],.status=ESP_NETIF_DHCP_INIT,.up=false};
+    }
+    nvs_set_u8(0,NVS_KEY_AP_ENABLED,1);
+    nvs_set_str(0,NVS_KEY_AP_START_IP,"10.10.99.100");nvs_set_str(0,NVS_KEY_AP_END_IP,"10.10.99.103");
+    nvs_set_str(0,NVS_KEY_AP_GATEWAY,"10.10.99.97");nvs_set_str(0,NVS_KEY_AP_NETMASK,"255.255.255.0");
+    nvs_set_str(0,NVS_KEY_AP_DNS,"");nvs_set_u32(0,NVS_KEY_AP_LEASE,120);
+    ts_dhcp_static_binding_t binding={.mac={2,0,0,0,0,1},.ip="10.10.99.50",.enabled=true};
+    nvs_set_blob(0,NVS_KEY_AP_BINDINGS,&binding,sizeof(binding));nvs_set_u8(0,NVS_KEY_AP_BIND_CNT,1);
+    esp_err_t restored=ts_dhcp_server_load_config();
+    if(restored!=ESP_OK||s_state.iface[0].static_binding_count!=1||servers[0].ts_bindings.count!=1) {
+        printf("P2 reproduced: restore=%d memory=%zu SDK=%zu\n",restored,s_state.iface[0].static_binding_count,servers[0].ts_bindings.count);return 10;
+    }
+    interface_up(0);
+    if(netifs[0].status!=ESP_NETIF_DHCP_STARTED) {puts("P1 reproduced: AP up but DHCP remains STOPPED");return 11;}
+    assert(servers[0].ts_bindings.entries[0].ip==inet_addr("10.10.99.50"));
+    puts("PASS same boot probe: restored owner installed and AP DHCP started");return 0;
+}
+'''
+    names = ['set_default_config', 'set_interface_defaults', 'same_network_config', 'get_netif_for_iface',
+             'build_binding_table', 'validate_config', 'validate_network', 'configure_stopped_netif',
+             'apply_config_to_netif', 'apply_on_tcpip', 'apply_candidate', 'install_static_bindings',
+             'commit_static_bindings', 'same_bindings', 'restore_error', 'dhcp_nvs_keys', 'read_saved_interface',
+             'restore_static_bindings', 'ts_dhcp_server_load_config']
+    results = []
+    for ref, expected in [('aad8d1a59', 10), ('f43f3b742', 11), ('current', 0)]:
+        project = ((ROOT / 'components/ts_net/src/ts_dhcp_server.c').read_text() if ref == 'current' else
+                   subprocess.check_output(['git', 'show', ref + ':components/ts_net/src/ts_dhcp_server.c'], cwd=ROOT, text=True))
+        directory = output / ('probe-' + ref)
+        directory.mkdir(exist_ok=True)
+        defines = '\n'.join(line for line in project.splitlines() if line.startswith('#define NVS_'))
+        begin = project.index('/** 事件回调节点 */')
+        end = project.index('static ts_dhcp_module_state_t s_state = {0};')
+        event_end = project.index('} dhcp_ip_event_t;') + len('} dhcp_ip_event_t;')
+        event_start = project.rfind('typedef struct {', 0, event_end)
+        (directory / 'project_types.inc').write_text(defines + '\n' + project[event_start:event_end] + '\n' + project[begin:end])
+        functions = []
+        for name in names:
+            if re.search(r'^(?:static )?[\w *]+\b' + name + r'\([^;]*?\)\s*\{', project, re.M):
+                functions.append(function(project, name))
+        (directory / 'old_project_core.inc').write_text('\n\n'.join(functions))
+        (directory / 'probe.c').write_text(prelude + '#include "old_project_core.inc"\n' + probe)
+        command = ['cc', '-std=c11', '-pthread', '-g', '-fsanitize=address,undefined',
+                   '-Wno-unused-function', '-Wno-unused-parameter', '-I' + str(directory), '-I' + str(output / 'stubs'),
+                   '-I' + str(output), '-I' + str(idf / 'components/lwip/include/apps'),
+                   '-I' + str(ROOT / 'components/ts_net/include'), '-I' + str(ROOT / 'components/ts_net/private_include'),
+                   str(directory / 'probe.c'), '-o', str(directory / 'probe')]
+        with (directory / 'compile.log').open('w') as log:
+            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+        result = subprocess.run([str(directory / 'probe')], capture_output=True, text=True, timeout=30)
+        (directory / 'run.log').write_text(result.stdout + result.stderr)
+        assert result.returncode == expected, (ref, expected, result.returncode, result.stdout, result.stderr)
+        results.append(dict(ref=ref, expected_exit=expected, actual_exit=result.returncode, output=result.stdout))
+        print(result.stdout, end='')
+    (output / 'regression-probes.json').write_text(json.dumps(results, indent=2))
+
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path)
+    p.add_argument('--regression-probes', action='store_true', help='Compare original P2/P1 Git revisions with current boot behavior')
     p.add_argument('--idf-dir', type=Path, default=Path(os.environ.get('IDF_PATH', '/Users/massif/esp/v5.5.2/esp-idf')))
     args = p.parse_args()
     if args.output:
         run(args.output, args.idf_dir)
+        if args.regression_probes: regression_probes(args.output, args.idf_dir)
     else:
         with tempfile.TemporaryDirectory(prefix='ts-dhcp-bindings-') as tmp:
             run(Path(tmp), args.idf_dir)
+            if args.regression_probes: regression_probes(Path(tmp), args.idf_dir)

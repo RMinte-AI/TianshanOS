@@ -6,6 +6,8 @@
 #include <string.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <setjmp.h>
+#include <time.h>
 #include "esp_err.h"
 #include "esp_netif.h"
 #include "dhcpserver/dhcpserver.h"
@@ -25,6 +27,17 @@
 static void sys_timeout(unsigned ms,void (*fn)(void *),void *arg) {}
 #include "sdk_types.inc"
 #include "sdk_core.inc"
+
+#define LWIP_ASSERT(message, condition) assert(condition)
+#define ip4_addr1(p) ((ntohl((p)->addr)>>24)&255)
+#define ip4_addr2(p) ((ntohl((p)->addr)>>16)&255)
+#define ip4_addr3(p) ((ntohl((p)->addr)>>8)&255)
+#define ip4_addr4(p) (ntohl((p)->addr)&255)
+static void get_ip_info(struct netif *n,ip_info_t *info){memset(info,0,sizeof(*info));}
+#define CONFIG_LWIP_DHCPS_ADD_DNS 1
+#include "sdk_offer.inc"
+#undef CONFIG_LWIP_DHCPS_ADD_DNS
+#include "sdk_offer_no_dns.inc"
 /* Execute the SDK IPC helpers unchanged, with a synchronous host TCP/IP thread.
  * No project state lock is ever acquired on that thread. */
 typedef struct esp_netif_api_msg esp_netif_api_msg_t;
@@ -43,18 +56,24 @@ static void tcpip_send_msg_wait_sem(tcpip_callback_fn fn,void *arg,void *sem) {
     ++ipc_calls;struct dispatch d={fn,arg};pthread_t thread;
     assert(!pthread_create(&thread,NULL,run_tcpip,&d));assert(!pthread_join(thread,NULL));
 }
+#define ts_netif_dhcps_replace_bindings sdk_replace_bindings
 #include "bridge_core.inc"
+#undef ts_netif_dhcps_replace_bindings
 
 typedef pthread_mutex_t *SemaphoreHandle_t;
 typedef void *QueueHandle_t;
 typedef void *TaskHandle_t;
 typedef unsigned TickType_t;
 #define portMAX_DELAY -1
+#define configTICK_RATE_HZ 1000
 #define NVS_READWRITE 1
 #define NVS_READONLY 0
 #define IPSTR "%u"
 #define IP2STR(p) (p)->addr
 #define ESP_NETIF_OP_SET 0
+#define ESP_NETIF_OP_GET 1
+#define pdTRUE 1
+#define pdMS_TO_TICKS(ms) (ms)
 #define ESP_NETIF_REQUESTED_IP_ADDRESS 1
 #define ESP_NETIF_IP_ADDRESS_LEASE_TIME 2
 #define ESP_NETIF_DOMAIN_NAME_SERVER 3
@@ -63,8 +82,8 @@ typedef unsigned TickType_t;
 #define TS_DHCP_IF_ALL TS_DHCP_IF_MAX
 static pthread_mutex_t project_mutex=PTHREAD_MUTEX_INITIALIZER;
 static unsigned project_lock_depth;
-static void xSemaphoreTake(SemaphoreHandle_t mutex,int ticks) {
-    assert(!on_tcpip&&!project_lock_depth);assert(!pthread_mutex_lock(mutex));project_lock_depth++;
+static int xSemaphoreTake(SemaphoreHandle_t mutex,int ticks) {
+    assert(!on_tcpip&&!project_lock_depth);assert(!pthread_mutex_lock(mutex));project_lock_depth++;return pdTRUE;
 }
 static void xSemaphoreGive(SemaphoreHandle_t mutex) {assert(project_lock_depth==1);project_lock_depth--;assert(!pthread_mutex_unlock(mutex));}
 #include "project_types.inc"
@@ -81,43 +100,118 @@ static esp_netif_t *esp_netif_get_handle_from_ifkey(const char *key) {
     if(!netifs_exist)return NULL;
     return !strcmp(key,"WIFI_AP_DEF")?&netifs[0]:&netifs[1];
 }
-static esp_err_t esp_netif_dhcps_stop(esp_netif_t *n) {drain(n->dhcps);n->dhcps->state=DHCPS_HANDLE_STOPPED;return ESP_OK;}
-static esp_err_t esp_netif_set_ip_info(esp_netif_t *n,const esp_netif_ip_info_t *i) {*n->ip_info=*i;return ESP_OK;}
+
+/* ESP-IDF 5.5.2 esp_netif_lwip.c:1192-1222,1675-1742,1978,2472.
+ * Model esp-netif status separately from the lower-level DHCPS_HANDLE state.
+ * No sockets, real event loop or hardware: this is explicitly a host model. */
+enum failure_stage {FAIL_NONE, FAIL_STATUS, FAIL_STOP, FAIL_IP, FAIL_POOL, FAIL_LEASE,
+                    FAIL_DNS_OFFER, FAIL_DNS_ADDRESS, FAIL_BINDINGS, FAIL_START, FAIL_LEASE_READ};
+static enum failure_stage fail_stage;
+static unsigned stop_calls, apply_dispatches;
+static bool fail_cleanup_stop;
+static bool fail_now(enum failure_stage stage) {
+    if(fail_stage!=stage)return false;fail_stage=FAIL_NONE;return true;
+}
+esp_err_t ts_netif_dhcps_replace_bindings(esp_netif_t *n,const ts_dhcps_binding_table_t *table) {
+    if(fail_now(FAIL_BINDINGS))return ESP_FAIL;
+    return sdk_replace_bindings(n,table);
+}
+static esp_err_t esp_netif_dhcps_get_status(esp_netif_t *n,esp_netif_dhcp_status_t *status) {
+    if(fail_now(FAIL_STATUS))return ESP_FAIL;*status=n->status;return ESP_OK;
+}
+static esp_err_t esp_netif_dhcps_stop(esp_netif_t *n) {
+    stop_calls++;if(fail_cleanup_stop&&stop_calls>1)return ESP_FAIL;
+    if(fail_now(FAIL_STOP))return ESP_FAIL;
+    if(n->status==ESP_NETIF_DHCP_STOPPED)return ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED;
+    if(n->status==ESP_NETIF_DHCP_STARTED){drain(n->dhcps);n->dhcps->state=DHCPS_HANDLE_STOPPED;}
+    n->status=ESP_NETIF_DHCP_STOPPED;return ESP_OK;
+}
+static esp_err_t esp_netif_set_ip_info(esp_netif_t *n,const esp_netif_ip_info_t *i) {
+    if(n->status!=ESP_NETIF_DHCP_STOPPED)return ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED;
+    if(fail_now(FAIL_IP))return ESP_FAIL;*n->ip_info=*i;return ESP_OK;
+}
 static esp_err_t esp_netif_get_ip_info(esp_netif_t *n,esp_netif_ip_info_t *i) {*i=*n->ip_info;return ESP_OK;}
 static esp_err_t esp_netif_dhcps_option(esp_netif_t *n,int op,int option,void *value,size_t len) {
-    if(option==ESP_NETIF_REQUESTED_IP_ADDRESS)n->dhcps->dhcps_poll=*(dhcps_lease_t *)value;
-    if(option==ESP_NETIF_IP_ADDRESS_LEASE_TIME)n->dhcps->dhcps_lease_time=*(uint32_t *)value;
+    if(op==ESP_NETIF_OP_GET) {
+        if(n->status==ESP_NETIF_DHCP_STOPPED)return ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED;
+        if(fail_now(FAIL_LEASE_READ))return ESP_FAIL;
+        assert(option==ESP_NETIF_IP_ADDRESS_LEASE_TIME);*(uint32_t *)value=n->dhcps->dhcps_lease_time;return ESP_OK;
+    }
+    if(n->status==ESP_NETIF_DHCP_STARTED)return ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED;
+    if(option==ESP_NETIF_REQUESTED_IP_ADDRESS) {
+        if(fail_now(FAIL_POOL))return ESP_FAIL;
+        dhcps_lease_t *lease=value;uint32_t self=ntohl(n->ip_info->ip.addr);
+        uint32_t begin=ntohl(lease->start_ip.addr),end=ntohl(lease->end_ip.addr);
+        if(self>=begin&&self<=end)return ESP_ERR_INVALID_ARG;
+        n->dhcps->dhcps_poll=*lease;
+    }
+    if(option==ESP_NETIF_IP_ADDRESS_LEASE_TIME) {
+        if(fail_now(FAIL_LEASE))return ESP_FAIL;n->dhcps->dhcps_lease_time=*(uint32_t *)value;
+    }
+    if(option==ESP_NETIF_DOMAIN_NAME_SERVER) {
+        if(fail_now(FAIL_DNS_OFFER))return ESP_FAIL;n->dhcps->dhcps_dns=*(uint8_t *)value;
+    }
     return ESP_OK;
 }
 typedef struct {struct {struct {ip4_addr_t ip4;} u_addr;int type;} ip;} esp_netif_dns_info_t;
-static esp_err_t esp_netif_set_dns_info(esp_netif_t *n,int kind,esp_netif_dns_info_t *dns) {return ESP_OK;}
+static esp_err_t esp_netif_set_dns_info(esp_netif_t *n,int kind,esp_netif_dns_info_t *dns) {
+    if(fail_now(FAIL_DNS_ADDRESS))return ESP_FAIL;n->dhcps->dns_server[0].addr=dns->ip.u_addr.ip4.addr;return ESP_OK;
+}
 static esp_err_t esp_netif_dhcps_start(esp_netif_t *n) {
+    if(n->status==ESP_NETIF_DHCP_STARTED)return ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED;
+    if(fail_now(FAIL_START)){n->status=ESP_NETIF_DHCP_INIT;return ESP_FAIL;}
+    if(!n->up){n->status=ESP_NETIF_DHCP_INIT;return ESP_OK;}
     if(check_start_table) {
         assert(n->dhcps->ts_bindings.count==(start_expected_owner?1:0));
         if(start_expected_owner)assert(n->dhcps->ts_bindings.entries[0].ip==ip(start_expected_owner).addr);
     }
-    n->dhcps->state=DHCPS_HANDLE_STARTED;n->dhcps->client_address_plus=n->dhcps->dhcps_poll.start_ip;
-    return ESP_OK;
+    n->status=ESP_NETIF_DHCP_STARTED;n->dhcps->state=DHCPS_HANDLE_STARTED;
+    n->dhcps->server_address=n->ip_info->ip;n->dhcps->dhcps_mask=n->ip_info->netmask;
+    n->dhcps->client_address_plus=n->dhcps->dhcps_poll.start_ip;return ESP_OK;
+}
+struct exec_context {esp_netif_callback_fn fn;void *arg;esp_err_t ret;};
+static void *exec_tcpip(void *arg) {
+    struct exec_context *ctx=arg;assert(!on_tcpip);on_tcpip=true;
+    ctx->ret=ctx->fn(ctx->arg);on_tcpip=false;return NULL;
+}
+static void (*after_dispatch)(void);
+static esp_err_t esp_netif_tcpip_exec(esp_netif_callback_fn fn,void *arg) {
+    assert(!on_tcpip);++apply_dispatches;struct exec_context ctx={fn,arg,ESP_FAIL};pthread_t worker;
+    assert(!pthread_create(&worker,NULL,exec_tcpip,&ctx));assert(!pthread_join(worker,NULL));
+    if(after_dispatch){void (*event)(void)=after_dispatch;after_dispatch=NULL;event();}
+    return ctx.ret;
+}
+static void interface_up(unsigned index) {
+    netifs[index].up=true;
+    if(netifs[index].status==ESP_NETIF_DHCP_INIT)assert(esp_netif_dhcps_start(&netifs[index])==ESP_OK);
 }
 static TickType_t xTaskGetTickCount(void) {return 100;}
-static void notify_event(ts_dhcp_if_t iface,ts_dhcp_event_t e,const ts_dhcp_client_t *client) {}
+static void notify_event(ts_dhcp_if_t iface,ts_dhcp_event_t e,const ts_dhcp_client_t *client) {assert(!on_tcpip);}
 const char *ts_dhcp_if_to_str(ts_dhcp_if_t iface) {return iface?"ethernet":"wifi_ap";}
 /* NVS key/value model runs the production explicit save and load functions. */
 typedef int nvs_handle_t;
-static struct {char key[16];unsigned char data[2048];size_t size;} kv[32];
+static struct {char key[16];unsigned char data[2048];size_t size;int type;} kv[32];
 static size_t kv_count;
 static unsigned commits;
-static esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *handle) {*handle=1;return ESP_OK;}
+static const char *fail_read_key, *fail_write_key;
+static bool fail_open_read, missing_namespace, fail_commit;
+static esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *handle) {
+    assert(!on_tcpip);if(mode==NVS_READONLY&&missing_namespace)return ESP_ERR_NVS_NOT_FOUND;
+    if(mode==NVS_READONLY&&fail_open_read)return ESP_FAIL;*handle=1;return ESP_OK;
+}
 static void nvs_close(nvs_handle_t handle) {}
-static esp_err_t nvs_commit(nvs_handle_t handle) {commits++;return ESP_OK;}
+static esp_err_t nvs_commit(nvs_handle_t handle) {assert(!on_tcpip);commits++;return fail_commit?ESP_FAIL:ESP_OK;}
 static esp_err_t kv_set(const char *key,const void *data,size_t size) {
+    assert(!on_tcpip);if(fail_write_key&&!strcmp(key,fail_write_key))return ESP_FAIL;
     size_t i=0;while(i<kv_count&&strcmp(kv[i].key,key))i++;
     if(i==kv_count){assert(kv_count<32);strcpy(kv[kv_count++].key,key);}
     assert(size<=sizeof(kv[i].data));memcpy(kv[i].data,data,size);kv[i].size=size;return ESP_OK;
 }
 static esp_err_t kv_get(const char *key,void *data,size_t *size) {
+    assert(!on_tcpip);if(fail_read_key&&!strcmp(key,fail_read_key))return ESP_FAIL;
     size_t i=0;while(i<kv_count&&strcmp(kv[i].key,key))i++;
     if(i==kv_count)return ESP_ERR_NVS_NOT_FOUND;
+    if(!data){*size=kv[i].size;return ESP_OK;}
     if(*size<kv[i].size){*size=kv[i].size;return ESP_ERR_NVS_INVALID_LENGTH;}
     memcpy(data,kv[i].data,kv[i].size);*size=kv[i].size;return ESP_OK;
 }
@@ -126,22 +220,89 @@ static bool shrink_blob(const char *key,size_t by) {
     for(size_t i=0;i<kv_count;i++)if(!strcmp(kv[i].key,key)){assert(kv[i].size>by);kv[i].size-=by;return true;}
     return false;
 }
-static esp_err_t nvs_set_u8(int h,const char *key,uint8_t value) {return kv_set(key,&value,sizeof(value));}
-static esp_err_t nvs_set_u32(int h,const char *key,uint32_t value) {return kv_set(key,&value,sizeof(value));}
-static esp_err_t nvs_set_str(int h,const char *key,const char *value) {return kv_set(key,value,strlen(value)+1);}
-static esp_err_t nvs_set_blob(int h,const char *key,const void *value,size_t size) {return kv_set(key,value,size);}
-static esp_err_t nvs_get_u8(int h,const char *key,uint8_t *value) {size_t n=sizeof(*value);return kv_get(key,value,&n);}
-static esp_err_t nvs_get_u32(int h,const char *key,uint32_t *value) {size_t n=sizeof(*value);return kv_get(key,value,&n);}
-static esp_err_t nvs_get_str(int h,const char *key,char *value,size_t *size) {return kv_get(key,value,size);}
-static esp_err_t nvs_get_blob(int h,const char *key,void *value,size_t *size) {return kv_get(key,value,size);}
+
+enum {KV_U8,KV_U32,KV_STR,KV_BLOB};
+static esp_err_t kv_typed_set(const char *key,const void *data,size_t size,int type) {
+    esp_err_t ret=kv_set(key,data,size);if(ret!=ESP_OK)return ret;
+    for(size_t i=0;i<kv_count;i++)if(!strcmp(key,kv[i].key)){kv[i].type=type;break;}return ESP_OK;
+}
+static esp_err_t kv_typed_get(const char *key,void *data,size_t *size,int type) {
+    for(size_t i=0;i<kv_count;i++)if(!strcmp(key,kv[i].key)&&kv[i].type!=type)return ESP_ERR_NVS_TYPE_MISMATCH;
+    return kv_get(key,data,size);
+}
+static esp_err_t nvs_set_u8(int h,const char *key,uint8_t value) {return kv_typed_set(key,&value,sizeof(value),KV_U8);}
+static esp_err_t nvs_set_u32(int h,const char *key,uint32_t value) {return kv_typed_set(key,&value,sizeof(value),KV_U32);}
+static esp_err_t nvs_set_str(int h,const char *key,const char *value) {return kv_typed_set(key,value,strlen(value)+1,KV_STR);}
+static esp_err_t nvs_set_blob(int h,const char *key,const void *value,size_t size) {return kv_typed_set(key,value,size,KV_BLOB);}
+static esp_err_t nvs_get_u8(int h,const char *key,uint8_t *value) {size_t n=sizeof(*value);return kv_typed_get(key,value,&n,KV_U8);}
+static esp_err_t nvs_get_u32(int h,const char *key,uint32_t *value) {size_t n=sizeof(*value);return kv_typed_get(key,value,&n,KV_U32);}
+static esp_err_t nvs_get_str(int h,const char *key,char *value,size_t *size) {return kv_typed_get(key,value,size,KV_STR);}
+static esp_err_t nvs_get_blob(int h,const char *key,void *value,size_t *size) {return kv_typed_get(key,value,size,KV_BLOB);}
+
+typedef void *esp_event_base_t;
+#define WIFI_EVENT ((esp_event_base_t)1)
+#define WIFI_EVENT_AP_STACONNECTED 1
+#define WIFI_EVENT_AP_STADISCONNECTED 2
+#define WIFI_EVENT_AP_START 3
+#define WIFI_EVENT_AP_STOP 4
+typedef struct {uint8_t mac[6];unsigned aid;} wifi_event_ap_staconnected_t;
+typedef wifi_event_ap_staconnected_t wifi_event_ap_stadisconnected_t;
+static dhcp_ip_event_t queued_lease;
+static bool lease_ready;
+static jmp_buf queue_finished;
+static int xQueueReceive(QueueHandle_t queue,dhcp_ip_event_t *event,int ticks) {
+    assert(!on_tcpip&&!project_lock_depth);
+    if(!lease_ready)longjmp(queue_finished,1);
+    *event=queued_lease;lease_ready=false;return pdTRUE;
+}
+static void esp_ip4addr_ntoa(const ip4_addr_t *ip,char *buffer,size_t len) {
+    assert(inet_ntop(AF_INET,&ip->addr,buffer,len));
+}
 #include "project_core.inc"
 static char console_text[1024];
 static const char *esp_err_to_name(esp_err_t err) {return "mock error";}
 static void ts_console_printf(const char *fmt,...) {
     size_t n=strlen(console_text);va_list args;va_start(args,fmt);vsnprintf(console_text+n,sizeof(console_text)-n,fmt,args);va_end(args);
 }
+
+static const char *iface_display_name(ts_dhcp_if_t iface){return ts_dhcp_if_to_str(iface);}
+static void ts_console_success(const char *fmt,...){assert(!on_tcpip);}
+static int do_dhcp_list_all(bool json){return 0;}
+static int do_dhcp_status(ts_dhcp_if_t iface,bool json){return 0;}
+static int do_dhcp_clients(ts_dhcp_if_t iface,bool json){return 0;}
+static int do_dhcp_start(ts_dhcp_if_t iface){return ts_dhcp_server_start(iface);}
+static int do_dhcp_stop(ts_dhcp_if_t iface){return ts_dhcp_server_stop(iface);}
+static int do_dhcp_restart(ts_dhcp_if_t iface){return ts_dhcp_server_restart(iface);}
+static int do_dhcp_unbind(ts_dhcp_if_t iface,const char *mac){return 0;}
+static int do_dhcp_bindings(ts_dhcp_if_t iface,bool json){return 0;}
+static int do_dhcp_save(void){return ts_dhcp_server_save_config();}
+static int do_dhcp_reset(void){return ts_dhcp_server_reset_config();}
+static ts_dhcp_if_t parse_iface(const char *name){return !strcmp(name,"ap")?0:!strcmp(name,"eth")?1:TS_DHCP_IF_ALL;}
 #include "console_core.inc"
 
+
+struct arg_lit {int count;};
+struct arg_str {int count;const char **sval;};
+struct arg_int {int count;int *ival;};
+struct arg_end {int count;};
+static int arg_parse(int argc,char **argv,void *table){return 0;}
+static void arg_print_errors(FILE *f,struct arg_end *end,const char *command){}
+#include "console_args.inc"
+#include "console_command.inc"
+static void cli_defaults(void) {
+    static struct arg_lit flags[19];memset(flags,0,sizeof(flags));
+    struct arg_lit **slots[]={&s_dhcp_args.status,&s_dhcp_args.list,&s_dhcp_args.clients,&s_dhcp_args.start,
+        &s_dhcp_args.stop,&s_dhcp_args.restart,&s_dhcp_args.config,&s_dhcp_args.pool,&s_dhcp_args.bind,
+        &s_dhcp_args.bindings,&s_dhcp_args.unbind,&s_dhcp_args.clear_bindings,&s_dhcp_args.save,&s_dhcp_args.reset,
+        &s_dhcp_args.json,&s_dhcp_args.help};
+    for(unsigned i=0;i<sizeof(slots)/sizeof(*slots);i++)*slots[i]=&flags[i];
+    static struct arg_str strings[9];memset(strings,0,sizeof(strings));
+    struct arg_str **texts[]={&s_dhcp_args.iface,&s_dhcp_args.start_ip,&s_dhcp_args.end_ip,&s_dhcp_args.gateway,
+        &s_dhcp_args.netmask,&s_dhcp_args.dns,&s_dhcp_args.mac,&s_dhcp_args.ip,&s_dhcp_args.hostname};
+    for(unsigned i=0;i<sizeof(texts)/sizeof(*texts);i++)*texts[i]=&strings[i];
+    static struct arg_int lease;lease.count=0;s_dhcp_args.lease=&lease;
+    static struct arg_end end;s_dhcp_args.end=&end;
+}
 static const uint8_t a[6]={2,0,0,0,0,1},b[6]={2,0,0,0,0,2},c[6]={2,0,0,0,0,3},dmac[6]={2,0,0,0,0,4},e[6]={2,0,0,0,0,5};
 static dhcps_t *eth(void) {return &servers[1];}
 static void setup(bool erase_nvs) {
@@ -150,14 +311,19 @@ static void setup(bool erase_nvs) {
     memset(&s_state,0,sizeof(s_state));s_state.initialized=true;s_state.mutex=&project_mutex;
     for(int i=0;i<TS_DHCP_IF_MAX;i++) {
         set_default_config(&s_state.iface[i].config);
+        strcpy(s_state.iface[i].config.pool.gateway,"10.10.99.97");
         /* One-minute host lease: no production clock or defaults are changed. */
         s_state.iface[i].config.lease_time_min=1;
         infos[i]=(esp_netif_ip_info_t){.ip=ip(97),.netmask={htonl(0xffffff00)},.gw=ip(100)};
-        netifs[i]=(esp_netif_t){&servers[i],&infos[i]};
+        netifs[i]=(esp_netif_t){.dhcps=&servers[i],.ip_info=&infos[i],.status=ESP_NETIF_DHCP_STARTED,.up=true};
+        s_state.iface[i].applied_config=s_state.iface[i].config;
+        s_state.iface[i].applied_valid=true;
         servers[i].dhcps_poll=(dhcps_lease_t){true,ip(100),ip(103)};
         servers[i].client_address_plus=ip(100);servers[i].dhcps_lease_time=1;servers[i].state=DHCPS_HANDLE_STARTED;
     }
     netifs_exist=true;check_start_table=false;console_text[0]=0;
+    fail_stage=FAIL_NONE;stop_calls=apply_dispatches=0;after_dispatch=NULL;
+    fail_read_key=fail_write_key=NULL;fail_open_read=missing_namespace=fail_commit=false;fail_cleanup_stop=false;
     if(erase_nvs){memset(kv,0,sizeof(kv));kv_count=commits=0;}
 }
 static esp_err_t bind_owner_if(ts_dhcp_if_t iface,const uint8_t *mac,unsigned last,bool enabled) {
@@ -188,7 +354,296 @@ static struct dhcps_pool *lease(const uint8_t *mac,unsigned last) {
     return NULL;
 }
 static void record(const char *name) {printf("{\"case\":\"%s\",\"passed\":true}\n",name);}
+
+static void boot_defaults(bool erase) {
+    setup(erase);
+    for(int i=0;i<TS_DHCP_IF_MAX;i++) {
+        set_interface_defaults(i,&s_state.iface[i].config);s_state.iface[i].applied_valid=false;
+        netifs[i].status=ESP_NETIF_DHCP_INIT;netifs[i].up=false;servers[i].state=DHCPS_HANDLE_CREATED;
+    }
+    infos[0]=(esp_netif_ip_info_t){.ip={inet_addr("192.168.4.1")},.netmask={inet_addr("255.255.255.0")},.gw={inet_addr("192.168.4.1")}};
+    servers[0].dhcps_lease_time=DHCPS_LEASE_TIME_DEF;servers[0].dhcps_dns=0;
+    servers[0].dhcps_poll=(dhcps_lease_t){true,{inet_addr("192.168.4.2")},{inet_addr("192.168.4.101")}};
+}
+static uint32_t option_value(dhcps_t *server,unsigned option,bool add_dns) {
+    unsigned char options[512]={0};unsigned char *end=add_dns?add_offer_options(server,options):add_offer_options_no_dns(server,options);
+    for(unsigned char *p=options;p+2<=end;) {
+        size_t len=p[1];assert(p+2+len<=end);
+        if(p[0]==option){assert(len==4);uint32_t value;memcpy(&value,p+2,4);return value;}
+        p+=2+len;
+    }
+    return 0;
+}
+static void set_saved_string(ts_dhcp_if_t iface,unsigned field,const char *value) {
+    assert(nvs_set_str(0,dhcp_nvs_keys(iface)[field],value)==ESP_OK);
+}
+static void queued_ap_up(void){interface_up(0);}
+
+
+static void remove_interface_record(ts_dhcp_if_t iface) {
+    const char *const *keys=dhcp_nvs_keys(iface);
+    for(unsigned key=0;key<9;key++)for(size_t i=0;i<kv_count;i++)if(!strcmp(kv[i].key,keys[key])) {
+        kv[i]=kv[--kv_count];break;
+    }
+}
+static void run_lease_event(const uint8_t *mac,unsigned last) {
+    memcpy(queued_lease.mac,mac,6);queued_lease.ip=ip(last);lease_ready=true;
+    if(!setjmp(queue_finished))dhcp_event_task(NULL);
+    assert(!project_lock_depth);
+}
+static void check_review_findings(void) {
+    setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);
+    fail_stage=FAIL_START;assert(ts_dhcp_server_restart(0)==ESP_FAIL);
+    assert(ts_dhcp_server_get_restore_error(0)==ESP_OK);
+    assert(ts_dhcp_server_get_apply_error(0)==ESP_FAIL);
+    assert(do_dhcp_pool(0,NULL,NULL,NULL,NULL,"1.1.1.1",0)==0);
+    assert(ts_dhcp_server_get_apply_error(0)==ESP_FAIL); /* Editing is not an application. */
+    assert(ts_dhcp_server_start(0)==ESP_OK&&ts_dhcp_server_get_apply_error(0)==ESP_OK);
+    record("review1_apply_failure_does_not_force_full_CLI_config_replacement");
+
+    setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);fail_read_key=NVS_KEY_AP_GATEWAY;
+    assert(ts_dhcp_server_load_config()==ESP_FAIL);fail_read_key=NULL;
+    remove_interface_record(0);
+    ts_dhcp_config_t retained=s_state.iface[0].config;
+    esp_netif_dhcp_status_t status=netifs[0].status;unsigned dispatches=apply_dispatches;
+    s_state.iface[0].apply_error=ESP_FAIL;
+    assert(ts_dhcp_server_load_config()==ESP_OK);
+    assert(ts_dhcp_server_get_restore_error(0)==ESP_OK&&ts_dhcp_server_get_apply_error(0)==ESP_FAIL);
+    assert(same_network_config(&retained,&s_state.iface[0].config)&&netifs[0].status==status);
+    assert(apply_dispatches==dispatches+1); /* ETH only; absent AP must not be applied. */
+    assert(ts_dhcp_server_save_config()==ESP_OK);
+    record("review2_absent_interface_clears_storage_errors_only_without_applying_AP");
+
+    setup(true);fail_open_read=true;assert(ts_dhcp_server_load_config()==ESP_FAIL);fail_open_read=false;
+    missing_namespace=true;s_state.iface[0].apply_error=ESP_FAIL;dispatches=apply_dispatches;
+    assert(ts_dhcp_server_load_config()==ESP_OK&&apply_dispatches==dispatches);
+    assert(ts_dhcp_server_get_restore_error(0)==ESP_OK&&ts_dhcp_server_get_restore_error(1)==ESP_OK);
+    assert(ts_dhcp_server_get_apply_error(0)==ESP_FAIL);missing_namespace=false;
+    assert(ts_dhcp_server_save_config()==ESP_OK);
+    record("review2_absent_namespace_clears_storage_errors_only_without_SDK_changes");
+
+    boot_defaults(true);
+    ts_dhcp_static_binding_t orphan={.mac={2,0,0,0,0,1},.ip="10.10.99.50",.enabled=true};
+    assert(nvs_set_blob(0,NVS_KEY_AP_BINDINGS,&orphan,sizeof(orphan))==ESP_OK);
+    assert(ts_dhcp_server_load_config()==ESP_ERR_NVS_NOT_FOUND);
+    assert(ESP_ERR_NVS_NOT_FOUND!=ESP_ERR_NOT_FOUND);
+    assert(ts_dhcp_server_get_restore_error(0)==ESP_ERR_NVS_NOT_FOUND);
+    assert(ts_dhcp_server_save_config()==ESP_ERR_NVS_NOT_FOUND);
+    uint8_t count=0;assert(nvs_get_u8(0,NVS_KEY_AP_BIND_CNT,&count)==ESP_ERR_NVS_NOT_FOUND);
+    ts_dhcp_static_binding_t preserved;size_t len=sizeof(preserved);
+    assert(nvs_get_blob(0,NVS_KEY_AP_BINDINGS,&preserved,&len)==ESP_OK&&!memcmp(&preserved,&orphan,sizeof(orphan)));
+    record("review3_orphan_blob_is_NVS_error_not_absent_interface_and_not_overwritten");
+
+    boot_defaults(true);interface_up(0);assert(!s_state.iface[0].applied_valid);
+    assert(ts_dhcp_server_set_lease_time(0,1440)==ESP_OK);
+    wifi_event_ap_staconnected_t joined={.mac={2,0,0,0,0,1},.aid=1};
+    wifi_event_handler(NULL,WIFI_EVENT,WIFI_EVENT_AP_STACONNECTED,&joined);
+    assert(s_state.iface[0].client_count==1);
+    assert(s_state.iface[0].clients[0].lease_expire-s_state.iface[0].clients[0].lease_start==7200);
+    assert(ntohl(option_value(&servers[0],DHCP_OPTION_LEASE_TIME,true))==7200);
+    record("review4_initial_AP_auto_start_client_expiry_matches_SDK_offer_not_pending");
+
+    setup(true);assert(ts_dhcp_server_set_lease_time(1,1440)==ESP_OK);
+    servers[1].dhcps_lease_time=3; /* Actual SDK lease is authoritative for statistics. */
+    run_lease_event(a,101);
+    assert(s_state.iface[1].client_count==1);
+    assert(s_state.iface[1].clients[0].lease_expire-s_state.iface[1].clients[0].lease_start==180);
+    run_lease_event(a,102);assert(s_state.iface[1].client_count==1);
+    assert(s_state.iface[1].clients[0].lease_expire-s_state.iface[1].clients[0].lease_start==180);
+    record("review4_ETH_new_and_renewed_client_expiry_use_active_lease_not_pending");
+
+    setup(true);assert(ts_dhcp_server_set_lease_time(0,1440)==ESP_OK);
+    fail_stage=FAIL_LEASE_READ;wifi_event_handler(NULL,WIFI_EVENT,WIFI_EVENT_AP_STACONNECTED,&joined);
+    assert(s_state.iface[0].clients[0].lease_expire==0);
+    record("review4_active_lease_read_error_is_unknown_without_pending_fallback");
+}
+static void check_fault_boundaries(void) {
+    boot_defaults(true);assert(ts_dhcp_server_load_config()==ESP_OK);
+    assert(!apply_dispatches&&netifs[0].status==ESP_NETIF_DHCP_INIT);
+    record("no_saved_record_preserves_default_auto_start_without_configure");
+    netifs_exist=false;
+    assert(bind_owner_if(0,a,50,true)==ESP_ERR_INVALID_ARG);
+    assert(s_state.iface[0].static_binding_count==0);
+    netifs_exist=true;
+    record("AP_without_netif_validates_staged_subnet_before_binding_commit");
+
+    setup(true);assert(bind_owner_if(0,a,50,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    boot_defaults(false);fail_stage=FAIL_BINDINGS;assert(ts_dhcp_server_load_config()!=ESP_OK);
+    assert(s_state.iface[0].static_binding_count==0);
+    assert(ts_dhcp_server_save_config()!=ESP_OK);
+    uint8_t saved=0;assert(nvs_get_u8(0,NVS_KEY_AP_BIND_CNT,&saved)==ESP_OK&&saved==1);
+    assert(ts_dhcp_server_start(0)!=ESP_OK); /* Cannot silently adopt the empty fallback. */
+    assert(ts_dhcp_server_load_config()==ESP_OK);assert(s_state.iface[0].static_binding_count==1);
+    record("boot_install_failure_cannot_save_or_start_as_empty_then_reload_recovers");
+
+    setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);assert(nvs_set_str(0,NVS_KEY_AP_BIND_CNT,"bad")==ESP_OK);
+    assert(ts_dhcp_server_load_config()==ESP_ERR_NVS_TYPE_MISMATCH);
+    assert(ts_dhcp_server_save_config()!=ESP_OK);
+    record("NVS_wrong_type_is_error_not_missing_or_empty");
+
+    setup(true);assert(bind_owner_if(0,a,50,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    boot_defaults(false);fail_read_key=NVS_KEY_AP_GATEWAY;assert(ts_dhcp_server_load_config()!=ESP_OK);fail_read_key=NULL;
+    ts_dhcp_config_t replacement;
+    set_interface_defaults(0,&replacement);assert(ts_dhcp_server_set_config(0,&replacement)==ESP_OK);
+    assert(ts_dhcp_server_save_config()!=ESP_OK);assert(bind_owner_if(0,b,102,true)!=ESP_OK);
+    uint8_t original=0;assert(nvs_get_u8(0,NVS_KEY_AP_BIND_CNT,&original)==ESP_OK&&original==1);
+    assert(ts_dhcp_server_load_config()==ESP_OK&&s_state.iface[0].static_binding_count==1);
+    record("read_successful_but_uncommitted_bindings_remain_save_protected");
+
+    setup(true);assert(bind_owner_if(0,a,50,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    assert(shrink_blob(NVS_KEY_AP_BINDINGS,1));boot_defaults(false);
+    assert(ts_dhcp_server_load_config()!=ESP_OK);assert(ts_dhcp_server_clear_static_bindings(0)==ESP_OK);
+    assert(ts_dhcp_server_save_config()!=ESP_OK); /* clear cannot replace unread/unapplied custom config. */
+    record("read_successful_but_uncommitted_config_not_unlocked_by_clear");
+
+
+    setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);fail_read_key=NVS_KEY_AP_GATEWAY;
+    assert(ts_dhcp_server_load_config()==ESP_FAIL);fail_read_key=NULL;
+    assert(do_dhcp_pool(0,NULL,NULL,NULL,NULL,"8.8.8.8",0)==1);
+    assert(ts_dhcp_server_get_restore_error(0)!=ESP_OK);
+    assert(do_dhcp_pool(0,"10.10.99.100","10.10.99.103","10.10.99.97","255.255.255.0","",120)==0);
+    /* Full config can only clear its own protection, not the binding error. */
+    assert(ts_dhcp_server_get_restore_error(0)==ESP_OK);
+    record("CLI_partial_DNS_edit_cannot_unlock_unrestored_config_full_replace_can");
+
+    setup(true);assert(bind_owner_if(0,a,101,true)==ESP_OK);
+    for(unsigned scenario=0;scenario<5;scenario++) {
+        cli_defaults();s_dhcp_args.clear_bindings->count=1;
+        const char *name=scenario==0?"ap":scenario==1?"eth":scenario==2?"all":"invalid";
+        s_dhcp_args.iface->sval=&name;s_dhcp_args.iface->count=scenario==4?0:1;
+        if(scenario<2) {
+            unsigned before=commits;assert(do_cmd_dhcp(0,NULL)==0);assert(commits==before);
+        } else assert(do_cmd_dhcp(0,NULL)==1);
+    }
+    cli_defaults();const char *name="ap";s_dhcp_args.iface->sval=&name;s_dhcp_args.iface->count=1;
+    s_dhcp_args.clear_bindings->count=1;s_dhcp_args.save->count=1;assert(do_cmd_dhcp(0,NULL)==1);
+    record("actual_CLI_dispatch_clear_requires_single_explicit_iface_and_no_save");
+
+    setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);
+    assert(nvs_set_u32(0,NVS_KEY_AP_LEASE,2)==ESP_OK);fail_stage=FAIL_START;fail_cleanup_stop=true;
+    assert(ts_dhcp_server_load_config()==ESP_FAIL);assert(s_state.iface[0].apply_error==ESP_FAIL);
+    assert(netifs[0].status==ESP_NETIF_DHCP_INIT); /* Report actual SDK state, not fictional stopped. */
+    record("startup_and_cleanup_failure_reports_error_without_claiming_stopped");
+}
+static void check_lifecycle(void) {
+    /* P2 old implementation drops this valid reservation against default AP IP. */
+    setup(true);assert(bind_owner_if(0,a,50,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    boot_defaults(false);assert(ts_dhcp_server_load_config()==ESP_OK);
+    assert(netifs[0].status==ESP_NETIF_DHCP_INIT&&servers[0].ts_bindings.count==1);
+    interface_up(0);assert(netifs[0].status==ESP_NETIF_DHCP_STARTED);
+    assert(packet(&servers[0],a,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)==50);
+    record("P2_saved_subnet_reboot_first_offer_has_owner");
+
+    /* P1 f43 leaves STOPPED, so a queued AP_START cannot start DHCP. */
+    setup(true);assert(bind_owner_if(0,a,50,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    boot_defaults(false);after_dispatch=queued_ap_up;
+    assert(ts_dhcp_server_load_config()==ESP_OK);
+    assert(netifs[0].status==ESP_NETIF_DHCP_STARTED&&servers[0].ts_bindings.count==1);
+    assert(packet(&servers[0],a,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)==50);
+    record("P1_interface_up_queued_after_atomic_apply_starts_with_binding");
+
+    /* Every SDK state x up/down on both interfaces; full reconfigure is forced. */
+    for(unsigned iface=0;iface<2;iface++)for(unsigned up=0;up<2;up++)for(unsigned state=0;state<3;state++) {
+        setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);
+        s_state.iface[iface].applied_valid=false;netifs[iface].up=up;netifs[iface].status=state;
+        assert(ts_dhcp_server_load_config()==ESP_OK);
+        unsigned expected=state==ESP_NETIF_DHCP_STOPPED?ESP_NETIF_DHCP_STOPPED:
+            up?ESP_NETIF_DHCP_STARTED:ESP_NETIF_DHCP_INIT;
+        assert(netifs[iface].status==expected);
+    }
+    record("lifecycle_both_interfaces_three_sdk_states_up_down");
+
+    /* New and legacy ETH-only saves must not poison AP on reboot. */
+    boot_defaults(true);assert(ts_dhcp_server_save_config()==ESP_OK);
+    boot_defaults(false);assert(ts_dhcp_server_load_config()==ESP_OK);interface_up(0);
+    assert(TS_DHCP_AP_DEFAULT_LEASE_TIME==DHCPS_LEASE_TIME_DEF);
+    unsigned first=ntohl(servers[0].dhcps_poll.start_ip.addr),last=ntohl(servers[0].dhcps_poll.end_ip.addr);
+    assert(first==ntohl(inet_addr("192.168.4.1"))+1&&last-first+1==DHCPS_MAX_LEASE);
+    assert(last==ntohl(inet_addr("192.168.4.101")));
+    assert(ntohl(option_value(&servers[0],DHCP_OPTION_LEASE_TIME,true))==7200);
+    assert(option_value(&servers[0],DHCP_OPTION_DNS_SERVER,true)==inet_addr("192.168.4.1"));
+    assert(!option_value(&servers[0],DHCP_OPTION_DNS_SERVER,false));
+    record("AP_defaults_saved_reboot_real_SDK_offer_pool_lease_DNS");
+
+    boot_defaults(true);assert(ts_dhcp_server_save_config()==ESP_OK);
+    ts_dhcp_config_t legacy;set_default_config(&legacy);
+    const char *values[]={legacy.pool.start_ip,legacy.pool.end_ip,legacy.pool.gateway,legacy.pool.netmask,legacy.pool.dns1};
+    for(unsigned i=0;i<5;i++)set_saved_string(0,i+1,values[i]);
+    assert(nvs_set_u32(0,NVS_KEY_AP_LEASE,legacy.lease_time_min)==ESP_OK);
+    unsigned before=commits;boot_defaults(false);assert(ts_dhcp_server_load_config()==ESP_OK);assert(commits==before);
+    assert(!strcmp(s_state.iface[0].config.pool.gateway,"192.168.4.1"));
+    assert(ts_dhcp_server_get_restore_error(0)==ESP_OK);
+    interface_up(0);assert(option_value(&servers[0],DHCP_OPTION_DNS_SERVER,true)==inet_addr("192.168.4.1"));
+    assert(ts_dhcp_server_save_config()==ESP_OK);boot_defaults(false);assert(ts_dhcp_server_load_config()==ESP_OK);
+    record("legacy_default_empty_AP_compat_no_boot_write_then_explicit_save");
+
+    /* Old defaults with nonempty bindings may never be treated as unconfigured. */
+    setup(true);assert(bind_owner_if(0,a,101,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    for(unsigned i=0;i<5;i++)set_saved_string(0,i+1,values[i]);
+    assert(nvs_set_u32(0,NVS_KEY_AP_LEASE,legacy.lease_time_min)==ESP_OK);
+    boot_defaults(false);assert(ts_dhcp_server_load_config()!=ESP_OK);
+    assert(ts_dhcp_server_get_restore_error(0)!=ESP_OK);
+    before=commits;assert(ts_dhcp_server_save_config()!=ESP_OK);assert(commits==before+1);
+    record("legacy_nonempty_AP_not_compat_protected_ETH_still_saved");
+
+    setup(true);strcpy(s_state.iface[0].config.pool.dns1,"8.8.8.8");
+    assert(ts_dhcp_server_restart(0)==ESP_OK);
+    assert(option_value(&servers[0],DHCP_OPTION_DNS_SERVER,true)==inet_addr("8.8.8.8"));
+    s_state.iface[0].config.pool.dns1[0]=0;assert(ts_dhcp_server_restart(0)==ESP_OK);
+    assert(!servers[0].dhcps_dns);
+    assert(option_value(&servers[0],DHCP_OPTION_DNS_SERVER,true)==ip(97).addr);
+    assert(!option_value(&servers[0],DHCP_OPTION_DNS_SERVER,false));
+    assert(ts_dhcp_server_save_config()==ESP_OK);boot_defaults(false);assert(ts_dhcp_server_load_config()==ESP_OK);interface_up(0);
+    assert(option_value(&servers[0],DHCP_OPTION_DNS_SERVER,true)==ip(97).addr);
+    record("custom_DNS_to_empty_explicit_disable_save_reboot_SDK_fallback");
+
+    /* A pending new subnet must be rejected before restart can stop old service. */
+    setup(true);assert(bind_owner_if(0,a,101,true)==ESP_OK);
+    ts_dhcp_config_t pending=s_state.iface[0].config;
+    strcpy(pending.pool.gateway,"192.168.7.1");strcpy(pending.pool.start_ip,"192.168.7.2");strcpy(pending.pool.end_ip,"192.168.7.20");
+    assert(ts_dhcp_server_set_config(0,&pending)==ESP_OK);
+    ts_dhcp_status_t live={0};assert(ts_dhcp_server_get_status(0,&live)==ESP_OK&&live.total_pool_size==4);
+    assert(bind_owner_if(0,b,102,true)==ESP_OK);unsigned stopped=stop_calls;
+    assert(ts_dhcp_server_restart(0)==ESP_ERR_INVALID_ARG);assert(stop_calls==stopped);
+    assert(netifs[0].status==ESP_NETIF_DHCP_STARTED&&servers[0].ts_bindings.count==2);
+    record("pending_config_revalidates_full_table_before_stop");
+
+    /* Save and editing may never turn an unread table into an authoritative zero. */
+    setup(true);assert(bind_owner_if(0,a,101,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    assert(shrink_blob(NVS_KEY_AP_BINDINGS,1));assert(ts_dhcp_server_load_config()==ESP_ERR_INVALID_SIZE);
+    size_t stored_count=0;uint8_t count=0;stored_count=sizeof(count);assert(kv_get(NVS_KEY_AP_BIND_CNT,&count,&stored_count)==ESP_OK&&count==1);
+    assert(bind_owner_if(0,b,102,true)!=ESP_OK);assert(ts_dhcp_server_save_config()!=ESP_OK);
+    stored_count=sizeof(count);assert(kv_get(NVS_KEY_AP_BIND_CNT,&count,&stored_count)==ESP_OK&&count==1);
+    assert(do_dhcp_clear_bindings(TS_DHCP_IF_ALL)==1);assert(do_dhcp_clear_bindings(0)==0);
+    stored_count=sizeof(count);assert(kv_get(NVS_KEY_AP_BIND_CNT,&count,&stored_count)==ESP_OK&&count==1);
+    assert(ts_dhcp_server_save_config()==ESP_OK);stored_count=sizeof(count);assert(kv_get(NVS_KEY_AP_BIND_CNT,&count,&stored_count)==ESP_OK&&count==0);
+    record("restore_failed_table_save_protected_clear_is_explicit_and_not_saved");
+
+    for(enum failure_stage stage=FAIL_STATUS;stage<=FAIL_START;stage++) {
+        setup(true);assert(bind_owner_if(0,a,101,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+        assert(nvs_set_u32(0,NVS_KEY_AP_LEASE,2)==ESP_OK);set_saved_string(0,5,"1.1.1.1");
+        ts_dhcps_binding_table_t old=servers[0].ts_bindings;fail_stage=stage;
+        assert(ts_dhcp_server_load_config()!=ESP_OK);
+        if(stage==FAIL_STATUS||stage==FAIL_STOP)assert(netifs[0].status==ESP_NETIF_DHCP_STARTED);
+        else assert(netifs[0].status==ESP_NETIF_DHCP_STOPPED);
+        assert(!memcmp(&old,&servers[0].ts_bindings,sizeof(old)));
+        if(stage==FAIL_START)assert(s_state.iface[0].config.lease_time_min==2);
+        else assert(s_state.iface[0].config.lease_time_min==1);
+    }
+    record("SDK_each_apply_stage_failure_reports_and_disarms_partial_service");
+
+    setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);fail_read_key=NVS_KEY_AP_GATEWAY;
+    assert(ts_dhcp_server_load_config()==ESP_FAIL);assert(netifs[0].status==ESP_NETIF_DHCP_STARTED);
+    fail_read_key=NULL;assert(ts_dhcp_server_save_config()!=ESP_OK);assert(ts_dhcp_server_load_config()==ESP_OK);
+    assert(ts_dhcp_server_save_config()==ESP_OK);
+    fail_write_key=NVS_KEY_AP_GATEWAY;assert(ts_dhcp_server_save_config()==ESP_FAIL);fail_write_key=NULL;
+    fail_commit=true;assert(ts_dhcp_server_save_config()==ESP_FAIL);fail_commit=false;
+    record("NVS_read_write_commit_errors_and_retry_recovery");
+}
 int main(void) {
+    check_lifecycle();
+    check_fault_boundaries();
+    check_review_findings();
     setup(true);assert(discover(a)==100);request(a,100);advance(30);renew(a,100);
     assert(lease(a,100)->lease_timer==60);advance(59);assert(lease(a,100));advance(1);assert(!eth()->plist);
     assert(discover(b)==100);request(b,100);release(b,100);assert(!eth()->plist);record("A_dynamic_discover_request_renew_expire_release_reuse");
@@ -236,7 +691,7 @@ int main(void) {
     const unsigned addresses[]={101,50,100,200};
     for(size_t i=0;i<sizeof(addresses)/sizeof(*addresses);i++) {
         unsigned last=addresses[i];setup(true);assert(bind_owner(a,last,true)==ESP_OK);assert(commits==0);
-        assert(ts_dhcp_server_save_config()==ESP_OK&&commits==1);
+        assert(ts_dhcp_server_save_config()==ESP_OK&&commits==2);
         setup(false);netifs_exist=false;assert(ts_dhcp_server_load_config()==ESP_OK);assert(eth()->ts_bindings.count==0);
         assert(s_state.iface[1].static_binding_count==1);netifs_exist=true;start_expected_owner=last;check_start_table=true;
         assert(ts_dhcp_server_start(1)==ESP_OK);assert(discover(a)==last);request(a,last);

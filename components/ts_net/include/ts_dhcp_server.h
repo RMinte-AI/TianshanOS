@@ -45,6 +45,13 @@ extern "C" {
 #define TS_DHCP_DEFAULT_DNS         "8.8.8.8"        /* 使用公共DNS */
 #define TS_DHCP_DEFAULT_LEASE_TIME  1440    /**< 默认租约时间24小时(分钟) */
 
+/* Match ESP-IDF 5.5.2 SoftAP defaults; SDK drift is checked by host tests. */
+#define TS_DHCP_AP_DEFAULT_GATEWAY    "192.168.4.1"
+#define TS_DHCP_AP_DEFAULT_START_IP   "192.168.4.2"
+#define TS_DHCP_AP_DEFAULT_END_IP     "192.168.4.101"
+#define TS_DHCP_AP_DEFAULT_LEASE_TIME 120
+
+
 /* ============================================================================
  * 类型定义
  * ========================================================================== */
@@ -98,7 +105,7 @@ typedef struct {
     char ip[TS_DHCP_IP_STR_MAX_LEN];        /**< 分配的 IP */
     char hostname[TS_DHCP_HOSTNAME_MAX_LEN]; /**< 客户端主机名 */
     uint32_t lease_start;                   /**< 租约开始时间(UNIX) */
-    uint32_t lease_expire;                  /**< 租约到期时间(UNIX) */
+    uint32_t lease_expire;                  /**< 租约到期时间(UNIX)，0 表示未知 */
     bool is_static;                         /**< 是否静态绑定 */
 } ts_dhcp_client_t;
 
@@ -149,7 +156,9 @@ typedef void (*ts_dhcp_event_cb_t)(ts_dhcp_if_t iface, ts_dhcp_event_t event,
 
 /**
  * @brief 初始化 DHCP 服务器模块
- * @return ESP_OK 成功
+ * @return ESP_OK 配置恢复成功；资源错误或配置恢复错误会返回具体错误。
+ * 配置恢复失败时资源可能已就绪，使用 is_initialized() 判断资源生命周期；
+ * 已就绪时重复 init 不重复申请资源，且仍报告未解决的恢复错误。
  */
 esp_err_t ts_dhcp_server_init(void);
 
@@ -217,7 +226,7 @@ bool ts_dhcp_server_is_running(ts_dhcp_if_t iface);
  * ========================================================================== */
 
 /**
- * @brief 获取配置
+ * @brief 获取待应用配置；编辑不会立即改变运行中的网段，使用 restart 显式应用。
  * @param iface 接口类型
  * @param config 配置结构体指针
  * @return ESP_OK 成功
@@ -250,7 +259,9 @@ esp_err_t ts_dhcp_server_set_lease_time(ts_dhcp_if_t iface, uint32_t lease_time_
 
 /**
  * @brief 保存配置到 NVS
- * @return ESP_OK 成功
+ * 跳过恢复未完成的接口；另一接口仍可保存。非 ESP_OK 可能表示部分保存，
+ * 每接口的具体结果见日志；不承诺多键写入的断电原子性。
+ * @return ESP_OK 两接口均保存成功，否则返回具体错误。
  */
 esp_err_t ts_dhcp_server_save_config(void);
 
@@ -259,6 +270,14 @@ esp_err_t ts_dhcp_server_save_config(void);
  * @return ESP_OK 成功
  */
 esp_err_t ts_dhcp_server_load_config(void);
+
+/** Storage recovery error only; application errors are reported separately.
+ * An init restore error can be returned while module resources remain initialized.
+ * Save skips an interface with unresolved storage recovery errors and reports failure. */
+esp_err_t ts_dhcp_server_get_restore_error(ts_dhcp_if_t iface);
+
+/** Last SDK application error; does not imply stored configuration is unread. */
+esp_err_t ts_dhcp_server_get_apply_error(ts_dhcp_if_t iface);
 
 /**
  * @brief 重置配置为默认值
@@ -351,6 +370,8 @@ esp_err_t ts_dhcp_server_get_static_bindings(ts_dhcp_if_t iface,
 
 /**
  * @brief 清除所有静态绑定
+ * 仅清除指定接口内存/生效表及其绑定恢复保护，不写 NVS，
+ * 不解除独立的配置恢复错误；使用 save_config() 显式持久化。
  * @param iface 接口类型
  * @return ESP_OK 成功
  */

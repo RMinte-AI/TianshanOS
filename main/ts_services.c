@@ -415,7 +415,7 @@ static esp_err_t network_service_init(ts_service_handle_t handle, void *user_dat
     /* 初始化 DHCP 服务器 */
     ret = ts_dhcp_server_init();
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to init DHCP server: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "DHCP initialization or configuration recovery failed: %s", esp_err_to_name(ret));
         /* 不是致命错误，继续 */
     }
     
