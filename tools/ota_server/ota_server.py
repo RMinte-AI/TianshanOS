@@ -296,6 +296,7 @@ class OTAServer:
                 "endpoints": {
                     "/version": "获取固件版本信息 (GET)",
                     "/firmware": "下载固件文件 (GET)",
+                    "/www.bin": "下载 WebUI 文件 (GET / HEAD, Range)",
                     "/www": "下载 WebUI 文件 (GET)",
                     "/health": "健康检查 (GET)"
                 },

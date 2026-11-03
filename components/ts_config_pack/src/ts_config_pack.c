@@ -1489,6 +1489,8 @@ esp_err_t ts_config_pack_get_cert_fingerprint(char *fingerprint, size_t len)
     esp_err_t ret = ts_cert_get_certificate(cert_pem, &cert_len);
     if (ret == ESP_OK) {
         ret = ts_config_pack_fingerprint_certificate(cert_pem, cert_len, fingerprint, len);
+    } else {
+        ESP_LOGE(TAG, "Failed to read device certificate for pack identity: 0x%x", (unsigned)ret);
     }
     free(cert_pem);
     return ret;

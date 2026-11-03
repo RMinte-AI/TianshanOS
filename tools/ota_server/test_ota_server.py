@@ -21,6 +21,10 @@ class Downloads(unittest.TestCase):
         self.client = self.server.app.test_client()
 
     def test_normal_update_downloads_and_alias(self):
+        index = self.client.get('/')
+        self.assertEqual(index.status_code, 200)
+        self.assertIn('/www.bin', index.json['endpoints'])
+        self.assertIn('/www', index.json['endpoints'])
         version = self.client.get('/version')
         self.assertEqual(version.status_code, 200)
         self.assertEqual(version.json['version'], '1.2.3')
