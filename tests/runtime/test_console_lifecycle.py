@@ -75,8 +75,9 @@ static int xSemaphoreTake(SemaphoreHandle_t s,unsigned timeout) {
 }
 static int xSemaphoreGive(SemaphoreHandle_t s) {
     assert(s);pthread_mutex_lock(&s->mutex);if(!s->binary){assert(s->owner==xTaskGetCurrentTaskHandle());--s->owner->held;s->owner=NULL;}
+    bool binary=s->binary; /* The receiver may delete the semaphore after unlock. */
     s->value=1;pthread_cond_broadcast(&s->changed);pthread_mutex_unlock(&s->mutex);
-    if(s->binary&&after_binary_give)after_binary_give(s);return pdTRUE;
+    if(binary&&after_binary_give)after_binary_give(s);return pdTRUE;
 }
 static int xSemaphoreTakeRecursive(SemaphoreHandle_t s,unsigned timeout) {
  if(s->owner==xTaskGetCurrentTaskHandle()){s->recursion++;return pdTRUE;}
