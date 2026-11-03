@@ -1031,8 +1031,10 @@ esp_err_t ts_dhcp_server_eth_resume(void)
     ts_dhcp_if_state_t *state = &s_state.iface[TS_DHCP_IF_ETH];
     bool was_running = state->state == TS_DHCP_STATE_RUNNING;
     const ts_dhcp_config_t *effective = state->applied_valid ? &state->applied_config : &state->config;
-    if (ret == ESP_OK) ret = apply_candidate(TS_DHCP_IF_ETH, effective,
-        state->static_bindings, state->static_binding_count, false, NULL);
+    if (ret == ESP_OK) {
+        ret = apply_candidate(TS_DHCP_IF_ETH, effective, state->static_bindings, state->static_binding_count, false, NULL);
+        if (ret != ESP_OK) state->apply_error = ret;
+    }
     bool started = ret == ESP_OK && !was_running && state->state == TS_DHCP_STATE_RUNNING;
     xSemaphoreGive(s_state.mutex);
     if (started) notify_event(TS_DHCP_IF_ETH, TS_DHCP_EVENT_STARTED, NULL);

@@ -268,8 +268,9 @@ def eth_boot_regression_probes(output, idf):
     harness = '#define ETH_BOOT_REGRESSION 1\n#define check_eth_lifecycle() ((void)0)\n' + harness
     names = json.loads((output / 'result.json').read_text())['project_functions']
     results = []
-    for ref, expected in [('c55643827', 12), ('current', 0)]:
-        directory = output / ('eth-probe-' + ref)
+    for ref, expected, probe in [('c55643827', 12, 'eth_boot_probe'), ('current', 0, 'eth_boot_probe'),
+        ('4abf001a3', 15, 'eth_error_isolation_probe'), ('current', 0, 'eth_error_isolation_probe')]:
+        directory = output / (('eth-probe-' if probe == 'eth_boot_probe' else 'eth-error-probe-') + ref)
         directory.mkdir(exist_ok=True)
         for source in output.glob('*.inc'):
             shutil.copyfile(source, directory / source.name)
@@ -285,12 +286,12 @@ def eth_boot_regression_probes(output, idf):
         (directory / 'project_types.inc').write_text(defines + '\n' + project[event_start:event_end] + '\n' + project[begin:end])
         functions = [function(project, n) for n in names if re.search(r'^(?:static )?[\w *]+\b' + n + r'\([^;]*?\)\s*\{', project, re.M)]
         core = '\n\n'.join(sorted(functions, key=project.index))
-        if ref != 'current':
+        if ref == 'c55643827':
             core += '\nstatic void initialize_eth_intent(void) {}\n'  # Old module has no such initialization step.
         (directory / 'project_core.inc').write_text(core)
         network_sources(directory, read('components/ts_net/src/ts_net_manager.c'), read('components/ts_net/src/ts_eth.c'),
             read('components/ts_net/src/ts_net.c'), read('components/ts_console/commands/ts_cmd_net.c'))
-        (directory / 'probe.c').write_text(harness + '\nint main(void) { return eth_boot_probe(); }\n')
+        (directory / 'probe.c').write_text(harness + '\nint main(void) { return ' + probe + '(); }\n')
         command = json.loads((output / 'result.json').read_text())['command']
         command[-3] = str(directory / 'probe.c')
         command[-1] = str(directory / 'probe')
@@ -301,7 +302,7 @@ def eth_boot_regression_probes(output, idf):
         result = subprocess.run([str(directory / 'probe')], capture_output=True, text=True, timeout=30)
         (directory / 'run.log').write_text(result.stdout + result.stderr)
         assert result.returncode == expected, (ref, expected, result.returncode, result.stdout, result.stderr)
-        results.append(dict(ref=ref, expected_exit=expected, actual_exit=result.returncode, output=result.stdout))
+        results.append(dict(ref=ref, probe=probe, expected_exit=expected, actual_exit=result.returncode, output=result.stdout))
         print(result.stdout, end='')
     (output / 'eth-boot-regression-probes.json').write_text(json.dumps(results, indent=2))
 

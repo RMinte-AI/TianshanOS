@@ -154,6 +154,18 @@ static int eth_boot_probe(void){
     for(unsigned i=0;i<2;i++)drain(&servers[i]);
     return result;
 }
+static int eth_error_isolation_probe(void){
+    setup(true);seed_network("10.10.99.97","10.10.99.100",TS_NET_IP_MODE_STATIC);seed_dhcp_eth("10.10.99");
+    assert(shrink_blob(NVS_KEY_ETH_BINDINGS,1));hardware_reset();
+    assert(ts_net_manager_init()==ESP_OK);esp_err_t restored=ts_dhcp_server_init();
+    esp_err_t started=ts_net_manager_start(TS_NET_IF_ETH);deliver_events();run_delayed_task();
+    printf("ETH error isolation: DHCP restore=%x network start=%x driver=%u DHCP=%u\n",
+        restored,started,driver_running,netifs[1].status);
+    int result=0;
+    if(started!=ESP_OK||!driver_running)result=15;
+    else if(restored==ESP_OK||netifs[1].status==ESP_NETIF_DHCP_STARTED||ts_dhcp_server_get_restore_error(1)==ESP_OK)result=16;
+    for(unsigned i=0;i<2;i++)drain(&servers[i]);return result;
+}
 #ifndef ETH_BOOT_REGRESSION
 static void prepare_custom_boot(void){
     setup(true);seed_network("192.168.50.1","192.168.50.254",TS_NET_IP_MODE_STATIC);seed_dhcp_eth("192.168.50");
@@ -177,6 +189,21 @@ static void prepare_pool(const char *prefix){
     assert(ts_dhcp_server_set_config(1,&config)==ESP_OK);
 }
 static void check_eth_lifecycle(void){
+    setup(true);seed_network("10.10.99.97","10.10.99.100",TS_NET_IP_MODE_STATIC);seed_dhcp_eth("10.10.99");
+    assert(shrink_blob(NVS_KEY_ETH_BINDINGS,1));hardware_reset();
+    assert(ts_net_manager_init()==ESP_OK&&ts_dhcp_server_init()!=ESP_OK);
+    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
+    assert(driver_running&&s_link_up&&netifs[1].status!=ESP_NETIF_DHCP_STARTED);
+    ts_dhcp_status_t blocked;assert(ts_dhcp_server_get_status(1,&blocked)==ESP_OK&&blocked.restore_error!=ESP_OK);
+    assert(servers[1].ts_bindings.count==0&&ts_dhcp_server_save_config()!=ESP_OK);
+    record("ETH_valid_host_starts_with_corrupt_DHCP_record_DHCP_stays_blocked_and_protected");
+    setup(true);seed_network("192.168.50.1","192.168.50.254",TS_NET_IP_MODE_STATIC);hardware_reset();
+    assert(ts_net_manager_init()==ESP_OK&&ts_dhcp_server_init()==ESP_OK);
+    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
+    assert(driver_running&&s_link_up&&netifs[1].status!=ESP_NETIF_DHCP_STARTED);
+    assert(ts_dhcp_server_get_status(1,&blocked)==ESP_OK&&blocked.apply_error==ESP_ERR_INVALID_ARG);
+    unsigned before=apply_dispatches;link_down();link_up();run_delayed_task();assert(apply_dispatches==before);
+    record("ETH_valid_custom_host_without_matching_DHCP_pool_is_reachable_failed_resume_not_retried");
     prepare_custom_boot();
     assert(packet(&servers[1],a,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)==50);
     assert(servers[1].server_address.addr==inet_addr("192.168.50.1"));

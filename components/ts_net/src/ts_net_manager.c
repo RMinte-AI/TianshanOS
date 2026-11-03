@@ -609,8 +609,15 @@ static esp_err_t start_eth(bool restart)
     if (!netif) return ESP_ERR_NOT_FOUND; /* Corrected boot error requires reboot. */
     uint32_t dns[] = {config.static_ip.dns1[0] ? ipaddr_addr(config.static_ip.dns1) : 0,
                       config.static_ip.dns2[0] ? ipaddr_addr(config.static_ip.dns2) : 0};
-    ret = ts_dhcp_server_apply_eth_network(&host, dns);
+    esp_netif_ip_info_t current;
+    ret = esp_netif_get_ip_info(netif, &current);
     if (ret != ESP_OK) return ret;
+    if (restart || current.ip.addr != host.ip.addr || current.netmask.addr != host.netmask.addr || current.gw.addr != host.gw.addr) {
+        ret = ts_dhcp_server_apply_eth_network(&host, dns);
+        if (ret != ESP_OK) return ret;
+    }
+    /* An already configured host can start even when DHCP recovery is blocked.
+     * Link resume owns DHCP startup; no change of address is needed here. */
     ret = esp_netif_set_hostname(netif, hostname);
     if (ret != ESP_OK) return ret;
     if (restart) {
