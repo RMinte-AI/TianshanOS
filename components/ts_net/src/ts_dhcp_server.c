@@ -1021,12 +1021,6 @@ esp_err_t ts_dhcp_server_load_config(void)
     nvs_get_str(handle, NVS_KEY_AP_DNS, cfg->pool.dns1, &len);
     nvs_get_u32(handle, NVS_KEY_AP_LEASE, &cfg->lease_time_min);
     
-    /* The AP netif still carries its creation-time subnet here, while the saved
-     * gateway/netmask are otherwise applied at start(); esp_netif may already
-     * start the DHCP server on interface up, so align it before installing the
-     * saved reservations, which were validated against the saved subnet. */
-    (void)apply_config_to_netif(TS_DHCP_IF_AP);
-
     /* 加载 AP 静态绑定：包括已保存的空表，记录不一致时保留现有归属。 */
     ret = restore_static_bindings(handle, TS_DHCP_IF_AP, NVS_KEY_AP_BIND_CNT,
                                   NVS_KEY_AP_BINDINGS, candidate,

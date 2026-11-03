@@ -298,22 +298,6 @@ int main(void) {
     assert(s_state.iface[0].static_binding_count==1&&servers[0].ts_bindings.count==1);
     record("F3_ap_candidate_does_not_leak_into_eth");
 
-    /* P2: reservations saved under a different subnet than the netif's boot
-     * address must be staged at load and installed once start applies the config. */
-    setup(true);
-    strcpy(s_state.iface[0].config.pool.gateway,"10.10.99.97");
-    strcpy(s_state.iface[0].config.pool.netmask,"255.255.255.0");
-    strcpy(s_state.iface[0].config.pool.start_ip,"10.10.99.100");
-    strcpy(s_state.iface[0].config.pool.end_ip,"10.10.99.103");
-    assert(bind_owner_if(TS_DHCP_IF_AP,a,50,true)==ESP_OK);
-    assert(ts_dhcp_server_save_config()==ESP_OK);
-    setup(false);  /* reboot: live state cleared, NVS kept */
-    infos[0]=(esp_netif_ip_info_t){.ip={htonl(0xC0A80401)},.netmask={htonl(0xFFFFFF00)},.gw={htonl(0xC0A80401)}};
-    assert(ts_dhcp_server_load_config()==ESP_OK);
-    assert(s_state.iface[0].static_binding_count==1);
-    assert(servers[0].ts_bindings.count==1&&servers[0].ts_bindings.entries[0].ip==ip(50).addr);
-    record("P2_saved_subnet_bindings_installed_at_load");
-
     setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);assert(bind_owner(a,101,true)==ESP_OK);
     assert(ts_dhcp_server_load_config()==ESP_OK);assert(eth()->ts_bindings.count==0&&s_state.iface[1].static_binding_count==0);
     assert(discover(b)==100);assert(discover(c)==101);record("F_loading_saved_empty_table_clears_old_ownership");
