@@ -231,6 +231,13 @@ static int do_dhcp_status(ts_dhcp_if_t iface, bool json_output)
     
     ts_dhcp_server_get_config(iface, &config);
     
+    if (iface == TS_DHCP_IF_ETH) {
+        ts_console_printf("ETH interface: %s; request: %s; link: %s\n",
+            status.interface_present ? "present" : "unavailable",
+            status.want_running ? "run" : "stopped", status.link_up ? "up" : "down");
+        if (status.resume_error != ESP_OK) ts_console_printf("ETH resume blocked: %s (restore=%s, apply=%s)\n",
+            esp_err_to_name(status.resume_error), esp_err_to_name(status.restore_error), esp_err_to_name(status.apply_error));
+    }
     char uptime[32];
     format_uptime(status.uptime_sec, uptime, sizeof(uptime));
     

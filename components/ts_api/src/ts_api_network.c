@@ -21,6 +21,15 @@
 /*                          Helper Functions                                  */
 /*===========================================================================*/
 
+static void add_eth_config_status(cJSON *data)
+{
+    ts_net_if_status_t status;
+    if (ts_net_manager_get_if_status(TS_NET_IF_ETH, &status) != ESP_OK) return;
+    cJSON_AddNumberToObject(data, "config_error", status.config_error);
+    cJSON_AddStringToObject(data, "config_error_name", esp_err_to_name(status.config_error));
+    cJSON_AddBoolToObject(data, "interface_present", ts_eth_get_netif() != NULL);
+}
+
 static const char *status_to_str(ts_net_status_t status)
 {
     switch (status) {
@@ -95,6 +104,7 @@ static esp_err_t api_network_status(const cJSON *params, ts_api_result_t *result
     cJSON *eth = cJSON_AddObjectToObject(data, "ethernet");
     ts_net_status_t eth_status = ts_net_get_status(TS_NET_IF_ETH);
     cJSON_AddStringToObject(eth, "status", status_to_str(eth_status));
+    add_eth_config_status(eth);
     cJSON_AddBoolToObject(eth, "link_up", ts_eth_is_link_up());
     
     if (eth_status == TS_NET_STATUS_CONNECTED) {
@@ -412,6 +422,7 @@ static esp_err_t api_network_eth_status(const cJSON *params, ts_api_result_t *re
 {
     cJSON *data = cJSON_CreateObject();
     
+    add_eth_config_status(data);
     cJSON_AddBoolToObject(data, "link_up", ts_eth_is_link_up());
     cJSON_AddStringToObject(data, "status", status_to_str(ts_net_get_status(TS_NET_IF_ETH)));
     

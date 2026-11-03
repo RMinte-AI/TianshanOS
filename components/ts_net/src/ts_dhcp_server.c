@@ -14,6 +14,8 @@
  */
 
 #include "ts_dhcp_server.h"
+#include "ts_net_manager.h"
+#include "ts_eth.h"
 #include "ts_log.h"
 #include "ts_event.h"
 #include "esp_netif.h"
@@ -115,6 +117,7 @@ typedef struct {
     bool initialized;
     SemaphoreHandle_t mutex;
     ts_dhcp_if_state_t iface[TS_DHCP_IF_MAX];
+    bool eth_want_running; /* Runtime user request; never inferred again on reload. */
     ts_dhcp_cb_node_t *callbacks;
     QueueHandle_t event_queue;      /* IP 事件队列 */
     TaskHandle_t event_task;        /* 事件处理任务 */
@@ -127,6 +130,9 @@ typedef struct {
     const ts_dhcps_binding_table_t *table;
     bool reconfigure;
     bool explicit_start;
+    bool eth_run_requested;
+    const esp_netif_ip_info_t *host;
+    const uint32_t *host_dns;
     bool installed;
     bool touched;
     esp_netif_dhcp_status_t status;
@@ -330,7 +336,25 @@ static esp_err_t validate_config(const ts_dhcp_config_t *config)
     return ESP_OK;
 }
 
-/* Validate against the future AP subnet, or the ETH netif's actual subnet. */
+static esp_err_t validate_network_info(const esp_netif_ip_info_t *info,
+                                       const ts_dhcp_config_t *config, const ts_dhcps_binding_table_t *table)
+{
+    uint32_t server = ntohl(info->ip.addr), mask = ntohl(info->netmask.addr);
+    uint32_t first = server & mask, last = first | ~mask;
+    uint32_t start = ntohl(ipaddr_addr(config->pool.start_ip));
+    uint32_t end = ntohl(ipaddr_addr(config->pool.end_ip));
+    if (ipaddr_addr(config->pool.netmask) != info->netmask.addr || !mask || server <= first || server >= last || start <= first || end >= last ||
+        start >= end || end - start + 1 > DHCPS_MAX_LEASE || (server >= start && server <= end)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < table->count; ++i) {
+        uint32_t ip = ntohl(table->entries[i].ip);
+        if (ip <= first || ip >= last || ip == server) return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+/* AP owns its interface address; ETH uses ts_net's host address. */
 static esp_err_t validate_network(ts_dhcp_if_t iface, esp_netif_t *netif,
                                   const ts_dhcp_config_t *config, const ts_dhcps_binding_table_t *table)
 {
@@ -342,19 +366,7 @@ static esp_err_t validate_network(ts_dhcp_if_t iface, esp_netif_t *netif,
         esp_err_t ret = esp_netif_get_ip_info(netif, &info);
         if (ret != ESP_OK) return ret;
     }
-    uint32_t server = ntohl(info.ip.addr), mask = ntohl(info.netmask.addr);
-    uint32_t first = server & mask, last = first | ~mask;
-    uint32_t start = ntohl(ipaddr_addr(config->pool.start_ip));
-    uint32_t end = ntohl(ipaddr_addr(config->pool.end_ip));
-    if (!mask || server <= first || server >= last || start <= first || end >= last ||
-        start >= end || end - start + 1 > DHCPS_MAX_LEASE || (server >= start && server <= end)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    for (size_t i = 0; i < table->count; ++i) {
-        uint32_t ip = ntohl(table->entries[i].ip);
-        if (ip <= first || ip >= last || ip == server) return ESP_ERR_INVALID_ARG;
-    }
-    return ESP_OK;
+    return validate_network_info(&info, config, table);
 }
 
 static esp_err_t configure_stopped_netif(ts_dhcp_if_t iface, esp_netif_t *netif,
@@ -396,20 +408,37 @@ static esp_err_t apply_on_tcpip(void *arg)
     esp_err_t ret = esp_netif_dhcps_get_status(op->netif, &op->status);
     if (ret != ESP_OK) return ret;
     esp_netif_dhcp_status_t before = op->status;
-    ret = validate_network(op->iface, op->netif, op->config, op->table);
+    ret = op->host ? validate_network_info(op->host, op->config, op->table) :
+        validate_network(op->iface, op->netif, op->config, op->table);
     if (ret != ESP_OK) return ret;
     if (op->reconfigure) {
         ret = esp_netif_dhcps_stop(op->netif);
         if (ret != ESP_OK && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return ret;
         op->touched = true;
+        if (op->host) {
+            ret = esp_netif_set_ip_info(op->netif, op->host);
+            if (ret != ESP_OK) goto failed;
+            if (op->host_dns) {
+                for (unsigned i = 0; i < 2; ++i) {
+                    if (!op->host_dns[i]) continue; /* Unspecified; SDK rejects IP_ANY. */
+                    esp_netif_dns_info_t dns = {0};
+                    dns.ip.type = ESP_IPADDR_TYPE_V4;
+                    dns.ip.u_addr.ip4.addr = op->host_dns[i];
+                    ret = esp_netif_set_dns_info(op->netif, i ? ESP_NETIF_DNS_BACKUP : ESP_NETIF_DNS_MAIN, &dns);
+                    if (ret != ESP_OK) goto failed;
+                }
+            }
+        }
         ret = configure_stopped_netif(op->iface, op->netif, op->config);
         if (ret != ESP_OK) goto failed;
     }
     ret = ts_netif_dhcps_replace_bindings(op->netif, op->table);
     if (ret != ESP_OK) goto failed;
     op->installed = true;
-    if ((op->explicit_start || before != ESP_NETIF_DHCP_STOPPED) &&
-        (op->reconfigure || before != ESP_NETIF_DHCP_STARTED)) {
+    bool should_start = op->iface == TS_DHCP_IF_ETH ?
+        op->eth_run_requested && ts_eth_is_link_up() && esp_netif_is_netif_up(op->netif) :
+        op->explicit_start || before != ESP_NETIF_DHCP_STOPPED;
+    if (should_start && (op->reconfigure || before != ESP_NETIF_DHCP_STARTED)) {
         op->touched = true;
         ret = esp_netif_dhcps_start(op->netif);
         if (ret != ESP_OK && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) goto failed;
@@ -427,15 +456,17 @@ failed:
 }
 
 /* Caller holds the project mutex. Only the completed SDK result is committed. */
-static esp_err_t apply_candidate(ts_dhcp_if_t iface, const ts_dhcp_config_t *config,
+static esp_err_t apply_candidate_to_host(ts_dhcp_if_t iface, const ts_dhcp_config_t *config,
                                  const ts_dhcp_static_binding_t *bindings, size_t count,
-                                 bool explicit_start, bool *installed)
+                                 bool explicit_start, bool *installed,
+                                 const esp_netif_ip_info_t *host, const uint32_t *host_dns)
 {
     if (installed) *installed = false;
     ts_dhcp_if_state_t *state = &s_state.iface[iface];
     ts_dhcps_binding_table_t table;
     esp_err_t ret = validate_config(config);
     if (ret == ESP_OK) ret = build_binding_table(bindings, count, &table);
+    if (ret == ESP_OK && host) ret = ts_net_validate_eth_ip(host);
     if (ret != ESP_OK) return ret;
     esp_netif_t *netif = get_netif_for_iface(iface);
     if (!netif) {
@@ -445,7 +476,6 @@ static esp_err_t apply_candidate(ts_dhcp_if_t iface, const ts_dhcp_config_t *con
             if (ret != ESP_OK) return ret;
         }
         /* No service can offer until a later explicit start validates its subnet. */
-        state->config = *config;
         if (count && bindings != state->static_bindings) memcpy(state->static_bindings, bindings, count * sizeof(*bindings));
         state->static_binding_count = count;
         state->applied_valid = false;
@@ -453,13 +483,20 @@ static esp_err_t apply_candidate(ts_dhcp_if_t iface, const ts_dhcp_config_t *con
         return ESP_OK;
     }
     ts_dhcp_apply_t op = {.iface = iface, .netif = netif, .config = config, .table = &table,
-        .explicit_start = explicit_start,
+        .explicit_start = explicit_start, .host = host, .host_dns = host_dns,
+        .eth_run_requested = explicit_start || s_state.eth_want_running,
         .reconfigure = !state->applied_valid || state->apply_error != ESP_OK ||
                        !same_network_config(config, &state->applied_config)};
+    if (host) {
+        esp_netif_ip_info_t current;
+        ret = esp_netif_get_ip_info(netif, &current);
+        if (ret != ESP_OK) return ret;
+        op.reconfigure = op.reconfigure || current.ip.addr != host->ip.addr ||
+            current.netmask.addr != host->netmask.addr || current.gw.addr != host->gw.addr || host_dns;
+    }
     ret = esp_netif_tcpip_exec(apply_on_tcpip, &op);
     if (installed) *installed = op.installed;
     if (op.installed) {
-        state->config = *config;
         state->applied_config = *config;
         state->applied_valid = true;
         if (count && bindings != state->static_bindings) memcpy(state->static_bindings, bindings, count * sizeof(*bindings));
@@ -474,6 +511,35 @@ static esp_err_t apply_candidate(ts_dhcp_if_t iface, const ts_dhcp_config_t *con
     }
     if (op.cleanup_error != ESP_OK) TS_LOGE(TAG, "%s cleanup failed: %s", ts_dhcp_if_to_str(iface), esp_err_to_name(op.cleanup_error));
     return ret;
+}
+
+static esp_err_t apply_candidate(ts_dhcp_if_t iface, const ts_dhcp_config_t *config,
+                                 const ts_dhcp_static_binding_t *bindings, size_t count,
+                                 bool explicit_start, bool *installed)
+{
+    return apply_candidate_to_host(iface, config, bindings, count, explicit_start, installed, NULL, NULL);
+}
+
+/* Called once during module initialization, before load or any link suspension. */
+static void initialize_eth_intent(void)
+{
+    esp_netif_t *netif = get_netif_for_iface(TS_DHCP_IF_ETH);
+    esp_netif_dhcp_status_t status;
+    s_state.eth_want_running = netif && esp_netif_dhcps_get_status(netif, &status) == ESP_OK &&
+        status != ESP_NETIF_DHCP_STOPPED;
+}
+
+/* Derived on demand; resume never clears errors or retries failed applications. */
+static esp_err_t eth_resume_error(void)
+{
+    ts_dhcp_if_state_t *state = &s_state.iface[TS_DHCP_IF_ETH];
+    if (!get_netif_for_iface(TS_DHCP_IF_ETH)) return ESP_ERR_NOT_FOUND;
+    if (state->config_restore_error != ESP_OK) return state->config_restore_error;
+    if (state->bindings_restore_error != ESP_OK) return state->bindings_restore_error;
+    if (state->apply_error != ESP_OK) return state->apply_error;
+    if (!s_state.eth_want_running || !ts_eth_is_link_up()) return ESP_ERR_INVALID_STATE;
+    if (!esp_netif_is_netif_up(get_netif_for_iface(TS_DHCP_IF_ETH))) return ESP_ERR_ESP_NETIF_IF_NOT_READY;
+    return ESP_OK;
 }
 
 static esp_err_t install_static_bindings(ts_dhcp_if_t iface,
@@ -711,6 +777,8 @@ static void dhcp_event_task(void *arg)
             continue;
         }
         
+        ts_dhcp_client_t new_client;
+        bool added = false;
         /* 检查以太网接口 DHCP 服务器状态 */
         ts_dhcp_if_state_t *if_state = &s_state.iface[TS_DHCP_IF_ETH];
         
@@ -758,12 +826,14 @@ static void dhcp_event_task(void *arg)
                     TS_LOGI(TAG, "New client: %s -> %s (total: %zu)", mac_str, client->ip, if_state->client_count);
                     
                     /* 发送事件通知 */
-                    notify_event(TS_DHCP_IF_ETH, TS_DHCP_EVENT_LEASE_NEW, client);
+                    new_client = *client;
+                    added = true;
                 }
             }
         }
         
         xSemaphoreGive(s_state.mutex);
+        if (added) notify_event(TS_DHCP_IF_ETH, TS_DHCP_EVENT_LEASE_NEW, &new_client);
     }
 }
 
@@ -820,6 +890,8 @@ esp_err_t ts_dhcp_server_init(void)
         s_state.iface[i].static_binding_count = 0;
     }
     
+    initialize_eth_intent();
+
     /* 加载 NVS 配置 */
     esp_err_t load_result = ts_dhcp_server_load_config();
     
@@ -897,6 +969,7 @@ esp_err_t ts_dhcp_server_start(ts_dhcp_if_t iface)
     if (iface >= TS_DHCP_IF_MAX) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     ts_dhcp_if_state_t *state = &s_state.iface[iface];
+    if (iface == TS_DHCP_IF_ETH) s_state.eth_want_running = true;
     esp_err_t ret = state->config_restore_error != ESP_OK ? state->config_restore_error : state->bindings_restore_error;
     if (ret == ESP_OK) ret = apply_candidate(iface, &state->config, state->static_bindings, state->static_binding_count, true, NULL);
     bool running = ret == ESP_OK && state->state == TS_DHCP_STATE_RUNNING;
@@ -905,21 +978,81 @@ esp_err_t ts_dhcp_server_start(ts_dhcp_if_t iface)
     return ret;
 }
 
+/* Caller holds the DHCP lock. Link suspension and explicit stop share mechanics. */
+static esp_err_t stop_interface(ts_dhcp_if_t iface, bool *stopped)
+{
+    *stopped = false;
+    ts_dhcp_if_state_t *state = &s_state.iface[iface];
+    esp_netif_t *netif = get_netif_for_iface(iface);
+    esp_netif_dhcp_status_t before = ESP_NETIF_DHCP_STOPPED;
+    esp_err_t ret = netif ? esp_netif_dhcps_get_status(netif, &before) : ESP_ERR_NOT_FOUND;
+    if (ret == ESP_OK) ret = esp_netif_dhcps_stop(netif);
+    if (ret == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) ret = ESP_OK;
+    if (ret == ESP_OK) {
+        *stopped = before == ESP_NETIF_DHCP_STARTED;
+        state->state = TS_DHCP_STATE_STOPPED;
+        state->start_tick = 0;
+    } else {
+        state->apply_error = ret;
+        state->state = TS_DHCP_STATE_ERROR;
+    }
+    return ret;
+}
+
 esp_err_t ts_dhcp_server_stop(ts_dhcp_if_t iface)
 {
     if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
     if (iface >= TS_DHCP_IF_MAX) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
-    ts_dhcp_if_state_t *state = &s_state.iface[iface];
-    esp_netif_t *netif = get_netif_for_iface(iface);
-    esp_err_t ret = netif ? esp_netif_dhcps_stop(netif) : ESP_ERR_NOT_FOUND;
-    if (ret == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) ret = ESP_OK;
-    if (ret == ESP_OK) {
-        state->state = TS_DHCP_STATE_STOPPED;
-        state->start_tick = 0;
-    }
+    if (iface == TS_DHCP_IF_ETH) s_state.eth_want_running = false;
+    bool stopped;
+    esp_err_t ret = stop_interface(iface, &stopped);
     xSemaphoreGive(s_state.mutex);
-    if (ret == ESP_OK) notify_event(iface, TS_DHCP_EVENT_STOPPED, NULL);
+    if (ret == ESP_OK && stopped) notify_event(iface, TS_DHCP_EVENT_STOPPED, NULL);
+    return ret;
+}
+
+esp_err_t ts_dhcp_server_eth_suspend(void)
+{
+    if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_state.mutex, portMAX_DELAY);
+    bool stopped;
+    esp_err_t ret = stop_interface(TS_DHCP_IF_ETH, &stopped);
+    xSemaphoreGive(s_state.mutex);
+    if (ret == ESP_OK && stopped) notify_event(TS_DHCP_IF_ETH, TS_DHCP_EVENT_STOPPED, NULL);
+    return ret;
+}
+
+esp_err_t ts_dhcp_server_eth_resume(void)
+{
+    if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_state.mutex, portMAX_DELAY);
+    esp_err_t ret = eth_resume_error();
+    ts_dhcp_if_state_t *state = &s_state.iface[TS_DHCP_IF_ETH];
+    bool was_running = state->state == TS_DHCP_STATE_RUNNING;
+    const ts_dhcp_config_t *effective = state->applied_valid ? &state->applied_config : &state->config;
+    if (ret == ESP_OK) ret = apply_candidate(TS_DHCP_IF_ETH, effective,
+        state->static_bindings, state->static_binding_count, false, NULL);
+    bool started = ret == ESP_OK && !was_running && state->state == TS_DHCP_STATE_RUNNING;
+    xSemaphoreGive(s_state.mutex);
+    if (started) notify_event(TS_DHCP_IF_ETH, TS_DHCP_EVENT_STARTED, NULL);
+    return ret;
+}
+
+esp_err_t ts_dhcp_server_apply_eth_network(const esp_netif_ip_info_t *host, const uint32_t host_dns[2])
+{
+    if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
+    if (!host) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_state.mutex, portMAX_DELAY);
+    ts_dhcp_if_state_t *state = &s_state.iface[TS_DHCP_IF_ETH];
+    esp_err_t ret = state->config_restore_error != ESP_OK ? state->config_restore_error : state->bindings_restore_error;
+    if (ret == ESP_OK && !get_netif_for_iface(TS_DHCP_IF_ETH)) ret = ESP_ERR_NOT_FOUND;
+    bool was_running = state->state == TS_DHCP_STATE_RUNNING;
+    if (ret == ESP_OK) ret = apply_candidate_to_host(TS_DHCP_IF_ETH, &state->config,
+        state->static_bindings, state->static_binding_count, false, NULL, host, host_dns);
+    bool started = ret == ESP_OK && !was_running && state->state == TS_DHCP_STATE_RUNNING;
+    xSemaphoreGive(s_state.mutex);
+    if (started) notify_event(TS_DHCP_IF_ETH, TS_DHCP_EVENT_STARTED, NULL);
     return ret;
 }
 
@@ -930,6 +1063,7 @@ esp_err_t ts_dhcp_server_restart(ts_dhcp_if_t iface)
     if (iface >= TS_DHCP_IF_MAX) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     ts_dhcp_if_state_t *state = &s_state.iface[iface];
+    if (iface == TS_DHCP_IF_ETH) s_state.eth_want_running = true;
     esp_err_t ret = state->config_restore_error != ESP_OK ? state->config_restore_error : state->bindings_restore_error;
     if (ret == ESP_OK) {
         bool valid = state->applied_valid;
@@ -971,10 +1105,16 @@ esp_err_t ts_dhcp_server_get_status(ts_dhcp_if_t iface, ts_dhcp_status_t *status
             status->state = TS_DHCP_STATE_STOPPED;
         }
     } else {
-        status->state = if_state->state;
+        status->state = TS_DHCP_STATE_STOPPED;
     }
-    
-    if (if_state->apply_error != ESP_OK) status->state = TS_DHCP_STATE_ERROR;
+    status->interface_present = netif != NULL;
+    status->want_running = iface == TS_DHCP_IF_ETH && s_state.eth_want_running;
+    status->link_up = iface == TS_DHCP_IF_ETH && ts_eth_is_link_up();
+    status->restore_error = if_state->config_restore_error != ESP_OK ?
+        if_state->config_restore_error : if_state->bindings_restore_error;
+    status->apply_error = if_state->apply_error;
+    status->resume_error = iface == TS_DHCP_IF_ETH ? eth_resume_error() : ESP_OK;
+    if (netif && if_state->apply_error != ESP_OK) status->state = TS_DHCP_STATE_ERROR;
     status->active_leases = if_state->client_count;
     status->total_offers = if_state->total_offers;
     
@@ -1188,6 +1328,7 @@ esp_err_t ts_dhcp_server_load_config(void)
         if (ret == ESP_OK) {
             bool installed = false;
             ret = apply_candidate(iface, &candidate, bindings, count, false, &installed);
+            if (installed) state->config = candidate;
             if (ret != ESP_OK && !installed) {
                 /* A rejected/uninstalled saved table must never be saved back as zero. */
                 config_error = ret;

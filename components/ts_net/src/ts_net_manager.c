@@ -15,6 +15,7 @@
 #include "ts_net_manager.h"
 #include "ts_net.h"
 #include "ts_eth.h"
+#include "ts_dhcp_server.h"
 #include "ts_wifi.h"
 #include "ts_log.h"
 #include "ts_event.h"
@@ -275,18 +276,7 @@ static void update_eth_ip_from_netif(void)
                                  TS_NET_IP_STR_MAX_LEN);
         }
         
-        /* 同步更新 eth_config，确保 net --config 显示正确的运行时配置 */
-        strncpy(s_state.eth_config.static_ip.ip, 
-                s_state.eth_status.ip_info.ip, TS_NET_IP_STR_MAX_LEN - 1);
-        strncpy(s_state.eth_config.static_ip.netmask, 
-                s_state.eth_status.ip_info.netmask, TS_NET_IP_STR_MAX_LEN - 1);
-        strncpy(s_state.eth_config.static_ip.gateway, 
-                s_state.eth_status.ip_info.gateway, TS_NET_IP_STR_MAX_LEN - 1);
-        if (s_state.eth_status.ip_info.dns1[0]) {
-            strncpy(s_state.eth_config.static_ip.dns1, 
-                    s_state.eth_status.ip_info.dns1, TS_NET_IP_STR_MAX_LEN - 1);
-        }
-        
+        /* Observed addresses must not overwrite pending user configuration. */
         TS_LOGI(TAG, "Ethernet IP (static/DHCPS): %s", s_state.eth_status.ip_info.ip);
         
         /* 静态 IP 模式下，link up 后启动 mDNS（DHCP 模式由 IP_EVENT 触发） */
@@ -444,7 +434,7 @@ esp_err_t ts_net_manager_init(void)
     strncpy(s_state.eth_config.static_ip.dns1, TS_NET_DEFAULT_DNS, TS_NET_IP_STR_MAX_LEN);
     
     /* 从 NVS 加载配置（如果有） */
-    ts_net_manager_load_config();
+    esp_err_t config_error = ts_net_manager_load_config();
     
     /* 初始化 ESP netif */
     esp_err_t ret = esp_netif_init();
@@ -476,8 +466,17 @@ esp_err_t ts_net_manager_init(void)
 #ifdef CONFIG_TS_NET_ETHERNET_ENABLE
     if (s_state.eth_config.enabled) {
         ts_eth_config_t eth_hw_config;
-        ret = load_eth_config_from_pins(&eth_hw_config);
+        esp_netif_ip_info_t host;
+        ret = config_error == ESP_OK ? ts_net_validate_eth_config(&s_state.eth_config, &host) : config_error;
+        s_state.eth_status.config_error = ret;
+        if (ret != ESP_OK) {
+            s_state.eth_status.state = TS_NET_STATE_ERROR;
+            TS_LOGE(TAG, "ETH configuration invalid; interface not created: %s", esp_err_to_name(ret));
+        } else {
+            ret = load_eth_config_from_pins(&eth_hw_config);
+        }
         if (ret == ESP_OK) {
+            eth_hw_config.ip_info = host;
             ret = ts_eth_init(&eth_hw_config);
             if (ret == ESP_OK) {
                 s_state.eth_status.state = TS_NET_STATE_INITIALIZED;
@@ -497,8 +496,10 @@ esp_err_t ts_net_manager_init(void)
                 s_state.eth_status.state = TS_NET_STATE_ERROR;
             }
         } else {
-            TS_LOGW(TAG, "Ethernet pins not configured, skipping");
-            s_state.eth_config.enabled = false;
+            if (s_state.eth_status.config_error == ESP_OK) {
+                TS_LOGW(TAG, "Ethernet pins not configured, skipping");
+                s_state.eth_config.enabled = false;
+            }
         }
     }
 #endif
@@ -586,71 +587,60 @@ bool ts_net_manager_is_initialized(void)
     return s_state.initialized;
 }
 
+/* Snapshot pending host configuration without holding the manager lock across
+ * DHCP notifications or the driver/event lifecycle. The DHCP transaction validates
+ * and applies the complete immutable candidate before an ETH restart can stop it. */
+static esp_err_t start_eth(bool restart)
+{
+#ifdef CONFIG_TS_NET_ETHERNET_ENABLE
+    ts_net_if_config_t config;
+    char hostname[TS_NET_HOSTNAME_MAX_LEN];
+    xSemaphoreTake(s_state.mutex, portMAX_DELAY);
+    config = s_state.eth_config;
+    memcpy(hostname, s_state.hostname, sizeof(hostname));
+    esp_err_t ret = s_state.eth_status.config_error;
+    xSemaphoreGive(s_state.mutex);
+    if (ret != ESP_OK) return ret;
+    if (!config.enabled) return ESP_ERR_INVALID_STATE;
+    esp_netif_ip_info_t host;
+    ret = ts_net_validate_eth_config(&config, &host);
+    if (ret != ESP_OK) return ret;
+    esp_netif_t *netif = ts_eth_get_netif();
+    if (!netif) return ESP_ERR_NOT_FOUND; /* Corrected boot error requires reboot. */
+    uint32_t dns[] = {config.static_ip.dns1[0] ? ipaddr_addr(config.static_ip.dns1) : 0,
+                      config.static_ip.dns2[0] ? ipaddr_addr(config.static_ip.dns2) : 0};
+    ret = ts_dhcp_server_apply_eth_network(&host, dns);
+    if (ret != ESP_OK) return ret;
+    ret = esp_netif_set_hostname(netif, hostname);
+    if (ret != ESP_OK) return ret;
+    if (restart) {
+        ret = ts_dhcp_server_eth_suspend();
+        if (ret != ESP_OK) return ret;
+        ret = ts_eth_stop();
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return ret;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    s_state.eth_status.state = TS_NET_STATE_STARTING;
+    ret = ts_eth_start();
+    if (ret != ESP_OK) {
+        s_state.eth_status.state = TS_NET_STATE_ERROR;
+        TS_LOGE(TAG, "Ethernet start failed: %s", esp_err_to_name(ret));
+    }
+    return ret;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 esp_err_t ts_net_manager_start(ts_net_if_t iface)
 {
     if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
+    if (iface == TS_NET_IF_ETH) return start_eth(false);
     
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     esp_err_t ret = ESP_OK;
     
     switch (iface) {
-        case TS_NET_IF_ETH:
-#ifdef CONFIG_TS_NET_ETHERNET_ENABLE
-            if (!s_state.eth_config.enabled) {
-                TS_LOGW(TAG, "Ethernet is disabled");
-                ret = ESP_ERR_INVALID_STATE;
-                break;
-            }
-            
-            TS_LOGI(TAG, "Starting Ethernet...");
-            s_state.eth_status.state = TS_NET_STATE_STARTING;
-            
-            /* 应用 IP 配置 */
-            esp_netif_t *eth_netif = ts_eth_get_netif();
-            if (eth_netif) {
-                if (s_state.eth_config.ip_mode == TS_NET_IP_MODE_STATIC) {
-                    /* 静态 IP */
-                    esp_netif_dhcpc_stop(eth_netif);
-                    
-                    esp_netif_ip_info_t ip_info = {
-                        .ip.addr = ts_net_ip_str_to_u32(s_state.eth_config.static_ip.ip),
-                        .netmask.addr = ts_net_ip_str_to_u32(s_state.eth_config.static_ip.netmask),
-                        .gw.addr = ts_net_ip_str_to_u32(s_state.eth_config.static_ip.gateway),
-                    };
-                    esp_netif_set_ip_info(eth_netif, &ip_info);
-                    
-                    /* 设置 DNS */
-                    if (s_state.eth_config.static_ip.dns1[0]) {
-                        esp_netif_dns_info_t dns = {
-                            .ip.u_addr.ip4.addr = ts_net_ip_str_to_u32(s_state.eth_config.static_ip.dns1)
-                        };
-                        esp_netif_set_dns_info(eth_netif, ESP_NETIF_DNS_MAIN, &dns);
-                    }
-                    
-                    TS_LOGI(TAG, "Using static IP: %s", s_state.eth_config.static_ip.ip);
-                } else {
-                    /* DHCP */
-                    esp_netif_dhcpc_start(eth_netif);
-                    TS_LOGI(TAG, "Using DHCP");
-                }
-                
-                /* 设置主机名 */
-                esp_netif_set_hostname(eth_netif, s_state.hostname);
-            }
-            
-            ret = ts_eth_start();
-            if (ret == ESP_OK) {
-                s_state.eth_status.state = TS_NET_STATE_DISCONNECTED;
-                TS_LOGI(TAG, "Ethernet started, waiting for link...");
-            } else {
-                s_state.eth_status.state = TS_NET_STATE_ERROR;
-                TS_LOGE(TAG, "Failed to start Ethernet: %s", esp_err_to_name(ret));
-            }
-#else
-            ret = ESP_ERR_NOT_SUPPORTED;
-#endif
-            break;
-            
         case TS_NET_IF_WIFI_STA:
 #ifdef CONFIG_TS_NET_WIFI_ENABLE
             if (!s_state.wifi_sta_config.enabled) {
@@ -833,6 +823,8 @@ esp_err_t ts_net_manager_stop(ts_net_if_t iface)
 
 esp_err_t ts_net_manager_restart(ts_net_if_t iface)
 {
+    if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
+    if (iface == TS_NET_IF_ETH) return start_eth(true);
     esp_err_t ret = ts_net_manager_stop(iface);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         return ret;
@@ -863,6 +855,20 @@ esp_err_t ts_net_manager_get_status(ts_net_manager_status_t *status)
     memcpy(&status->wifi_ap, &s_state.wifi_ap_status, sizeof(ts_net_if_status_t));
     strncpy(status->hostname, s_state.hostname, TS_NET_HOSTNAME_MAX_LEN);
     
+    /* Pending host edits never represent the address currently on the wire. */
+    esp_netif_t *netif = ts_eth_get_netif();
+    if (status->eth.link_up && netif) {
+        esp_netif_ip_info_t actual;
+        if (esp_netif_get_ip_info(netif, &actual) == ESP_OK) {
+            ts_net_ip_u32_to_str(actual.ip.addr, status->eth.ip_info.ip, TS_NET_IP_STR_MAX_LEN);
+            ts_net_ip_u32_to_str(actual.netmask.addr, status->eth.ip_info.netmask, TS_NET_IP_STR_MAX_LEN);
+            ts_net_ip_u32_to_str(actual.gw.addr, status->eth.ip_info.gateway, TS_NET_IP_STR_MAX_LEN);
+        } else {
+            status->eth.has_ip = false;
+            memset(&status->eth.ip_info, 0, sizeof(status->eth.ip_info));
+        }
+    }
+
     /* 计算连接时长 */
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
     if (s_state.eth_status.state == TS_NET_STATE_GOT_IP) {
@@ -965,12 +971,18 @@ esp_err_t ts_net_manager_get_config(ts_net_if_t iface, ts_net_if_config_t *confi
 esp_err_t ts_net_manager_set_config(ts_net_if_t iface, const ts_net_if_config_t *config)
 {
     if (!config) return ESP_ERR_INVALID_ARG;
+    if (iface == TS_NET_IF_ETH) {
+        esp_netif_ip_info_t host;
+        esp_err_t ret = ts_net_validate_eth_config(config, &host);
+        if (ret != ESP_OK) return ret;
+    }
     
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     
     switch (iface) {
         case TS_NET_IF_ETH:
             memcpy(&s_state.eth_config, config, sizeof(s_state.eth_config));
+            s_state.eth_status.config_error = ESP_OK;
             break;
         case TS_NET_IF_WIFI_STA:
             memcpy(&s_state.wifi_sta_config, config, sizeof(s_state.wifi_sta_config));
@@ -991,11 +1003,15 @@ esp_err_t ts_net_manager_set_config(ts_net_if_t iface, const ts_net_if_config_t 
 
 esp_err_t ts_net_manager_set_ip_mode(ts_net_if_t iface, ts_net_ip_mode_t mode)
 {
+    if (mode != TS_NET_IP_MODE_STATIC && mode != TS_NET_IP_MODE_DHCP) return ESP_ERR_INVALID_ARG;
+    if (iface == TS_NET_IF_ETH && mode != TS_NET_IP_MODE_STATIC) return ESP_ERR_NOT_SUPPORTED;
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     
     switch (iface) {
         case TS_NET_IF_ETH:
             s_state.eth_config.ip_mode = mode;
+            esp_netif_ip_info_t host;
+            s_state.eth_status.config_error = ts_net_validate_eth_config(&s_state.eth_config, &host);
             break;
         case TS_NET_IF_WIFI_STA:
             s_state.wifi_sta_config.ip_mode = mode;
@@ -1020,8 +1036,18 @@ esp_err_t ts_net_manager_set_static_ip(ts_net_if_t iface, const ts_net_ip_info_s
     
     ts_net_ip_info_str_t *target = NULL;
     switch (iface) {
-        case TS_NET_IF_ETH:
+        case TS_NET_IF_ETH: {
+            ts_net_if_config_t candidate = s_state.eth_config;
+            candidate.static_ip = *ip_info;
+            esp_netif_ip_info_t host;
+            esp_err_t ret = ts_net_validate_eth_config(&candidate, &host);
+            if (ret != ESP_OK) {
+                xSemaphoreGive(s_state.mutex);
+                return ret;
+            }
+            s_state.eth_status.config_error = ESP_OK;
             target = &s_state.eth_config.static_ip;
+        }
             break;
         case TS_NET_IF_WIFI_STA:
             target = &s_state.wifi_sta_config.static_ip;
@@ -1072,15 +1098,30 @@ esp_err_t ts_net_manager_save_config(void)
     
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     
+    esp_netif_ip_info_t host;
+    ret = s_state.eth_status.config_error;
+    if (ret == ESP_OK) ret = ts_net_validate_eth_config(&s_state.eth_config, &host);
+    if (ret != ESP_OK) {
+        xSemaphoreGive(s_state.mutex);
+        nvs_close(handle);
+        return ret;
+    }
     /* 保存以太网配置 */
-    nvs_set_u8(handle, NVS_KEY_ETH_ENABLED, s_state.eth_config.enabled ? 1 : 0);
-    nvs_set_u8(handle, NVS_KEY_ETH_IP_MODE, (uint8_t)s_state.eth_config.ip_mode);
-    nvs_set_str(handle, NVS_KEY_ETH_IP, s_state.eth_config.static_ip.ip);
-    nvs_set_str(handle, NVS_KEY_ETH_NETMASK, s_state.eth_config.static_ip.netmask);
-    nvs_set_str(handle, NVS_KEY_ETH_GATEWAY, s_state.eth_config.static_ip.gateway);
-    nvs_set_str(handle, NVS_KEY_ETH_DNS1, s_state.eth_config.static_ip.dns1);
-    nvs_set_str(handle, NVS_KEY_HOSTNAME, s_state.hostname);
+    if (ret == ESP_OK) ret = nvs_set_u8(handle, NVS_KEY_ETH_ENABLED, s_state.eth_config.enabled ? 1 : 0);
+    if (ret == ESP_OK) ret = nvs_set_u8(handle, NVS_KEY_ETH_IP_MODE, (uint8_t)s_state.eth_config.ip_mode);
+    if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_IP, s_state.eth_config.static_ip.ip);
+    if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_NETMASK, s_state.eth_config.static_ip.netmask);
+    if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_GATEWAY, s_state.eth_config.static_ip.gateway);
+    if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_DNS1, s_state.eth_config.static_ip.dns1);
+    if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_DNS2, s_state.eth_config.static_ip.dns2);
+    if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_HOSTNAME, s_state.hostname);
     
+    if (ret != ESP_OK) {
+        xSemaphoreGive(s_state.mutex);
+        nvs_close(handle);
+        return ret;
+    }
+
     /* 保存 WiFi AP 配置 */
 #ifdef CONFIG_TS_NET_WIFI_ENABLE
     nvs_set_u8(handle, NVS_KEY_AP_ENABLED, s_state.wifi_ap_config.enabled ? 1 : 0);
@@ -1109,6 +1150,28 @@ esp_err_t ts_net_manager_save_config(void)
     return ret;
 }
 
+static esp_err_t read_eth_config(nvs_handle_t handle, ts_net_if_config_t *config)
+{
+    uint8_t value;
+    esp_err_t ret = nvs_get_u8(handle, NVS_KEY_ETH_ENABLED, &value);
+    if (ret == ESP_OK) {
+        if (value > 1) return ESP_ERR_INVALID_ARG;
+        config->enabled = value != 0;
+    } else if (ret != ESP_ERR_NVS_NOT_FOUND) return ret;
+    ret = nvs_get_u8(handle, NVS_KEY_ETH_IP_MODE, &value);
+    if (ret == ESP_OK) config->ip_mode = (ts_net_ip_mode_t)value;
+    else if (ret != ESP_ERR_NVS_NOT_FOUND) return ret;
+    const char *keys[] = {NVS_KEY_ETH_IP, NVS_KEY_ETH_NETMASK, NVS_KEY_ETH_GATEWAY, NVS_KEY_ETH_DNS1, NVS_KEY_ETH_DNS2};
+    char *fields[] = {config->static_ip.ip, config->static_ip.netmask, config->static_ip.gateway,
+                      config->static_ip.dns1, config->static_ip.dns2};
+    for (size_t i = 0; i < 5; ++i) {
+        size_t length = TS_NET_IP_STR_MAX_LEN;
+        ret = nvs_get_str(handle, keys[i], fields[i], &length);
+        if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) return ret;
+    }
+    return ESP_OK;
+}
+
 esp_err_t ts_net_manager_load_config(void)
 {
     nvs_handle_t handle;
@@ -1119,34 +1182,26 @@ esp_err_t ts_net_manager_load_config(void)
     }
     if (ret != ESP_OK) {
         TS_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(ret));
+        s_state.eth_status.config_error = ret;
         return ret;
     }
     
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     
-    uint8_t u8_val;
     size_t str_len;
+#ifdef CONFIG_TS_NET_WIFI_ENABLE
+    uint8_t u8_val;
+#endif
     
-    /* 加载以太网配置 */
-    if (nvs_get_u8(handle, NVS_KEY_ETH_ENABLED, &u8_val) == ESP_OK) {
-        s_state.eth_config.enabled = (u8_val != 0);
+    ts_net_if_config_t candidate = s_state.eth_config;
+    esp_err_t eth_result = read_eth_config(handle, &candidate);
+    if (eth_result == ESP_OK) {
+        s_state.eth_config = candidate;
+        esp_netif_ip_info_t host;
+        eth_result = ts_net_validate_eth_config(&candidate, &host);
     }
-    if (nvs_get_u8(handle, NVS_KEY_ETH_IP_MODE, &u8_val) == ESP_OK) {
-        s_state.eth_config.ip_mode = (ts_net_ip_mode_t)u8_val;
-    }
-    
-    str_len = TS_NET_IP_STR_MAX_LEN;
-    nvs_get_str(handle, NVS_KEY_ETH_IP, s_state.eth_config.static_ip.ip, &str_len);
-    
-    str_len = TS_NET_IP_STR_MAX_LEN;
-    nvs_get_str(handle, NVS_KEY_ETH_NETMASK, s_state.eth_config.static_ip.netmask, &str_len);
-    
-    str_len = TS_NET_IP_STR_MAX_LEN;
-    nvs_get_str(handle, NVS_KEY_ETH_GATEWAY, s_state.eth_config.static_ip.gateway, &str_len);
-    
-    str_len = TS_NET_IP_STR_MAX_LEN;
-    nvs_get_str(handle, NVS_KEY_ETH_DNS1, s_state.eth_config.static_ip.dns1, &str_len);
-    
+    s_state.eth_status.config_error = eth_result;
+
     str_len = TS_NET_HOSTNAME_MAX_LEN;
     nvs_get_str(handle, NVS_KEY_HOSTNAME, s_state.hostname, &str_len);
     
@@ -1185,8 +1240,9 @@ esp_err_t ts_net_manager_load_config(void)
     
     nvs_close(handle);
     
-    TS_LOGI(TAG, "Configuration loaded from NVS");
-    return ESP_OK;
+    if (eth_result == ESP_OK) TS_LOGI(TAG, "Configuration loaded from NVS");
+    else TS_LOGE(TAG, "ETH configuration not usable: %s", esp_err_to_name(eth_result));
+    return eth_result;
 }
 
 esp_err_t ts_net_manager_reset_config(void)
@@ -1201,6 +1257,8 @@ esp_err_t ts_net_manager_reset_config(void)
     strncpy(s_state.eth_config.static_ip.netmask, TS_NET_DEFAULT_NETMASK, TS_NET_IP_STR_MAX_LEN);
     strncpy(s_state.eth_config.static_ip.gateway, TS_NET_DEFAULT_GATEWAY, TS_NET_IP_STR_MAX_LEN);
     strncpy(s_state.eth_config.static_ip.dns1, TS_NET_DEFAULT_DNS, TS_NET_IP_STR_MAX_LEN);
+    s_state.eth_config.static_ip.dns2[0] = '\0';
+    s_state.eth_status.config_error = ESP_OK;
     
     strncpy(s_state.hostname, TS_NET_DEFAULT_HOSTNAME, TS_NET_HOSTNAME_MAX_LEN);
     

@@ -12,6 +12,7 @@
 #include "esp_netif.h"
 #include "dhcpserver/dhcpserver.h"
 #include "ts_dhcp_server.h"
+#include "ts_net_manager.h"
 #include "ts_dhcps_bindings.h"
 #define mem_calloc calloc
 #define DHCP_COARSE_TIMER_MSECS 1000
@@ -64,6 +65,7 @@ typedef pthread_mutex_t *SemaphoreHandle_t;
 typedef void *QueueHandle_t;
 typedef void *TaskHandle_t;
 typedef unsigned TickType_t;
+typedef int BaseType_t;
 #define portMAX_DELAY -1
 #define configTICK_RATE_HZ 1000
 #define NVS_READWRITE 1
@@ -79,9 +81,10 @@ typedef unsigned TickType_t;
 #define ESP_NETIF_DOMAIN_NAME_SERVER 3
 #define ESP_IPADDR_TYPE_V4 0
 #define ESP_NETIF_DNS_MAIN 0
+#define ESP_NETIF_DNS_BACKUP 1
 #define TS_DHCP_IF_ALL TS_DHCP_IF_MAX
 static pthread_mutex_t project_mutex=PTHREAD_MUTEX_INITIALIZER;
-static unsigned project_lock_depth;
+static unsigned project_lock_depth, manager_lock_depth;
 static int xSemaphoreTake(SemaphoreHandle_t mutex,int ticks) {
     assert(!on_tcpip&&!project_lock_depth);assert(!pthread_mutex_lock(mutex));project_lock_depth++;return pdTRUE;
 }
@@ -91,14 +94,16 @@ static ts_dhcp_module_state_t s_state;
 static dhcps_t servers[TS_DHCP_IF_MAX];
 static esp_netif_ip_info_t infos[TS_DHCP_IF_MAX];
 static esp_netif_t netifs[TS_DHCP_IF_MAX];
-static bool netifs_exist=true;
+static bool netifs_exist=true, eth_netif_exists=true, s_link_up;
+static bool ts_eth_is_link_up(void) { return s_link_up; }
+static bool esp_netif_is_netif_up(esp_netif_t *n) { return n->up; }
 static unsigned start_expected_owner;
 static bool check_start_table;
 static ip4_addr_t ip(unsigned last) {return (ip4_addr_t){htonl(0x0a0a6300U+last)};}
 static void drain(dhcps_t *d) {while(d->plist){list_node *n=d->plist;d->plist=n->pnext;free(n->pnode);free(n);}}
 static esp_netif_t *esp_netif_get_handle_from_ifkey(const char *key) {
     if(!netifs_exist)return NULL;
-    return !strcmp(key,"WIFI_AP_DEF")?&netifs[0]:&netifs[1];
+    return !strcmp(key,"WIFI_AP_DEF")?&netifs[0]:(eth_netif_exists?&netifs[1]:NULL);
 }
 
 /* ESP-IDF 5.5.2 esp_netif_lwip.c:1192-1222,1675-1742,1978,2472.
@@ -154,9 +159,16 @@ static esp_err_t esp_netif_dhcps_option(esp_netif_t *n,int op,int option,void *v
     return ESP_OK;
 }
 typedef struct {struct {struct {ip4_addr_t ip4;} u_addr;int type;} ip;} esp_netif_dns_info_t;
-static esp_err_t esp_netif_set_dns_info(esp_netif_t *n,int kind,esp_netif_dns_info_t *dns) {
-    if(fail_now(FAIL_DNS_ADDRESS))return ESP_FAIL;n->dhcps->dns_server[0].addr=dns->ip.u_addr.ip4.addr;return ESP_OK;
+typedef int esp_netif_dns_type_t;
+typedef struct {esp_netif_dns_type_t dns_type;esp_netif_dns_info_t *dns_info;} esp_netif_dns_param_t;
+#define ESP_IP_IS_ANY(ip) ((ip).u_addr.ip4.addr==0)
+/* Real SDK public wrapper enforces the nonzero-address contract before IPC. */
+static esp_err_t esp_netif_set_dns_info_api(esp_netif_api_msg_t *msg) {
+    esp_netif_dns_param_t *p=msg->data;
+    if(fail_now(FAIL_DNS_ADDRESS))return ESP_FAIL;
+    msg->esp_netif->dhcps->dns_server[p->dns_type].addr=p->dns_info->ip.u_addr.ip4.addr;return ESP_OK;
 }
+#include "sdk_dns.inc"
 static esp_err_t esp_netif_dhcps_start(esp_netif_t *n) {
     if(n->status==ESP_NETIF_DHCP_STARTED)return ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED;
     if(fail_now(FAIL_START)){n->status=ESP_NETIF_DHCP_INIT;return ESP_FAIL;}
@@ -182,62 +194,68 @@ static esp_err_t esp_netif_tcpip_exec(esp_netif_callback_fn fn,void *arg) {
     return ctx.ret;
 }
 static void interface_up(unsigned index) {
-    netifs[index].up=true;
+    netifs[index].up=true;if(index==1)s_link_up=true;
     if(netifs[index].status==ESP_NETIF_DHCP_INIT)assert(esp_netif_dhcps_start(&netifs[index])==ESP_OK);
 }
 static TickType_t xTaskGetTickCount(void) {return 100;}
-static void notify_event(ts_dhcp_if_t iface,ts_dhcp_event_t e,const ts_dhcp_client_t *client) {assert(!on_tcpip);}
+static unsigned started_notifications, stopped_notifications;
+static void notify_event(ts_dhcp_if_t iface,ts_dhcp_event_t e,const ts_dhcp_client_t *client) {
+    assert(!on_tcpip&&!project_lock_depth&&!manager_lock_depth);
+    if(e==TS_DHCP_EVENT_STARTED)started_notifications++;
+    if(e==TS_DHCP_EVENT_STOPPED)stopped_notifications++;
+}
 const char *ts_dhcp_if_to_str(ts_dhcp_if_t iface) {return iface?"ethernet":"wifi_ap";}
 /* NVS key/value model runs the production explicit save and load functions. */
 typedef int nvs_handle_t;
-static struct {char key[16];unsigned char data[2048];size_t size;int type;} kv[32];
+static struct {char key[16];unsigned char data[2048];size_t size;int type;int ns;} kv[64];
 static size_t kv_count;
 static unsigned commits;
 static const char *fail_read_key, *fail_write_key;
 static bool fail_open_read, missing_namespace, fail_commit;
 static esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *handle) {
     assert(!on_tcpip);if(mode==NVS_READONLY&&missing_namespace)return ESP_ERR_NVS_NOT_FOUND;
-    if(mode==NVS_READONLY&&fail_open_read)return ESP_FAIL;*handle=1;return ESP_OK;
+    if(mode==NVS_READONLY&&fail_open_read)return ESP_FAIL;*handle=!strcmp(name,"ts_net")?2:1;return ESP_OK;
 }
 static void nvs_close(nvs_handle_t handle) {}
 static esp_err_t nvs_commit(nvs_handle_t handle) {assert(!on_tcpip);commits++;return fail_commit?ESP_FAIL:ESP_OK;}
-static esp_err_t kv_set(const char *key,const void *data,size_t size) {
+static esp_err_t kv_set_in(int ns,const char *key,const void *data,size_t size) {
     assert(!on_tcpip);if(fail_write_key&&!strcmp(key,fail_write_key))return ESP_FAIL;
-    size_t i=0;while(i<kv_count&&strcmp(kv[i].key,key))i++;
-    if(i==kv_count){assert(kv_count<32);strcpy(kv[kv_count++].key,key);}
+    size_t i=0;while(i<kv_count&&(kv[i].ns!=ns||strcmp(kv[i].key,key)))i++;
+    if(i==kv_count){assert(kv_count<64);kv[i].ns=ns;strcpy(kv[kv_count++].key,key);}
     assert(size<=sizeof(kv[i].data));memcpy(kv[i].data,data,size);kv[i].size=size;return ESP_OK;
 }
-static esp_err_t kv_get(const char *key,void *data,size_t *size) {
+static esp_err_t kv_get_in(int ns,const char *key,void *data,size_t *size) {
     assert(!on_tcpip);if(fail_read_key&&!strcmp(key,fail_read_key))return ESP_FAIL;
-    size_t i=0;while(i<kv_count&&strcmp(kv[i].key,key))i++;
+    size_t i=0;while(i<kv_count&&(kv[i].ns!=ns||strcmp(kv[i].key,key)))i++;
     if(i==kv_count)return ESP_ERR_NVS_NOT_FOUND;
     if(!data){*size=kv[i].size;return ESP_OK;}
     if(*size<kv[i].size){*size=kv[i].size;return ESP_ERR_NVS_INVALID_LENGTH;}
     memcpy(data,kv[i].data,kv[i].size);*size=kv[i].size;return ESP_OK;
 }
 /* Simulates a stored record whose count and blob length disagree. */
+static esp_err_t kv_get(const char *key,void *data,size_t *size) {return kv_get_in(1,key,data,size);}
 static bool shrink_blob(const char *key,size_t by) {
     for(size_t i=0;i<kv_count;i++)if(!strcmp(kv[i].key,key)){assert(kv[i].size>by);kv[i].size-=by;return true;}
     return false;
 }
 
 enum {KV_U8,KV_U32,KV_STR,KV_BLOB};
-static esp_err_t kv_typed_set(const char *key,const void *data,size_t size,int type) {
-    esp_err_t ret=kv_set(key,data,size);if(ret!=ESP_OK)return ret;
-    for(size_t i=0;i<kv_count;i++)if(!strcmp(key,kv[i].key)){kv[i].type=type;break;}return ESP_OK;
+static esp_err_t kv_typed_set(int h,const char *key,const void *data,size_t size,int type) {
+    int ns=h==2?2:1;esp_err_t ret=kv_set_in(ns,key,data,size);if(ret!=ESP_OK)return ret;
+    for(size_t i=0;i<kv_count;i++)if(kv[i].ns==ns&&!strcmp(key,kv[i].key)){kv[i].type=type;break;}return ESP_OK;
 }
-static esp_err_t kv_typed_get(const char *key,void *data,size_t *size,int type) {
-    for(size_t i=0;i<kv_count;i++)if(!strcmp(key,kv[i].key)&&kv[i].type!=type)return ESP_ERR_NVS_TYPE_MISMATCH;
-    return kv_get(key,data,size);
+static esp_err_t kv_typed_get(int h,const char *key,void *data,size_t *size,int type) {
+    int ns=h==2?2:1;for(size_t i=0;i<kv_count;i++)if(kv[i].ns==ns&&!strcmp(key,kv[i].key)&&kv[i].type!=type)return ESP_ERR_NVS_TYPE_MISMATCH;
+    return kv_get_in(ns,key,data,size);
 }
-static esp_err_t nvs_set_u8(int h,const char *key,uint8_t value) {return kv_typed_set(key,&value,sizeof(value),KV_U8);}
-static esp_err_t nvs_set_u32(int h,const char *key,uint32_t value) {return kv_typed_set(key,&value,sizeof(value),KV_U32);}
-static esp_err_t nvs_set_str(int h,const char *key,const char *value) {return kv_typed_set(key,value,strlen(value)+1,KV_STR);}
-static esp_err_t nvs_set_blob(int h,const char *key,const void *value,size_t size) {return kv_typed_set(key,value,size,KV_BLOB);}
-static esp_err_t nvs_get_u8(int h,const char *key,uint8_t *value) {size_t n=sizeof(*value);return kv_typed_get(key,value,&n,KV_U8);}
-static esp_err_t nvs_get_u32(int h,const char *key,uint32_t *value) {size_t n=sizeof(*value);return kv_typed_get(key,value,&n,KV_U32);}
-static esp_err_t nvs_get_str(int h,const char *key,char *value,size_t *size) {return kv_typed_get(key,value,size,KV_STR);}
-static esp_err_t nvs_get_blob(int h,const char *key,void *value,size_t *size) {return kv_typed_get(key,value,size,KV_BLOB);}
+static esp_err_t nvs_set_u8(int h,const char *key,uint8_t value) {return kv_typed_set(h,key,&value,sizeof(value),KV_U8);}
+static esp_err_t nvs_set_u32(int h,const char *key,uint32_t value) {return kv_typed_set(h,key,&value,sizeof(value),KV_U32);}
+static esp_err_t nvs_set_str(int h,const char *key,const char *value) {return kv_typed_set(h,key,value,strlen(value)+1,KV_STR);}
+static esp_err_t nvs_set_blob(int h,const char *key,const void *value,size_t size) {return kv_typed_set(h,key,value,size,KV_BLOB);}
+static esp_err_t nvs_get_u8(int h,const char *key,uint8_t *value) {size_t n=sizeof(*value);return kv_typed_get(h,key,value,&n,KV_U8);}
+static esp_err_t nvs_get_u32(int h,const char *key,uint32_t *value) {size_t n=sizeof(*value);return kv_typed_get(h,key,value,&n,KV_U32);}
+static esp_err_t nvs_get_str(int h,const char *key,char *value,size_t *size) {return kv_typed_get(h,key,value,size,KV_STR);}
+static esp_err_t nvs_get_blob(int h,const char *key,void *value,size_t *size) {return kv_typed_get(h,key,value,size,KV_BLOB);}
 
 typedef void *esp_event_base_t;
 #define WIFI_EVENT ((esp_event_base_t)1)
@@ -258,6 +276,17 @@ static int xQueueReceive(QueueHandle_t queue,dhcp_ip_event_t *event,int ticks) {
 static void esp_ip4addr_ntoa(const ip4_addr_t *ip,char *buffer,size_t len) {
     assert(inet_ntop(AF_INET,&ip->addr,buffer,len));
 }
+#define IP_EVENT ((esp_event_base_t)2)
+#define IP_EVENT_AP_STAIPASSIGNED 1
+static SemaphoreHandle_t xSemaphoreCreateMutex(void){return &project_mutex;}
+static void vSemaphoreDelete(SemaphoreHandle_t m){}
+static QueueHandle_t xQueueCreate(unsigned n,unsigned size){return (void*)1;}
+static void vQueueDelete(QueueHandle_t q){}
+#define pdPASS 1
+static int xTaskCreate(void (*fn)(void*),const char *name,unsigned stack,void *arg,unsigned prio,TaskHandle_t *task){*task=(void*)1;return pdPASS;}
+static esp_err_t esp_event_handler_register(esp_event_base_t base,int id,void (*fn)(void*,esp_event_base_t,int32_t,void*),void *arg){return ESP_OK;}
+static void ip_event_handler(void *arg,esp_event_base_t base,int32_t id,void *data){}
+#include "network_validation.inc"
 #include "project_core.inc"
 static char console_text[1024];
 static const char *esp_err_to_name(esp_err_t err) {return "mock error";}
@@ -321,7 +350,7 @@ static void setup(bool erase_nvs) {
         servers[i].dhcps_poll=(dhcps_lease_t){true,ip(100),ip(103)};
         servers[i].client_address_plus=ip(100);servers[i].dhcps_lease_time=1;servers[i].state=DHCPS_HANDLE_STARTED;
     }
-    netifs_exist=true;check_start_table=false;console_text[0]=0;
+    netifs_exist=eth_netif_exists=true;s_link_up=true;initialize_eth_intent();check_start_table=false;console_text[0]=0;
     fail_stage=FAIL_NONE;stop_calls=apply_dispatches=0;after_dispatch=NULL;
     fail_read_key=fail_write_key=NULL;fail_open_read=missing_namespace=fail_commit=false;fail_cleanup_stop=false;
     if(erase_nvs){memset(kv,0,sizeof(kv));kv_count=commits=0;}
@@ -361,6 +390,7 @@ static void boot_defaults(bool erase) {
         set_interface_defaults(i,&s_state.iface[i].config);s_state.iface[i].applied_valid=false;
         netifs[i].status=ESP_NETIF_DHCP_INIT;netifs[i].up=false;servers[i].state=DHCPS_HANDLE_CREATED;
     }
+    s_link_up=false;initialize_eth_intent();
     infos[0]=(esp_netif_ip_info_t){.ip={inet_addr("192.168.4.1")},.netmask={inet_addr("255.255.255.0")},.gw={inet_addr("192.168.4.1")}};
     servers[0].dhcps_lease_time=DHCPS_LEASE_TIME_DEF;servers[0].dhcps_dns=0;
     servers[0].dhcps_poll=(dhcps_lease_t){true,{inet_addr("192.168.4.2")},{inet_addr("192.168.4.101")}};
@@ -391,6 +421,8 @@ static void run_lease_event(const uint8_t *mac,unsigned last) {
     if(!setjmp(queue_finished))dhcp_event_task(NULL);
     assert(!project_lock_depth);
 }
+#include "test_eth_lifecycle.inc"
+
 static void check_review_findings(void) {
     setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);
     fail_stage=FAIL_START;assert(ts_dhcp_server_restart(0)==ESP_FAIL);
@@ -545,10 +577,11 @@ static void check_lifecycle(void) {
     /* Every SDK state x up/down on both interfaces; full reconfigure is forced. */
     for(unsigned iface=0;iface<2;iface++)for(unsigned up=0;up<2;up++)for(unsigned state=0;state<3;state++) {
         setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);
-        s_state.iface[iface].applied_valid=false;netifs[iface].up=up;netifs[iface].status=state;
+        s_state.iface[iface].applied_valid=false;netifs[iface].up=up;netifs[iface].status=state;s_link_up=up;
         assert(ts_dhcp_server_load_config()==ESP_OK);
         unsigned expected=state==ESP_NETIF_DHCP_STOPPED?ESP_NETIF_DHCP_STOPPED:
             up?ESP_NETIF_DHCP_STARTED:ESP_NETIF_DHCP_INIT;
+        if(iface==TS_DHCP_IF_ETH) expected=up?ESP_NETIF_DHCP_STARTED:ESP_NETIF_DHCP_STOPPED;
         assert(netifs[iface].status==expected);
     }
     record("lifecycle_both_interfaces_three_sdk_states_up_down");
@@ -641,6 +674,7 @@ static void check_lifecycle(void) {
     record("NVS_read_write_commit_errors_and_retry_recovery");
 }
 int main(void) {
+    check_eth_lifecycle();
     check_lifecycle();
     check_fault_boundaries();
     check_review_findings();

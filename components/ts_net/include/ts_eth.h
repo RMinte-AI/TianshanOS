@@ -23,6 +23,7 @@ typedef struct {
     int gpio_int;
     int gpio_rst;
     int spi_clock_mhz;
+    esp_netif_ip_info_t ip_info; /**< Validated host address, owned by ts_net. */
 } ts_eth_config_t;
 
 #define TS_ETH_DEFAULT_CONFIG() { \

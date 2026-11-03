@@ -124,6 +124,12 @@ typedef struct {
  */
 typedef struct {
     ts_dhcp_server_state_t state;           /**< 当前状态 */
+    bool interface_present;
+    bool want_running;                     /**< ETH runtime request, not persisted */
+    bool link_up;
+    esp_err_t restore_error;
+    esp_err_t apply_error;
+    esp_err_t resume_error;                 /**< Derived from current conditions; ESP_OK if unblocked */
     uint32_t total_pool_size;               /**< 地址池总大小 */
     uint32_t available_count;               /**< 可用地址数 */
     uint32_t active_leases;                 /**< 活动租约数 */
@@ -194,6 +200,16 @@ esp_err_t ts_dhcp_server_stop(ts_dhcp_if_t iface);
  * @return ESP_OK 成功
  */
 esp_err_t ts_dhcp_server_restart(ts_dhcp_if_t iface);
+
+/** ETH link lifecycle: neither operation changes the user's run request. */
+esp_err_t ts_dhcp_server_eth_suspend(void);
+esp_err_t ts_dhcp_server_eth_resume(void);
+
+/** Apply a validated ETH host address and current pending DHCP candidate in one
+ * TCP/IP transaction. Preserves ETH run request; validates before stopping.
+ * host_dns is optional (two IPv4 DNS addresses, nonzero entries only); DHCP offer policy still owns
+ * the DHCP server's dedicated DNS address. No persistence is performed. */
+esp_err_t ts_dhcp_server_apply_eth_network(const esp_netif_ip_info_t *host, const uint32_t host_dns[2]);
 
 /* ============================================================================
  * 状态查询

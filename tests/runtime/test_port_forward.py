@@ -258,15 +258,15 @@ code = code.replace('CLI_CLEANUP_BODY', cli[start:end])
 # Exercise the other three actual temporary task bodies, with hardware/queue leaves fake.
 code += '#include "cJSON.h"\n#include "' + str(root / 'components/ts_drivers/include/ts_device_ctrl.h') + '"\n'
 code += r'''
-static unsigned virtual_delays,dhcp_starts,ping_calls,gpio_pulses;
+static unsigned virtual_delays,dhcp_resumes,ping_calls,gpio_pulses;
 static void caps_delay(unsigned ticks) {virtual_delays+=ticks;}
 #define vTaskDelay caps_delay
 typedef int esp_netif_t;
 #define TS_DHCP_IF_ETH 1
 #define ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED 2
 static bool s_link_up;
-static TaskHandle_t s_dhcp_task,s_lpmu_detect_task;
-static esp_err_t ts_dhcp_server_start(int iface) {assert(iface==TS_DHCP_IF_ETH);dhcp_starts++;return ESP_OK;}
+static TaskHandle_t s_lpmu_detect_task;
+static esp_err_t ts_dhcp_server_eth_resume(void) {dhcp_resumes++;return ESP_OK;}
 #define LPMU_DEFAULT_IP "synthetic-only"
 #define TS_EVENT_BASE_DEVICE_MON 3
 #define TS_EVENT_DEVICE_STATUS_CHANGED 77
@@ -297,9 +297,9 @@ code += r'''
 static void other_caps_exits(const char *kind) {
     esp_netif_t netif=1;
     if(!kind||!strcmp(kind,"cap_dhcp"))for(unsigned linked=0;linked<2;linked++) {
-        unsigned before=dhcp_starts;s_link_up=linked;
-        assert(create_caps(dhcp_start_task,"dhcp_start",4096,&netif,5,&s_dhcp_task,MALLOC_CAP_SPIRAM)==pdPASS);
-        join_tasks();assert(!s_dhcp_task&&dhcp_starts==before+linked&&caps_created==caps_deleted);
+        unsigned before=dhcp_resumes;s_link_up=linked;
+        assert(create_caps(dhcp_start_task,"dhcp_start",4096,&netif,5,NULL,MALLOC_CAP_SPIRAM)==pdPASS);
+        join_tasks();assert(dhcp_resumes==before+linked&&caps_created==caps_deleted);
     }
     if(!kind||!strcmp(kind,"cap_lpmu"))for(unsigned scenario=0;scenario<3;scenario++) {
         memset(&s_lpmu,0,sizeof(s_lpmu));s_lpmu.gpio.power_btn=(void*)1;ping_calls=gpio_pulses=0;

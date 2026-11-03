@@ -114,6 +114,7 @@ typedef struct {
  */
 typedef struct {
     ts_net_state_t state;                       /**< 当前状态 */
+    esp_err_t config_error;                     /**< ETH host configuration/read error, ESP_OK when valid */
     bool link_up;                               /**< 物理链路状态 */
     bool has_ip;                                /**< 是否有 IP */
     uint8_t mac[TS_NET_MAC_ADDR_LEN];           /**< MAC 地址 */
@@ -269,6 +270,11 @@ esp_err_t ts_net_manager_set_ip_mode(ts_net_if_t iface, ts_net_ip_mode_t mode);
  * @return ESP_OK 成功
  */
 esp_err_t ts_net_manager_set_static_ip(ts_net_if_t iface, const ts_net_ip_info_str_t *ip_info);
+
+/** Validate an ETH static host configuration before creating/applying a netif.
+ * ETH is a DHCP server interface; client DHCP mode is not supported. */
+esp_err_t ts_net_validate_eth_ip(const esp_netif_ip_info_t *info);
+esp_err_t ts_net_validate_eth_config(const ts_net_if_config_t *config, esp_netif_ip_info_t *ip_info);
 
 /**
  * @brief 设置主机名

@@ -22,7 +22,7 @@ static int ts_console_printf(const char *f,...){(void)f;return 0;}
 static void ts_console_error(const char *f,...){(void)f;}
 static int writes,reads,saves,restarts,loads,mode_writes;
 static ts_net_if_t last_iface;
-static ts_net_if_config_t config;
+static ts_net_if_config_t config,configs[TS_NET_IF_MAX];
 static char api_name[40];static cJSON *api_params;
 esp_err_t ts_api_call(const char *name,const cJSON *params,ts_api_result_t *r){
  strcpy(api_name,name);cJSON_Delete(api_params);api_params=cJSON_Duplicate(params,true);
@@ -37,9 +37,13 @@ bool ts_temp_source_is_initialized(void){return true;}
 bool ts_temp_is_manual_mode(void){return false;}
 esp_err_t ts_temp_get_status(ts_temp_status_t *s){++reads;memset(s,0,sizeof(*s));return ESP_OK;}
 esp_err_t ts_net_manager_get_status(ts_net_manager_status_t *s){++reads;memset(s,0,sizeof(*s));return ESP_OK;}
-esp_err_t ts_net_manager_get_config(ts_net_if_t i,ts_net_if_config_t *c){++reads;last_iface=i;*c=config;return ESP_OK;}
-esp_err_t ts_net_manager_set_static_ip(ts_net_if_t i,const ts_net_ip_info_str_t *p){++writes;last_iface=i;config.static_ip=*p;return ESP_OK;}
-esp_err_t ts_net_manager_set_ip_mode(ts_net_if_t i,ts_net_ip_mode_t m){++writes;++mode_writes;last_iface=i;config.ip_mode=m;return ESP_OK;}
+esp_err_t ts_net_manager_get_config(ts_net_if_t i,ts_net_if_config_t *c){++reads;last_iface=i;*c=i==TS_NET_IF_ETH?config:configs[i];return ESP_OK;}
+esp_err_t ts_net_manager_set_config(ts_net_if_t i,const ts_net_if_config_t *c){
+ if(i==TS_NET_IF_ETH&&c->ip_mode!=TS_NET_IP_MODE_STATIC)return ESP_ERR_NOT_SUPPORTED;
+ ++writes;last_iface=i;if(i==TS_NET_IF_ETH)config=*c;else configs[i]=*c;return ESP_OK;
+}
+esp_err_t ts_net_manager_set_static_ip(ts_net_if_t i,const ts_net_ip_info_str_t *p){++writes;last_iface=i;(i==TS_NET_IF_ETH?&config:&configs[i])->static_ip=*p;return ESP_OK;}
+esp_err_t ts_net_manager_set_ip_mode(ts_net_if_t i,ts_net_ip_mode_t m){++writes;++mode_writes;last_iface=i;(i==TS_NET_IF_ETH?&config:&configs[i])->ip_mode=m;return ESP_OK;}
 esp_err_t ts_net_manager_set_hostname(const char *s){(void)s;++writes;return ESP_OK;}
 const char *ts_net_state_to_str(ts_net_state_t s){(void)s;return "fixture";}
 const char *ts_net_if_to_str(ts_net_if_t i){(void)i;return "fixture";}
@@ -64,6 +68,7 @@ static int run(const char *command){
 static void readonly(const char *cmd){int before=writes;assert(run(cmd)==0&&writes==before);}
 static void invalid(const char *cmd){int before=writes;assert(run(cmd)!=0&&writes==before);}
 int main(void){
+ config.ip_mode=TS_NET_IP_MODE_STATIC;for(unsigned i=0;i<TS_NET_IF_MAX;i++)configs[i].ip_mode=TS_NET_IP_MODE_STATIC;
  assert(ts_cmd_temp_register()==ESP_OK&&ts_cmd_net_register()==ESP_OK);
  if(getenv("TS_CLI_CONTRACT_TEMP_FIRST"))assert(run("temp --mode --value auto")==0&&!strcmp(api_name,"temp.select"));
  for(int round=0;round<3;round++){
@@ -74,7 +79,8 @@ int main(void){
   readonly("net --ip");
   assert(run("net --set --mode static --ip 10.10.99.98 --netmask 255.255.255.0 --gateway 10.10.99.1")==0);
   assert(!strcmp(config.static_ip.ip,"10.10.99.98")&&!strcmp(config.static_ip.netmask,"255.255.255.0")&&!strcmp(config.static_ip.gateway,"10.10.99.1")&&config.ip_mode==TS_NET_IP_MODE_STATIC);
-  assert(run("net --set --mode dhcp")==0&&config.ip_mode==TS_NET_IP_MODE_DHCP);
+  invalid("net --set --mode dhcp");assert(config.ip_mode==TS_NET_IP_MODE_STATIC);
+  assert(run("net --set --iface wifi --mode dhcp")==0&&configs[TS_NET_IF_WIFI_STA].ip_mode==TS_NET_IP_MODE_DHCP);
   assert(run("net --set --dns 8.8.8.8")==0&&!strcmp(config.static_ip.dns1,"8.8.8.8"));
   readonly("net --config");readonly("net -c --iface wifi -j");readonly("net --status");readonly("net -s -j");readonly("net --help");readonly("net -h");readonly("net");
   readonly("temp --status");readonly("temp --providers --json");readonly("temp -h");
@@ -104,7 +110,7 @@ int main(void){
 argtable=IDF/'components/console/argtable3'
 headers={'argtable3/argtable3.h':(argtable/'argtable3.h').read_text(),
          'ts_net_manager.h':Path('components/ts_net/include/ts_net_manager.h').read_text(),
-         'esp_netif.h':'#pragma once\ntypedef void esp_netif_t;\n'}
+         'esp_netif.h':'#pragma once\ntypedef void esp_netif_t;\ntypedef struct {struct {uint32_t addr;} ip,netmask,gw;} esp_netif_ip_info_t;\n'}
 # SDK arg_end packs int[5] before pointers for 32-bit targets. On a 64-bit
 # host the SDK itself has misaligned pointer fields; keep ASan and the rest of
 # UBSan there, while production commands retain full ASan/UBSan instrumentation.
