@@ -118,7 +118,13 @@ static esp_err_t kv_set(const char *key,const void *data,size_t size) {
 static esp_err_t kv_get(const char *key,void *data,size_t *size) {
     size_t i=0;while(i<kv_count&&strcmp(kv[i].key,key))i++;
     if(i==kv_count)return ESP_ERR_NVS_NOT_FOUND;
-    assert(*size>=kv[i].size);memcpy(data,kv[i].data,kv[i].size);*size=kv[i].size;return ESP_OK;
+    if(*size<kv[i].size){*size=kv[i].size;return ESP_ERR_NVS_INVALID_LENGTH;}
+    memcpy(data,kv[i].data,kv[i].size);*size=kv[i].size;return ESP_OK;
+}
+/* Simulates a stored record whose count and blob length disagree. */
+static bool shrink_blob(const char *key,size_t by) {
+    for(size_t i=0;i<kv_count;i++)if(!strcmp(kv[i].key,key)){assert(kv[i].size>by);kv[i].size-=by;return true;}
+    return false;
 }
 static esp_err_t nvs_set_u8(int h,const char *key,uint8_t value) {return kv_set(key,&value,sizeof(value));}
 static esp_err_t nvs_set_u32(int h,const char *key,uint32_t value) {return kv_set(key,&value,sizeof(value));}
@@ -154,10 +160,13 @@ static void setup(bool erase_nvs) {
     netifs_exist=true;check_start_table=false;console_text[0]=0;
     if(erase_nvs){memset(kv,0,sizeof(kv));kv_count=commits=0;}
 }
-static esp_err_t bind_owner(const uint8_t *mac,unsigned last,bool enabled) {
+static esp_err_t bind_owner_if(ts_dhcp_if_t iface,const uint8_t *mac,unsigned last,bool enabled) {
     ts_dhcp_static_binding_t binding={.enabled=enabled};memcpy(binding.mac,mac,6);
     snprintf(binding.ip,sizeof(binding.ip),"10.10.99.%u",last);
-    return ts_dhcp_server_add_static_binding(TS_DHCP_IF_ETH,&binding);
+    return ts_dhcp_server_add_static_binding(iface,&binding);
+}
+static esp_err_t bind_owner(const uint8_t *mac,unsigned last,bool enabled) {
+    return bind_owner_if(TS_DHCP_IF_ETH,mac,last,enabled);
 }
 static unsigned packet(dhcps_t *server,const uint8_t *mac,unsigned type,unsigned current,unsigned request,int expected) {
     dhcps_msg m={.op=1,.htype=1,.hlen=6};memcpy(m.chaddr,mac,6);
@@ -234,6 +243,61 @@ int main(void) {
         unsigned other=discover(b);assert(other>=100&&other<=103&&other!=last);
         char name[80];snprintf(name,sizeof(name),"F_saved_%u_load_before_netif_start_installed_before_first_offer",last);record(name);
     }
+    /* F3: both interfaces must refuse inconsistent stored records and keep the
+     * complete previous table, not just the count. */
+    for(int index=0;index<TS_DHCP_IF_MAX;index++) {
+        ts_dhcp_if_t iface=(ts_dhcp_if_t)index;
+        const char *count_key=index?NVS_KEY_ETH_BIND_CNT:NVS_KEY_AP_BIND_CNT;
+        const char *blob_key=index?NVS_KEY_ETH_BINDINGS:NVS_KEY_AP_BINDINGS;
+        const char *tag=index?"eth":"ap";
+        ts_dhcp_static_binding_t before[TS_DHCP_MAX_STATIC_BINDINGS];size_t before_count;char name[80];
+        ts_dhcps_binding_table_t kept=servers[index].ts_bindings;
+
+        setup(true);assert(bind_owner_if(iface,a,101,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+        assert(ts_dhcp_server_get_static_bindings(iface,before,TS_DHCP_MAX_STATIC_BINDINGS,&before_count)==ESP_OK);
+        kept=servers[index].ts_bindings;
+        assert(nvs_set_u8(0,count_key,(uint8_t)(TS_DHCP_MAX_STATIC_BINDINGS+1))==ESP_OK);
+        assert(ts_dhcp_server_load_config()==ESP_ERR_INVALID_SIZE);
+        assert(!memcmp(&kept,&servers[index].ts_bindings,sizeof(kept)));
+        assert(s_state.iface[index].static_binding_count==before_count&&
+               !memcmp(before,s_state.iface[index].static_bindings,before_count*sizeof(*before)));
+        snprintf(name,sizeof(name),"F3_%s_count_above_capacity_rejected_current_owner_kept",tag);record(name);
+
+        setup(true);assert(bind_owner_if(iface,a,101,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+        assert(ts_dhcp_server_get_static_bindings(iface,before,TS_DHCP_MAX_STATIC_BINDINGS,&before_count)==ESP_OK);
+        kept=servers[index].ts_bindings;
+        assert(shrink_blob(blob_key,1));
+        assert(ts_dhcp_server_load_config()==ESP_ERR_INVALID_SIZE);
+        assert(!memcmp(&kept,&servers[index].ts_bindings,sizeof(kept)));
+        assert(s_state.iface[index].static_binding_count==before_count&&
+               !memcmp(before,s_state.iface[index].static_bindings,before_count*sizeof(*before)));
+        snprintf(name,sizeof(name),"F3_%s_short_blob_rejected_current_owner_kept",tag);record(name);
+
+        setup(true);assert(bind_owner_if(iface,a,101,true)==ESP_OK);
+        assert(bind_owner_if(iface,dmac,102,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+        assert(ts_dhcp_server_get_static_bindings(iface,before,TS_DHCP_MAX_STATIC_BINDINGS,&before_count)==ESP_OK&&before_count==2);
+        kept=servers[index].ts_bindings;
+        assert(nvs_set_u8(0,count_key,1)==ESP_OK);
+        assert(ts_dhcp_server_load_config()==ESP_ERR_NVS_INVALID_LENGTH);
+        assert(!memcmp(&kept,&servers[index].ts_bindings,sizeof(kept)));
+        assert(s_state.iface[index].static_binding_count==before_count&&
+               !memcmp(before,s_state.iface[index].static_bindings,before_count*sizeof(*before)));
+        snprintf(name,sizeof(name),"F3_%s_overlong_blob_rejected_current_owner_kept",tag);record(name);
+    }
+
+    /* AP data must not reach ETH when ETH's own record is inconsistent. */
+    setup(true);
+    ts_dhcp_static_binding_t ap={.enabled=true};memcpy(ap.mac,c,6);strcpy(ap.ip,"10.10.99.102");
+    assert(ts_dhcp_server_add_static_binding(TS_DHCP_IF_AP,&ap)==ESP_OK);
+    assert(bind_owner_if(TS_DHCP_IF_ETH,a,101,true)==ESP_OK);assert(ts_dhcp_server_save_config()==ESP_OK);
+    ts_dhcps_binding_table_t eth_kept=servers[1].ts_bindings;size_t eth_kept_count=s_state.iface[1].static_binding_count;
+    assert(shrink_blob(NVS_KEY_ETH_BINDINGS,1));
+    assert(ts_dhcp_server_load_config()==ESP_ERR_INVALID_SIZE);
+    assert(!memcmp(&eth_kept,&servers[1].ts_bindings,sizeof(eth_kept))&&s_state.iface[1].static_binding_count==eth_kept_count);
+    for(size_t i=0;i<servers[1].ts_bindings.count;i++)assert(servers[1].ts_bindings.entries[i].ip!=ip(102).addr);
+    assert(s_state.iface[0].static_binding_count==1&&servers[0].ts_bindings.count==1);
+    record("F3_ap_candidate_does_not_leak_into_eth");
+
     setup(true);assert(ts_dhcp_server_save_config()==ESP_OK);assert(bind_owner(a,101,true)==ESP_OK);
     assert(ts_dhcp_server_load_config()==ESP_OK);assert(eth()->ts_bindings.count==0&&s_state.iface[1].static_binding_count==0);
     assert(discover(b)==100);assert(discover(c)==101);record("F_loading_saved_empty_table_clears_old_ownership");

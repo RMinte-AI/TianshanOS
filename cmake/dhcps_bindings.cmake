@@ -9,7 +9,9 @@ execute_process(
     ERROR_VARIABLE bindings_error
 )
 if(NOT bindings_result EQUAL 0)
-    message(FATAL_ERROR "DHCP address ownership unavailable: ${bindings_error}")
+    # Generator is verified against ESP-IDF 5.5.2; the message below names the
+    # path or anchor that failed, so other SDKs produce an accurate diagnosis.
+    message(FATAL_ERROR "DHCP address ownership unavailable (verified against ESP-IDF 5.5.2): ${bindings_error}")
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${bindings_tool}" "${bindings_headers}/ts_dhcps_binding_table.h"

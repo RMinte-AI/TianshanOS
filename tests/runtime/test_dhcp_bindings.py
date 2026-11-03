@@ -48,11 +48,13 @@ typedef int esp_err_t;
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_INVALID_ARG 0x102
+#define ESP_ERR_INVALID_SIZE 0x104
 #define ESP_ERR_INVALID_STATE 0x103
 #define ESP_ERR_NOT_FOUND 0x105
 #define ESP_ERR_NO_MEM 0x101
 #define ESP_ERR_NOT_SUPPORTED 0x106
 #define ESP_ERR_NVS_NOT_FOUND 0x1102
+#define ESP_ERR_NVS_INVALID_LENGTH 0x110c
 #define ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED 0x5002
 ''')
     (stubs / 'esp_netif.h').write_text('''#pragma once
@@ -73,7 +75,7 @@ typedef struct esp_netif_obj {struct dhcps_t *dhcps;esp_netif_ip_info_t *ip_info
     state_end = project.index('static ts_dhcp_module_state_t s_state = {0};')
     defines = '\n'.join(line for line in project.splitlines() if line.startswith('#define NVS_'))
     (output / 'project_types.inc').write_text(defines + '\n' + project[state_start:state_end])
-    project_names = ['set_default_config', 'get_netif_for_iface', 'apply_config_to_netif', 'install_static_bindings', 'commit_static_bindings',
+    project_names = ['set_default_config', 'get_netif_for_iface', 'apply_config_to_netif', 'install_static_bindings', 'commit_static_bindings', 'restore_static_bindings',
                      'ts_dhcp_server_add_static_binding', 'ts_dhcp_server_remove_static_binding', 'ts_dhcp_server_get_static_bindings',
                      'ts_dhcp_server_clear_static_bindings', 'ts_dhcp_server_save_config', 'ts_dhcp_server_load_config',
                      'ts_dhcp_server_start', 'ts_dhcp_server_stop', 'ts_dhcp_server_is_initialized', 'ts_dhcp_mac_str_to_array']
@@ -89,21 +91,32 @@ typedef struct esp_netif_obj {struct dhcps_t *dhcps;esp_netif_ip_info_t *ip_info
     with (output / 'observations.jsonl').open('w') as log, (output / 'stderr.log').open('w') as err:
         subprocess.run([str(output / 'dhcp-bindings')], stdout=log, stderr=err, check=True, timeout=30)
     # A changed SDK must fail generation explicitly, with no old-source fallback.
+    # The last two cases guard dependencies the patches rely on but do not touch.
     drift_results = []
     relative_sources = ['components/lwip/apps/dhcpserver/dhcpserver.c', 'components/esp_netif/lwip/esp_netif_lwip.c']
-    markers = ['    bool has_declined_ip;', 'struct array_mac_ip_t {']
-    for changed, marker in zip(relative_sources, markers):
+    drift_cases = [
+        (relative_sources[0], '    bool has_declined_ip;', '/* fixture changed SDK anchor */'),
+        (relative_sources[1], 'struct array_mac_ip_t {', '/* fixture changed SDK anchor */'),
+        (relative_sources[0], 'state = parse_msg(dhcps, pmsg_dhcps, tlen - 240);',
+         'state = parse_msg(dhcps, pmsg_dhcps, tlen - 236);'),
+        (relative_sources[0], 'parse_options(dhcps, &m->options[4], len)',
+         'parse_options(dhcps, &m->options[8], len)'),
+    ]
+    for changed, old, new in drift_cases:
         with tempfile.TemporaryDirectory(prefix='ts-dhcp-sdk-drift-') as tmp:
             clone = Path(tmp) / 'sdk'
             for relative in relative_sources:
                 target = clone / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 content = (idf / relative).read_text()
-                target.write_text(content.replace(marker, '/* fixture changed SDK anchor */', 1) if relative == changed else content)
+                if relative == changed:
+                    assert old in content, old
+                    content = content.replace(old, new, 1)
+                target.write_text(content)
             result = subprocess.run(['python3', str(ROOT / 'tools/prepare_dhcps_bindings.py'), '--idf-dir', str(clone), '--output', str(Path(tmp) / 'out')], capture_output=True, text=True)
             assert result.returncode != 0 and 'SDK DHCP source changed' in result.stderr
             assert not (Path(tmp) / 'out/dhcpserver.c').exists()
-            drift_results.append(dict(changed=changed, returncode=result.returncode, passed=True))
+            drift_results.append(dict(changed=changed, marker=old[:48], returncode=result.returncode, passed=True))
     (output / 'generator-drift.json').write_text(json.dumps(drift_results, indent=2))
     sources = [ROOT / 'components/ts_net/src/ts_dhcp_server.c', ROOT / 'tools/prepare_dhcps_bindings.py',
                generated / 'dhcpserver.c', generated / 'esp_netif_lwip.c']

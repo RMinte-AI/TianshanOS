@@ -10,6 +10,14 @@ def replace_once(source, old, new):
     return source.replace(old, new, 1)
 
 
+def require_once(source, needle, what):
+    """Checks a dependency the patches rely on without changing anything.
+    Refuses to generate against an SDK whose contract drifted."""
+    if source.count(needle) != 1:
+        raise ValueError('SDK DHCP source changed at: ' + what + ' [' + needle[:80] + ']')
+    return source
+
+
 DHCPS_HELPERS = r'''
 /* Project address ownership, updated only on the TCP/IP thread. The lease list
  * remains owned by the SDK: normal renewal, RELEASE and expiry are unchanged. */
@@ -133,6 +141,12 @@ esp_err_t ts_netif_dhcps_replace_bindings(esp_netif_t *netif,
 def prepare(idf_dir, output):
     dhcps = (idf_dir / 'components/lwip/apps/dhcpserver/dhcpserver.c').read_text()
     netif = (idf_dir / 'components/esp_netif/lwip/esp_netif_lwip.c').read_text()
+    # The patches assume two SDK contracts that they do not otherwise touch:
+    # parse_msg receives the length after the fixed header, and option parsing
+    # starts at m->options[4].  Verify both before generating anything.
+    require_once(dhcps, 'state = parse_msg(dhcps, pmsg_dhcps, tlen - 240);',
+                 'message length passed to parse_msg')
+    require_once(dhcps, 'parse_options(dhcps, &m->options[4], len)', 'option start')
     dhcps = replace_once(dhcps, '#include "dhcpserver/dhcpserver.h"',
                          '#include "dhcpserver/dhcpserver.h"\n#include "ts_dhcps_binding_table.h"')
     dhcps = replace_once(dhcps, '    bool has_declined_ip;\n};',

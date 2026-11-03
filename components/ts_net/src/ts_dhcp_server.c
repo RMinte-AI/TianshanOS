@@ -373,6 +373,28 @@ static esp_err_t commit_static_bindings(ts_dhcp_if_t iface,
     return ESP_OK;
 }
 
+/* Restores one interface's saved ownership table. A count above capacity, or a
+ * blob whose stored length disagrees with that count, means the record is
+ * inconsistent: the interface keeps its current ownership instead of committing
+ * a partially filled candidate. */
+static esp_err_t restore_static_bindings(nvs_handle_t handle, ts_dhcp_if_t iface,
+                                         const char *count_key, const char *blob_key,
+                                         ts_dhcp_static_binding_t *candidate, size_t capacity)
+{
+    uint8_t count = 0;
+    esp_err_t ret = nvs_get_u8(handle, count_key, &count);
+    if (ret != ESP_OK) return ESP_OK;
+    if (count > capacity) return ESP_ERR_INVALID_SIZE;
+    if (count == 0) return commit_static_bindings(iface, NULL, 0);
+
+    const size_t expected = count * sizeof(*candidate);
+    size_t actual = expected;
+    ret = nvs_get_blob(handle, blob_key, candidate, &actual);
+    if (ret != ESP_OK) return ret;
+    if (actual != expected) return ESP_ERR_INVALID_SIZE;
+    return commit_static_bindings(iface, candidate, count);
+}
+
 /* WiFi AP 站点连接/断开事件处理 */
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
@@ -999,15 +1021,11 @@ esp_err_t ts_dhcp_server_load_config(void)
     nvs_get_str(handle, NVS_KEY_AP_DNS, cfg->pool.dns1, &len);
     nvs_get_u32(handle, NVS_KEY_AP_LEASE, &cfg->lease_time_min);
     
-    /* 加载 AP 静态绑定：包括已保存的空表，失败保留现有归属。 */
-    uint8_t ap_bind_cnt = 0;
-    if (nvs_get_u8(handle, NVS_KEY_AP_BIND_CNT, &ap_bind_cnt) == ESP_OK) {
-        if (ap_bind_cnt > TS_DHCP_MAX_STATIC_BINDINGS) ap_bind_cnt = TS_DHCP_MAX_STATIC_BINDINGS;
-        len = ap_bind_cnt * sizeof(ts_dhcp_static_binding_t);
-        ret = ap_bind_cnt ? nvs_get_blob(handle, NVS_KEY_AP_BINDINGS, candidate, &len) : ESP_OK;
-        if (ret == ESP_OK) ret = commit_static_bindings(TS_DHCP_IF_AP, candidate, ap_bind_cnt);
-        if (ret != ESP_OK && binding_result == ESP_OK) binding_result = ret;
-    }
+    /* 加载 AP 静态绑定：包括已保存的空表，记录不一致时保留现有归属。 */
+    ret = restore_static_bindings(handle, TS_DHCP_IF_AP, NVS_KEY_AP_BIND_CNT,
+                                  NVS_KEY_AP_BINDINGS, candidate,
+                                  TS_DHCP_MAX_STATIC_BINDINGS);
+    if (ret != ESP_OK && binding_result == ESP_OK) binding_result = ret;
     /* 加载 ETH 接口配置 */
     cfg = &s_state.iface[TS_DHCP_IF_ETH].config;
     if (nvs_get_u8(handle, NVS_KEY_ETH_ENABLED, &enabled) == ESP_OK) {
@@ -1026,15 +1044,11 @@ esp_err_t ts_dhcp_server_load_config(void)
     nvs_get_str(handle, NVS_KEY_ETH_DNS, cfg->pool.dns1, &len);
     nvs_get_u32(handle, NVS_KEY_ETH_LEASE, &cfg->lease_time_min);
     
-    /* 加载 ETH 静态绑定：包括已保存的空表，失败保留现有归属。 */
-    uint8_t eth_bind_cnt = 0;
-    if (nvs_get_u8(handle, NVS_KEY_ETH_BIND_CNT, &eth_bind_cnt) == ESP_OK) {
-        if (eth_bind_cnt > TS_DHCP_MAX_STATIC_BINDINGS) eth_bind_cnt = TS_DHCP_MAX_STATIC_BINDINGS;
-        len = eth_bind_cnt * sizeof(ts_dhcp_static_binding_t);
-        ret = eth_bind_cnt ? nvs_get_blob(handle, NVS_KEY_ETH_BINDINGS, candidate, &len) : ESP_OK;
-        if (ret == ESP_OK) ret = commit_static_bindings(TS_DHCP_IF_ETH, candidate, eth_bind_cnt);
-        if (ret != ESP_OK && binding_result == ESP_OK) binding_result = ret;
-    }
+    /* 加载 ETH 静态绑定：包括已保存的空表，记录不一致时保留现有归属。 */
+    ret = restore_static_bindings(handle, TS_DHCP_IF_ETH, NVS_KEY_ETH_BIND_CNT,
+                                  NVS_KEY_ETH_BINDINGS, candidate,
+                                  TS_DHCP_MAX_STATIC_BINDINGS);
+    if (ret != ESP_OK && binding_result == ESP_OK) binding_result = ret;
     xSemaphoreGive(s_state.mutex);
     
     nvs_close(handle);
