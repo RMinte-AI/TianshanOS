@@ -262,24 +262,44 @@ static esp_err_t api_led_set(const cJSON *params, ts_api_result_t *result)
         return ESP_ERR_INVALID_ARG;
     }
     
-    // Get base layer (layer 0) for direct LED control
-    // For simplicity, we'll use device clear and direct pixel setting
+    uint16_t total = ts_led_device_get_count(dev);
     uint16_t start = 0;
-    uint16_t count = ts_led_device_get_count(dev);
-    
-    if (index_param && cJSON_IsNumber(index_param)) {
-        start = (uint16_t)cJSON_GetNumberValue(index_param);
-        count = 1;
+    uint16_t count = index_param ? 1 : total;
+
+    /* Validate the complete range before stopping animation or changing pixels. */
+    if ((index_param && (!cJSON_IsNumber(index_param) ||
+                         !(index_param->valuedouble >= 0 && index_param->valuedouble < total) ||
+                         index_param->valuedouble != index_param->valueint)) ||
+        (count_param && (!cJSON_IsNumber(count_param) ||
+                         !(count_param->valuedouble > 0 && count_param->valuedouble <= total) ||
+                         count_param->valuedouble != count_param->valueint))) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "Invalid LED range");
+        return ESP_ERR_INVALID_ARG;
     }
-    
-    if (count_param && cJSON_IsNumber(count_param)) {
-        count = (uint16_t)cJSON_GetNumberValue(count_param);
+    if (index_param) start = (uint16_t)index_param->valueint;
+    if (count_param) count = (uint16_t)count_param->valueint;
+    if (count == 0 || count > total - start) {
+        ts_api_result_error(result, TS_API_ERR_INVALID_ARG, "LED range out of bounds");
+        return ESP_ERR_INVALID_ARG;
     }
-    
-    // Use layer API if available, otherwise use simple fill
-    // For now, create a temporary approach using device clear + fill
-    // In production, you'd want to expose layer handles through the device
-    
+
+    ts_led_layer_t layer = ts_led_layer_get(dev, 0);
+    if (!layer) {
+        ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to get layer");
+        return ESP_FAIL;
+    }
+    ts_led_animation_stop(layer);
+    esp_err_t ret = ts_led_fill_range(layer, start, count, color);
+    if (ret != ESP_OK) {
+        ts_api_result_error(result, TS_API_ERR_HARDWARE, "Failed to set color");
+        return ret;
+    }
+    if (start == 0 && count == total) {
+        ts_led_preset_set_current_animation(device_param->valuestring, "solid", 50);
+        ts_led_preset_set_current_color(device_param->valuestring, color);
+    }
+    ts_led_device_set_enabled(dev, true);
+
     cJSON *data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "device", device_param->valuestring);
     cJSON_AddNumberToObject(data, "start", start);

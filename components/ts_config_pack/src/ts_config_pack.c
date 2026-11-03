@@ -130,14 +130,11 @@ typedef struct {
 /*===========================================================================*/
 
 static bool s_initialized = false;
-static char s_device_fingerprint[CERT_FINGERPRINT_LEN + 1] = {0};
 
 /*===========================================================================*/
 /*                          Forward Declarations                              */
 /*===========================================================================*/
 
-static esp_err_t compute_cert_fingerprint(const char *cert_pem, size_t cert_len,
-                                           char *fingerprint, size_t fp_len);
 static ts_config_pack_result_t parse_tscfg_json(const char *json, size_t len,
                                                   cJSON **root,
                                                   ts_config_pack_crypto_params_t *params,
@@ -224,33 +221,7 @@ esp_err_t ts_config_pack_init(void)
         return ESP_OK;
     }
     
-    /* 获取设备证书指纹 - 使用堆分配避免栈溢出 */
-    char *cert_pem = TS_MALLOC_PSRAM(TS_CERT_PEM_MAX_LEN);
-    if (!cert_pem) {
-        ESP_LOGE(TAG, "Failed to allocate cert buffer");
-        return ESP_ERR_NO_MEM;
-    }
-    size_t cert_len = TS_CERT_PEM_MAX_LEN;
-    
-    esp_err_t ret = ts_cert_get_certificate(cert_pem, &cert_len);
-    if (ret != ESP_OK) {
-        free(cert_pem);
-        ESP_LOGW(TAG, "No device certificate, config pack import disabled");
-        /* 没有证书也可以初始化，但无法解密 */
-        s_initialized = true;
-        return ESP_OK;
-    }
-    
-    ret = compute_cert_fingerprint(cert_pem, cert_len, 
-                                    s_device_fingerprint, sizeof(s_device_fingerprint));
-    free(cert_pem);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to compute certificate fingerprint");
-        return ret;
-    }
-    
-    ESP_LOGI(TAG, "Config pack system initialized, device fingerprint: %.16s...", 
-             s_device_fingerprint);
+    ESP_LOGI(TAG, "Config pack system initialized");
     s_initialized = true;
     return ESP_OK;
 }
@@ -337,12 +308,12 @@ ts_config_pack_result_t ts_config_pack_load_mem(
         return TS_CONFIG_PACK_ERR_NOT_INIT;
     }
     
-    /* 检查设备是否有私钥可用于解密 */
-    if (s_device_fingerprint[0] == '\0') {
-        ESP_LOGE(TAG, "No device certificate, cannot decrypt");
-        return TS_CONFIG_PACK_ERR_RECIPIENT;
+    char device_fingerprint[CERT_FINGERPRINT_LEN + 1];
+    esp_err_t identity_ret = ts_config_pack_get_cert_fingerprint(device_fingerprint, sizeof(device_fingerprint));
+    if (identity_ret != ESP_OK) {
+        return identity_ret == ESP_ERR_NO_MEM ? TS_CONFIG_PACK_ERR_NO_MEM : TS_CONFIG_PACK_ERR_RECIPIENT;
     }
-    
+
     cJSON *root = NULL;
     ts_config_pack_crypto_params_t params = {0};
     char *payload_b64 = NULL;
@@ -360,9 +331,9 @@ ts_config_pack_result_t ts_config_pack_load_mem(
     }
     
     /* 验证接收方指纹 */
-    if (strcmp(params.recipient_fingerprint, s_device_fingerprint) != 0) {
+    if (strcmp(params.recipient_fingerprint, device_fingerprint) != 0) {
         ESP_LOGE(TAG, "Config pack not intended for this device");
-        ESP_LOGE(TAG, "Device fingerprint: %s", s_device_fingerprint);
+        ESP_LOGE(TAG, "Device fingerprint: %s", device_fingerprint);
         ESP_LOGE(TAG, "Pack fingerprint:   %s", params.recipient_fingerprint);
         result = TS_CONFIG_PACK_ERR_RECIPIENT;
         goto cleanup;
@@ -526,7 +497,7 @@ ts_config_pack_result_t ts_config_pack_create(
     
     /* 计算接收方证书指纹 */
     char recipient_fingerprint[CERT_FINGERPRINT_LEN + 1];
-    ret = compute_cert_fingerprint(recipient_pem, recipient_length + 1,
+    ret = ts_config_pack_fingerprint_certificate(recipient_pem, recipient_length + 1,
                                     recipient_fingerprint, sizeof(recipient_fingerprint));
     free(recipient_pem);
     if (ret != ESP_OK) {
@@ -991,10 +962,17 @@ ts_config_pack_result_t ts_config_pack_import(
         return result;
     }
     
+    char device_fingerprint[CERT_FINGERPRINT_LEN + 1];
+    esp_err_t identity_ret = ts_config_pack_get_cert_fingerprint(device_fingerprint, sizeof(device_fingerprint));
+    if (identity_ret != ESP_OK) {
+        cJSON_Delete(root);
+        return identity_ret == ESP_ERR_NO_MEM ? TS_CONFIG_PACK_ERR_NO_MEM : TS_CONFIG_PACK_ERR_RECIPIENT;
+    }
+
     /* 验证接收方指纹 - 必须是本设备 */
-    if (strcmp(params.recipient_fingerprint, s_device_fingerprint) != 0) {
+    if (strcmp(params.recipient_fingerprint, device_fingerprint) != 0) {
         ESP_LOGE(TAG, "Config pack not intended for this device");
-        ESP_LOGE(TAG, "Device fingerprint: %s", s_device_fingerprint);
+        ESP_LOGE(TAG, "Device fingerprint: %s", device_fingerprint);
         ESP_LOGE(TAG, "Pack fingerprint:   %s", params.recipient_fingerprint);
         cJSON_Delete(root);
         return TS_CONFIG_PACK_ERR_RECIPIENT;
@@ -1194,10 +1172,17 @@ ts_config_pack_result_t ts_config_pack_validate_file(
         return result;
     }
     
+    char device_fingerprint[CERT_FINGERPRINT_LEN + 1];
+    esp_err_t identity_ret = ts_config_pack_get_cert_fingerprint(device_fingerprint, sizeof(device_fingerprint));
+    if (identity_ret != ESP_OK) {
+        cJSON_Delete(root);
+        return identity_ret == ESP_ERR_NO_MEM ? TS_CONFIG_PACK_ERR_NO_MEM : TS_CONFIG_PACK_ERR_RECIPIENT;
+    }
+
     /* 验证接收方指纹 - 必须是本设备 */
-    if (strcmp(params.recipient_fingerprint, s_device_fingerprint) != 0) {
+    if (strcmp(params.recipient_fingerprint, device_fingerprint) != 0) {
         ESP_LOGE(TAG, "Config pack not intended for this device");
-        ESP_LOGE(TAG, "Device fingerprint: %s", s_device_fingerprint);
+        ESP_LOGE(TAG, "Device fingerprint: %s", device_fingerprint);
         ESP_LOGE(TAG, "Pack fingerprint:   %s", params.recipient_fingerprint);
         cJSON_Delete(root);
         return TS_CONFIG_PACK_ERR_RECIPIENT;
@@ -1494,13 +1479,21 @@ esp_err_t ts_config_pack_get_cert_fingerprint(char *fingerprint, size_t len)
         return ESP_ERR_INVALID_ARG;
     }
     
-    if (!s_initialized || s_device_fingerprint[0] == '\0') {
+    if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    
-    strncpy(fingerprint, s_device_fingerprint, len - 1);
-    fingerprint[len - 1] = '\0';
-    return ESP_OK;
+
+    char *cert_pem = TS_MALLOC_PSRAM(TS_CERT_PEM_MAX_LEN);
+    if (!cert_pem) return ESP_ERR_NO_MEM;
+    size_t cert_len = TS_CERT_PEM_MAX_LEN;
+    esp_err_t ret = ts_cert_get_certificate(cert_pem, &cert_len);
+    if (ret == ESP_OK) {
+        ret = ts_config_pack_fingerprint_certificate(cert_pem, cert_len, fingerprint, len);
+    } else {
+        ESP_LOGE(TAG, "Failed to read device certificate for pack identity: 0x%x", (unsigned)ret);
+    }
+    free(cert_pem);
+    return ret;
 }
 
 /*===========================================================================*/
@@ -1513,7 +1506,7 @@ esp_err_t ts_config_pack_get_cert_fingerprint(char *fingerprint, size_t len)
  * 注意：只计算实际 PEM 内容的哈希，去除尾部空白和 null 终止符，
  * 确保相同证书无论复制方式如何都能得到一致的指纹。
  */
-static esp_err_t compute_cert_fingerprint(const char *cert_pem, size_t cert_len,
+esp_err_t ts_config_pack_fingerprint_certificate(const char *cert_pem, size_t cert_len,
                                            char *fingerprint, size_t fp_len)
 {
     if (!cert_pem || !fingerprint || fp_len < CERT_FINGERPRINT_LEN + 1) {
@@ -1839,7 +1832,7 @@ ts_config_pack_result_t ts_config_pack_load_verified_mem(const char *text, size_
     }
     char recipient[65], hash[65];
     unsigned char digest[32];
-    if (compute_cert_fingerprint(snapshot.certificate, strlen(snapshot.certificate) + 1,
+    if (ts_config_pack_fingerprint_certificate(snapshot.certificate, strlen(snapshot.certificate) + 1,
                                  recipient, sizeof recipient) != ESP_OK ||
         ts_crypto_hash(TS_HASH_SHA256, text, length, digest, sizeof digest) != ESP_OK ||
         ts_crypto_hex_encode(digest, sizeof digest, hash, sizeof hash) != ESP_OK) {

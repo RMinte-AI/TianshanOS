@@ -115,7 +115,7 @@ static esp_err_t api_config_pack_export_cert(const cJSON *params, ts_api_result_
     
     /* 添加指纹 */
     char fingerprint[65] = {0};
-    if (ts_config_pack_get_cert_fingerprint(fingerprint, sizeof(fingerprint)) == ESP_OK) {
+    if (ts_config_pack_fingerprint_certificate(cert_pem, cert_len, fingerprint, sizeof(fingerprint)) == ESP_OK) {
         cJSON_AddStringToObject(data, "fingerprint", fingerprint);
     }
     
