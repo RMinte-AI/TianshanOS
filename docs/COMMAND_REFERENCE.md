@@ -1554,6 +1554,8 @@ net --reset
 net --status --json
 ```
 
+以太网状态中的 DNS 是接口读回的值，不保证等于 DHCP 客户端收到的 DNS。客户端的主 DNS 由已生效的 DHCP 地址池 DNS 决定；池 DNS 留空时，当前构建下发 TianShanOS 在该接口上的 IP 地址。修改 `net --set --dns` 不会直接替换客户端的主 DNS；要更改客户端 DNS，请设置 DHCP 池的 DNS 并重启 DHCP 服务应用。
+
 ### 配置持久化
 
 - `net --set` 修改的配置是**临时的**，重启后丢失

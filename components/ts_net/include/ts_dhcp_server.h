@@ -219,21 +219,21 @@ esp_err_t ts_dhcp_server_apply_eth_network(const esp_netif_ip_info_t *host, cons
  * @brief 获取 DHCP 服务器状态
  * @param iface 接口类型
  * @param status 状态结构体指针
- * @return ESP_OK 成功
+ * @return ESP_OK 成功；SDK 查询失败返回实际错误，此时不可使用 status。
  */
 esp_err_t ts_dhcp_server_get_status(ts_dhcp_if_t iface, ts_dhcp_status_t *status);
 
 /**
  * @brief 获取服务器状态枚举
  * @param iface 接口类型
- * @return 状态枚举
+ * @return SDK 实际运行状态；查询失败返回 ERROR，详细错误使用 get_status。
  */
 ts_dhcp_server_state_t ts_dhcp_server_get_state(ts_dhcp_if_t iface);
 
 /**
  * @brief 检查服务器是否运行中
  * @param iface 接口类型
- * @return true 运行中
+ * @return true 确认运行；false 表示停止或查询失败，需区分时使用 get_status。
  */
 bool ts_dhcp_server_is_running(ts_dhcp_if_t iface);
 

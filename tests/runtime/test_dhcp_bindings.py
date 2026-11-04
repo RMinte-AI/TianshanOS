@@ -34,7 +34,6 @@ def network_sources(output, manager, driver, network, console):
     (output / 'manager_types.inc').write_text(manager_identifiers(defines + '\n' + manager[begin:end]))
     (output / 'manager_core.inc').write_text(manager_identifiers('\n\n'.join(sorted(
         (function(manager, n) for n in manager_names if re.search(r'^(?:static )?[\w *]+\b' + n + r'\([^;]*?\)\s*\{', manager, re.M)), key=manager.index))))
-    (output / 'eth_constants.inc').write_text('\n'.join(line for line in driver.splitlines() if line.startswith('#define ETH_')) + '\n')
     (output / 'eth_creation.inc').write_text(function(driver, 'create_eth_netif_with_dhcps'))
     init = function(driver, 'ts_eth_init')
     creation = re.findall(r'^\s*s_eth_netif = create_eth_netif_with_dhcps\([^;]*;', init, re.M)
@@ -44,6 +43,16 @@ def network_sources(output, manager, driver, network, console):
         ['dhcp_start_task', 'eth_event_handler', 'ts_eth_start', 'ts_eth_stop']))
     (output / 'network_setter.inc').write_text('\n'.join(function(network, n) for n in ['get_netif', 'ts_net_set_ip_info', 'ts_net_get_status']))
     (output / 'network_cli.inc').write_text(function(console, 'do_net_set') + '\n' + function(console, 'do_net_ip'))
+
+
+def project_sources(output, project, names):
+    state_start = project.index('/** 事件回调节点 */')
+    state_end = project.index('static ts_dhcp_module_state_t s_state = {0};')
+    defines = '\n'.join(line for line in project.splitlines() if line.startswith(('#define NVS_', '#define DHCP_EVENT_')))
+    event_end = project.index('} dhcp_ip_event_t;') + len('} dhcp_ip_event_t;')
+    event_start = project.rfind('typedef struct {', 0, event_end)
+    (output / 'project_types.inc').write_text(defines + '\n' + project[event_start:event_end] + '\n' + project[state_start:state_end])
+    (output / 'project_core.inc').write_text('\n\n'.join(sorted((function(project, n) for n in names), key=project.index)))
 
 
 def run(output, idf):
@@ -110,15 +119,9 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
     bridge_names = ['esp_netif_api_cb', 'esp_netif_lwip_ipc_call_msg', 'esp_netif_lwip_ipc_call',
                     'ts_netif_dhcps_replace_bindings_api', 'ts_netif_dhcps_replace_bindings']
     (output / 'bridge_core.inc').write_text('\n\n'.join(function(netif, n) for n in bridge_names))
-    state_start = project.index('/** 事件回调节点 */')
-    state_end = project.index('static ts_dhcp_module_state_t s_state = {0};')
-    defines = '\n'.join(line for line in project.splitlines() if line.startswith(('#define NVS_', '#define DHCP_EVENT_')))
-    event_end = project.index('} dhcp_ip_event_t;') + len('} dhcp_ip_event_t;')
-    event_start = project.rfind('typedef struct {', 0, event_end)
-    (output / 'project_types.inc').write_text(defines + '\n' + project[event_start:event_end] + '\n' + project[state_start:state_end])
     network = (ROOT / 'components/ts_net/src/ts_net.c').read_text()
     (output / 'network_validation.inc').write_text('\n\n'.join(function(network, n) for n in ['ts_net_validate_eth_ip', 'ts_net_validate_eth_config']))
-    project_names = ['validate_network_info', 'apply_candidate_to_host', 'initialize_eth_intent', 'eth_resume_error', 'stop_interface',
+    project_names = ['validate_network_info', 'apply_interface', 'initialize_eth_intent', 'eth_resume_error', 'stop_on_tcpip', 'stop_interface',
                      'ts_dhcp_server_init', 'ts_dhcp_server_eth_suspend', 'ts_dhcp_server_eth_resume', 'ts_dhcp_server_apply_eth_network', 'set_default_config', 'set_interface_defaults', 'same_network_config',
                      'get_netif_for_iface', 'build_binding_table', 'validate_config', 'validate_network',
                      'configure_stopped_netif', 'apply_on_tcpip', 'apply_candidate', 'install_static_bindings',
@@ -127,10 +130,10 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
                      'ts_dhcp_server_clear_static_bindings', 'ts_dhcp_server_save_config', 'ts_dhcp_server_load_config',
                      'ts_dhcp_server_start', 'ts_dhcp_server_stop', 'ts_dhcp_server_restart', 'ts_dhcp_server_set_config',
                      'ts_dhcp_server_set_pool', 'ts_dhcp_server_set_lease_time', 'ts_dhcp_server_reset_config', 'ts_dhcp_server_get_config', 'ts_dhcp_server_get_status',
-                     'ts_dhcp_server_get_restore_error', 'ts_dhcp_server_get_apply_error', 'client_lease_expiry',
+                     'ts_dhcp_server_get_state', 'ts_dhcp_server_is_running', 'ts_dhcp_state_to_str', 'ts_dhcp_server_get_restore_error', 'ts_dhcp_server_get_apply_error', 'client_lease_expiry',
                      'wifi_event_handler', 'ts_dhcp_mac_array_to_str', 'dhcp_event_task', 'ts_dhcp_server_is_initialized', 'ts_dhcp_mac_str_to_array']
-    (output / 'project_core.inc').write_text('\n\n'.join(sorted((function(project, n) for n in project_names), key=project.index)))
-    (output / 'console_core.inc').write_text(function(console, 'do_dhcp_bind') + '\n' + function(console, 'do_dhcp_clear_bindings') + '\n' + function(console, 'do_dhcp_pool'))
+    project_sources(output, project, project_names)
+    (output / 'console_core.inc').write_text('\n'.join(function(console, n) for n in ['state_color', 'format_uptime', 'do_dhcp_list_all', 'do_dhcp_status', 'do_dhcp_bind', 'do_dhcp_clear_bindings', 'do_dhcp_pool']))
     args_start = console.index('static struct {')
     args_end = console.index('} s_dhcp_args;', args_start) + len('} s_dhcp_args;')
     (output / 'console_args.inc').write_text(console[args_start:args_end])
@@ -138,7 +141,9 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
     network_sources(output, (ROOT / 'components/ts_net/src/ts_net_manager.c').read_text(),
         (ROOT / 'components/ts_net/src/ts_eth.c').read_text(), network,
         (ROOT / 'components/ts_console/commands/ts_cmd_net.c').read_text())
-    (output / 'status_api.inc').write_text(function((ROOT / 'components/ts_api/src/ts_api_dhcp.c').read_text(), 'add_recovery_status') + '\n' + function((ROOT / 'components/ts_api/src/ts_api_network.c').read_text(), 'add_eth_config_status'))
+    api = (ROOT / 'components/ts_api/src/ts_api_dhcp.c').read_text()
+    (output / 'dhcp_status_api.inc').write_text('\n'.join(function(api, n) for n in ['iface_name', 'add_recovery_status', 'api_dhcp_status']))
+    (output / 'status_api.inc').write_text(function((ROOT / 'components/ts_api/src/ts_api_network.c').read_text(), 'add_eth_config_status'))
     command = ['cc', '-I' + str(idf / 'components/json/cJSON'), str(idf / 'components/json/cJSON/cJSON.c'), '-std=c11', '-pthread', '-g', '-Wall', '-Wextra', '-Wno-unused-function', '-Wno-unused-parameter',
                '-fsanitize=address,undefined', '-I' + str(stubs), '-I' + str(output),
                '-I' + str(idf / 'components/lwip/include/apps'), '-I' + str(ROOT / 'components/ts_net/include'),
@@ -191,136 +196,13 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
     print('PASS F38 generated SDK + project entry points (ASan/UBSan); evidence:', output)
 
 
-def regression_probes(output, idf):
-    """Run one identical boot probe on original P2, f43 P1 and current functions.
-    Optional: requires local Git history; not needed for ordinary offline CI.
-    """
-    harness = (ROOT / 'tests/runtime/dhcp_bindings/test_bindings.c').read_text()
-    prelude = harness[:harness.index('#include "project_core.inc"')]
-    probe = r'''
-int main(void) {
-    s_state.mutex=&project_mutex;s_state.initialized=true;
-    for(unsigned i=0;i<2;i++) {
-        set_default_config(&s_state.iface[i].config);
-        infos[i]=(esp_netif_ip_info_t){.ip={inet_addr(i?"10.10.99.97":"192.168.4.1")},
-            .netmask={inet_addr("255.255.255.0")},.gw={inet_addr(i?"10.10.99.100":"192.168.4.1")}};
-        netifs[i]=(esp_netif_t){.dhcps=&servers[i],.ip_info=&infos[i],.status=ESP_NETIF_DHCP_INIT,.up=false};
-    }
-    nvs_set_u8(0,NVS_KEY_AP_ENABLED,1);
-    nvs_set_str(0,NVS_KEY_AP_START_IP,"10.10.99.100");nvs_set_str(0,NVS_KEY_AP_END_IP,"10.10.99.103");
-    nvs_set_str(0,NVS_KEY_AP_GATEWAY,"10.10.99.97");nvs_set_str(0,NVS_KEY_AP_NETMASK,"255.255.255.0");
-    nvs_set_str(0,NVS_KEY_AP_DNS,"");nvs_set_u32(0,NVS_KEY_AP_LEASE,120);
-    ts_dhcp_static_binding_t binding={.mac={2,0,0,0,0,1},.ip="10.10.99.50",.enabled=true};
-    nvs_set_blob(0,NVS_KEY_AP_BINDINGS,&binding,sizeof(binding));nvs_set_u8(0,NVS_KEY_AP_BIND_CNT,1);
-    esp_err_t restored=ts_dhcp_server_load_config();
-    if(restored!=ESP_OK||s_state.iface[0].static_binding_count!=1||servers[0].ts_bindings.count!=1) {
-        printf("P2 reproduced: restore=%d memory=%zu SDK=%zu\n",restored,s_state.iface[0].static_binding_count,servers[0].ts_bindings.count);return 10;
-    }
-    interface_up(0);
-    if(netifs[0].status!=ESP_NETIF_DHCP_STARTED) {puts("P1 reproduced: AP up but DHCP remains STOPPED");return 11;}
-    assert(servers[0].ts_bindings.entries[0].ip==inet_addr("10.10.99.50"));
-    puts("PASS same boot probe: restored owner installed and AP DHCP started");return 0;
-}
-'''
-    names = ['validate_network_info', 'apply_candidate_to_host', 'initialize_eth_intent', 'eth_resume_error', 'set_default_config', 'set_interface_defaults', 'same_network_config', 'get_netif_for_iface',
-             'build_binding_table', 'validate_config', 'validate_network', 'configure_stopped_netif',
-             'apply_config_to_netif', 'apply_on_tcpip', 'apply_candidate', 'install_static_bindings',
-             'commit_static_bindings', 'same_bindings', 'restore_error', 'dhcp_nvs_keys', 'read_saved_interface',
-             'restore_static_bindings', 'ts_dhcp_server_load_config']
-    results = []
-    for ref, expected in [('aad8d1a59', 10), ('f43f3b742', 11), ('current', 0)]:
-        project = ((ROOT / 'components/ts_net/src/ts_dhcp_server.c').read_text() if ref == 'current' else
-                   subprocess.check_output(['git', 'show', ref + ':components/ts_net/src/ts_dhcp_server.c'], cwd=ROOT, text=True))
-        directory = output / ('probe-' + ref)
-        directory.mkdir(exist_ok=True)
-        defines = '\n'.join(line for line in project.splitlines() if line.startswith(('#define NVS_', '#define DHCP_EVENT_')))
-        begin = project.index('/** 事件回调节点 */')
-        end = project.index('static ts_dhcp_module_state_t s_state = {0};')
-        event_end = project.index('} dhcp_ip_event_t;') + len('} dhcp_ip_event_t;')
-        event_start = project.rfind('typedef struct {', 0, event_end)
-        (directory / 'project_types.inc').write_text(defines + '\n' + project[event_start:event_end] + '\n' + project[begin:end])
-        functions = []
-        for name in names:
-            if re.search(r'^(?:static )?[\w *]+\b' + name + r'\([^;]*?\)\s*\{', project, re.M):
-                functions.append(function(project, name))
-        (directory / 'old_project_core.inc').write_text('\n\n'.join(sorted(functions, key=project.index)))
-        (directory / 'probe.c').write_text(prelude + '#include "old_project_core.inc"\n' + probe)
-        command = ['cc', '-std=c11', '-pthread', '-g', '-fsanitize=address,undefined',
-                   '-Wno-unused-function', '-Wno-unused-parameter', '-I' + str(directory), '-I' + str(output / 'stubs'),
-                   '-I' + str(output), '-I' + str(idf / 'components/lwip/include/apps'),
-                   '-I' + str(ROOT / 'components/ts_net/include'), '-I' + str(ROOT / 'components/ts_net/private_include'),
-                   str(directory / 'probe.c'), '-o', str(directory / 'probe')]
-        with (directory / 'compile.log').open('w') as log:
-            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
-        result = subprocess.run([str(directory / 'probe')], capture_output=True, text=True, timeout=30)
-        (directory / 'run.log').write_text(result.stdout + result.stderr)
-        assert result.returncode == expected, (ref, expected, result.returncode, result.stdout, result.stderr)
-        results.append(dict(ref=ref, expected_exit=expected, actual_exit=result.returncode, output=result.stdout))
-        print(result.stdout, end='')
-    (output / 'regression-probes.json').write_text(json.dumps(results, indent=2))
-
-
-def eth_boot_regression_probes(output, idf):
-    """Same complete manager/driver/DHCP boot probe before and after the ETH fix."""
-    import shutil
-    harness = (ROOT / 'tests/runtime/dhcp_bindings/test_bindings.c').read_text()
-    harness = harness.replace('int main(void) {', 'int original_suite_main(void) {', 1)
-    harness = '#define ETH_BOOT_REGRESSION 1\n#define check_eth_lifecycle() ((void)0)\n' + harness
-    names = json.loads((output / 'result.json').read_text())['project_functions']
-    results = []
-    for ref, expected, probe in [('c55643827', 12, 'eth_boot_probe'), ('current', 0, 'eth_boot_probe'),
-        ('4abf001a3', 15, 'eth_error_isolation_probe'), ('current', 0, 'eth_error_isolation_probe')]:
-        directory = output / (('eth-probe-' if probe == 'eth_boot_probe' else 'eth-error-probe-') + ref)
-        directory.mkdir(exist_ok=True)
-        for source in output.glob('*.inc'):
-            shutil.copyfile(source, directory / source.name)
-        def read(relative):
-            return ((ROOT / relative).read_text() if ref == 'current' else
-                subprocess.check_output(['git', 'show', ref + ':' + relative], cwd=ROOT, text=True))
-        project = read('components/ts_net/src/ts_dhcp_server.c')
-        defines = '\n'.join(line for line in project.splitlines() if line.startswith(('#define NVS_', '#define DHCP_EVENT_')))
-        begin = project.index('/** 事件回调节点 */')
-        end = project.index('static ts_dhcp_module_state_t s_state = {0};')
-        event_end = project.index('} dhcp_ip_event_t;') + len('} dhcp_ip_event_t;')
-        event_start = project.rfind('typedef struct {', 0, event_end)
-        (directory / 'project_types.inc').write_text(defines + '\n' + project[event_start:event_end] + '\n' + project[begin:end])
-        functions = [function(project, n) for n in names if re.search(r'^(?:static )?[\w *]+\b' + n + r'\([^;]*?\)\s*\{', project, re.M)]
-        core = '\n\n'.join(sorted(functions, key=project.index))
-        if ref == 'c55643827':
-            core += '\nstatic void initialize_eth_intent(void) {}\n'  # Old module has no such initialization step.
-        (directory / 'project_core.inc').write_text(core)
-        network_sources(directory, read('components/ts_net/src/ts_net_manager.c'), read('components/ts_net/src/ts_eth.c'),
-            read('components/ts_net/src/ts_net.c'), read('components/ts_console/commands/ts_cmd_net.c'))
-        (directory / 'probe.c').write_text(harness + '\nint main(void) { return ' + probe + '(); }\n')
-        command = json.loads((output / 'result.json').read_text())['command']
-        command[-3] = str(directory / 'probe.c')
-        command[-1] = str(directory / 'probe')
-        command[command.index('-I' + str(output))] = '-I' + str(directory)
-        command.insert(1, '-I' + str(ROOT / 'tests/runtime/dhcp_bindings'))
-        with (directory / 'compile.log').open('w') as log:
-            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
-        result = subprocess.run([str(directory / 'probe')], capture_output=True, text=True, timeout=30)
-        (directory / 'run.log').write_text(result.stdout + result.stderr)
-        assert result.returncode == expected, (ref, expected, result.returncode, result.stdout, result.stderr)
-        results.append(dict(ref=ref, probe=probe, expected_exit=expected, actual_exit=result.returncode, output=result.stdout))
-        print(result.stdout, end='')
-    (output / 'eth-boot-regression-probes.json').write_text(json.dumps(results, indent=2))
-
-
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path)
-    p.add_argument('--regression-probes', action='store_true', help='Compare original P2/P1 Git revisions with current boot behavior')
     p.add_argument('--idf-dir', type=Path, default=Path(os.environ.get('IDF_PATH', '/Users/massif/esp/v5.5.2/esp-idf')))
     args = p.parse_args()
     if args.output:
         run(args.output, args.idf_dir)
-        if args.regression_probes:
-            regression_probes(args.output, args.idf_dir)
-            eth_boot_regression_probes(args.output, args.idf_dir)
     else:
         with tempfile.TemporaryDirectory(prefix='ts-dhcp-bindings-') as tmp:
             run(Path(tmp), args.idf_dir)
-            if args.regression_probes:
-                regression_probes(Path(tmp), args.idf_dir)
-                eth_boot_regression_probes(Path(tmp), args.idf_dir)

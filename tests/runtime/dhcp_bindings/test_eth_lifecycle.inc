@@ -24,7 +24,6 @@ typedef struct {unsigned flags;const esp_netif_ip_info_t *ip_info;int get_ip_eve
 typedef struct {const esp_netif_inherent_config_t *base;void *driver,*stack;} esp_netif_config_t;
 static esp_netif_t *s_eth_netif;
 static esp_eth_handle_t s_eth_handle=(void*)1;
-static TaskHandle_t s_dhcp_task;
 static unsigned created_count, driver_stops, driver_starts;
 static bool driver_running;
 static esp_netif_ip_info_t created_host;
@@ -67,7 +66,6 @@ static esp_netif_t *esp_netif_new(const esp_netif_config_t *config){
     netifs[1]=(esp_netif_t){.dhcps=&servers[1],.ip_info=&infos[1],.status=ESP_NETIF_DHCP_INIT};
     eth_netif_exists=true;return &netifs[1];
 }
-#include "eth_constants.inc"
 #include "eth_creation.inc"
 esp_err_t ts_eth_init(const ts_eth_config_t *config){
 #include "eth_init_creation.inc"
@@ -138,44 +136,24 @@ static void hardware_reset(void){
     boot_defaults(false);memset(&manager_state,0,sizeof(manager_state));
     s_state.initialized=false;s_state.mutex=NULL;eth_netif_exists=false;s_eth_netif=NULL;s_link_up=false;
     created_count=driver_starts=driver_stops=0;events_count=0;driver_running=false;
-    delayed_count=0;s_dhcp_task=NULL;started_notifications=stopped_notifications=0;
+    delayed_count=0;started_notifications=stopped_notifications=0;
 }
-static int eth_boot_probe(void){
-    setup(true);seed_network("192.168.50.1","192.168.50.254",TS_NET_IP_MODE_STATIC);seed_dhcp_eth("192.168.50");
+/* Shared by ordinary boot acceptance and the optional historical probes. */
+static int boot_eth(bool corrupt){
+    setup(true);
+    const char *prefix=corrupt?"10.10.99":"192.168.50";
+    seed_network(corrupt?"10.10.99.97":"192.168.50.1",corrupt?"10.10.99.100":"192.168.50.254",TS_NET_IP_MODE_STATIC);
+    seed_dhcp_eth(prefix);if(corrupt)assert(shrink_blob(NVS_KEY_ETH_BINDINGS,1));
     hardware_reset();assert(ts_net_manager_init()==ESP_OK);
-    esp_err_t loaded=ts_dhcp_server_init();
-    esp_err_t started=ts_net_manager_start(TS_NET_IF_ETH);deliver_events();run_delayed_task();
-    printf("ETH boot: created=%u host=%08x load=%x start=%x DHCP=%u bindings=%zu\n",
-        created_count,ntohl(created_host.ip.addr),loaded,started,netifs[1].status,servers[1].ts_bindings.count);
-    int result=0;
-    if(created_host.ip.addr!=inet_addr("192.168.50.1"))result=12;
-    else if(loaded!=ESP_OK||started!=ESP_OK||netifs[1].status!=ESP_NETIF_DHCP_STARTED||servers[1].ts_bindings.count!=1)result=13;
-    else if(packet(&servers[1],a,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)!=50)result=14;
-    for(unsigned i=0;i<2;i++)drain(&servers[i]);
-    return result;
+    esp_err_t restored=ts_dhcp_server_init(),started=ts_net_manager_start(TS_NET_IF_ETH);
+    deliver_events();run_delayed_task();
+    if(corrupt)return started!=ESP_OK||!driver_running?15:
+        restored==ESP_OK||netifs[1].status==ESP_NETIF_DHCP_STARTED||ts_dhcp_server_get_restore_error(1)==ESP_OK?16:0;
+    if(created_host.ip.addr!=inet_addr("192.168.50.1"))return 12;
+    if(restored!=ESP_OK||started!=ESP_OK||netifs[1].status!=ESP_NETIF_DHCP_STARTED||servers[1].ts_bindings.count!=1)return 13;
+    return packet(&servers[1],a,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)==50?0:14;
 }
-static int eth_error_isolation_probe(void){
-    setup(true);seed_network("10.10.99.97","10.10.99.100",TS_NET_IP_MODE_STATIC);seed_dhcp_eth("10.10.99");
-    assert(shrink_blob(NVS_KEY_ETH_BINDINGS,1));hardware_reset();
-    assert(ts_net_manager_init()==ESP_OK);esp_err_t restored=ts_dhcp_server_init();
-    esp_err_t started=ts_net_manager_start(TS_NET_IF_ETH);deliver_events();run_delayed_task();
-    printf("ETH error isolation: DHCP restore=%x network start=%x driver=%u DHCP=%u\n",
-        restored,started,driver_running,netifs[1].status);
-    int result=0;
-    if(started!=ESP_OK||!driver_running)result=15;
-    else if(restored==ESP_OK||netifs[1].status==ESP_NETIF_DHCP_STARTED||ts_dhcp_server_get_restore_error(1)==ESP_OK)result=16;
-    for(unsigned i=0;i<2;i++)drain(&servers[i]);return result;
-}
-#ifndef ETH_BOOT_REGRESSION
-static void prepare_custom_boot(void){
-    setup(true);seed_network("192.168.50.1","192.168.50.254",TS_NET_IP_MODE_STATIC);seed_dhcp_eth("192.168.50");
-    hardware_reset();assert(ts_net_manager_init()==ESP_OK);
-    assert(created_count==1&&created_host.ip.addr==inet_addr("192.168.50.1"));
-    assert(ts_dhcp_server_init()==ESP_OK);
-    assert(servers[1].ts_bindings.count==1&&s_state.eth_want_running);
-    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
-    assert(netifs[1].status==ESP_NETIF_DHCP_STARTED);
-}
+static void prepare_custom_boot(void){assert(boot_eth(false)==0);}
 static ts_net_if_config_t network_candidate(const char *host,const char *gateway){
     ts_net_if_config_t config;assert(ts_net_manager_get_config(TS_NET_IF_ETH,&config)==ESP_OK);
     snprintf(config.static_ip.ip,sizeof(config.static_ip.ip),"%s",host);
@@ -189,10 +167,7 @@ static void prepare_pool(const char *prefix){
     assert(ts_dhcp_server_set_config(1,&config)==ESP_OK);
 }
 static void check_eth_lifecycle(void){
-    setup(true);seed_network("10.10.99.97","10.10.99.100",TS_NET_IP_MODE_STATIC);seed_dhcp_eth("10.10.99");
-    assert(shrink_blob(NVS_KEY_ETH_BINDINGS,1));hardware_reset();
-    assert(ts_net_manager_init()==ESP_OK&&ts_dhcp_server_init()!=ESP_OK);
-    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
+    assert(boot_eth(true)==0);
     assert(driver_running&&s_link_up&&netifs[1].status!=ESP_NETIF_DHCP_STARTED);
     ts_dhcp_status_t blocked;assert(ts_dhcp_server_get_status(1,&blocked)==ESP_OK&&blocked.restore_error!=ESP_OK);
     assert(servers[1].ts_bindings.count==0&&ts_dhcp_server_save_config()!=ESP_OK);
@@ -202,26 +177,25 @@ static void check_eth_lifecycle(void){
     assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
     assert(driver_running&&s_link_up&&netifs[1].status!=ESP_NETIF_DHCP_STARTED);
     assert(ts_dhcp_server_get_status(1,&blocked)==ESP_OK&&blocked.apply_error==ESP_ERR_INVALID_ARG);
-    unsigned before=apply_dispatches;link_down();link_up();run_delayed_task();assert(apply_dispatches==before);
+    link_down();unsigned before=apply_dispatches;link_up();run_delayed_task();assert(apply_dispatches==before);
     record("ETH_valid_custom_host_without_matching_DHCP_pool_is_reachable_failed_resume_not_retried");
     prepare_custom_boot();
-    assert(packet(&servers[1],a,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)==50);
     assert(servers[1].server_address.addr==inet_addr("192.168.50.1"));
     assert(option_value(&servers[1],51,true)==htonl(7200));
     assert(created_host.ip.addr!=inet_addr("192.168.50.254")); /* Pool gateway is not host IP. */
     record("ETH_P1_real_manager_create_restore_start_first_OFFER_custom_subnet");
 
-    link_down();assert(s_state.eth_want_running&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
-    assert(ts_dhcp_server_load_config()==ESP_OK);assert(s_state.eth_want_running);
+    link_down();assert(eth_run_requested()&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
+    assert(ts_dhcp_server_load_config()==ESP_OK);assert(eth_run_requested());
     link_up();run_delayed_task();assert(netifs[1].status==ESP_NETIF_DHCP_STARTED);
     record("ETH_disconnect_reload_reconnect_preserves_run_request");
     link_down();assert(ts_dhcp_server_stop(1)==ESP_OK);link_up();unsigned notices=started_notifications;
-    run_delayed_task();assert(!s_state.eth_want_running&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
+    run_delayed_task();assert(!eth_run_requested()&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
     assert(started_notifications==notices);
     record("ETH_user_stop_while_disconnected_wins_over_reconnect");
     assert(ts_dhcp_server_start(1)==ESP_OK);link_down();link_up();
     assert(delayed_count);assert(ts_dhcp_server_stop(1)==ESP_OK);notices=started_notifications;
-    run_delayed_task();assert(!s_state.eth_want_running&&netifs[1].status==ESP_NETIF_DHCP_STOPPED&&started_notifications==notices);
+    run_delayed_task();assert(!eth_run_requested()&&netifs[1].status==ESP_NETIF_DHCP_STOPPED&&started_notifications==notices);
     record("ETH_CONNECTED_queued_then_user_stop_wins_over_delayed_resume");
 
     prepare_custom_boot();link_down();link_up();link_down();link_up();
@@ -236,19 +210,19 @@ static void check_eth_lifecycle(void){
     assert(ts_net_manager_set_config(TS_NET_IF_ETH,&candidate)==ESP_OK);
     unsigned stops=driver_stops, sdk_stops=stop_calls;ts_dhcps_binding_table_t old=servers[1].ts_bindings;
     assert(ts_net_manager_restart(TS_NET_IF_ETH)==ESP_ERR_INVALID_ARG);
-    assert(driver_stops==stops&&stop_calls==sdk_stops&&s_state.eth_want_running&&netifs[1].status==ESP_NETIF_DHCP_STARTED);
+    assert(driver_stops==stops&&stop_calls==sdk_stops&&eth_run_requested()&&netifs[1].status==ESP_NETIF_DHCP_STARTED);
     assert(!memcmp(&old,&servers[1].ts_bindings,sizeof(old))&&infos[1].ip.addr==inet_addr("192.168.50.1"));
     record("ETH_net_restart_invalid_candidate_preserves_interface_DHCP_request_and_table");
     /* Bindings are explicit edits on the current subnet; clearing is intentional. */
     assert(ts_dhcp_server_clear_static_bindings(1)==ESP_OK);prepare_pool("192.168.60");
     assert(ts_net_manager_restart(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
-    assert(driver_stops==stops+1&&s_state.eth_want_running&&netifs[1].status==ESP_NETIF_DHCP_STARTED);
+    assert(driver_stops==stops+1&&eth_run_requested()&&netifs[1].status==ESP_NETIF_DHCP_STARTED);
     assert(infos[1].ip.addr==inet_addr("192.168.60.1"));
     assert(packet(&servers[1],b,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)==100);
     record("ETH_net_restart_valid_complete_candidate_new_subnet_first_offer");
     assert(ts_dhcp_server_stop(1)==ESP_OK);
     assert(ts_net_manager_restart(TS_NET_IF_ETH)==ESP_OK);deliver_events();notices=started_notifications;run_delayed_task();
-    assert(!s_state.eth_want_running&&netifs[1].status==ESP_NETIF_DHCP_STOPPED&&started_notifications==notices);
+    assert(!eth_run_requested()&&netifs[1].status==ESP_NETIF_DHCP_STOPPED&&started_notifications==notices);
     record("ETH_net_restart_complete_event_chain_preserves_explicit_stop");
 
     prepare_custom_boot();assert(ts_dhcp_server_clear_static_bindings(1)==ESP_OK);prepare_pool("192.168.60");
@@ -304,7 +278,6 @@ static void check_eth_lifecycle(void){
     assert(netifs[1].status==ESP_NETIF_DHCP_STARTED&&servers[1].dhcps_lease_time==120);
     assert(servers[1].dhcps_poll.start_ip.addr==inet_addr("192.168.50.100"));
     assert(!strcmp(s_state.iface[1].config.pool.start_ip,"192.168.60.100")&&s_state.iface[1].config.lease_time_min==999);
-    assert(!strcmp(s_state.iface[1].applied_config.pool.start_ip,"192.168.50.100"));
     record("ETH_link_resume_uses_applied_config_and_preserves_pending_edits");
     prepare_custom_boot();netifs[1].up=false;
     unsigned no_dispatch=apply_dispatches;assert(ts_dhcp_server_eth_resume()==ESP_ERR_ESP_NETIF_IF_NOT_READY);
@@ -314,11 +287,11 @@ static void check_eth_lifecycle(void){
     prepare_custom_boot();link_down();
     s_state.iface[1].config_restore_error=ESP_ERR_NVS_TYPE_MISMATCH;
     link_up();unsigned dispatches=apply_dispatches;run_delayed_task();
-    assert(apply_dispatches==dispatches&&s_state.eth_want_running);
+    assert(apply_dispatches==dispatches&&eth_run_requested());
     assert(ts_dhcp_server_get_status(1,&status)==ESP_OK&&status.resume_error==ESP_ERR_NVS_TYPE_MISMATCH);
     record("ETH_resume_blocks_storage_error_without_dispatch_and_reports_actual_reason");
     prepare_custom_boot();assert(ts_dhcp_server_stop(1)==ESP_OK);assert(ts_dhcp_server_load_config()==ESP_OK);
-    assert(!s_state.eth_want_running&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
+    assert(!eth_run_requested()&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
     notices=started_notifications;assert(ts_dhcp_server_eth_resume()==ESP_ERR_INVALID_STATE);
     assert(started_notifications==notices);
     record("ETH_explicit_stop_then_reload_does_not_rewrite_request_or_notify_start");
@@ -327,5 +300,3 @@ static void check_eth_lifecycle(void){
     record("AP_auto_started_stop_notification_uses_real_SDK_state_outside_lock");
     setup(true); /* Release model leases and restore original test environment. */
 }
-
-#endif /* ETH_BOOT_REGRESSION */

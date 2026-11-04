@@ -161,8 +161,8 @@ static int do_dhcp_list_all(bool json_output)
         
         esp_err_t ret = ts_dhcp_server_get_status(interfaces[i], &status);
         if (ret != ESP_OK) {
-            memset(&status, 0, sizeof(status));
-            status.state = TS_DHCP_STATE_STOPPED;
+            ts_console_printf("Error: Failed to get DHCP status for %s\n", iface_display_name(interfaces[i]));
+            return 1;
         }
         ts_dhcp_server_get_config(interfaces[i], &config);
         

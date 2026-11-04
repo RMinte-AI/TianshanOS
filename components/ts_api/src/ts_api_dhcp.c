@@ -114,8 +114,9 @@ static esp_err_t api_dhcp_status(const cJSON *params, ts_api_result_t *result)
             
             esp_err_t ret = ts_dhcp_server_get_status(interfaces[i], &status);
             if (ret != ESP_OK) {
-                memset(&status, 0, sizeof(status));
-                status.state = TS_DHCP_STATE_STOPPED;
+                cJSON_Delete(data);
+                ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get status");
+                return ret;
             }
             ts_dhcp_server_get_config(interfaces[i], &config);
             

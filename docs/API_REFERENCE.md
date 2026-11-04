@@ -465,19 +465,21 @@ POST /api/v1/led/effect
 
 **请求**: `GET /api/v1/network/status`
 
-**响应**:
+**响应示例（以太网字段节选）**:
 ```json
 {
   "code": 0,
   "data": {
-    "eth_connected": true,
-    "wifi_connected": false,
-    "ip": "192.168.1.100",
-    "gateway": "192.168.1.1",
-    "dns": "8.8.8.8"
+    "ethernet": {
+      "ip": "10.10.99.97",
+      "gateway": "10.10.99.100",
+      "dns1": "8.8.8.8"
+    }
   }
 }
 ```
+
+以太网的 `dns1` / `dns2` 是接口读回的 DNS 值，不保证与 DHCP 客户端收到的 DNS 相同。客户端的主 DNS 取已生效的 DHCP 池 DNS；池 DNS 留空时，当前构建下发服务器在该接口上的 IP 地址。接口 DNS 的读回值不代表主机解析器正在使用它，也不代表 DHCP 回退会下发它。
 
 ### network.wifi.scan
 扫描 WiFi 网络。

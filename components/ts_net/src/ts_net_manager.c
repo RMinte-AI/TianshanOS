@@ -50,7 +50,6 @@
 #define NVS_KEY_ETH_NETMASK     "eth_mask"
 #define NVS_KEY_ETH_GATEWAY     "eth_gw"
 #define NVS_KEY_ETH_DNS1        "eth_dns1"
-#define NVS_KEY_ETH_DNS2        "eth_dns2"
 #define NVS_KEY_HOSTNAME        "hostname"
 
 /* WiFi AP NVS 键 */
@@ -1120,7 +1119,6 @@ esp_err_t ts_net_manager_save_config(void)
     if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_NETMASK, s_state.eth_config.static_ip.netmask);
     if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_GATEWAY, s_state.eth_config.static_ip.gateway);
     if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_DNS1, s_state.eth_config.static_ip.dns1);
-    if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_ETH_DNS2, s_state.eth_config.static_ip.dns2);
     if (ret == ESP_OK) ret = nvs_set_str(handle, NVS_KEY_HOSTNAME, s_state.hostname);
     
     if (ret != ESP_OK) {
@@ -1168,10 +1166,10 @@ static esp_err_t read_eth_config(nvs_handle_t handle, ts_net_if_config_t *config
     ret = nvs_get_u8(handle, NVS_KEY_ETH_IP_MODE, &value);
     if (ret == ESP_OK) config->ip_mode = (ts_net_ip_mode_t)value;
     else if (ret != ESP_ERR_NVS_NOT_FOUND) return ret;
-    const char *keys[] = {NVS_KEY_ETH_IP, NVS_KEY_ETH_NETMASK, NVS_KEY_ETH_GATEWAY, NVS_KEY_ETH_DNS1, NVS_KEY_ETH_DNS2};
+    const char *keys[] = {NVS_KEY_ETH_IP, NVS_KEY_ETH_NETMASK, NVS_KEY_ETH_GATEWAY, NVS_KEY_ETH_DNS1};
     char *fields[] = {config->static_ip.ip, config->static_ip.netmask, config->static_ip.gateway,
-                      config->static_ip.dns1, config->static_ip.dns2};
-    for (size_t i = 0; i < 5; ++i) {
+                      config->static_ip.dns1};
+    for (size_t i = 0; i < 4; ++i) {
         size_t length = TS_NET_IP_STR_MAX_LEN;
         ret = nvs_get_str(handle, keys[i], fields[i], &length);
         if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) return ret;
