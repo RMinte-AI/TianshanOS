@@ -33,6 +33,8 @@ with tempfile.TemporaryDirectory(prefix='ts-fan-decay-') as tmp:
              'update_response_learning', 'apply_adaptive_auto', 'apply_auto_immediate',
              'apply_curve_with_hysteresis', 'update_pwm', 'fan_update_callback',
              'ts_fan_set_mode', 'ts_fan_get_status']
+    if 'static bool fan_lock(' in source:
+        names[:0] = ['fan_lock', 'fan_unlock']
     if 'static void update_guard_observation(' in source:
         names.insert(names.index('apply_adaptive_auto'), 'update_guard_observation')
     core = '\n\n'.join(function(name) for name in names)
@@ -42,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='ts-fan-decay-') as tmp:
     core = core.replace(needle, '    observed_demand = target;\n' + needle)
     (out / 'fan_core.inc').write_text(core)
     exe = out / 'decay'
-    subprocess.run(['cc', '-std=c11', '-g', '-Wall', '-Wextra',
+    subprocess.run(['cc', '-std=c11', '-pthread', '-g', '-Wall', '-Wextra',
                     '-Wno-unused-function', '-Wno-unused-parameter',
                     '-fsanitize=address,undefined', '-I' + str(ROOT / 'tests/fan_monitor/stubs'),
                     '-I' + str(ROOT / 'components/ts_drivers/include'), '-I' + tmp,

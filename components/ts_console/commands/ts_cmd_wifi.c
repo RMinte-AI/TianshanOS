@@ -212,8 +212,8 @@ static int do_wifi_scan(bool json_out)
     if (ret != ESP_OK) {
         ts_console_error("Scan failed: %s\n", esp_err_to_name(ret));
         if (need_stop_after) {
-            esp_wifi_stop();
-            ts_wifi_set_mode(TS_WIFI_MODE_OFF);
+            esp_err_t stopped = ts_wifi_set_mode(TS_WIFI_MODE_OFF);
+            if (stopped != ESP_OK) ts_console_error("Failed to stop temporary WiFi: %s\n", esp_err_to_name(stopped));
         }
         return 1;
     }
@@ -245,8 +245,11 @@ static int do_wifi_scan(bool json_out)
     
     /* 如果是临时启动的 WiFi，扫描后停止 */
     if (need_stop_after) {
-        esp_wifi_stop();
-        ts_wifi_set_mode(TS_WIFI_MODE_OFF);
+        ret = ts_wifi_set_mode(TS_WIFI_MODE_OFF);
+        if (ret != ESP_OK) {
+            ts_console_error("Failed to stop temporary WiFi: %s\n", esp_err_to_name(ret));
+            return 1;
+        }
     }
     
     return 0;

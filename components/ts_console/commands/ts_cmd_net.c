@@ -121,7 +121,8 @@ static int do_net_ip(const char *iface_str, bool json_out)
     if (json_out) {
         ts_console_printf("{\n");
         ts_console_printf("  \"interface\": \"%s\",\n", if_name);
-        ts_console_printf("  \"has_ip\": %s,\n", if_status->has_ip ? "true" : "false");
+        ts_console_printf("  \"config_error\": %d,\n", (int)if_status->config_error);
+        ts_console_printf("  \"has_ip\": %s%s\n", if_status->has_ip ? "true" : "false", if_status->has_ip ? "," : "");
         if (if_status->has_ip) {
             ts_console_printf("  \"ip\": \"%s\",\n", if_status->ip_info.ip);
             ts_console_printf("  \"netmask\": \"%s\",\n", if_status->ip_info.netmask);
@@ -137,7 +138,7 @@ static int do_net_ip(const char *iface_str, bool json_out)
                 if_status->ip_info.netmask,
                 if_status->ip_info.gateway);
         } else {
-            ts_console_printf("%s: no IP\n", if_name);
+            ts_console_printf("%s: no IP (configuration: %s)\n", if_name, esp_err_to_name(if_status->config_error));
         }
     }
     
@@ -189,6 +190,9 @@ static int do_net_status(bool json_out)
     ts_console_printf("║ \033[1mEthernet (W5500)\033[0m                                            ║\n");
     ts_console_printf("║   State:    %s%-12s\033[0m                                   ║\n",
         state_color(status.eth.state), ts_net_state_to_str(status.eth.state));
+    if (status.eth.config_error != ESP_OK) {
+        ts_console_printf("║   Configuration error: %s\n", esp_err_to_name(status.eth.config_error));
+    }
     ts_console_printf("║   Link:     %-12s                                   ║\n",
         status.eth.link_up ? "Up" : "Down");
     ts_console_printf("║   MAC:      %02x:%02x:%02x:%02x:%02x:%02x                            ║\n",
@@ -277,62 +281,44 @@ static int do_net_set(const char *iface_str, const char *ip, const char *netmask
 {
     ts_net_if_t iface = parse_iface(iface_str);
     bool changed = false;
-    
-    /* 设置 IP 模式 */
-    if (mode && mode[0]) {
-        ts_net_ip_mode_t ip_mode;
-        if (strcmp(mode, "dhcp") == 0) {
-            ip_mode = TS_NET_IP_MODE_DHCP;
-        } else if (strcmp(mode, "static") == 0) {
-            ip_mode = TS_NET_IP_MODE_STATIC;
-        } else {
-            ts_console_error("Invalid mode: %s (use 'dhcp' or 'static')\n", mode);
+    if ((mode && mode[0]) || ip || netmask || gateway || dns) {
+        ts_net_if_config_t config;
+        esp_err_t ret = ts_net_manager_get_config(iface, &config);
+        if (ret != ESP_OK) {
+            ts_console_error("Cannot read interface configuration: %s\n", esp_err_to_name(ret));
             return 1;
         }
-        ts_net_manager_set_ip_mode(iface, ip_mode);
-        ts_console_printf("IP mode set to: %s\n", mode);
+        if (mode && mode[0]) {
+            if (!strcmp(mode, "dhcp")) config.ip_mode = TS_NET_IP_MODE_DHCP;
+            else if (!strcmp(mode, "static")) config.ip_mode = TS_NET_IP_MODE_STATIC;
+            else {
+                ts_console_error("Invalid mode: %s (use 'dhcp' or 'static')\n", mode);
+                return 1;
+            }
+        }
+        if (ip && ip[0]) snprintf(config.static_ip.ip, sizeof(config.static_ip.ip), "%s", ip);
+        if (netmask && netmask[0]) snprintf(config.static_ip.netmask, sizeof(config.static_ip.netmask), "%s", netmask);
+        if (gateway && gateway[0]) snprintf(config.static_ip.gateway, sizeof(config.static_ip.gateway), "%s", gateway);
+        if (dns && dns[0]) snprintf(config.static_ip.dns1, sizeof(config.static_ip.dns1), "%s", dns);
+        ret = ts_net_manager_set_config(iface, &config);
+        if (ret != ESP_OK) {
+            ts_console_error("Configuration rejected: %s (Ethernet supports static mode only)\n", esp_err_to_name(ret));
+            return 1;
+        }
+        ts_console_printf("Configuration updated for %s\n", ts_net_if_to_str(iface));
         changed = true;
     }
-    
-    /* 设置静态 IP 配置 */
-    if (ip || netmask || gateway || dns) {
-        ts_net_if_config_t config;
-        ts_net_manager_get_config(iface, &config);
-        
-        if (ip && ip[0]) {
-            strncpy(config.static_ip.ip, ip, TS_NET_IP_STR_MAX_LEN - 1);
-            ts_console_printf("IP set to: %s\n", ip);
-        }
-        if (netmask && netmask[0]) {
-            strncpy(config.static_ip.netmask, netmask, TS_NET_IP_STR_MAX_LEN - 1);
-            ts_console_printf("Netmask set to: %s\n", netmask);
-        }
-        if (gateway && gateway[0]) {
-            strncpy(config.static_ip.gateway, gateway, TS_NET_IP_STR_MAX_LEN - 1);
-            ts_console_printf("Gateway set to: %s\n", gateway);
-        }
-        if (dns && dns[0]) {
-            strncpy(config.static_ip.dns1, dns, TS_NET_IP_STR_MAX_LEN - 1);
-            ts_console_printf("DNS set to: %s\n", dns);
-        }
-        
-        ts_net_manager_set_static_ip(iface, &config.static_ip);
-        changed = true;
-    }
-    
-    /* 设置主机名 */
     if (hostname && hostname[0]) {
-        ts_net_manager_set_hostname(hostname);
+        esp_err_t ret = ts_net_manager_set_hostname(hostname);
+        if (ret != ESP_OK) {
+            ts_console_error("Hostname rejected: %s\n", esp_err_to_name(ret));
+            return 1;
+        }
         ts_console_printf("Hostname set to: %s\n", hostname);
         changed = true;
     }
-    
-    if (changed) {
-        ts_console_printf("\nNote: Use 'net --save' to persist, 'net --restart' to apply\n");
-    } else {
-        ts_console_printf("No changes made. Use --ip, --netmask, --gateway, --dns, --mode, or --hostname\n");
-    }
-    
+    if (changed) ts_console_printf("\nUse 'net --save' to persist, 'net --restart' to apply. If ETH was not created at boot, reboot after saving.\n");
+    else ts_console_printf("No changes made. Use --ip, --netmask, --gateway, --dns, --mode, or --hostname\n");
     return 0;
 }
 
@@ -350,6 +336,9 @@ static int do_net_start(const char *iface_str)
     if (ret == ESP_OK) {
         ts_console_printf("%s started successfully\n", ts_net_if_to_str(iface));
         return 0;
+    } else if (ret == ESP_ERR_NOT_FINISHED) {
+        ts_console_error("操作进行中，请稍后 (operation in progress)\n");
+        return 1;
     } else {
         ts_console_error("Failed to start %s: %s\n", ts_net_if_to_str(iface), esp_err_to_name(ret));
         return 1;
@@ -366,6 +355,9 @@ static int do_net_stop(const char *iface_str)
     if (ret == ESP_OK) {
         ts_console_printf("%s stopped\n", ts_net_if_to_str(iface));
         return 0;
+    } else if (ret == ESP_ERR_NOT_FINISHED) {
+        ts_console_error("操作进行中，请稍后 (operation in progress)\n");
+        return 1;
     } else {
         ts_console_error("Failed to stop %s: %s\n", ts_net_if_to_str(iface), esp_err_to_name(ret));
         return 1;
@@ -382,6 +374,9 @@ static int do_net_restart(const char *iface_str)
     if (ret == ESP_OK) {
         ts_console_printf("%s restarted successfully\n", ts_net_if_to_str(iface));
         return 0;
+    } else if (ret == ESP_ERR_NOT_FINISHED) {
+        ts_console_error("操作进行中，请稍后 (operation in progress)\n");
+        return 1;
     } else {
         ts_console_error("Failed to restart %s: %s\n", ts_net_if_to_str(iface), esp_err_to_name(ret));
         return 1;

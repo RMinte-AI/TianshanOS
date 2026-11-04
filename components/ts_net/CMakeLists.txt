@@ -24,6 +24,8 @@ idf_component_register(
         lwip
         mbedtls
         mdns
+    PRIV_INCLUDE_DIRS
+        "private_include"
     PRIV_REQUIRES
         driver
         esp_event

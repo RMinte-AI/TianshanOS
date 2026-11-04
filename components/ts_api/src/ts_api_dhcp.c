@@ -43,6 +43,18 @@ static const char *iface_name(ts_dhcp_if_t iface)
  * 
  * @param params { "interface": "ap" | "eth" } (optional)
  */
+static void add_recovery_status(cJSON *data, ts_dhcp_if_t iface, const ts_dhcp_status_t *status)
+{
+    cJSON_AddBoolToObject(data, "interface_present", status->interface_present);
+    cJSON_AddNumberToObject(data, "restore_error", status->restore_error);
+    cJSON_AddNumberToObject(data, "apply_error", status->apply_error);
+    if (iface == TS_DHCP_IF_ETH) {
+        cJSON_AddBoolToObject(data, "want_running", status->want_running);
+        cJSON_AddBoolToObject(data, "link_up", status->link_up);
+        cJSON_AddNumberToObject(data, "resume_error", status->resume_error);
+    }
+}
+
 static esp_err_t api_dhcp_status(const cJSON *params, ts_api_result_t *result)
 {
     const char *iface_str = NULL;
@@ -73,6 +85,7 @@ static esp_err_t api_dhcp_status(const cJSON *params, ts_api_result_t *result)
         }
         ts_dhcp_server_get_config(iface, &config);
         
+        add_recovery_status(data, iface, &status);
         cJSON_AddStringToObject(data, "interface", ts_dhcp_if_to_str(iface));
         cJSON_AddStringToObject(data, "display_name", iface_name(iface));
         cJSON_AddStringToObject(data, "state", ts_dhcp_state_to_str(status.state));
@@ -101,12 +114,14 @@ static esp_err_t api_dhcp_status(const cJSON *params, ts_api_result_t *result)
             
             esp_err_t ret = ts_dhcp_server_get_status(interfaces[i], &status);
             if (ret != ESP_OK) {
-                memset(&status, 0, sizeof(status));
-                status.state = TS_DHCP_STATE_STOPPED;
+                cJSON_Delete(data);
+                ts_api_result_error(result, TS_API_ERR_INTERNAL, "Failed to get status");
+                return ret;
             }
             ts_dhcp_server_get_config(interfaces[i], &config);
             
             cJSON *item = cJSON_CreateObject();
+            add_recovery_status(item, interfaces[i], &status);
             cJSON_AddStringToObject(item, "interface", ts_dhcp_if_to_str(interfaces[i]));
             cJSON_AddStringToObject(item, "display_name", iface_name(interfaces[i]));
             cJSON_AddStringToObject(item, "state", ts_dhcp_state_to_str(status.state));

@@ -41,14 +41,14 @@ out.joinpath('temp_core.inc').write_text(functions(temp, [
     'fill_invalid_temp_data', 'fill_effective_data_locked', 'ts_temp_get_effective_impl',
     'ts_temp_get_effective_nonblocking', 'ts_temp_get_status']))
 out.joinpath('fan_core.inc').write_text(functions(fan, [
-    'calc_duty_from_curve', 'clamp_float', 'apply_duty_limits', 'is_temp_data_basic_valid',
+    'fan_lock', 'fan_unlock', 'calc_duty_from_curve', 'clamp_float', 'apply_duty_limits', 'is_temp_data_basic_valid',
     'is_auto_temp_data_usable', 'reset_adaptive_auto_state', 'get_adaptive_temperatures',
     'record_auto_temp_sample', 'calculate_auto_slope', 'apply_auto_rate_limit',
     'update_response_learning', 'update_guard_observation', 'apply_adaptive_auto', 'apply_curve_with_hysteresis',
     'update_pwm', 'fan_update_callback', 'ts_fan_get_status']))
 PY
 
-cc -std=c11 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
+cc -std=c11 -pthread -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
     -fsanitize=address,undefined -Itests/fan_monitor/stubs \
     -Icomponents/ts_drivers/include -I"$build" tests/fan_monitor/test_monitor.c -o "$build/monitor"
 "$build/monitor"

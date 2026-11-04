@@ -118,6 +118,7 @@ project(TianShanOS VERSION ${TIANSHAN_VERSION_MAJOR}.${TIANSHAN_VERSION_MINOR}.$
 
 if(NOT ROOT_PASSWORD_RESET)
     include(cmake/httpd_admission.cmake)
+    include(cmake/dhcps_bindings.cmake)
 endif()
 
 # 添加编译定义 - 使用 idf_build_set_property 确保所有组件都能访问

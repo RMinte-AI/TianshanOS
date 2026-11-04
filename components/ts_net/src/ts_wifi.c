@@ -133,7 +133,8 @@ esp_err_t ts_wifi_set_mode(ts_wifi_mode_t mode)
     
     switch (mode) {
         case TS_WIFI_MODE_OFF:
-            esp_wifi_stop();
+            ret = esp_wifi_stop();
+            if (ret != ESP_OK) return ret;
             s_mode = mode;
             TS_LOGI(TAG, "WiFi stopped");
             return ESP_OK;
@@ -151,7 +152,8 @@ esp_err_t ts_wifi_set_mode(ts_wifi_mode_t mode)
     }
     
     // 先停止 WiFi（如果已启动）
-    esp_wifi_stop();
+    ret = esp_wifi_stop();
+    if (ret != ESP_OK) return ret;
     
     ret = esp_wifi_set_mode(esp_mode);
     if (ret != ESP_OK) {

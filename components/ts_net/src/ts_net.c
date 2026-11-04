@@ -5,6 +5,7 @@
 
 #include "ts_net.h"
 #include "ts_eth.h"
+#include "ts_dhcp_server.h"
 #include "ts_wifi.h"
 #include "ts_log.h"
 #include "esp_netif.h"
@@ -108,13 +109,18 @@ esp_err_t ts_net_deinit(void)
 ts_net_status_t ts_net_get_status(ts_net_if_t iface)
 {
     switch (iface) {
-        case TS_NET_IF_ETH:
+        case TS_NET_IF_ETH: {
 #ifdef CONFIG_TS_NET_ETHERNET_ENABLE
+            ts_net_if_status_t status;
+            if (ts_net_manager_get_if_status(iface, &status) == ESP_OK && status.config_error != ESP_OK) {
+                return TS_NET_STATUS_ERROR;
+            }
             return ts_eth_is_link_up() ? TS_NET_STATUS_CONNECTED : TS_NET_STATUS_DOWN;
 #else
             return TS_NET_STATUS_DOWN;
 #endif
         
+        }
         case TS_NET_IF_WIFI_STA:
 #ifdef CONFIG_TS_NET_WIFI_ENABLE
             return ts_wifi_sta_is_connected() ? TS_NET_STATUS_CONNECTED : TS_NET_STATUS_DOWN;
@@ -180,6 +186,40 @@ esp_err_t ts_net_get_ip_info(ts_net_if_t iface, ts_net_ip_info_t *info)
     return ESP_OK;
 }
 
+/* ETH host addresses are owned by ts_net, never derived from a DHCP pool. */
+esp_err_t ts_net_validate_eth_ip(const esp_netif_ip_info_t *info)
+{
+    if (!info) return ESP_ERR_INVALID_ARG;
+    uint32_t host = ntohl(info->ip.addr), mask = ntohl(info->netmask.addr);
+    uint32_t inverse = ~mask, network = host & mask, broadcast = network | inverse;
+    if (!mask || inverse < 3 || (inverse & (inverse + 1)) || host <= network ||
+        host >= broadcast || host >= 0xe0000000U || (host >> 24) == 127 || (host >> 24) == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t gateway = ntohl(info->gw.addr);
+    if (gateway && ((gateway & mask) != network || gateway <= network || gateway >= broadcast)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+esp_err_t ts_net_validate_eth_config(const ts_net_if_config_t *config, esp_netif_ip_info_t *info)
+{
+    if (!config || !info) return ESP_ERR_INVALID_ARG;
+    if (config->ip_mode != TS_NET_IP_MODE_STATIC) return ESP_ERR_NOT_SUPPORTED;
+    const char *strings[] = {config->static_ip.ip, config->static_ip.netmask,
+        config->static_ip.gateway, config->static_ip.dns1, config->static_ip.dns2};
+    ip4_addr_t addresses[5] = {0};
+    for (size_t i = 0; i < 5; ++i) {
+        if (!memchr(strings[i], '\0', TS_NET_IP_STR_MAX_LEN)) return ESP_ERR_INVALID_ARG;
+        if (i >= 3 && !strings[i][0]) continue;
+        if (!ip4addr_aton(strings[i], &addresses[i])) return ESP_ERR_INVALID_ARG;
+    }
+    *info = (esp_netif_ip_info_t){.ip.addr = addresses[0].addr,
+        .netmask.addr = addresses[1].addr, .gw.addr = addresses[2].addr};
+    return ts_net_validate_eth_ip(info);
+}
+
 esp_err_t ts_net_set_ip_info(ts_net_if_t iface, const ts_net_ip_info_t *info)
 {
     if (!info) return ESP_ERR_INVALID_ARG;
@@ -187,24 +227,33 @@ esp_err_t ts_net_set_ip_info(ts_net_if_t iface, const ts_net_ip_info_t *info)
     esp_netif_t *netif = get_netif(iface);
     if (!netif) return ESP_ERR_NOT_FOUND;
     
-    esp_netif_dhcpc_stop(netif);
-    
     esp_netif_ip_info_t ip_info = {
         .ip.addr = info->ip,
         .netmask.addr = info->netmask,
         .gw.addr = info->gateway
     };
     
-    esp_err_t ret = esp_netif_set_ip_info(netif, &ip_info);
+    if (iface == TS_NET_IF_ETH) {
+        uint32_t dns[] = {info->dns1, info->dns2};
+        return ts_dhcp_server_apply_eth_network(&ip_info, dns);
+    }
+    esp_err_t ret;
+    if (iface == TS_NET_IF_WIFI_STA) {
+        ret = esp_netif_dhcpc_stop(netif);
+        if (ret != ESP_OK && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return ret;
+    }
+    ret = esp_netif_set_ip_info(netif, &ip_info);
     if (ret != ESP_OK) return ret;
     
     if (info->dns1) {
         esp_netif_dns_info_t dns = {.ip.u_addr.ip4.addr = info->dns1};
-        esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
+        ret = esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
+        if (ret != ESP_OK) return ret;
     }
     if (info->dns2) {
         esp_netif_dns_info_t dns = {.ip.u_addr.ip4.addr = info->dns2};
-        esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns);
+        ret = esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns);
+        if (ret != ESP_OK) return ret;
     }
     
     return ESP_OK;
@@ -212,6 +261,7 @@ esp_err_t ts_net_set_ip_info(ts_net_if_t iface, const ts_net_ip_info_t *info)
 
 esp_err_t ts_net_enable_dhcp(ts_net_if_t iface)
 {
+    if (iface == TS_NET_IF_ETH) return ESP_ERR_NOT_SUPPORTED;
     esp_netif_t *netif = get_netif(iface);
     if (!netif) return ESP_ERR_NOT_FOUND;
     

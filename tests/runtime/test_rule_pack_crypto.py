@@ -1,20 +1,43 @@
 """Real production pack create/verify/decrypt with SDK Mbed TLS 3.6.5 and disposable PKI."""
 from pathlib import Path
-import os, subprocess, shutil, hashlib, sys, time, re
+import fcntl, os, subprocess, shutil, hashlib, sys, tempfile, time, re
 root = Path(__file__).resolve().parents[2]
-build = Path('/tmp/tianshan-rule-pack-tests')
-build.mkdir(exist_ok=True)
+# Every run owns its scratch tree, so concurrent runs (another worktree, another
+# agent) never share generated sources, PKI, config.h or the linked executable.
+build = Path(tempfile.mkdtemp(prefix='tianshan-rule-pack-'))
 idf = Path(os.environ.get('IDF_PATH', '/Users/massif/esp/v5.5.2/esp-idf'))
 mbed = idf/'components/mbedtls/mbedtls'
 cmake = shutil.which('cmake') or '/Users/massif/.espressif/tools/cmake/3.30.2/CMake.app/Contents/bin/cmake'
-native = Path('/tmp/tianshan-pack-mbedtls')
 env = {**os.environ, 'DEVELOPER_DIR': '/Library/Developer/CommandLineTools'}
 def run(args, **kw):
     kw.setdefault('env',env)
     return subprocess.run([str(a) for a in args], check=True, **kw)
-if not (native/'library/libmbedcrypto.a').exists():
-    run([cmake, '-S', mbed, '-B', native, '-DENABLE_PROGRAMS=OFF', '-DENABLE_TESTING=OFF'])
-    run([cmake, '--build', native, '-j', '4'])
+
+def mbedtls_version():
+    header = mbed/'include/mbedtls/build_info.h'
+    if not header.exists():
+        raise RuntimeError(f'Mbed TLS build_info.h not found under {mbed}')
+    for line in header.read_text().splitlines():
+        if line.startswith('#define MBEDTLS_VERSION_STRING '):
+            return line.split('"')[1]
+    raise RuntimeError(f'MBEDTLS_VERSION_STRING not found in {header}')
+
+MBEDTLS_ARGS = ['-DENABLE_PROGRAMS=OFF', '-DENABLE_TESTING=OFF']
+# The cache directory is keyed by SDK path, Mbed TLS version and build arguments.
+# A different identity therefore gets its own directory instead of deleting
+# another run's cache, and a completed build is never removed. Concurrent first
+# builds of the same identity are serialised by a lock on that directory.
+identity = hashlib.sha256('|'.join([str(idf), mbedtls_version(), *MBEDTLS_ARGS]).encode()).hexdigest()[:16]
+native = Path('/tmp/tianshan-pack-mbedtls-' + identity)
+complete = native/'build-complete'
+with Path(str(native) + '.lock').open('w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    if not complete.exists():
+        if native.exists():
+            shutil.rmtree(native)
+        run([cmake, '-S', mbed, '-B', native, *MBEDTLS_ARGS])
+        run([cmake, '--build', native, '-j', '4'])
+        complete.write_text(mbedtls_version())
 openssl = shutil.which('openssl')
 assert openssl
 pki = build/'pki'
@@ -93,3 +116,5 @@ cmd += sources+[native/'library/libmbedx509.a',native/'library/libmbedcrypto.a',
 run(cmd,cwd=root)
 case=None if integration else next((a.split('=',1)[1] for a in sys.argv if a.startswith('--case=')),None)
 run([executable,pki,*([export_payloads] if export_payloads else [case] if case else [])],cwd=root,env={**env,'ASAN_OPTIONS':'detect_leaks=0'} if '--store' in sys.argv else env)
+# Scratch tree is disposable; it is kept only when a step above raised.
+shutil.rmtree(build, ignore_errors=True)

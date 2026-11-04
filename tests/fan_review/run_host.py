@@ -39,10 +39,12 @@ with tempfile.TemporaryDirectory(prefix='fan-review-') as tmp:
              'get_adaptive_temperatures', 'record_auto_temp_sample', 'calculate_auto_slope',
              'apply_auto_rate_limit', 'update_response_learning', 'apply_adaptive_auto',
              'apply_auto_immediate', 'apply_curve_with_hysteresis', 'update_pwm',
-             'fan_update_callback', 'ts_fan_configure', 'ts_fan_set_mode', 'ts_fan_set_duty',
+             'fan_update_callback', 'ts_fan_init', 'ts_fan_deinit', 'ts_fan_configure', 'ts_fan_set_mode', 'ts_fan_set_duty',
              'ts_fan_enable', 'ts_fan_get_status', 'ts_fan_emergency_full',
              'ts_fan_save_config', 'ts_fan_save_full_config', 'ts_fan_load_config',
-             'ts_fan_get_config', 'ts_fan_set_limits', 'ts_fan_set_curve', 'ts_fan_set_hysteresis']
+             'ts_fan_get_config', 'ts_fan_set_temperature', 'temp_event_handler', 'ts_fan_set_limits', 'ts_fan_set_curve', 'ts_fan_set_hysteresis']
+    if 'static bool fan_lock(' in source:
+        names[:0] = ['fan_lock', 'fan_unlock']
     if 'static void update_guard_observation(' in source:
         names.insert(names.index('apply_adaptive_auto'), 'update_guard_observation')
     (out / 'fan_core.inc').write_text('\n\n'.join(function(source, n) for n in names))
@@ -55,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='fan-review-') as tmp:
         cjson = Path('/Users/massif/esp/v5.5.2/esp-idf/components/json/cJSON')
     if args.cjson_dir: cjson = args.cjson_dir
     exe = out / 'review'
-    command = ['cc', '-std=c11', '-g', '-Wall', '-Wextra', '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-deprecated-declarations',
+    command = ['cc', '-std=c11', '-pthread', '-g', '-Wall', '-Wextra', '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-deprecated-declarations',
                '-fsanitize=address,undefined', '-DCONFIG_TS_DRIVERS_FAN_TEMP_UPDATE_MS=' + str(args.period_ms), '-DREPAIRED=' + str(int('guard_last_observation_ms' in source)),
                '-I' + str(ROOT / 'tests/fan_monitor/stubs'), '-I' + str(ROOT / 'components/ts_drivers/include'),
                '-I' + str(cjson), '-I' + tmp, str(ROOT / 'tests/fan_review/test_review.c'), str(cjson / 'cJSON.c'),
@@ -63,5 +65,5 @@ with tempfile.TemporaryDirectory(prefix='fan-review-') as tmp:
     subprocess.run(command, check=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('w') as result:
-        subprocess.run([str(exe), 'cadence' if args.cadence_only else 'check' if args.check else 'probe'], stdout=result, check=True)
+        subprocess.run([str(exe), 'cadence' if args.cadence_only else 'check' if args.check else 'probe'], stdout=result, check=True, timeout=30)
     print('PASS execution' + (' and repaired assertions' if args.check or args.cadence_only else ' (probe, not acceptance)') + ': ' + str(args.output))

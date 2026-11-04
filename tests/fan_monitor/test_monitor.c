@@ -8,7 +8,6 @@
 
 typedef void *ts_pwm_handle_t;
 typedef void *ts_gpio_handle_t;
-typedef int SemaphoreHandle_t;
 #define pdTRUE 1
 #define portMAX_DELAY (-1)
 #define portTICK_PERIOD_MS 1
@@ -19,6 +18,7 @@ typedef int SemaphoreHandle_t;
 #define TS_AUTO_VAL_INT 2
 
 #define CONFIG_TS_DRIVERS_FAN_TEMP_UPDATE_MS 1000
+#include "../fan_review/mutex_host.h"
 #include "fan_types.inc"
 #include "temp_types.inc"
 static fan_instance_t s_fans[TS_FAN_MAX];
@@ -27,6 +27,7 @@ static bool s_auto_temp_enabled = true;
 static int64_t now_ms;
 static bool inside_timer;
 static bool temp_mutex_busy;
+static bool variable_mutex_busy;
 static float pwm_output;
 typedef struct {
     int64_t last_update_ms;
@@ -36,17 +37,18 @@ static ts_variable_info_t variable;
 
 static int64_t esp_timer_get_time(void) { return now_ms * 1000; }
 static uint32_t xTaskGetTickCount(void) { return (uint32_t)now_ms; }
-static int xSemaphoreTake(int mutex, int ticks) {
+static int temp_mutex_take(SemaphoreHandle_t mutex, int ticks) {
     if (inside_timer) assert(ticks == 0);
     return !temp_mutex_busy;
 }
-static void xSemaphoreGive(int mutex) {}
+static void temp_mutex_give(SemaphoreHandle_t mutex) {}
 static esp_err_t ts_variable_get_info(const char *name, ts_variable_info_t *info) {
-    assert(!inside_timer); /* Timer must use the nonblocking variant. */
+    assert(!inside_timer&&!variable_mutex_busy); /* Never wait on a busy variable leaf. */
     *info = variable;
     return ESP_OK;
 }
 static esp_err_t ts_variable_get_info_try(const char *name, ts_variable_info_t *info) {
+    if(variable_mutex_busy)return ESP_ERR_INVALID_STATE;
     *info = variable;
     return ESP_OK;
 }
@@ -62,14 +64,18 @@ static esp_err_t save_bound_vars_to_nvs(void){return ESP_OK;}
 static esp_err_t save_bound_variable_to_nvs(const char *name){return ESP_OK;}
 static void export_temp_config_to_sdcard(void){}
 static esp_err_t update_pwm(fan_instance_t *fan, uint8_t duty);
+#define xSemaphoreTake temp_mutex_take
+#define xSemaphoreGive temp_mutex_give
 #include "temp_core.inc"
+#undef xSemaphoreTake
+#undef xSemaphoreGive
 #include "fan_core.inc"
 
 static void setup(ts_fan_mode_t mode) {
     memset(&s_state, 0, sizeof(s_state));
     memset(s_fans, 0, sizeof(s_fans));
     s_state.initialized = true;
-    s_state.mutex = 1;
+    s_state.mutex = (SemaphoreHandle_t)1;
     s_state.bound_var_count = 1;
     strcpy(s_state.bound_vars[0].name, "cpu.temperature");
     s_state.bound_vars[0].weight = 1.0f;
@@ -161,14 +167,16 @@ int main(void) {
     assert(s_fans[0].current_duty == 0 && pwm_output == 0);
     puts("PASS disabled fan: temperature monitoring stays fresh; output remains zero");
 
-    setup(TS_FAN_MODE_MANUAL);
-    temp_mutex_busy = true;
-    tick(2000, 49.5, true);
-    assert(s_fans[0].current_duty == 37);
-    temp_mutex_busy = false;
-    tick(3000, 49.5, true);
-    assert_temperature(495, true);
-    puts("PASS busy temperature service: nonblocking timer, manual output preserved, refresh resumes");
+    for(unsigned busy=0;busy<2;busy++){
+        setup(TS_FAN_MODE_MANUAL);
+        temp_mutex_busy=busy==0;variable_mutex_busy=busy==1;
+        tick(2000, 49.5, true);
+        ts_temp_data_t unavailable;inside_timer=true;ts_temp_get_effective_nonblocking(&unavailable);inside_timer=false;
+        assert(!unavailable.valid&&s_fans[0].current_duty==37);
+        temp_mutex_busy=variable_mutex_busy=false;
+        tick(3000, 49.5, true);assert_temperature(495, true);
+    }
+    puts("PASS busy temperature/variable service: real nonblocking getter invalid while busy, manual output preserved, refresh resumes");
 
     setup(TS_FAN_MODE_AUTO);
     for (int second = 2; second <= 25; second++) {

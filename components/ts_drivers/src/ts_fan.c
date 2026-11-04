@@ -20,6 +20,8 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+#include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -98,10 +100,27 @@ typedef struct {
 /*===========================================================================*/
 
 static fan_instance_t s_fans[TS_FAN_MAX];
+/* One ordinary mutex owns a fan's state through its HAL commit. Private control
+ * helpers below require that ownership; ISR tach counting remains independent.
+ * Static locks survive deinit so an already waiting caller never uses a deleted lock. */
+static StaticSemaphore_t s_fan_mutex_storage[TS_FAN_MAX];
+static SemaphoreHandle_t s_fan_mutex[TS_FAN_MAX];
+
+static bool fan_lock(ts_fan_id_t fan)
+{
+    if (!s_fan_mutex[fan]) return false;  /* Driver has not been initialized. */
+    xSemaphoreTake(s_fan_mutex[fan], portMAX_DELAY);
+    return true;
+}
+
+static void fan_unlock(ts_fan_id_t fan)
+{
+    xSemaphoreGive(s_fan_mutex[fan]);
+}
 static esp_timer_handle_t s_update_timer = NULL;
-static bool s_initialized = false;
+static atomic_bool s_initialized = false;
 static ts_event_handler_handle_t s_temp_event_handle = NULL;
-static bool s_auto_temp_enabled = true;
+static atomic_bool s_auto_temp_enabled = true;
 
 /*===========================================================================*/
 /*                          Forward Declarations                              */
@@ -142,6 +161,7 @@ static void temp_event_handler(const ts_event_t *event, void *user_data)
     
     /* AUTO 模式只由 fan_update_callback() 推进，事件仅服务旧的 CURVE 快照路径 */
     for (int i = 0; i < TS_FAN_MAX; i++) {
+        if (!fan_lock(i)) continue;
         if (s_fans[i].initialized && s_fans[i].mode == TS_FAN_MODE_CURVE) {
             s_fans[i].temperature = temp_evt->temp;
             TS_LOGD(TAG, "Fan %d temp updated: %d.%d°C (source=%d)", 
@@ -149,6 +169,7 @@ static void temp_event_handler(const ts_event_t *event, void *user_data)
                     abs(temp_evt->temp % 10),
                     temp_evt->source);
         }
+        fan_unlock(i);
     }
 }
 
@@ -559,21 +580,11 @@ static esp_err_t apply_adaptive_auto(fan_instance_t *fan, const ts_temp_data_t *
     return ret;
 }
 
-static esp_err_t apply_auto_immediate(fan_instance_t *fan)
+static esp_err_t apply_auto_immediate(fan_instance_t *fan, const ts_temp_data_t *temp_data)
 {
-    ts_temp_data_t temp_data = {0};
-    const ts_temp_data_t *auto_temp = NULL;
-
-    if (s_auto_temp_enabled) {
-        ts_temp_get_effective(&temp_data);
-        if (is_temp_data_basic_valid(&temp_data)) {
-            fan->temperature = temp_data.value;
-        }
-        auto_temp = &temp_data;
-    }
-
+    if (is_temp_data_basic_valid(temp_data)) fan->temperature = temp_data->value;
     reset_adaptive_auto_state(fan);
-    return apply_adaptive_auto(fan, auto_temp);
+    return apply_adaptive_auto(fan, temp_data);
 }
 
 /**
@@ -663,7 +674,7 @@ static void fan_update_callback(void *arg)
     
     /* 温度监控独立于风扇模式，手动/关闭模式下也保持有效温度快照更新。 */
     if (s_auto_temp_enabled) {
-        int16_t current_temp = ts_temp_get_effective_nonblocking(&temp_data);
+        ts_temp_get_effective_nonblocking(&temp_data);
         have_temp_data = true;
         basic_temp_data_valid = is_temp_data_basic_valid(&temp_data);
         
@@ -671,22 +682,19 @@ static void fan_update_callback(void *arg)
         if (++s_log_counter >= 10) {
             s_log_counter = 0;
             TS_LOGD(TAG, "[FAN-CB] temp=%d.%d°C, source=%d, valid=%d",
-                    current_temp / 10, current_temp % 10,
+                    temp_data.value / 10, temp_data.value % 10,
                     temp_data.source, temp_data.valid);
-        }
-        
-        if (basic_temp_data_valid) {
-            for (int i = 0; i < TS_FAN_MAX; i++) {
-                if (s_fans[i].initialized) {
-                    s_fans[i].temperature = current_temp;
-                }
-            }
         }
     }
     
     for (int i = 0; i < TS_FAN_MAX; i++) {
+        if (!fan_lock(i)) continue;
         fan_instance_t *fan = &s_fans[i];
-        if (!fan->initialized) continue;
+        if (!fan->initialized) {
+            fan_unlock(i);
+            continue;
+        }
+        if (basic_temp_data_valid) fan->temperature = temp_data.value;
         
         // 计算 RPM
         if (fan->tach_gpio) {
@@ -701,6 +709,7 @@ static void fan_update_callback(void *arg)
         // 根据模式更新
         if (!fan->enabled) {
             update_pwm(fan, 0);
+            fan_unlock(i);
             continue;
         }
         
@@ -727,6 +736,7 @@ static void fan_update_callback(void *arg)
             update_pwm(fan, 0);
             break;
         }
+        fan_unlock(i);
     }
 }
 
@@ -738,14 +748,17 @@ esp_err_t ts_fan_init(void)
 {
     if (s_initialized) return ESP_OK;
     
-    memset(s_fans, 0, sizeof(s_fans));
-    
     // 默认曲线（30°C-20%, 50°C-40%, 70°C-80%, 80°C-100%）
     ts_fan_curve_point_t default_curve[] = {
         {300, 20}, {500, 40}, {700, 80}, {800, 100}
     };
     
     for (int i = 0; i < TS_FAN_MAX; i++) {
+        if (!s_fan_mutex[i]) {
+            s_fan_mutex[i] = xSemaphoreCreateMutexStatic(&s_fan_mutex_storage[i]);
+        }
+        fan_lock(i);
+        memset(&s_fans[i], 0, sizeof(s_fans[i]));
         s_fans[i].config.min_duty = 20;
         s_fans[i].config.max_duty = 100;
         s_fans[i].config.hysteresis = TS_FAN_DEFAULT_HYSTERESIS;
@@ -757,6 +770,7 @@ esp_err_t ts_fan_init(void)
         s_fans[i].temperature = 250;
         s_fans[i].enabled = true;
         reset_adaptive_auto_state(&s_fans[i]);
+        fan_unlock(i);
     }
     
     // 启动更新定时器
@@ -809,6 +823,8 @@ esp_err_t ts_fan_deinit(void)
     }
     
     for (int i = 0; i < TS_FAN_MAX; i++) {
+        fan_lock(i);
+        s_fans[i].initialized = false;
         if (s_fans[i].pwm) {
             ts_pwm_destroy(s_fans[i].pwm);
             s_fans[i].pwm = NULL;
@@ -817,6 +833,7 @@ esp_err_t ts_fan_deinit(void)
             ts_gpio_destroy(s_fans[i].tach_gpio);
             s_fans[i].tach_gpio = NULL;
         }
+        fan_unlock(i);
     }
     
     s_initialized = false;
@@ -856,9 +873,14 @@ void ts_fan_get_default_config(ts_fan_config_t *config)
 esp_err_t ts_fan_get_config(ts_fan_id_t fan, ts_fan_config_t *config)
 {
     if (fan >= TS_FAN_MAX || !config) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     *config = s_fans[fan].config;
+    fan_unlock(fan);
     return ESP_OK;
 }
 
@@ -866,6 +888,7 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
 {
     if (fan >= TS_FAN_MAX || !config) return ESP_ERR_INVALID_ARG;
     
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
     fan_instance_t *f = &s_fans[fan];
     f->config = *config;
     f->duty_valid = false;
@@ -874,6 +897,7 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
     f->pwm = ts_pwm_create_raw(config->gpio_pwm, "fan");
     if (!f->pwm) {
         TS_LOGE(TAG, "Failed to create PWM for fan %d", fan);
+        fan_unlock(fan);
         return ESP_FAIL;
     }
     
@@ -890,6 +914,7 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
         TS_LOGE(TAG, "Failed to configure PWM for fan %d", fan);
         ts_pwm_destroy(f->pwm);
         f->pwm = NULL;
+        fan_unlock(fan);
         return ret;
     }
     
@@ -924,6 +949,7 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
     TS_LOGI(TAG, "Fan %d configured: PWM=GPIO%d, TACH=%d, curve=%d points", 
             fan, config->gpio_pwm, config->gpio_tach, config->curve_points);
     
+    fan_unlock(fan);
     return ret;
 }
 
@@ -934,7 +960,15 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
 esp_err_t ts_fan_set_mode(ts_fan_id_t fan, ts_fan_mode_t mode)
 {
     if (fan >= TS_FAN_MAX) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
+    ts_temp_data_t temp_data = {0};
+    if (s_auto_temp_enabled && (mode == TS_FAN_MODE_AUTO || mode == TS_FAN_MODE_CURVE)) {
+        ts_temp_get_effective_nonblocking(&temp_data);
+    }
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     ts_fan_mode_t old_mode = s_fans[fan].mode;
     s_fans[fan].mode = mode;
@@ -955,13 +989,9 @@ esp_err_t ts_fan_set_mode(ts_fan_id_t fan, ts_fan_mode_t mode)
         s_fans[fan].last_speed_change_time = 0;  /* 允许立即调速 */
         
         if (mode == TS_FAN_MODE_AUTO) {
-            ret = apply_auto_immediate(&s_fans[fan]);
-        } else if (s_auto_temp_enabled) {
-            ts_temp_data_t temp_data;
-            int16_t current_temp = ts_temp_get_effective(&temp_data);
-            if (is_temp_data_basic_valid(&temp_data)) {
-                s_fans[fan].temperature = current_temp;
-            }
+            ret = apply_auto_immediate(&s_fans[fan], &temp_data);
+        } else if (is_temp_data_basic_valid(&temp_data)) {
+            s_fans[fan].temperature = temp_data.value;
         }
         
         TS_LOGI(TAG, "Fan %d mode -> %d: hysteresis reset, temp=%d", 
@@ -970,22 +1000,32 @@ esp_err_t ts_fan_set_mode(ts_fan_id_t fan, ts_fan_mode_t mode)
         TS_LOGI(TAG, "Fan %d mode set to %d", fan, mode);
     }
     
+    fan_unlock(fan);
     return ret;
 }
 
 esp_err_t ts_fan_get_mode(ts_fan_id_t fan, ts_fan_mode_t *mode)
 {
     if (fan >= TS_FAN_MAX || !mode) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     *mode = s_fans[fan].mode;
+    fan_unlock(fan);
     return ESP_OK;
 }
 
 esp_err_t ts_fan_set_duty(ts_fan_id_t fan, uint8_t duty_percent)
 {
     if (fan >= TS_FAN_MAX) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     if (duty_percent > 100) duty_percent = 100;
     
@@ -993,30 +1033,44 @@ esp_err_t ts_fan_set_duty(ts_fan_id_t fan, uint8_t duty_percent)
     reset_adaptive_auto_state(&s_fans[fan]);
     s_fans[fan].target_duty = duty_percent;
     
-    return update_pwm(&s_fans[fan], duty_percent);
+    esp_err_t ret = update_pwm(&s_fans[fan], duty_percent);
+    fan_unlock(fan);
+    return ret;
 }
 
 esp_err_t ts_fan_enable(ts_fan_id_t fan, bool enable)
 {
     if (fan >= TS_FAN_MAX) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     s_fans[fan].enabled = enable;
     
     if (!enable) {
-        return update_pwm(&s_fans[fan], 0);
+        esp_err_t ret = update_pwm(&s_fans[fan], 0);
+        fan_unlock(fan);
+        return ret;
     }
     
     TS_LOGI(TAG, "Fan %d %s", fan, enable ? "enabled" : "disabled");
+    fan_unlock(fan);
     return ESP_OK;
 }
 
 esp_err_t ts_fan_is_enabled(ts_fan_id_t fan, bool *enabled)
 {
     if (fan >= TS_FAN_MAX || !enabled) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     *enabled = s_fans[fan].enabled;
+    fan_unlock(fan);
     return ESP_OK;
 }
 
@@ -1027,11 +1081,16 @@ esp_err_t ts_fan_is_enabled(ts_fan_id_t fan, bool *enabled)
 esp_err_t ts_fan_set_temperature(ts_fan_id_t fan, int16_t temp_01c)
 {
     if (fan >= TS_FAN_MAX) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
     if (temp_01c < TS_TEMP_MIN_VALID || temp_01c > TS_TEMP_MAX_VALID) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     s_fans[fan].temperature = temp_01c;
+    fan_unlock(fan);
     return ESP_OK;
 }
 
@@ -1041,6 +1100,7 @@ esp_err_t ts_fan_set_curve(ts_fan_id_t fan, const ts_fan_curve_point_t *curve, u
         return ESP_ERR_INVALID_ARG;
     }
     
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
     // 复制曲线点
     memcpy(s_fans[fan].config.curve, curve, points * sizeof(ts_fan_curve_point_t));
     s_fans[fan].config.curve_points = points;
@@ -1057,6 +1117,7 @@ esp_err_t ts_fan_set_curve(ts_fan_id_t fan, const ts_fan_curve_point_t *curve, u
     }
     
     TS_LOGI(TAG, "Fan %d curve set with %d points", fan, points);
+    fan_unlock(fan);
     return ESP_OK;
 }
 
@@ -1071,12 +1132,14 @@ esp_err_t ts_fan_set_hysteresis(ts_fan_id_t fan, int16_t hysteresis, uint32_t mi
         return ESP_ERR_INVALID_ARG;
     }
     
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
     s_fans[fan].config.hysteresis = hysteresis;
     s_fans[fan].config.min_interval = min_interval;
     
     TS_LOGI(TAG, "Fan %d hysteresis: %.1f°C, interval: %lums", 
             fan, hysteresis / 10.0f, (unsigned long)min_interval);
     
+    fan_unlock(fan);
     return ESP_OK;
 }
 
@@ -1091,11 +1154,13 @@ esp_err_t ts_fan_set_limits(ts_fan_id_t fan, uint8_t min_duty, uint8_t max_duty)
         return ESP_ERR_INVALID_ARG;
     }
     
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
     s_fans[fan].config.min_duty = min_duty;
     s_fans[fan].config.max_duty = max_duty;
     
     TS_LOGI(TAG, "Fan %d limits: min=%d%%, max=%d%%", fan, min_duty, max_duty);
     
+    fan_unlock(fan);
     return ESP_OK;
 }
 
@@ -1106,7 +1171,11 @@ esp_err_t ts_fan_set_limits(ts_fan_id_t fan, uint8_t min_duty, uint8_t max_duty)
 esp_err_t ts_fan_get_status(ts_fan_id_t fan, ts_fan_status_t *status)
 {
     if (fan >= TS_FAN_MAX || !status) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
+    if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        return ESP_ERR_INVALID_STATE;
+    }
     
     fan_instance_t *f = &s_fans[fan];
 
@@ -1131,6 +1200,7 @@ esp_err_t ts_fan_get_status(ts_fan_id_t fan, ts_fan_status_t *status)
     status->guard_active = f->guard_active;
     status->temp_stale = f->temp_stale;
     
+    fan_unlock(fan);
     return ESP_OK;
 }
 
@@ -1157,6 +1227,7 @@ esp_err_t ts_fan_emergency_full(void)
     
     esp_err_t result = ESP_OK;
     for (int i = 0; i < TS_FAN_MAX; i++) {
+        if (!fan_lock(i)) continue;
         if (s_fans[i].initialized) {
             s_fans[i].mode = TS_FAN_MODE_MANUAL;
             s_fans[i].enabled = true;
@@ -1165,6 +1236,7 @@ esp_err_t ts_fan_emergency_full(void)
             esp_err_t ret = update_pwm(&s_fans[i], 100);
             if (ret != ESP_OK && result == ESP_OK) result = ret;
         }
+        fan_unlock(i);
     }
     
     return result;
@@ -1202,7 +1274,11 @@ esp_err_t ts_fan_save_config(void)
     
     esp_err_t save_error = ESP_OK;
     for (int i = 0; i < TS_FAN_MAX; i++) {
-        if (!s_fans[i].initialized) continue;
+        if (!fan_lock(i)) continue;
+        if (!s_fans[i].initialized) {
+            fan_unlock(i);
+            continue;
+        }
         
         char key[16];
         snprintf(key, sizeof(key), "fan%d", i);
@@ -1223,6 +1299,7 @@ esp_err_t ts_fan_save_config(void)
         memcpy(cfg.curve, s_fans[i].config.curve, 
                s_fans[i].config.curve_points * sizeof(ts_fan_curve_point_t));
         
+        fan_unlock(i);
         ret = nvs_set_blob(nvs, key, &cfg, sizeof(cfg));
         if (ret != ESP_OK) {
             TS_LOGE(TAG, "Failed to save fan %d: %s", i, esp_err_to_name(ret));
@@ -1242,7 +1319,6 @@ esp_err_t ts_fan_save_config(void)
 esp_err_t ts_fan_save_full_config(ts_fan_id_t fan)
 {
     if (fan >= TS_FAN_MAX) return ESP_ERR_INVALID_ARG;
-    if (!s_fans[fan].initialized) return ESP_ERR_INVALID_STATE;
     
     nvs_handle_t nvs;
     esp_err_t ret = nvs_open(FAN_NVS_NAMESPACE, NVS_READWRITE, &nvs);
@@ -1253,6 +1329,15 @@ esp_err_t ts_fan_save_full_config(ts_fan_id_t fan)
     char key[16];
     snprintf(key, sizeof(key), "fan%d", fan);
     
+    if (!fan_lock(fan)) {
+        nvs_close(nvs);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_fans[fan].initialized) {
+        fan_unlock(fan);
+        nvs_close(nvs);
+        return ESP_ERR_INVALID_STATE;
+    }
     fan_nvs_config_t cfg = {
         .version = FAN_CONFIG_VERSION,
         .mode = s_fans[fan].mode,
@@ -1269,6 +1354,7 @@ esp_err_t ts_fan_save_full_config(ts_fan_id_t fan)
     memcpy(cfg.curve, s_fans[fan].config.curve, 
            s_fans[fan].config.curve_points * sizeof(ts_fan_curve_point_t));
     
+    fan_unlock(fan);
     ret = nvs_set_blob(nvs, key, &cfg, sizeof(cfg));
     if (ret == ESP_OK) {
         ret = nvs_commit(nvs);
@@ -1289,7 +1375,6 @@ esp_err_t ts_fan_load_config(void)
     
     esp_err_t result = ESP_OK;
     for (int i = 0; i < TS_FAN_MAX; i++) {
-        if (!s_fans[i].initialized) continue;
         
         char key[16];
         snprintf(key, sizeof(key), "fan%d", i);
@@ -1306,7 +1391,15 @@ esp_err_t ts_fan_load_config(void)
             TS_LOGW(TAG, "Fan %d config version mismatch, skipping", i);
             continue;
         }
-        
+        ts_temp_data_t temp_data = {0};
+        if (s_auto_temp_enabled && cfg.mode == TS_FAN_MODE_AUTO) {
+            ts_temp_get_effective_nonblocking(&temp_data);
+        }
+        if (!fan_lock(i)) continue;
+        if (!s_fans[i].initialized) {
+            fan_unlock(i);
+            continue;
+        }
         // 恢复配置
         s_fans[i].mode = cfg.mode;
         reset_adaptive_auto_state(&s_fans[i]);
@@ -1322,7 +1415,7 @@ esp_err_t ts_fan_load_config(void)
                cfg.curve_points * sizeof(ts_fan_curve_point_t));
         
         if (s_fans[i].mode == TS_FAN_MODE_AUTO && s_fans[i].pwm) {
-            ret = apply_auto_immediate(&s_fans[i]);
+            ret = apply_auto_immediate(&s_fans[i], &temp_data);
         } else if (s_fans[i].mode == TS_FAN_MODE_MANUAL && s_fans[i].pwm) {
             ret = update_pwm(&s_fans[i], cfg.duty);
         } else if (s_fans[i].mode == TS_FAN_MODE_OFF && s_fans[i].pwm) {
@@ -1330,6 +1423,7 @@ esp_err_t ts_fan_load_config(void)
         } else {
             ret = ESP_OK;
         }
+        fan_unlock(i);
         if (ret != ESP_OK && result == ESP_OK) result = ret;
         
         TS_LOGI(TAG, "Restored fan %d: mode=%d, duty=%d%%, curve=%d pts", 

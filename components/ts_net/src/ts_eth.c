@@ -35,31 +35,18 @@
 #include "dhcpserver/dhcpserver.h"
 #include "dhcpserver/dhcpserver_options.h"
 #include <string.h>
+#include <stdatomic.h>
 
 #define TAG "ts_eth"
 
-/* 以太网静态 IP 配置（作为 DHCP 服务器时使用）
- * - 设备 IP: 10.10.99.97 (DHCP 服务器自身 IP)
- * - 网关: 10.10.99.100 (客户端使用网关的 USB 网卡 IP 作为网关)
- * - DHCP Pool: 10.10.99.100 - 10.10.99.103 (4 个 IP，第一个分配给网关)
- * - DNS: 8.8.8.8
- */
-#define ETH_STATIC_IP       "10.10.99.97"
-#define ETH_STATIC_NETMASK  "255.255.255.0"
-#define ETH_STATIC_GW       "10.10.99.100"  /* 网关 = 网关设备的 USB 网卡 IP */
-#define ETH_DHCP_POOL_START "10.10.99.100"
-#define ETH_DHCP_POOL_END   "10.10.99.103"  /* 只需要 4 个 IP */
-#define ETH_DNS_SERVER      "8.8.8.8"
-
-/* 来自 esp_netif_defaults.c 的 SoftAP 默认 IP */
-extern const esp_netif_ip_info_t _g_esp_netif_soft_ap_ip;
-
+/* Host configuration is supplied by ts_net; DHCP options belong to ts_dhcp_server. */
 static esp_eth_handle_t s_eth_handle = NULL;
 static esp_netif_t *s_eth_netif = NULL;
-static bool s_link_up = false;
+static atomic_bool s_link_up = false;
 static bool s_initialized = false;
+/* Synchronous completion evidence, not link state. Events never write it. */
+static bool s_driver_stop_complete = false;
 static bool s_isr_service_installed = false;
-static TaskHandle_t s_dhcp_task = NULL;
 
 /**
  * @brief DHCP 服务器启动任务
@@ -76,15 +63,14 @@ static void dhcp_start_task(void *arg)
     if (netif && s_link_up) {
         /* 通过 ts_dhcp_server 启动 DHCP 服务器
          * 这样可以正确追踪状态和统计信息 */
-        esp_err_t ret = ts_dhcp_server_start(TS_DHCP_IF_ETH);
+        esp_err_t ret = ts_dhcp_server_eth_resume();
         if (ret == ESP_OK) {
             TS_LOGI(TAG, "DHCP server started via ts_dhcp_server");
-        } else if (ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+        } else if (ret != ESP_ERR_INVALID_STATE && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
             TS_LOGW(TAG, "DHCP start failed: %s", esp_err_to_name(ret));
         }
     }
     
-    s_dhcp_task = NULL;
     vTaskDeleteWithCaps(NULL);
 }
 
@@ -114,9 +100,9 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
              * 避免在事件处理器上下文中操作导致崩溃
              * 使用 PSRAM 栈以减少 DRAM 压力（纯网络操作）
              */
-            if (netif && s_dhcp_task == NULL) {
-                xTaskCreateWithCaps(dhcp_start_task, "dhcp_start", 4096, netif, 5, &s_dhcp_task,
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (netif && xTaskCreateWithCaps(dhcp_start_task, "dhcp_start", 4096, netif, 5, NULL,
+                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+                TS_LOGE(TAG, "Unable to schedule ETH DHCP resume");
             }
             
             esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
@@ -128,7 +114,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
         case ETHERNET_EVENT_DISCONNECTED:
             TS_LOGI(TAG, "Ethernet link down");
             s_link_up = false;
-            ts_dhcp_server_stop(TS_DHCP_IF_ETH);
+            ts_dhcp_server_eth_suspend();
             break;
             
         case ETHERNET_EVENT_START:
@@ -136,6 +122,8 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
             break;
             
         case ETHERNET_EVENT_STOP:
+            s_link_up = false;
+            ts_dhcp_server_eth_suspend();
             TS_LOGI(TAG, "Ethernet stopped");
             break;
     }
@@ -171,16 +159,9 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
  * - 设置静态 IP 配置
  * - 使用标准以太网网络栈
  */
-static esp_netif_t *create_eth_netif_with_dhcps(void)
+static esp_err_t create_eth_netif_with_dhcps(const ts_eth_config_t *config, esp_netif_t **out)
 {
-    /* 
-     * 静态 IP 配置 - 使用自定义地址
-     */
-    static esp_netif_ip_info_t eth_ip_info;
-    eth_ip_info.ip.addr = ipaddr_addr(ETH_STATIC_IP);
-    eth_ip_info.netmask.addr = ipaddr_addr(ETH_STATIC_NETMASK);
-    eth_ip_info.gw.addr = ipaddr_addr(ETH_STATIC_GW);
-    
+    *out = NULL;
     /* 
      * 基础配置 - 参考 sta2eth/ethernet_iface.c:347-353
      * 关键：使用 ESP_NETIF_DHCP_SERVER 标志而不是 ESP_NETIF_DHCP_CLIENT
@@ -188,7 +169,7 @@ static esp_netif_t *create_eth_netif_with_dhcps(void)
      */
     esp_netif_inherent_config_t base_cfg = {
         .flags = ESP_NETIF_DHCP_SERVER,      /* DHCP 服务器模式 */
-        .ip_info = &eth_ip_info,             /* 静态 IP */
+        .ip_info = &config->ip_info,         /* 静态 IP */
         .get_ip_event = 0,                   /* 不需要 get IP 事件 */
         .lost_ip_event = 0,                  /* 不需要 lost IP 事件 */
         .if_key = "ETH_DHCPS",               /* 接口标识 - ts_dhcp_server.c 通过此 key 查找 */
@@ -206,15 +187,25 @@ static esp_netif_t *create_eth_netif_with_dhcps(void)
     esp_netif_t *netif = esp_netif_new(&cfg);
     if (!netif) {
         TS_LOGE(TAG, "Failed to create Ethernet netif");
-        return NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Complete host initialization before DHCP restores its pool DNS override. */
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!config->dns[i]) continue;
+        esp_netif_dns_info_t dns = {.ip.type = ESP_IPADDR_TYPE_V4};
+        dns.ip.u_addr.ip4.addr = config->dns[i];
+        esp_err_t ret = esp_netif_set_dns_info(netif, i ? ESP_NETIF_DNS_BACKUP : ESP_NETIF_DNS_MAIN, &dns);
+        if (ret != ESP_OK) {
+            esp_netif_destroy(netif);
+            return ret;
+        }
     }
     
     TS_LOGI(TAG, "Created Ethernet netif with DHCP server mode");
-    TS_LOGI(TAG, "  Device IP: %s", ETH_STATIC_IP);
-    TS_LOGI(TAG, "  Gateway:   %s", ETH_STATIC_GW);
-    TS_LOGI(TAG, "  Netmask:   %s", ETH_STATIC_NETMASK);
     
-    return netif;
+    *out = netif;
+    return ESP_OK;
 }
 
 esp_err_t ts_eth_init(const ts_eth_config_t *config)
@@ -238,10 +229,10 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config)
     }
     
     // Create netif with DHCP server support - 必须在注册事件处理器前创建
-    s_eth_netif = create_eth_netif_with_dhcps();
-    if (!s_eth_netif) {
-        TS_LOGE(TAG, "Failed to create eth netif");
-        return ESP_FAIL;
+    esp_err_t ret = create_eth_netif_with_dhcps(config, &s_eth_netif);
+    if (ret != ESP_OK) {
+        TS_LOGE(TAG, "Failed to initialize eth netif: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     /* 
@@ -263,7 +254,7 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config)
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
-    esp_err_t ret = spi_bus_initialize(config->spi_host, &buscfg, SPI_DMA_CH_AUTO);
+    ret = spi_bus_initialize(config->spi_host, &buscfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         TS_LOGE(TAG, "SPI bus init failed: %s", esp_err_to_name(ret));
         return ret;
@@ -304,6 +295,7 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config)
         TS_LOGE(TAG, "Ethernet driver install failed");
         return ret;
     }
+    s_driver_stop_complete = true; /* A newly installed driver has not started. */
     
     // Generate and set MAC address from chip efuse
     // W5500 doesn't have built-in MAC, we derive from ESP32's base MAC
@@ -316,61 +308,10 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config)
     // Attach to netif
     esp_netif_attach(s_eth_netif, esp_eth_new_netif_glue(s_eth_handle));
     
-    /*
-     * 配置 DHCP 服务器选项 - 必须在 attach 之后完成
-     * 参考 sta2eth/ethernet_iface.c:373-377
-     * 
-     * 注意：DHCP 服务器不在这里启动！
-     * 它会在 ETHERNET_EVENT_CONNECTED 事件处理器中启动
-     * 参考 sta2eth/ethernet_iface.c:50-55
-     */
-    
-    /* 设置 MAC 地址到 netif */
-    esp_netif_set_mac(s_eth_netif, eth_mac);
-    
-    /* 设置最小租约时间 - 参考 sta2eth/ethernet_iface.c:376 */
-    uint32_t lease_opt = 60;  // 60 秒最小租约时间
-    esp_netif_dhcps_option(s_eth_netif, ESP_NETIF_OP_SET, 
-                           ESP_NETIF_IP_ADDRESS_LEASE_TIME, 
-                           &lease_opt, sizeof(lease_opt));
-    
-    /*
-     * 配置 DHCP 租约范围
-     * 注意：这里只是配置，不启动服务器
-     * 关键：必须使用 memset 初始化并设置 enable = true
-     */
-    dhcps_lease_t lease;
-    memset(&lease, 0, sizeof(lease));
-    lease.enable = true;  /* 必须为 true，否则 IP 池配置被忽略 */
-    lease.start_ip.addr = ipaddr_addr(ETH_DHCP_POOL_START);
-    lease.end_ip.addr = ipaddr_addr(ETH_DHCP_POOL_END);
-    
-    ret = esp_netif_dhcps_option(s_eth_netif, ESP_NETIF_OP_SET,
-                                  ESP_NETIF_REQUESTED_IP_ADDRESS,
-                                  &lease, sizeof(lease));
-    if (ret != ESP_OK) {
-        TS_LOGW(TAG, "Failed to set DHCP lease range: %s", esp_err_to_name(ret));
-    } else {
-        TS_LOGI(TAG, "DHCP lease range configured: %s - %s", 
-                ETH_DHCP_POOL_START, ETH_DHCP_POOL_END);
-    }
-    
-    /* 配置 DNS 选项 - 启用 DNS offer */
-    uint8_t dhcps_offer_option = OFFER_DNS;
-    ret = esp_netif_dhcps_option(s_eth_netif, ESP_NETIF_OP_SET,
-                                  ESP_NETIF_DOMAIN_NAME_SERVER,
-                                  &dhcps_offer_option, sizeof(dhcps_offer_option));
-    if (ret != ESP_OK) {
-        TS_LOGW(TAG, "Failed to enable DHCP DNS offer: %s", esp_err_to_name(ret));
-    }
-    
-    /* 设置 DNS 服务器地址 */
-    esp_netif_dns_info_t dns_info;
-    dns_info.ip.u_addr.ip4.addr = ipaddr_addr(ETH_DNS_SERVER);
-    dns_info.ip.type = ESP_IPADDR_TYPE_V4;
-    esp_netif_set_dns_info(s_eth_netif, ESP_NETIF_DNS_MAIN, &dns_info);
-    TS_LOGI(TAG, "DHCP DNS server configured: %s", ETH_DNS_SERVER);
-    
+    /* Pool, leases, bindings and DNS offers belong to ts_dhcp_server. */
+    ret = esp_netif_set_mac(s_eth_netif, eth_mac);
+    if (ret != ESP_OK) return ret;
+
     s_initialized = true;
     TS_LOGI(TAG, "Ethernet initialized");
     return ESP_OK;
@@ -405,13 +346,20 @@ esp_err_t ts_eth_deinit(void)
 esp_err_t ts_eth_start(void)
 {
     if (!s_eth_handle) return ESP_ERR_INVALID_STATE;
+    s_driver_stop_complete = false; /* A failed start may already have changed the SDK. */
     return esp_eth_start(s_eth_handle);
 }
 
 esp_err_t ts_eth_stop(void)
 {
     if (!s_eth_handle) return ESP_ERR_INVALID_STATE;
-    return esp_eth_stop(s_eth_handle);
+    if (!s_driver_stop_complete) {
+        esp_err_t ret = esp_eth_stop(s_eth_handle);
+        if (ret != ESP_OK) return ret;
+        s_driver_stop_complete = true;
+    }
+    s_link_up = false;
+    return ts_dhcp_server_is_initialized() ? ts_dhcp_server_eth_suspend() : ESP_OK;
 }
 
 bool ts_eth_is_link_up(void)
