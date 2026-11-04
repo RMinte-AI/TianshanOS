@@ -21,9 +21,9 @@ def function(source, name):
 
 
 def network_sources(output, manager, driver, network, console):
-    manager_names = ['ts_net_manager_init', 'start_eth', 'ts_net_manager_start', 'ts_net_manager_stop',
+    manager_names = ['ts_net_manager_init', 'ts_net_manager_is_initialized', 'ts_net_manager_deinit', 'stop_eth', 'operate_eth', 'start_eth', 'ts_net_manager_start', 'ts_net_manager_stop',
         'ts_net_manager_restart', 'ts_net_manager_get_status', 'ts_net_manager_get_if_status',
-        'ts_net_manager_get_config', 'ts_net_manager_set_config', 'ts_net_manager_set_ip_mode',
+        'ts_net_manager_get_netif', 'ts_net_manager_get_config', 'ts_net_manager_set_config', 'ts_net_manager_set_ip_mode',
         'ts_net_manager_set_static_ip', 'ts_net_manager_set_hostname', 'ts_net_manager_save_config',
         'read_eth_config', 'ts_net_manager_load_config', 'net_event_handler', 'update_eth_ip_from_netif', 'ts_net_ip_u32_to_str', 'ts_net_ip_str_to_u32']
     def manager_identifiers(text):
@@ -32,7 +32,7 @@ def network_sources(output, manager, driver, network, console):
     end = manager.index('static ts_net_manager_state_t s_state = {0};')
     defines = '\n'.join(line for line in manager.splitlines() if line.startswith('#define NVS_'))
     (output / 'manager_types.inc').write_text(manager_identifiers(defines + '\n' + manager[begin:end]))
-    (output / 'manager_core.inc').write_text(manager_identifiers('\n\n'.join(sorted(
+    (output / 'manager_core.inc').write_text('static esp_err_t stop_eth(void);\n' + manager_identifiers('\n\n'.join(sorted(
         (function(manager, n) for n in manager_names if re.search(r'^(?:static )?[\w *]+\b' + n + r'\([^;]*?\)\s*\{', manager, re.M)), key=manager.index))))
     (output / 'eth_creation.inc').write_text(function(driver, 'create_eth_netif_with_dhcps'))
     init = function(driver, 'ts_eth_init')
@@ -42,7 +42,7 @@ def network_sources(output, manager, driver, network, console):
     (output / 'eth_events.inc').write_text('\n\n'.join(function(driver, n) for n in
         ['dhcp_start_task', 'eth_event_handler', 'ts_eth_start', 'ts_eth_stop']))
     (output / 'network_setter.inc').write_text('\n'.join(function(network, n) for n in ['get_netif', 'ts_net_set_ip_info', 'ts_net_get_status']))
-    (output / 'network_cli.inc').write_text(function(console, 'do_net_set') + '\n' + function(console, 'do_net_ip'))
+    (output / 'network_cli.inc').write_text('\n'.join(function(console,n) for n in ['do_net_set','do_net_ip','do_net_start','do_net_stop','do_net_restart']))
 
 
 def project_sources(output, project, names):
@@ -90,6 +90,7 @@ typedef int esp_err_t;
 #define ESP_ERR_NOT_FOUND 0x105
 #define ESP_ERR_NO_MEM 0x101
 #define ESP_ERR_NOT_SUPPORTED 0x106
+#define ESP_ERR_NOT_FINISHED 0x10c
 #define ESP_ERR_NVS_NOT_FOUND 0x1102
 #define ESP_ERR_NVS_TYPE_MISMATCH 0x1103
 #define ESP_ERR_NVS_INVALID_LENGTH 0x110c
@@ -130,9 +131,10 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
                      'ts_dhcp_server_clear_static_bindings', 'ts_dhcp_server_save_config', 'ts_dhcp_server_load_config',
                      'ts_dhcp_server_start', 'ts_dhcp_server_stop', 'ts_dhcp_server_restart', 'ts_dhcp_server_set_config',
                      'ts_dhcp_server_set_pool', 'ts_dhcp_server_set_lease_time', 'ts_dhcp_server_reset_config', 'ts_dhcp_server_get_config', 'ts_dhcp_server_get_status',
-                     'ts_dhcp_server_get_state', 'ts_dhcp_server_is_running', 'ts_dhcp_state_to_str', 'ts_dhcp_server_get_restore_error', 'ts_dhcp_server_get_apply_error', 'client_lease_expiry',
+                     'ts_dhcp_server_register_event_cb', 'ts_dhcp_server_unregister_event_cb', 'ts_dhcp_server_get_state', 'ts_dhcp_server_is_running', 'ts_dhcp_state_to_str', 'ts_dhcp_server_get_restore_error', 'ts_dhcp_server_get_apply_error', 'client_lease_expiry',
                      'wifi_event_handler', 'ts_dhcp_mac_array_to_str', 'dhcp_event_task', 'ts_dhcp_server_is_initialized', 'ts_dhcp_mac_str_to_array']
     project_sources(output, project, project_names)
+    (output / 'notify_core.inc').write_text(function(project, 'notify_event').replace('static void notify_event(', 'static void production_notify_event(', 1))
     (output / 'console_core.inc').write_text('\n'.join(function(console, n) for n in ['state_color', 'format_uptime', 'do_dhcp_list_all', 'do_dhcp_status', 'do_dhcp_bind', 'do_dhcp_clear_bindings', 'do_dhcp_pool']))
     args_start = console.index('static struct {')
     args_end = console.index('} s_dhcp_args;', args_start) + len('} s_dhcp_args;')
@@ -144,6 +146,8 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
     api = (ROOT / 'components/ts_api/src/ts_api_dhcp.c').read_text()
     (output / 'dhcp_status_api.inc').write_text('\n'.join(function(api, n) for n in ['iface_name', 'add_recovery_status', 'api_dhcp_status']))
     (output / 'status_api.inc').write_text(function((ROOT / 'components/ts_api/src/ts_api_network.c').read_text(), 'add_eth_config_status'))
+    (output / 'network_service.inc').write_text('\n'.join(function((ROOT / 'main/ts_services.c').read_text(), n) for n in ['network_service_start','network_service_stop']))
+    (output / 'service_api.inc').write_text('\n'.join(function((ROOT / 'components/ts_api/src/ts_api_service.c').read_text(), n) for n in ['api_service_start','api_service_stop','api_service_restart']))
     command = ['cc', '-I' + str(idf / 'components/json/cJSON'), str(idf / 'components/json/cJSON/cJSON.c'), '-std=c11', '-pthread', '-g', '-Wall', '-Wextra', '-Wno-unused-function', '-Wno-unused-parameter',
                '-fsanitize=address,undefined', '-I' + str(stubs), '-I' + str(output),
                '-I' + str(idf / 'components/lwip/include/apps'), '-I' + str(ROOT / 'components/ts_net/include'),

@@ -336,6 +336,9 @@ static int do_net_start(const char *iface_str)
     if (ret == ESP_OK) {
         ts_console_printf("%s started successfully\n", ts_net_if_to_str(iface));
         return 0;
+    } else if (ret == ESP_ERR_NOT_FINISHED) {
+        ts_console_error("操作进行中，请稍后 (operation in progress)\n");
+        return 1;
     } else {
         ts_console_error("Failed to start %s: %s\n", ts_net_if_to_str(iface), esp_err_to_name(ret));
         return 1;
@@ -352,6 +355,9 @@ static int do_net_stop(const char *iface_str)
     if (ret == ESP_OK) {
         ts_console_printf("%s stopped\n", ts_net_if_to_str(iface));
         return 0;
+    } else if (ret == ESP_ERR_NOT_FINISHED) {
+        ts_console_error("操作进行中，请稍后 (operation in progress)\n");
+        return 1;
     } else {
         ts_console_error("Failed to stop %s: %s\n", ts_net_if_to_str(iface), esp_err_to_name(ret));
         return 1;
@@ -368,6 +374,9 @@ static int do_net_restart(const char *iface_str)
     if (ret == ESP_OK) {
         ts_console_printf("%s restarted successfully\n", ts_net_if_to_str(iface));
         return 0;
+    } else if (ret == ESP_ERR_NOT_FINISHED) {
+        ts_console_error("操作进行中，请稍后 (operation in progress)\n");
+        return 1;
     } else {
         ts_console_error("Failed to restart %s: %s\n", ts_net_if_to_str(iface), esp_err_to_name(ret));
         return 1;

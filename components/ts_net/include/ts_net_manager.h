@@ -163,8 +163,8 @@ typedef void (*ts_net_event_cb_t)(ts_net_if_t iface, ts_net_state_t state, void 
 esp_err_t ts_net_manager_init(void);
 
 /**
- * @brief 反初始化网络管理器
- * @return ESP_OK 成功
+ * @brief 反初始化网络管理器（生命周期所有者须先停止其他使用者）
+ * @return ESP_OK 成功；ETH 操作忙或停止失败时返回错误，保留资源供查询/修复，不报告销毁成功。
  */
 esp_err_t ts_net_manager_deinit(void);
 
@@ -177,21 +177,24 @@ bool ts_net_manager_is_initialized(void);
 /**
  * @brief 启动指定网络接口
  * @param iface 接口类型
- * @return ESP_OK 成功
+ * @return ESP_OK 成功；并发/回调重入 ETH 生命周期操作返回 ESP_ERR_NOT_FINISHED。
+ * 状态查询不受此操作互斥限制；驱动调用及通知不持 manager 状态锁。
  */
 esp_err_t ts_net_manager_start(ts_net_if_t iface);
 
 /**
  * @brief 停止指定网络接口
  * @param iface 接口类型
- * @return ESP_OK 成功
+ * @return ESP_OK 成功；并发/回调重入 ETH 生命周期操作返回 ESP_ERR_NOT_FINISHED。
+ * 状态查询不受此操作互斥限制；驱动调用及通知不持 manager 状态锁。
  */
 esp_err_t ts_net_manager_stop(ts_net_if_t iface);
 
 /**
  * @brief 重启指定网络接口
  * @param iface 接口类型
- * @return ESP_OK 成功
+ * @return ESP_OK 成功；并发/回调重入 ETH 生命周期操作返回 ESP_ERR_NOT_FINISHED。
+ * 状态查询不受此操作互斥限制；驱动调用及通知不持 manager 状态锁。
  */
 esp_err_t ts_net_manager_restart(ts_net_if_t iface);
 

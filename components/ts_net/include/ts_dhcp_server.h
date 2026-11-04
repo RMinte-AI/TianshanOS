@@ -182,6 +182,8 @@ bool ts_dhcp_server_is_initialized(void);
 
 /**
  * @brief 启动 DHCP 服务器
+ * ETH 候选被接纳后记录运行请求；链路未就绪时不会立即运行，后续 resume 按请求恢复。
+ * 候选校验失败不改变原运行请求；接纳后的 SDK 失败通过 apply_error 阻断自动恢复。
  * @param iface 接口类型
  * @return ESP_OK 成功
  */

@@ -131,6 +131,7 @@ typedef struct {
     bool eth_run_requested;
     const esp_netif_ip_info_t *host;
     const uint32_t *host_dns;
+    bool accepted; /* Full candidate validation passed; SDK application may follow. */
     bool installed;
     bool touched;
     esp_netif_dhcp_status_t status;
@@ -406,6 +407,7 @@ static esp_err_t apply_on_tcpip(void *arg)
     ret = op->host ? validate_network_info(op->host, op->config, op->table) :
         validate_network(op->iface, op->netif, op->config, op->table);
     if (ret != ESP_OK) return ret;
+    op->accepted = true;
     if (op->reconfigure) {
         ret = esp_netif_dhcps_stop(op->netif);
         if (ret != ESP_OK && ret != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) return ret;
@@ -464,7 +466,7 @@ static esp_err_t apply_candidate(ts_dhcp_if_t iface, const ts_dhcp_config_t *con
     if (!op->netif) return ESP_ERR_NOT_FOUND;
     op->config = config;
     op->table = &table;
-    op->eth_run_requested = s_state.eth_want_running;
+    op->eth_run_requested = op->explicit_start || s_state.eth_want_running;
     op->reconfigure |= !state->applied_valid || state->apply_error != ESP_OK ||
                        !same_network_config(config, &state->applied_config);
     if (op->host) {
@@ -481,7 +483,7 @@ static esp_err_t apply_candidate(ts_dhcp_if_t iface, const ts_dhcp_config_t *con
         if (count && bindings != state->static_bindings) memcpy(state->static_bindings, bindings, count * sizeof(*bindings));
         state->static_binding_count = count;
     }
-    if (op->touched || op->installed) state->apply_error = ret;
+    if (op->accepted) state->apply_error = ret;
     if (op->event == TS_DHCP_EVENT_STARTED) state->start_tick = xTaskGetTickCount();
     else if (op->status_valid && op->status != ESP_NETIF_DHCP_STARTED) state->start_tick = 0;
     if (op->cleanup_error != ESP_OK) TS_LOGE(TAG, "%s cleanup failed: %s", ts_dhcp_if_to_str(iface), esp_err_to_name(op->cleanup_error));
@@ -935,7 +937,6 @@ static esp_err_t apply_interface(ts_dhcp_if_t iface, bool explicit_start, bool f
     if (iface >= TS_DHCP_IF_MAX) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     ts_dhcp_if_state_t *state = &s_state.iface[iface];
-    if (iface == TS_DHCP_IF_ETH && explicit_start) s_state.eth_want_running = true;
     bool resume = !explicit_start && !host;
     esp_err_t ret = resume ? eth_resume_error() : state->config_restore_error != ESP_OK ?
         state->config_restore_error : state->bindings_restore_error;
@@ -944,6 +945,7 @@ static esp_err_t apply_interface(ts_dhcp_if_t iface, bool explicit_start, bool f
                          .host = host, .host_dns = host_dns, .event = -1};
     if (ret == ESP_OK) {
         ret = apply_candidate(iface, config, state->static_bindings, state->static_binding_count, &op);
+        if (iface == TS_DHCP_IF_ETH && explicit_start && op.accepted) s_state.eth_want_running = true;
         if (resume && ret != ESP_OK) state->apply_error = ret;
     }
     xSemaphoreGive(s_state.mutex);

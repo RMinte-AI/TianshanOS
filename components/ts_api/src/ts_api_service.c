@@ -192,7 +192,8 @@ static esp_err_t api_service_start(const cJSON *params, ts_api_result_t *result)
     
     esp_err_t ret = ts_service_start(handle);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, ret == ESP_ERR_NOT_FINISHED ? TS_API_ERR_BUSY : TS_API_ERR_INTERNAL, "Failed to start service");
+        ts_api_result_error(result, ret == ESP_ERR_NOT_FINISHED ? TS_API_ERR_BUSY : TS_API_ERR_INTERNAL,
+            ret == ESP_ERR_NOT_FINISHED ? "Operation in progress; try again later" : "Failed to start service");
         return ret;
     }
     
@@ -230,7 +231,8 @@ static esp_err_t api_service_stop(const cJSON *params, ts_api_result_t *result)
     
     esp_err_t ret = ts_service_stop(handle);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, ret == ESP_ERR_NOT_FINISHED ? TS_API_ERR_BUSY : TS_API_ERR_INTERNAL, "Failed to stop service");
+        ts_api_result_error(result, ret == ESP_ERR_NOT_FINISHED ? TS_API_ERR_BUSY : TS_API_ERR_INTERNAL,
+            ret == ESP_ERR_NOT_FINISHED ? "Operation in progress; try again later" : "Failed to stop service");
         return ret;
     }
     
@@ -268,7 +270,8 @@ static esp_err_t api_service_restart(const cJSON *params, ts_api_result_t *resul
     
     esp_err_t ret = ts_service_restart(handle);
     if (ret != ESP_OK) {
-        ts_api_result_error(result, ret == ESP_ERR_NOT_FINISHED ? TS_API_ERR_BUSY : TS_API_ERR_INTERNAL, "Failed to restart service");
+        ts_api_result_error(result, ret == ESP_ERR_NOT_FINISHED ? TS_API_ERR_BUSY : TS_API_ERR_INTERNAL,
+            ret == ESP_ERR_NOT_FINISHED ? "Operation in progress; try again later" : "Failed to restart service");
         return ret;
     }
     

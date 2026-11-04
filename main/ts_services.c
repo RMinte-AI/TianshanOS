@@ -431,6 +431,7 @@ static esp_err_t network_service_start(ts_service_handle_t handle, void *user_da
     
     /* 启动以太网 */
     esp_err_t ret = ts_net_manager_start(TS_NET_IF_ETH);
+    if (ret == ESP_ERR_NOT_FINISHED) return ret;
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to start Ethernet: %s", esp_err_to_name(ret));
         /* 不是致命错误，继续 */
@@ -467,10 +468,11 @@ static esp_err_t network_service_stop(ts_service_handle_t handle, void *user_dat
     
     ESP_LOGI(TAG, "Stopping network service...");
     
-    ts_net_manager_stop(TS_NET_IF_ETH);
-    ts_net_manager_stop(TS_NET_IF_WIFI_STA);
-    
-    return ESP_OK;
+    if (ts_net_manager_get_netif(TS_NET_IF_ETH)) {
+        esp_err_t ret = ts_net_manager_stop(TS_NET_IF_ETH);
+        if (ret != ESP_OK) return ret;
+    }
+    return ts_net_manager_stop(TS_NET_IF_WIFI_STA);
 }
 
 static bool network_service_health(ts_service_handle_t handle, void *user_data)

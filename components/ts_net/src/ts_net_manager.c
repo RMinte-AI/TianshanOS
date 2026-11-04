@@ -32,6 +32,7 @@
 #include "lwip/ip4_addr.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include "esp_heap_caps.h"
 
 /* PSRAM 优先分配宏 */
@@ -101,6 +102,10 @@ typedef struct {
     uint32_t wifi_connect_time;
 } ts_net_manager_state_t;
 
+/* Non-waiting ETH lifecycle guard. Survives deinit; never held by queries/events. */
+static atomic_flag s_eth_operation = ATOMIC_FLAG_INIT;
+typedef enum { ETH_OP_START, ETH_OP_STOP, ETH_OP_RESTART } eth_operation_t;
+
 static ts_net_manager_state_t s_state = {0};
 
 /* ============================================================================
@@ -112,6 +117,7 @@ static void net_event_handler(void *arg, esp_event_base_t event_base,
 static void ip_event_handler(void *arg, esp_event_base_t event_base,
                               int32_t event_id, void *event_data);
 static esp_err_t load_eth_config_from_pins(ts_eth_config_t *eth_hw_config);
+static esp_err_t stop_eth(void);
 
 /* ============================================================================
  * 工具函数
@@ -539,12 +545,21 @@ esp_err_t ts_net_manager_init(void)
 
 esp_err_t ts_net_manager_deinit(void)
 {
-    if (!s_state.initialized) return ESP_OK;
-    
+    if (atomic_flag_test_and_set_explicit(&s_eth_operation, memory_order_acquire)) return ESP_ERR_NOT_FINISHED;
+    if (!s_state.initialized) {
+        atomic_flag_clear_explicit(&s_eth_operation, memory_order_release);
+        return ESP_OK;
+    }
+    esp_err_t ret = ESP_OK;
     TS_LOGI(TAG, "Deinitializing network manager...");
     
     /* 停止所有接口 */
-    ts_net_manager_stop(TS_NET_IF_ETH);
+#ifdef CONFIG_TS_NET_ETHERNET_ENABLE
+    if (ts_eth_get_netif()) {
+        ret = stop_eth(); /* Already owns the lifecycle guard; no public reentry. */
+        if (ret != ESP_OK) goto done;
+    }
+#endif
     ts_net_manager_stop(TS_NET_IF_WIFI_STA);
     
     /* 注销事件处理器 */
@@ -577,8 +592,11 @@ esp_err_t ts_net_manager_deinit(void)
     
     memset(&s_state, 0, sizeof(s_state));
     TS_LOGI(TAG, "Network manager deinitialized");
-    
-    return ESP_OK;
+#ifdef CONFIG_TS_NET_ETHERNET_ENABLE
+done:
+#endif
+    atomic_flag_clear_explicit(&s_eth_operation, memory_order_release);
+    return ret;
 }
 
 bool ts_net_manager_is_initialized(void)
@@ -626,10 +644,14 @@ static esp_err_t start_eth(bool restart)
         if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return ret;
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     s_state.eth_status.state = TS_NET_STATE_STARTING;
+    xSemaphoreGive(s_state.mutex);
     ret = ts_eth_start();
     if (ret != ESP_OK) {
+        xSemaphoreTake(s_state.mutex, portMAX_DELAY);
         s_state.eth_status.state = TS_NET_STATE_ERROR;
+        xSemaphoreGive(s_state.mutex);
         TS_LOGE(TAG, "Ethernet start failed: %s", esp_err_to_name(ret));
     }
     return ret;
@@ -638,10 +660,35 @@ static esp_err_t start_eth(bool restart)
 #endif
 }
 
+/* Called with the ETH operation guard, without the manager state mutex. */
+static esp_err_t stop_eth(void)
+{
+#ifdef CONFIG_TS_NET_ETHERNET_ENABLE
+    esp_err_t ret = ts_eth_stop();
+    xSemaphoreTake(s_state.mutex, portMAX_DELAY);
+    s_state.eth_status.state = ret == ESP_OK ? TS_NET_STATE_INITIALIZED : TS_NET_STATE_ERROR;
+    s_state.eth_status.link_up = ts_eth_is_link_up();
+    if (!s_state.eth_status.link_up) s_state.eth_status.has_ip = false;
+    xSemaphoreGive(s_state.mutex);
+    return ret;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+static esp_err_t operate_eth(eth_operation_t operation)
+{
+    if (atomic_flag_test_and_set_explicit(&s_eth_operation, memory_order_acquire)) return ESP_ERR_NOT_FINISHED;
+    esp_err_t ret = !s_state.initialized ? ESP_ERR_INVALID_STATE :
+        operation == ETH_OP_STOP ? stop_eth() : start_eth(operation == ETH_OP_RESTART);
+    atomic_flag_clear_explicit(&s_eth_operation, memory_order_release);
+    return ret;
+}
+
 esp_err_t ts_net_manager_start(ts_net_if_t iface)
 {
+    if (iface == TS_NET_IF_ETH) return operate_eth(ETH_OP_START);
     if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
-    if (iface == TS_NET_IF_ETH) return start_eth(false);
     
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     esp_err_t ret = ESP_OK;
@@ -764,22 +811,13 @@ esp_err_t ts_net_manager_start(ts_net_if_t iface)
 
 esp_err_t ts_net_manager_stop(ts_net_if_t iface)
 {
+    if (iface == TS_NET_IF_ETH) return operate_eth(ETH_OP_STOP);
     if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
-    
+
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
     esp_err_t ret = ESP_OK;
     
     switch (iface) {
-        case TS_NET_IF_ETH:
-#ifdef CONFIG_TS_NET_ETHERNET_ENABLE
-            TS_LOGI(TAG, "Stopping Ethernet...");
-            ret = ts_eth_stop();
-            s_state.eth_status.state = TS_NET_STATE_INITIALIZED;
-            s_state.eth_status.link_up = false;
-            s_state.eth_status.has_ip = false;
-#endif
-            break;
-            
         case TS_NET_IF_WIFI_STA:
 #ifdef CONFIG_TS_NET_WIFI_ENABLE
             TS_LOGI(TAG, "Stopping WiFi STA...");
@@ -829,8 +867,8 @@ esp_err_t ts_net_manager_stop(ts_net_if_t iface)
 
 esp_err_t ts_net_manager_restart(ts_net_if_t iface)
 {
+    if (iface == TS_NET_IF_ETH) return operate_eth(ETH_OP_RESTART);
     if (!s_state.initialized) return ESP_ERR_INVALID_STATE;
-    if (iface == TS_NET_IF_ETH) return start_eth(true);
     esp_err_t ret = ts_net_manager_stop(iface);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         return ret;
@@ -857,6 +895,13 @@ esp_err_t ts_net_manager_get_status(ts_net_manager_status_t *status)
     
     status->initialized = s_state.initialized;
     memcpy(&status->eth, &s_state.eth_status, sizeof(ts_net_if_status_t));
+    /* A stop callback may run before queued ETH events update the snapshot. */
+    status->eth.link_up = ts_eth_is_link_up();
+    if (!status->eth.link_up) {
+        status->eth.has_ip = false;
+        if (status->eth.state == TS_NET_STATE_CONNECTED || status->eth.state == TS_NET_STATE_GOT_IP)
+            status->eth.state = TS_NET_STATE_DISCONNECTED;
+    }
     memcpy(&status->wifi_sta, &s_state.wifi_sta_status, sizeof(ts_net_if_status_t));
     memcpy(&status->wifi_ap, &s_state.wifi_ap_status, sizeof(ts_net_if_status_t));
     strncpy(status->hostname, s_state.hostname, TS_NET_HOSTNAME_MAX_LEN);
@@ -877,7 +922,7 @@ esp_err_t ts_net_manager_get_status(ts_net_manager_status_t *status)
 
     /* 计算连接时长 */
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    if (s_state.eth_status.state == TS_NET_STATE_GOT_IP) {
+    if (status->eth.state == TS_NET_STATE_GOT_IP) {
         status->eth.uptime_sec = (now - s_state.eth_connect_time) / 1000;
     }
     

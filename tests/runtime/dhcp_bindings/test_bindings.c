@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <setjmp.h>
 #include <time.h>
+#include <stdatomic.h>
 #include "cJSON.h"
 #include "esp_err.h"
 #include "esp_netif.h"
@@ -207,10 +208,12 @@ static void interface_up(unsigned index) {
 static TickType_t model_tick=100;
 static TickType_t xTaskGetTickCount(void) {return model_tick;}
 static unsigned started_notifications, stopped_notifications;
+#include "notify_core.inc"
 static void notify_event(ts_dhcp_if_t iface,ts_dhcp_event_t e,const ts_dhcp_client_t *client) {
     assert(!on_tcpip&&!project_lock_depth&&!manager_lock_depth);
     if(e==TS_DHCP_EVENT_STARTED)started_notifications++;
     if(e==TS_DHCP_EVENT_STOPPED)stopped_notifications++;
+    production_notify_event(iface,e,client);
 }
 const char *ts_dhcp_if_to_str(ts_dhcp_if_t iface) {return iface?"ethernet":"wifi_ap";}
 /* NVS key/value model runs the production explicit save and load functions. */
@@ -293,8 +296,10 @@ static void vQueueDelete(QueueHandle_t q){}
 #define pdPASS 1
 static int xTaskCreate(void (*fn)(void*),const char *name,unsigned stack,void *arg,unsigned prio,TaskHandle_t *task){*task=(void*)1;return pdPASS;}
 static esp_err_t esp_event_handler_register(esp_event_base_t base,int id,void (*fn)(void*,esp_event_base_t,int32_t,void*),void *arg){return ESP_OK;}
+static void esp_event_handler_unregister(esp_event_base_t base,int id,void (*fn)(void*,esp_event_base_t,int32_t,void*)){}
 static void ip_event_handler(void *arg,esp_event_base_t base,int32_t id,void *data){}
 #include "network_validation.inc"
+#define TS_DHCP_MALLOC malloc
 #include "project_core.inc"
 static char console_text[1024];
 static const char *esp_err_to_name(esp_err_t err) {return "mock error";}
@@ -743,6 +748,8 @@ static void check_lifecycle(void) {
     record("NVS_read_write_commit_errors_and_retry_recovery");
 }
 int main(void) {
+    check_manager_control_boundaries();
+    check_start_intent_boundaries();
     check_transitions_and_queries();
     check_eth_lifecycle();
     check_lifecycle();

@@ -25,7 +25,8 @@ typedef struct {const esp_netif_inherent_config_t *base;void *driver,*stack;} es
 static esp_netif_t *s_eth_netif;
 static esp_eth_handle_t s_eth_handle=(void*)1;
 static unsigned created_count, driver_stops, driver_starts;
-static bool driver_running;
+static bool driver_running, fail_driver_stop;
+static void (*driver_stop_hook)(void);
 static esp_netif_ip_info_t created_host;
 static int event_queue[32];static size_t events_count;
 static void (*delayed_tasks[16])(void*);static void *delayed_args[16];static unsigned delayed_count;
@@ -53,6 +54,8 @@ static esp_err_t esp_eth_start(esp_eth_handle_t h){
     return ESP_OK;
 }
 static esp_err_t esp_eth_stop(esp_eth_handle_t h){
+    if(driver_stop_hook)driver_stop_hook();
+    if(fail_driver_stop)return ESP_FAIL;
     if(!driver_running)return ESP_ERR_INVALID_STATE;
     driver_running=false;driver_stops++;
     event_queue[events_count++]=ETHERNET_EVENT_DISCONNECTED;event_queue[events_count++]=ETHERNET_EVENT_STOP;
@@ -72,6 +75,7 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config){
     return s_eth_netif?ESP_OK:ESP_FAIL;
 }
 esp_netif_t *ts_eth_get_netif(void){return s_eth_netif;}
+esp_err_t ts_eth_deinit(void){ts_eth_stop();s_eth_netif=NULL;eth_netif_exists=false;return ESP_OK;}
 #include "eth_events.inc"
 esp_err_t ts_net_mdns_start(void){return ESP_OK;}
 static int manager_take(SemaphoreHandle_t mutex,int ticks){
@@ -103,6 +107,24 @@ static ts_net_if_t net_parse_iface(const char *name){return !strcmp(name,"eth")?
 #undef ts_console_error
 #undef parse_iface
 #include "status_api.inc"
+
+/* Service-owner and registry boundaries; execute the real main hooks/API handlers. */
+typedef void *ts_service_handle_t;
+#include "ts_time_sync.h"
+static unsigned aux_starts;
+esp_err_t ts_time_sync_init(const ts_time_sync_config_t *config){aux_starts++;return ESP_OK;}
+static esp_err_t ts_device_lpmu_start_detection(void){aux_starts++;return ESP_OK;}
+#define ESP_LOGI(...) ((void)0)
+#define ESP_LOGW(...) ((void)0)
+#include "network_service.inc"
+static ts_service_handle_t ts_service_find(const char *name){return (void*)1;}
+static esp_err_t ts_service_start(ts_service_handle_t h){return network_service_start(h,NULL);}
+static esp_err_t ts_service_stop(ts_service_handle_t h){return network_service_stop(h,NULL);}
+static esp_err_t ts_service_restart(ts_service_handle_t h){esp_err_t r=network_service_stop(h,NULL);return r==ESP_OK?network_service_start(h,NULL):r;}
+#define TS_API_ERR_BUSY 3
+#define TS_API_ERR_INVALID_ARG 4
+#define TS_API_ERR_NOT_FOUND 5
+#include "service_api.inc"
 
 static void deliver_events(void){
     for(size_t i=0;i<events_count;i++){
@@ -136,6 +158,7 @@ static void hardware_reset(void){
     boot_defaults(false);memset(&manager_state,0,sizeof(manager_state));
     s_state.initialized=false;s_state.mutex=NULL;eth_netif_exists=false;s_eth_netif=NULL;s_link_up=false;
     created_count=driver_starts=driver_stops=0;events_count=0;driver_running=false;
+    driver_stop_hook=NULL;fail_driver_stop=false;
     delayed_count=0;started_notifications=stopped_notifications=0;
 }
 /* Shared by ordinary boot acceptance and the optional historical probes. */
@@ -299,4 +322,111 @@ static void check_eth_lifecycle(void){
     assert(ts_dhcp_server_stop(0)==ESP_OK&&stopped_notifications==stopped+1);
     record("AP_auto_started_stop_notification_uses_real_SDK_state_outside_lock");
     setup(true); /* Release model leases and restore original test environment. */
+}
+/* Frozen P2 boundaries: real callback registration, caller reentry, two callers,
+ * driver-vs-DHCP failure, and rejected/accepted intent. No device acceptance. */
+static unsigned control_callbacks;
+static bool callback_start_dhcp;
+static void control_callback(ts_dhcp_if_t iface,ts_dhcp_event_t event,const ts_dhcp_client_t *client,void *arg){
+    if(iface!=TS_DHCP_IF_ETH||event!=TS_DHCP_EVENT_STOPPED)return;
+    control_callbacks++;
+    ts_net_manager_status_t status;assert(ts_net_manager_get_status(&status)==ESP_OK);
+    assert(!status.eth.link_up&&!status.eth.has_ip&&status.eth.state!=TS_NET_STATE_GOT_IP);
+    (void)ts_net_get_status(TS_NET_IF_ETH);
+    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_ERR_NOT_FINISHED);
+    assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_ERR_NOT_FINISHED);
+    assert(ts_net_manager_restart(TS_NET_IF_ETH)==ESP_ERR_NOT_FINISHED);
+    assert(ts_net_manager_deinit()==ESP_ERR_NOT_FINISHED);
+    int (*commands[])(const char*)={do_net_start,do_net_stop,do_net_restart};
+    for(unsigned i=0;i<3;i++){console_text[0]=0;assert(commands[i]("eth")==1&&strstr(console_text,"operation in progress"));}
+    cJSON *params=cJSON_CreateObject();cJSON_AddStringToObject(params,"name","network");
+    esp_err_t (*apis[])(const cJSON*,ts_api_result_t*)={api_service_start,api_service_stop,api_service_restart};
+    for(unsigned i=0;i<3;i++){
+        ts_api_result_t result={0};unsigned auxiliary=aux_starts;
+        assert(apis[i](params,&result)==ESP_ERR_NOT_FINISHED&&result.code==TS_API_ERR_BUSY);
+        assert(strstr(result.message,"Operation in progress")&&aux_starts==auxiliary);
+        ts_api_result_free(&result);
+    }
+    cJSON_Delete(params);
+    if(callback_start_dhcp){
+        unsigned starts=start_calls;
+        assert(ts_dhcp_server_start(TS_DHCP_IF_ETH)==ESP_OK);
+        assert(!s_link_up&&netifs[1].status==ESP_NETIF_DHCP_STOPPED&&start_calls==starts);
+    }
+}
+static pthread_mutex_t control_barrier=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t control_condition=PTHREAD_COND_INITIALIZER;
+static bool driver_entered,driver_continue;
+static void pause_driver_stop(void){
+    pthread_mutex_lock(&control_barrier);driver_entered=true;pthread_cond_broadcast(&control_condition);
+    while(!driver_continue)pthread_cond_wait(&control_condition,&control_barrier);
+    pthread_mutex_unlock(&control_barrier);
+}
+static void *stop_network_thread(void *arg){assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_OK);return NULL;}
+static void check_manager_control_boundaries(void){
+    for(unsigned teardown=0;teardown<2;teardown++){
+        prepare_custom_boot();control_callbacks=0;callback_start_dhcp=!teardown;
+        assert(ts_dhcp_server_register_event_cb(control_callback,NULL)==ESP_OK);
+        assert((teardown?ts_net_manager_deinit():ts_net_manager_stop(TS_NET_IF_ETH))==ESP_OK);
+        assert(control_callbacks==1&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
+        assert(ts_dhcp_server_unregister_event_cb(control_callback)==ESP_OK);
+        if(!teardown){assert(eth_run_requested());assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();assert(netifs[1].status==ESP_NETIF_DHCP_STARTED);}
+        else {assert(!ts_net_manager_is_initialized());assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_ERR_INVALID_STATE);}
+    }
+    record("P2_manager_stop_deinit_callback_queries_succeed_reentry_busy_DHCP_start_defers_until_link");
+
+    prepare_custom_boot();driver_entered=driver_continue=false;driver_stop_hook=pause_driver_stop;
+    pthread_t thread;assert(!pthread_create(&thread,NULL,stop_network_thread,NULL));
+    pthread_mutex_lock(&control_barrier);while(!driver_entered)pthread_cond_wait(&control_condition,&control_barrier);pthread_mutex_unlock(&control_barrier);
+    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_ERR_NOT_FINISHED);
+    assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_ERR_NOT_FINISHED);
+    assert(ts_net_manager_restart(TS_NET_IF_ETH)==ESP_ERR_NOT_FINISHED);
+    assert(ts_net_manager_deinit()==ESP_ERR_NOT_FINISHED);
+    ts_net_manager_status_t status;assert(ts_net_manager_get_status(&status)==ESP_OK);
+    assert(status.eth.link_up&&driver_running); /* Operation request is not a stopped fact. */
+    pthread_mutex_lock(&control_barrier);driver_continue=true;pthread_cond_broadcast(&control_condition);pthread_mutex_unlock(&control_barrier);
+    assert(!pthread_join(thread,NULL));driver_stop_hook=NULL;
+    assert(ts_net_manager_get_status(&status)==ESP_OK&&status.eth.state==TS_NET_STATE_INITIALIZED&&!status.eth.link_up);
+    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
+    record("P2_two_threads_ETH_operation_busy_queries_available_guard_released_after_stop");
+
+    for(unsigned teardown=0;teardown<2;teardown++)for(unsigned driver_failure=0;driver_failure<2;driver_failure++){
+        prepare_custom_boot();if(driver_failure)fail_driver_stop=true;else fail_stage=FAIL_STOP;
+        assert((teardown?ts_net_manager_deinit():ts_net_manager_stop(TS_NET_IF_ETH))==ESP_FAIL);
+        assert(ts_net_manager_is_initialized()&&ts_eth_get_netif());
+        ts_dhcp_status_t dhcp;assert(ts_net_manager_get_status(&status)==ESP_OK&&status.eth.state==TS_NET_STATE_ERROR);
+        assert(ts_dhcp_server_get_status(TS_DHCP_IF_ETH,&dhcp)==ESP_OK);
+        assert(status.eth.link_up==(bool)driver_failure&&status.eth.has_ip==(bool)driver_failure);
+        assert(dhcp.apply_error==(driver_failure?ESP_OK:ESP_FAIL)&&dhcp.state==TS_DHCP_STATE_RUNNING);
+        fail_driver_stop=false;
+        if(!driver_failure){deliver_events();assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();assert(netifs[1].status==ESP_NETIF_DHCP_STOPPED&&ts_dhcp_server_get_apply_error(1)==ESP_FAIL);}
+    }
+    record("P2_driver_and_DHCP_stop_failures_keep_actual_state_and_correct_error_owner");
+
+}
+static void check_start_intent_boundaries(void){
+    for(unsigned restart=0;restart<2;restart++)for(unsigned rejection=0;rejection<3;rejection++){
+        prepare_custom_boot();assert(ts_dhcp_server_stop(1)==ESP_OK);
+        if(rejection==0)prepare_pool("192.168.60");
+        if(rejection==1){fail_open_read=true;assert(ts_dhcp_server_load_config()==ESP_FAIL);fail_open_read=false;}
+        if(rejection==2)fail_stage=FAIL_STATUS;
+        esp_err_t ret=restart?ts_dhcp_server_restart(1):ts_dhcp_server_start(1);
+        assert(ret==(rejection==0?ESP_ERR_INVALID_ARG:ESP_FAIL));
+        assert(!eth_run_requested()&&ts_dhcp_server_get_apply_error(1)==ESP_OK);
+        unsigned starts=started_notifications;link_down();link_up();run_delayed_task();
+        assert(netifs[1].status==ESP_NETIF_DHCP_STOPPED&&!eth_run_requested()&&started_notifications==starts);
+    }
+    record("P2_rejected_start_restart_from_stopped_preserve_intent_across_reconnect");
+
+    const enum failure_stage stages[]={FAIL_STOP,FAIL_BINDINGS,FAIL_START};
+    for(unsigned requested=0;requested<2;requested++)for(unsigned i=0;i<3;i++){
+        prepare_custom_boot();if(!requested)assert(ts_dhcp_server_stop(1)==ESP_OK);
+        assert(ts_dhcp_server_set_lease_time(1,121)==ESP_OK);fail_stage=stages[i];
+        assert(ts_dhcp_server_start(1)==ESP_FAIL&&eth_run_requested());
+        assert(ts_dhcp_server_get_apply_error(1)==ESP_FAIL);
+        link_down();unsigned dispatches=apply_dispatches,starts=started_notifications;link_up();run_delayed_task();
+        assert(netifs[1].status==ESP_NETIF_DHCP_STOPPED&&apply_dispatches==dispatches&&started_notifications==starts);
+    }
+    record("P2_accepted_start_SDK_failure_including_stop_latches_error_and_blocks_resume");
+    setup(true);
 }

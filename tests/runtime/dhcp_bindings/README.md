@@ -31,3 +31,7 @@ python3 tests/runtime/dhcp_bindings/probes/replay.py --output /tmp/pr62-dhcp-pro
 恢复时可通过 AP/串口修正并保存主机网络配置后重启，原 DHCP 数据留在 NVS；明确更换 DHCP 数据则完整设置池、按接口清空/重建绑定，随后单独保存。未创建 ETH 的情况需要重启。
 
 测试减量只针对重复搭建和重复证明，不以行数目标删独立风险。以上不证明硬件和真实客户端互通；真机 AP/ETH 首个 OFFER、option 6/51、重连仍待授权验收。
+
+P2 补充：manager ETH start/stop/restart/deinit 使用非等待操作互斥，状态查询不取它；真实 STOPPED 回调查询可返回，manager 操作重入/并发返回 NOT_FINISHED（CLI/API 显示忙）。DHCP 控制仍用原锁；停止链路时回调中的 DHCP start 只登记未来意图，重连才实际运行。驱动 stop 失败不污染 DHCP 错误；suspend 失败保留 SDK 实际状态并阻断 resume。
+
+手动探针另对 `0ab404a15` 的真实注册回调/manager stop 与停止后非法 start/restart 执行相同检查：旧版预期断言失败（exit -6），当前通过（exit 0）。这是故意触发测试断言的反证，不是产品崩溃或真机验收。

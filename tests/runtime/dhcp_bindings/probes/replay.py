@@ -42,10 +42,12 @@ def replay(output, idf):
     harness = (ROOT / 'tests/runtime/dhcp_bindings/test_bindings.c').read_text()
     prelude = harness[:harness.index('#include "project_core.inc"')]
     support = harness[:harness.index('static void check_transitions_and_queries')]
-    lifecycle = (ROOT / 'tests/runtime/dhcp_bindings/test_eth_lifecycle.inc').read_text().split('static void check_eth_lifecycle')[0]
+    lifecycle = (ROOT / 'tests/runtime/dhcp_bindings/test_eth_lifecycle.inc').read_text()
     legacy = ['apply_candidate_to_host', 'restore_error', 'apply_config_to_netif', 'restore_static_bindings']
     cases = [('ap', 'aad8d1a59', 10), ('ap', 'f43f3b742', 11), ('ap', 'current', 0),
-             ('eth', 'c55643827', 12), ('eth', 'current', 0), ('isolation', '4abf001a3', 15), ('isolation', 'current', 0)]
+             ('eth', 'c55643827', 12), ('eth', 'current', 0), ('isolation', '4abf001a3', 15), ('isolation', 'current', 0),
+             ('control', '0ab404a15', -6), ('control', 'current', 0),
+             ('intent', '0ab404a15', -6), ('intent', 'current', 0)]
     results = []
     for kind, ref, expected in cases:
         directory = output / (kind + '-' + ref)
@@ -68,8 +70,11 @@ def replay(output, idf):
                     f.write('\nstatic void initialize_eth_intent(void) {}\n')
             suite.network_sources(directory, *(read('components/ts_net/src/'+n) for n in ['ts_net_manager.c','ts_eth.c','ts_net.c']), read('components/ts_console/commands/ts_cmd_net.c'))
             constants = '\n'.join(line for line in read('components/ts_net/src/ts_eth.c').splitlines() if line.startswith('#define ETH_'))
-            (directory / 'test_eth_lifecycle.inc').write_text(constants+'\n'+lifecycle)
-            source = 'static void *s_dhcp_task;\nstatic void vTaskDelay(unsigned ticks);\n' + support + '\nint main(void) { int ret=boot_eth('+('true' if kind=='isolation' else 'false')+');for(unsigned i=0;i<2;i++)drain(&servers[i]);return ret;}\n'
+            (directory / 'test_eth_lifecycle.inc').write_text(constants+'\n'+(lifecycle if kind in ('control','intent') else lifecycle.split('static void check_eth_lifecycle')[0]))
+            main = ('check_manager_control_boundaries();for(unsigned i=0;i<2;i++)drain(&servers[i]);return 0;' if kind == 'control' else
+                    'check_start_intent_boundaries();return 0;' if kind == 'intent' else
+                    'int ret=boot_eth('+('true' if kind=='isolation' else 'false')+');for(unsigned i=0;i<2;i++)drain(&servers[i]);return ret;')
+            source = 'static void *s_dhcp_task;\nstatic void vTaskDelay(unsigned ticks);\n' + support + '\nint main(void) { '+main+' }\n'
         (directory / 'probe.c').write_text(source)
         command = manifest['command'].copy()
         command[command.index('-I'+str(output))] = '-I'+str(directory)
