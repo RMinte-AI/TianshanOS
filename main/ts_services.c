@@ -472,7 +472,8 @@ static esp_err_t network_service_stop(ts_service_handle_t handle, void *user_dat
         esp_err_t ret = ts_net_manager_stop(TS_NET_IF_ETH);
         if (ret != ESP_OK) return ret;
     }
-    return ts_net_manager_stop(TS_NET_IF_WIFI_STA);
+    return ts_net_manager_get_netif(TS_NET_IF_WIFI_STA) ?
+        ts_net_manager_stop(TS_NET_IF_WIFI_STA) : ESP_OK;
 }
 
 static bool network_service_health(ts_service_handle_t handle, void *user_data)

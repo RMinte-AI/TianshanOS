@@ -47,7 +47,9 @@ def replay(output, idf):
     cases = [('ap', 'aad8d1a59', 10), ('ap', 'f43f3b742', 11), ('ap', 'current', 0),
              ('eth', 'c55643827', 12), ('eth', 'current', 0), ('isolation', '4abf001a3', 15), ('isolation', 'current', 0),
              ('control', '0ab404a15', -6), ('control', 'current', 0),
-             ('intent', '0ab404a15', -6), ('intent', 'current', 0)]
+             ('intent', '0ab404a15', -6), ('intent', 'current', 0),
+             ('service_eth', 'e05946717', 17), ('service_eth', 'current', 0),
+             ('service_sta', 'e05946717', 18), ('service_sta', 'current', 0)]
     results = []
     for kind, ref, expected in cases:
         directory = output / (kind + '-' + ref)
@@ -70,8 +72,13 @@ def replay(output, idf):
                     f.write('\nstatic void initialize_eth_intent(void) {}\n')
             suite.network_sources(directory, *(read('components/ts_net/src/'+n) for n in ['ts_net_manager.c','ts_eth.c','ts_net.c']), read('components/ts_console/commands/ts_cmd_net.c'))
             constants = '\n'.join(line for line in read('components/ts_net/src/ts_eth.c').splitlines() if line.startswith('#define ETH_'))
-            (directory / 'test_eth_lifecycle.inc').write_text(constants+'\n'+(lifecycle if kind in ('control','intent') else lifecycle.split('static void check_eth_lifecycle')[0]))
-            main = ('check_manager_control_boundaries();for(unsigned i=0;i<2;i++)drain(&servers[i]);return 0;' if kind == 'control' else
+            (directory / 'test_eth_lifecycle.inc').write_text(constants+'\n'+(lifecycle if kind in ('control','intent','service_eth','service_sta') else lifecycle.split('static void check_eth_lifecycle')[0]))
+            (directory / 'wifi_core.inc').write_text('\n'.join(suite.function(read('components/ts_net/src/ts_wifi.c'),n) for n in ['ts_wifi_set_mode','ts_wifi_get_mode','ts_wifi_sta_disconnect','ts_wifi_ap_start','ts_wifi_ap_stop']))
+            if kind.startswith('service_'):
+                assert read('components/ts_core/ts_service/src/ts_service.c') == (ROOT / 'components/ts_core/ts_service/src/ts_service.c').read_text(), 'Registry changed: extract historical registry before replay'
+            (directory / 'network_service.inc').write_text('\n'.join(suite.function(read('main/ts_services.c'),n) for n in ['network_service_init','network_service_start','network_service_stop']))
+            main = ('int ret=service_restart_probe('+('true' if kind=='service_eth' else 'false')+');for(unsigned i=0;i<2;i++)drain(&servers[i]);return ret;' if kind.startswith('service_') else
+                    'check_manager_control_boundaries();for(unsigned i=0;i<2;i++)drain(&servers[i]);return 0;' if kind == 'control' else
                     'check_start_intent_boundaries();return 0;' if kind == 'intent' else
                     'int ret=boot_eth('+('true' if kind=='isolation' else 'false')+');for(unsigned i=0;i<2;i++)drain(&servers[i]);return ret;')
             source = 'static void *s_dhcp_task;\nstatic void vTaskDelay(unsigned ticks);\n' + support + '\nint main(void) { '+main+' }\n'

@@ -24,6 +24,7 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_eth.h"
+#include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -641,7 +642,7 @@ static esp_err_t start_eth(bool restart)
         ret = ts_dhcp_server_eth_suspend();
         if (ret != ESP_OK) return ret;
         ret = ts_eth_stop();
-        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return ret;
+        if (ret != ESP_OK) return ret;
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     xSemaphoreTake(s_state.mutex, portMAX_DELAY);
@@ -804,7 +805,7 @@ esp_err_t ts_net_manager_start(ts_net_if_t iface)
         default:
             ret = ESP_ERR_INVALID_ARG;
     }
-    
+
     xSemaphoreGive(s_state.mutex);
     return ret;
 }
@@ -820,21 +821,23 @@ esp_err_t ts_net_manager_stop(ts_net_if_t iface)
     switch (iface) {
         case TS_NET_IF_WIFI_STA:
 #ifdef CONFIG_TS_NET_WIFI_ENABLE
+        {
             TS_LOGI(TAG, "Stopping WiFi STA...");
-            ret = ts_wifi_sta_disconnect();
-            
-            /* 如果 AP 也没启动，关闭 WiFi */
-            if (s_state.wifi_ap_status.state == TS_NET_STATE_INITIALIZED ||
-                s_state.wifi_ap_status.state == TS_NET_STATE_DISCONNECTED) {
-                ts_wifi_set_mode(TS_WIFI_MODE_OFF);
-            } else {
-                /* 只有 AP 在运行，切换到纯 AP 模式 */
-                ts_wifi_set_mode(TS_WIFI_MODE_AP);
+            wifi_mode_t mode;
+            ret = esp_wifi_get_mode(&mode);
+            if (ret != ESP_OK) break;
+            if (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA) {
+                ret = ts_wifi_sta_disconnect();
+                if (ret == ESP_ERR_WIFI_NOT_STARTED) ret = ESP_OK;
+                else if (ret == ESP_OK) ret = ts_wifi_set_mode(
+                    mode == WIFI_MODE_APSTA ? TS_WIFI_MODE_AP : TS_WIFI_MODE_OFF);
+                if (ret != ESP_OK) break;
             }
             
             s_state.wifi_sta_status.state = TS_NET_STATE_INITIALIZED;
             s_state.wifi_sta_status.has_ip = false;
             memset(&s_state.wifi_sta_status.ip_info, 0, sizeof(s_state.wifi_sta_status.ip_info));
+        }
 #endif
             break;
             
@@ -842,15 +845,17 @@ esp_err_t ts_net_manager_stop(ts_net_if_t iface)
 #ifdef CONFIG_TS_NET_WIFI_ENABLE
             TS_LOGI(TAG, "Stopping WiFi AP...");
             ret = ts_wifi_ap_stop();
+            if (ret != ESP_OK) break;
             
             /* 如果 STA 也没启动，关闭 WiFi */
             if (s_state.wifi_sta_status.state == TS_NET_STATE_INITIALIZED ||
                 s_state.wifi_sta_status.state == TS_NET_STATE_DISCONNECTED) {
-                ts_wifi_set_mode(TS_WIFI_MODE_OFF);
+                ret = ts_wifi_set_mode(TS_WIFI_MODE_OFF);
             } else {
                 /* 只有 STA 在运行，切换到纯 STA 模式 */
-                ts_wifi_set_mode(TS_WIFI_MODE_STA);
+                ret = ts_wifi_set_mode(TS_WIFI_MODE_STA);
             }
+            if (ret != ESP_OK) break;
             
             s_state.wifi_ap_status.state = TS_NET_STATE_INITIALIZED;
             s_state.wifi_ap_status.has_ip = false;
@@ -861,6 +866,10 @@ esp_err_t ts_net_manager_stop(ts_net_if_t iface)
             ret = ESP_ERR_INVALID_ARG;
     }
     
+    if (ret != ESP_OK) {
+        if (iface == TS_NET_IF_WIFI_STA) s_state.wifi_sta_status.state = TS_NET_STATE_ERROR;
+        else if (iface == TS_NET_IF_WIFI_AP) s_state.wifi_ap_status.state = TS_NET_STATE_ERROR;
+    }
     xSemaphoreGive(s_state.mutex);
     return ret;
 }

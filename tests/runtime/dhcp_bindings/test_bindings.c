@@ -97,6 +97,7 @@ static dhcps_t servers[TS_DHCP_IF_MAX];
 static esp_netif_ip_info_t infos[TS_DHCP_IF_MAX];
 static esp_netif_t netifs[TS_DHCP_IF_MAX];
 static bool netifs_exist=true, eth_netif_exists=true, s_link_up;
+static bool wifi_present=true;
 static bool ts_eth_is_link_up(void) { return s_link_up; }
 static bool esp_netif_is_netif_up(esp_netif_t *n) { return n->up; }
 static unsigned start_expected_owner;
@@ -106,6 +107,7 @@ static void drain(dhcps_t *d) {while(d->plist){list_node *n=d->plist;d->plist=n-
 static esp_netif_t *esp_netif_get_handle_from_ifkey(const char *key) {
     if(!netifs_exist)return NULL;
     if(!strcmp(key,"WIFI_AP_DEF"))return &netifs[0];
+    if(!strcmp(key,"WIFI_STA_DEF"))return wifi_present?&netifs[0]:NULL;
     return !strcmp(key,"ETH_DHCPS")&&eth_netif_exists?&netifs[1]:NULL;
 }
 
@@ -748,6 +750,7 @@ static void check_lifecycle(void) {
     record("NVS_read_write_commit_errors_and_retry_recovery");
 }
 int main(void) {
+    check_network_stop_contract();
     check_manager_control_boundaries();
     check_start_intent_boundaries();
     check_transitions_and_queries();

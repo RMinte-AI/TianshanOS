@@ -54,6 +54,8 @@ esp_err_t ts_eth_start(void);
 
 /**
  * @brief Stop Ethernet
+ * Repeated stops skip only a synchronously completed driver stop; DHCP is still
+ * suspended. Failed SDK operations are not inferred to be cleanly stopped.
  */
 esp_err_t ts_eth_stop(void);
 

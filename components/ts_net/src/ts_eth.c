@@ -44,6 +44,8 @@ static esp_eth_handle_t s_eth_handle = NULL;
 static esp_netif_t *s_eth_netif = NULL;
 static atomic_bool s_link_up = false;
 static bool s_initialized = false;
+/* Synchronous completion evidence, not link state. Events never write it. */
+static bool s_driver_stop_complete = false;
 static bool s_isr_service_installed = false;
 
 /**
@@ -279,6 +281,7 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config)
         TS_LOGE(TAG, "Ethernet driver install failed");
         return ret;
     }
+    s_driver_stop_complete = true; /* A newly installed driver has not started. */
     
     // Generate and set MAC address from chip efuse
     // W5500 doesn't have built-in MAC, we derive from ESP32's base MAC
@@ -329,18 +332,20 @@ esp_err_t ts_eth_deinit(void)
 esp_err_t ts_eth_start(void)
 {
     if (!s_eth_handle) return ESP_ERR_INVALID_STATE;
+    s_driver_stop_complete = false; /* A failed start may already have changed the SDK. */
     return esp_eth_start(s_eth_handle);
 }
 
 esp_err_t ts_eth_stop(void)
 {
     if (!s_eth_handle) return ESP_ERR_INVALID_STATE;
-    esp_err_t ret = esp_eth_stop(s_eth_handle);
-    if (ret == ESP_OK) {
-        s_link_up = false;
-        if (ts_dhcp_server_is_initialized()) ret = ts_dhcp_server_eth_suspend();
+    if (!s_driver_stop_complete) {
+        esp_err_t ret = esp_eth_stop(s_eth_handle);
+        if (ret != ESP_OK) return ret;
+        s_driver_stop_complete = true;
     }
-    return ret;
+    s_link_up = false;
+    return ts_dhcp_server_is_initialized() ? ts_dhcp_server_eth_suspend() : ESP_OK;
 }
 
 bool ts_eth_is_link_up(void)

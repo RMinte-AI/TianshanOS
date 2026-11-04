@@ -35,3 +35,5 @@ python3 tests/runtime/dhcp_bindings/probes/replay.py --output /tmp/pr62-dhcp-pro
 P2 补充：manager ETH start/stop/restart/deinit 使用非等待操作互斥，状态查询不取它；真实 STOPPED 回调查询可返回，manager 操作重入/并发返回 NOT_FINISHED（CLI/API 显示忙）。DHCP 控制仍用原锁；停止链路时回调中的 DHCP start 只登记未来意图，重连才实际运行。驱动 stop 失败不污染 DHCP 错误；suspend 失败保留 SDK 实际状态并阻断 resume。
 
 手动探针另对 `0ab404a15` 的真实注册回调/manager stop 与停止后非法 start/restart 执行相同检查：旧版预期断言失败（exit -6），当前通过（exit 0）。这是故意触发测试断言的反证，不是产品崩溃或真机验收。
+
+网络服务 stop/restart 使用真实注册表函数、私有类型及状态事件，替代原服务转发桩；Wi-Fi 的 SDK 模式、驱动运行与 disconnect/stop/set_mode/start 故障为明确模型。覆盖重复停止、拔网线仍停驱动、不确定 SDK 部分失败、重复 suspend、STA 未启动/保留 AP、API/扫描 CLI 错误传播。手动探针增加 `service_eth`/`service_sta`：同一真实注册表链路在 `e05946717` 返回预期 17/18，当前返回 0，并核对重启后的首次 OFFER。真机仍待验。

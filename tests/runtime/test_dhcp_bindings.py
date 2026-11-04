@@ -38,7 +38,7 @@ def network_sources(output, manager, driver, network, console):
     init = function(driver, 'ts_eth_init')
     creation = re.findall(r'^\s*s_eth_netif = create_eth_netif_with_dhcps\([^;]*;', init, re.M)
     assert len(creation) == 1, 'ETH init must create exactly one netif from its supplied configuration'
-    (output / 'eth_init_creation.inc').write_text(creation[0] + '\n')
+    (output / 'eth_init_creation.inc').write_text(creation[0] + '\n' + '\n'.join(re.findall(r'^    s_driver_stop_complete = [^;]+;', init, re.M)))
     (output / 'eth_events.inc').write_text('\n\n'.join(function(driver, n) for n in
         ['dhcp_start_task', 'eth_event_handler', 'ts_eth_start', 'ts_eth_stop']))
     (output / 'network_setter.inc').write_text('\n'.join(function(network, n) for n in ['get_netif', 'ts_net_set_ip_info', 'ts_net_get_status']))
@@ -80,6 +80,7 @@ struct netif;
 #define ipaddr_addr inet_addr
 #define ip4addr_aton(s,a) inet_pton(AF_INET,s,&(a)->addr)
 ''')
+    (stubs / 'esp_wifi_types.h').write_text('#pragma once\ntypedef int wifi_auth_mode_t;\n')
     (stubs / 'esp_err.h').write_text('''#pragma once
 typedef int esp_err_t;
 #define ESP_OK 0
@@ -146,12 +147,21 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
     api = (ROOT / 'components/ts_api/src/ts_api_dhcp.c').read_text()
     (output / 'dhcp_status_api.inc').write_text('\n'.join(function(api, n) for n in ['iface_name', 'add_recovery_status', 'api_dhcp_status']))
     (output / 'status_api.inc').write_text(function((ROOT / 'components/ts_api/src/ts_api_network.c').read_text(), 'add_eth_config_status'))
-    (output / 'network_service.inc').write_text('\n'.join(function((ROOT / 'main/ts_services.c').read_text(), n) for n in ['network_service_start','network_service_stop']))
+    (output / 'network_service.inc').write_text('\n'.join(function((ROOT / 'main/ts_services.c').read_text(), n) for n in ['network_service_init','network_service_start','network_service_stop']))
     (output / 'service_api.inc').write_text('\n'.join(function((ROOT / 'components/ts_api/src/ts_api_service.c').read_text(), n) for n in ['api_service_start','api_service_stop','api_service_restart']))
+    wifi = (ROOT / 'components/ts_net/src/ts_wifi.c').read_text()
+    (output / 'wifi_core.inc').write_text('\n'.join(function(wifi,n) for n in ['ts_wifi_set_mode','ts_wifi_get_mode','ts_wifi_sta_disconnect','ts_wifi_ap_start','ts_wifi_ap_stop']))
+    (output / 'wifi_cli.inc').write_text(function((ROOT / 'components/ts_console/commands/ts_cmd_wifi.c').read_text(),'do_wifi_scan'))
+    (output / 'wifi_api.inc').write_text(function((ROOT / 'components/ts_api/src/ts_api_network.c').read_text(),'api_network_wifi_mode'))
+    registry = (ROOT / 'components/ts_core/ts_service/src/ts_service.c').read_text()
+    (output / 'service_types.inc').write_text(registry[registry.index('typedef struct ts_service_handle'):registry.index('static ts_service_context_t s_svc_ctx')])
+    service_names = ['find_service_by_name','start_service_internal','stop_service_internal','set_service_state','check_dependencies','notify_state_change','ts_service_find','ts_service_start','ts_service_stop','ts_service_restart']
+    declarations = '\n'.join(function(registry,n).split('\n{')[0]+';' for n in service_names if n.startswith(('find_','start_','stop_','set_','check_','notify_')))
+    (output / 'service_core.inc').write_text(declarations+'\n'+'\n'.join(sorted((function(registry,n) for n in service_names),key=registry.index)))
     command = ['cc', '-I' + str(idf / 'components/json/cJSON'), str(idf / 'components/json/cJSON/cJSON.c'), '-std=c11', '-pthread', '-g', '-Wall', '-Wextra', '-Wno-unused-function', '-Wno-unused-parameter',
                '-fsanitize=address,undefined', '-I' + str(stubs), '-I' + str(output),
                '-I' + str(idf / 'components/lwip/include/apps'), '-I' + str(ROOT / 'components/ts_net/include'),
-               '-I' + str(ROOT / 'components/ts_net/private_include'), str(ROOT / 'tests/runtime/dhcp_bindings/test_bindings.c'),
+               '-I' + str(ROOT / 'components/ts_net/private_include'), '-I' + str(ROOT / 'components/ts_core/ts_service/include'), str(ROOT / 'tests/runtime/dhcp_bindings/test_bindings.c'),
                '-o', str(output / 'dhcp-bindings')]
     with (output / 'compile.log').open('w') as log:
         subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -191,7 +201,9 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
     sources = [ROOT / 'components/ts_net/src/ts_dhcp_server.c', ROOT / 'tools/prepare_dhcps_bindings.py',
                generated / 'dhcpserver.c', generated / 'esp_netif_lwip.c',
                ROOT / 'components/ts_net/src/ts_eth.c', ROOT / 'components/ts_net/src/ts_net_manager.c',
-               ROOT / 'components/ts_net/src/ts_net.c', ROOT / 'tests/runtime/dhcp_bindings/test_eth_lifecycle.inc']
+               ROOT / 'components/ts_net/src/ts_net.c', ROOT / 'components/ts_net/src/ts_wifi.c',
+               ROOT / 'main/ts_services.c', ROOT / 'components/ts_console/commands/ts_cmd_wifi.c',
+               ROOT / 'components/ts_core/ts_service/src/ts_service.c', ROOT / 'tests/runtime/dhcp_bindings/test_eth_lifecycle.inc']
     (output / 'result.json').write_text(json.dumps(dict(status='PASS', command=command,
         sources={str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
         sdk_functions=sdk_names, sdk_netif_functions=['esp_netif_set_dns_info'], bridge_functions=bridge_names, project_functions=project_names,

@@ -3,6 +3,15 @@
 #include "ts_eth.h"
 #include "cJSON.h"
 #include "ts_net.h"
+#include "ts_wifi.h"
+#define CONFIG_TS_NET_WIFI_ENABLE 1
+#define CONFIG_TS_NET_WIFI_AP_SSID "test"
+#define CONFIG_TS_NET_WIFI_AP_PASS ""
+#define CONFIG_TS_NET_WIFI_AP_CHANNEL 1
+#define CONFIG_TS_NET_WIFI_AP_MAX_CONN 4
+#define WIFI_AUTH_OPEN 0
+#define WIFI_AUTH_WPA2_PSK 3
+#define WIFI_IF_STA 0
 #define CONFIG_TS_NET_ETHERNET_ENABLE 1
 #define ESP_NETIF_DHCP_SERVER 1
 #define ESP_NETIF_NETSTACK_DEFAULT_ETH ((void*)1)
@@ -25,7 +34,9 @@ typedef struct {const esp_netif_inherent_config_t *base;void *driver,*stack;} es
 static esp_netif_t *s_eth_netif;
 static esp_eth_handle_t s_eth_handle=(void*)1;
 static unsigned created_count, driver_stops, driver_starts;
-static bool driver_running, fail_driver_stop;
+static bool driver_running, fail_driver_stop, partial_driver_stop, fail_driver_start;
+static unsigned driver_stop_attempts;
+static bool s_driver_stop_complete;
 static void (*driver_stop_hook)(void);
 static esp_netif_ip_info_t created_host;
 static int event_queue[32];static size_t events_count;
@@ -49,12 +60,15 @@ static int xTaskCreateWithCaps(void (*fn)(void*),const char *name,unsigned stack
 static esp_err_t esp_eth_ioctl(esp_eth_handle_t h,int command,void *data){memset(data,2,6);return ESP_OK;}
 static esp_err_t esp_eth_start(esp_eth_handle_t h){
     if(driver_running)return ESP_ERR_INVALID_STATE;
+    if(fail_driver_start)return ESP_FAIL;
     driver_running=true;driver_starts++;
     event_queue[events_count++]=ETHERNET_EVENT_START;event_queue[events_count++]=ETHERNET_EVENT_CONNECTED;
     return ESP_OK;
 }
 static esp_err_t esp_eth_stop(esp_eth_handle_t h){
+    driver_stop_attempts++;
     if(driver_stop_hook)driver_stop_hook();
+    if(partial_driver_stop){driver_running=false;return ESP_ERR_INVALID_STATE;}
     if(fail_driver_stop)return ESP_FAIL;
     if(!driver_running)return ESP_ERR_INVALID_STATE;
     driver_running=false;driver_stops++;
@@ -85,6 +99,29 @@ static void manager_give(SemaphoreHandle_t mutex){assert(manager_lock_depth==1);
 static SemaphoreHandle_t manager_create(void){return &manager_mutex;}
 static esp_err_t load_eth_config_from_pins(ts_eth_config_t *config){*config=(ts_eth_config_t)TS_ETH_DEFAULT_CONFIG();return ESP_OK;}
 static void manager_ip_event(void *arg,esp_event_base_t base,int32_t id,void *data){}
+/* SDK leaves: configured mode is distinct from running/connected state. */
+enum {WIFI_MODE_NULL,WIFI_MODE_STA,WIFI_MODE_AP,WIFI_MODE_APSTA};
+typedef int wifi_mode_t;
+#define ESP_ERR_WIFI_NOT_STARTED 0x3002
+#define ESP_ERR_WIFI_NOT_INIT 0x3001
+#define ESP_ERR_WIFI_CONN 0x3007
+static wifi_mode_t wifi_sdk_mode;
+static ts_wifi_mode_t s_mode;
+static bool wifi_running;
+static unsigned wifi_calls[5]; /* get_mode, disconnect, stop, set_mode, start */
+static int wifi_failure=-1,scan_failure;
+static bool scan_cleanup_failure;
+static esp_err_t esp_wifi_get_mode(wifi_mode_t *mode){wifi_calls[0]++;if(wifi_failure==0)return ESP_ERR_WIFI_NOT_INIT;*mode=wifi_sdk_mode;return ESP_OK;}
+static esp_err_t esp_wifi_disconnect(void){wifi_calls[1]++;return wifi_failure==1?ESP_FAIL:wifi_running?ESP_OK:ESP_ERR_WIFI_NOT_STARTED;}
+static esp_err_t esp_wifi_stop(void){wifi_calls[2]++;if(wifi_failure==2)return ESP_ERR_WIFI_NOT_INIT;wifi_running=false;return ESP_OK;}
+static esp_err_t esp_wifi_set_mode(wifi_mode_t mode){wifi_calls[3]++;if(wifi_failure==3)return ESP_FAIL;wifi_sdk_mode=mode;return ESP_OK;}
+static esp_err_t esp_wifi_start(void){wifi_calls[4]++;if(wifi_failure==4)return ESP_FAIL;wifi_running=true;return ESP_OK;}
+#include "wifi_core.inc"
+esp_err_t ts_wifi_init(void){return ESP_OK;}
+bool ts_wifi_sta_is_connected(void){return wifi_running&&(wifi_sdk_mode==WIFI_MODE_STA||wifi_sdk_mode==WIFI_MODE_APSTA);}
+esp_err_t ts_wifi_sta_config(const ts_wifi_sta_config_t *c){return ESP_OK;}
+esp_err_t ts_wifi_sta_connect(void){return esp_wifi_start();}
+esp_err_t ts_wifi_ap_config(const ts_wifi_ap_config_t *c){return ESP_OK;}
 #include "manager_types.inc"
 static ts_net_manager_state_t manager_state;
 #define s_state manager_state
@@ -109,22 +146,50 @@ static ts_net_if_t net_parse_iface(const char *name){return !strcmp(name,"eth")?
 #include "status_api.inc"
 
 /* Service-owner and registry boundaries; execute the real main hooks/API handlers. */
-typedef void *ts_service_handle_t;
+#include "ts_service.h"
 #include "ts_time_sync.h"
 static unsigned aux_starts;
 esp_err_t ts_time_sync_init(const ts_time_sync_config_t *config){aux_starts++;return ESP_OK;}
 static esp_err_t ts_device_lpmu_start_detection(void){aux_starts++;return ESP_OK;}
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
+#define ESP_LOGE(...) ((void)0)
 #include "network_service.inc"
-static ts_service_handle_t ts_service_find(const char *name){return (void*)1;}
-static esp_err_t ts_service_start(ts_service_handle_t h){return network_service_start(h,NULL);}
-static esp_err_t ts_service_stop(ts_service_handle_t h){return network_service_stop(h,NULL);}
-static esp_err_t ts_service_restart(ts_service_handle_t h){esp_err_t r=network_service_stop(h,NULL);return r==ESP_OK?network_service_start(h,NULL):r;}
+#define TS_EVENT_BASE_SERVICE 0
+#include "service_types.inc"
+static pthread_mutex_t registry_mutex=PTHREAD_MUTEX_INITIALIZER;
+static ts_service_context_t s_svc_ctx;
+static ts_service_instance_t network_instance;
+static unsigned registry_events[4];
+static void registry_take(SemaphoreHandle_t m,int ticks){assert(!pthread_mutex_lock(m));}
+static void registry_give(SemaphoreHandle_t m){if(m)assert(!pthread_mutex_unlock(m));}
+static int64_t esp_timer_get_time(void){return 0;}
+static esp_err_t ts_event_post(int base,int event,const void *data,size_t size,unsigned ticks){registry_events[event]++;return ESP_OK;}
+#define xSemaphoreTake registry_take
+#define xSemaphoreGive registry_give
+#include "service_core.inc"
+#undef xSemaphoreGive
+#undef xSemaphoreTake
+static void reset_registry(void){
+    network_instance=(ts_service_instance_t){.state=TS_SERVICE_STATE_RUNNING,.def={.name="network",.capabilities=TS_SERVICE_CAP_RESTARTABLE,.init=network_service_init,.start=network_service_start,.stop=network_service_stop}};
+    s_svc_ctx=(ts_service_context_t){.initialized=true,.mutex=&registry_mutex,.services=&network_instance};
+    memset(registry_events,0,sizeof(registry_events));
+}
 #define TS_API_ERR_BUSY 3
 #define TS_API_ERR_INVALID_ARG 4
 #define TS_API_ERR_NOT_FOUND 5
 #include "service_api.inc"
+#define TS_API_ERR_HARDWARE 6
+static const char *wifi_mode_to_str(ts_wifi_mode_t m){return m==TS_WIFI_MODE_OFF?"off":m==TS_WIFI_MODE_AP?"ap":m==TS_WIFI_MODE_STA?"sta":"apsta";}
+#include "wifi_api.inc"
+typedef struct {struct {char ssid[32];} sta;} wifi_config_t;
+static esp_err_t esp_wifi_set_config(int iface,const wifi_config_t *config){return ESP_OK;}
+esp_err_t ts_wifi_scan_start(bool block){if(scan_cleanup_failure)wifi_failure=2;return scan_failure?ESP_FAIL:ESP_OK;}
+esp_err_t ts_wifi_scan_get_results(ts_wifi_scan_result_t *results,uint16_t *count){*count=0;return ESP_OK;}
+static const char *auth_mode_str(wifi_auth_mode_t mode){return "open";}
+#define ts_console_error ts_console_printf
+#include "wifi_cli.inc"
+#undef ts_console_error
 
 static void deliver_events(void){
     for(size_t i=0;i<events_count;i++){
@@ -158,7 +223,8 @@ static void hardware_reset(void){
     boot_defaults(false);memset(&manager_state,0,sizeof(manager_state));
     s_state.initialized=false;s_state.mutex=NULL;eth_netif_exists=false;s_eth_netif=NULL;s_link_up=false;
     created_count=driver_starts=driver_stops=0;events_count=0;driver_running=false;
-    driver_stop_hook=NULL;fail_driver_stop=false;
+    driver_stop_hook=NULL;fail_driver_stop=partial_driver_stop=fail_driver_start=false;driver_stop_attempts=0;
+    s_driver_stop_complete=false;wifi_present=true;wifi_running=false;wifi_sdk_mode=WIFI_MODE_STA;s_mode=TS_WIFI_MODE_OFF;wifi_failure=-1;scan_failure=0;scan_cleanup_failure=false;memset(wifi_calls,0,sizeof(wifi_calls));reset_registry();
     delayed_count=0;started_notifications=stopped_notifications=0;
 }
 /* Shared by ordinary boot acceptance and the optional historical probes. */
@@ -342,11 +408,13 @@ static void control_callback(ts_dhcp_if_t iface,ts_dhcp_event_t event,const ts_d
     cJSON *params=cJSON_CreateObject();cJSON_AddStringToObject(params,"name","network");
     esp_err_t (*apis[])(const cJSON*,ts_api_result_t*)={api_service_start,api_service_stop,api_service_restart};
     for(unsigned i=0;i<3;i++){
+        network_instance.state=i?TS_SERVICE_STATE_RUNNING:TS_SERVICE_STATE_STOPPED;
         ts_api_result_t result={0};unsigned auxiliary=aux_starts;
         assert(apis[i](params,&result)==ESP_ERR_NOT_FINISHED&&result.code==TS_API_ERR_BUSY);
         assert(strstr(result.message,"Operation in progress")&&aux_starts==auxiliary);
         ts_api_result_free(&result);
     }
+    network_instance.state=TS_SERVICE_STATE_RUNNING;
     cJSON_Delete(params);
     if(callback_start_dhcp){
         unsigned starts=start_calls;
@@ -428,5 +496,98 @@ static void check_start_intent_boundaries(void){
         assert(netifs[1].status==ESP_NETIF_DHCP_STOPPED&&apply_dispatches==dispatches&&started_notifications==starts);
     }
     record("P2_accepted_start_SDK_failure_including_stop_latches_error_and_blocks_resume");
+    setup(true);
+}
+
+/* Same service-registry path for both historical P1 counterexamples. */
+static int service_restart_probe(bool already_stopped){
+    prepare_custom_boot();
+    if(already_stopped){assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_OK);deliver_events();}
+    unsigned starts=driver_starts;
+    esp_err_t ret=ts_service_restart(&network_instance);
+    deliver_events();run_delayed_task();
+    return ret!=ESP_OK||network_instance.state!=TS_SERVICE_STATE_RUNNING||!driver_running||driver_starts!=starts+1||netifs[1].status!=ESP_NETIF_DHCP_STARTED||
+        registry_events[TS_EVENT_SERVICE_STARTED]!=1||registry_events[TS_EVENT_SERVICE_STOPPED]!=1||
+        packet(&servers[1],a,DHCPDISCOVER,0,0,DHCPS_STATE_OFFER)!=50 ? (already_stopped?17:18):0;
+}
+static void check_network_stop_contract(void){
+    assert(service_restart_probe(true)==0);assert(service_restart_probe(false)==0);
+    record("P1_real_registry_restart_after_ETH_stop_and_with_unstarted_STA");
+
+    prepare_custom_boot();manager_state.eth_config.enabled=false;wifi_present=false;
+    assert(ts_service_stop(&network_instance)==ESP_OK&&!driver_running);
+    unsigned attempts=driver_stop_attempts,stops=stop_calls;
+    assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_OK&&driver_stop_attempts==attempts&&stop_calls==stops+1);
+    assert(ts_net_manager_deinit()==ESP_OK&&driver_stop_attempts==attempts);
+    prepare_custom_boot();link_down();assert(driver_running);
+    attempts=driver_stop_attempts;assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_OK&&driver_stop_attempts==attempts+1);
+    hardware_reset();assert(ts_net_manager_init()==ESP_OK&&ts_dhcp_server_init()==ESP_OK);
+    assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_OK&&driver_stop_attempts==0);
+    s_eth_netif=NULL;eth_netif_exists=false;wifi_present=false;
+    assert(network_service_stop(NULL,NULL)==ESP_OK);
+    record("ETH_confirmed_stop_repeats_suspend_deinit_and_link_down_still_stops_driver_absent_interfaces_skip");
+
+    for(unsigned failure=0;failure<2;failure++){
+        prepare_custom_boot();unsigned auxiliary=aux_starts;
+        if(failure){assert(ts_net_manager_stop(TS_NET_IF_ETH)==ESP_OK);fail_driver_start=true;assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_FAIL);fail_driver_start=false;}
+        else partial_driver_stop=true;
+        assert(ts_service_restart(&network_instance)==ESP_ERR_INVALID_STATE);
+        partial_driver_stop=false;attempts=driver_stop_attempts;
+        assert(ts_service_restart(&network_instance)==ESP_ERR_INVALID_STATE&&driver_stop_attempts==attempts+1);
+        assert(!driver_running&&network_instance.state==TS_SERVICE_STATE_RUNNING&&aux_starts==auxiliary);
+    }
+    prepare_custom_boot();fail_stage=FAIL_STOP;
+    assert(ts_service_restart(&network_instance)==ESP_FAIL&&!driver_running);
+    attempts=driver_stop_attempts;stops=stop_calls;fail_stage=FAIL_STOP;
+    assert(ts_service_restart(&network_instance)==ESP_FAIL&&driver_stop_attempts==attempts&&stop_calls==stops+1);
+    assert(ts_service_stop(&network_instance)==ESP_OK&&driver_stop_attempts==attempts&&netifs[1].status==ESP_NETIF_DHCP_STOPPED);
+    assert(ts_dhcp_server_get_apply_error(1)==ESP_FAIL); /* No automatic error clearing. */
+    record("ETH_uncertain_SDK_failures_block_registry_restart_confirmed_driver_stop_never_skips_DHCP_failure");
+
+    for(unsigned mode=0;mode<4;mode++){
+        prepare_custom_boot();wifi_sdk_mode=mode;wifi_running=mode==WIFI_MODE_AP;
+        assert(ts_net_manager_stop(TS_NET_IF_WIFI_STA)==ESP_OK);
+        assert(wifi_calls[1]==(mode==WIFI_MODE_STA||mode==WIFI_MODE_APSTA));
+        assert(!wifi_calls[2]&&!wifi_calls[3]&&!wifi_calls[4]);
+        assert(wifi_running==(mode==WIFI_MODE_AP)&&wifi_sdk_mode==(int)mode);
+    }
+    for(unsigned ap=0;ap<2;ap++){
+        prepare_custom_boot();wifi_sdk_mode=ap?WIFI_MODE_APSTA:WIFI_MODE_STA;wifi_running=true;s_mode=TS_WIFI_MODE_APSTA;
+        assert(ts_net_manager_stop(TS_NET_IF_WIFI_STA)==ESP_OK&&wifi_sdk_mode==(ap?WIFI_MODE_AP:WIFI_MODE_STA)&&wifi_running==(bool)ap);
+        assert(s_mode==(ap?TS_WIFI_MODE_AP:TS_WIFI_MODE_OFF)&&manager_state.wifi_sta_status.state==TS_NET_STATE_INITIALIZED);
+    }
+    record("STA_absent_role_or_NOT_STARTED_is_complete_AP_preserved_APSTA_moves_to_AP");
+
+    for(unsigned failure=0;failure<5;failure++){
+        prepare_custom_boot();wifi_running=true;wifi_sdk_mode=WIFI_MODE_APSTA;s_mode=TS_WIFI_MODE_APSTA;
+        manager_state.wifi_sta_status.state=TS_NET_STATE_GOT_IP;wifi_failure=failure;
+        esp_err_t expected=failure==0||failure==2?ESP_ERR_WIFI_NOT_INIT:ESP_FAIL;
+        assert(ts_net_manager_stop(TS_NET_IF_WIFI_STA)==expected);
+        for(unsigned stage=failure+1;stage<5;stage++)assert(!wifi_calls[stage]);
+        assert(s_mode==TS_WIFI_MODE_APSTA&&manager_state.wifi_sta_status.state==TS_NET_STATE_ERROR);
+    }
+    for(unsigned target=0;target<2;target++)for(unsigned failure=2;failure<5;failure++){
+        if(!target&&failure!=2)continue;
+        prepare_custom_boot();wifi_running=true;wifi_sdk_mode=WIFI_MODE_STA;s_mode=TS_WIFI_MODE_STA;wifi_failure=failure;
+        cJSON *params=cJSON_CreateObject();cJSON_AddStringToObject(params,"mode",target?"ap":"off");ts_api_result_t result={0};
+        assert(api_network_wifi_mode(params,&result)==(failure==2?ESP_ERR_WIFI_NOT_INIT:ESP_FAIL));
+        assert(result.code==TS_API_ERR_HARDWARE&&!result.data&&s_mode==TS_WIFI_MODE_STA);
+        for(unsigned stage=failure+1;stage<5;stage++)assert(!wifi_calls[stage]);cJSON_Delete(params);ts_api_result_free(&result);
+    }
+    /* AP stop is another caller of the stricter shared mode helper. */
+    for(unsigned failure=3;failure<5;failure++){
+        prepare_custom_boot();wifi_running=true;wifi_sdk_mode=WIFI_MODE_APSTA;s_mode=TS_WIFI_MODE_APSTA;wifi_failure=failure;
+        manager_state.wifi_sta_status.state=TS_NET_STATE_GOT_IP;manager_state.wifi_ap_status.state=TS_NET_STATE_GOT_IP;
+        assert(ts_net_manager_stop(TS_NET_IF_WIFI_AP)==ESP_FAIL&&manager_state.wifi_ap_status.state==TS_NET_STATE_ERROR);
+    }
+    record("WiFi_mode_steps_and_API_AP_callers_preserve_failure_without_success_commit");
+
+    for(unsigned scan_error=0;scan_error<2;scan_error++){
+        prepare_custom_boot();manager_state.wifi_sta_status.state=manager_state.wifi_ap_status.state=TS_NET_STATE_INITIALIZED;
+        scan_failure=scan_error;scan_cleanup_failure=true;console_text[0]=0;
+        assert(do_wifi_scan(false)==1&&strstr(console_text,"Failed to stop temporary WiFi"));
+        assert(wifi_calls[2]==2); /* Mode setup + one cleanup; no duplicate raw stop. */
+    }
+    record("WiFi_scan_CLI_reports_cleanup_error_on_success_and_failure_paths");
     setup(true);
 }
