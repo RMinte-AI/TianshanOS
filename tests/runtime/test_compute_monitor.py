@@ -4,7 +4,9 @@ import re
 from test_console_lifecycle import RTOS, body, run_native, IDF
 
 path = 'components/ts_drivers/src/ts_compute_monitor.c'
-code = RTOS + r'''
+# Lifetime belongs to each fixture TaskHandle, including overlapping generations.
+assert RTOS.count('int held;} *TaskHandle_t;') == 1
+code = RTOS.replace('int held;} *TaskHandle_t;', 'int held;atomic_bool deleted;} *TaskHandle_t;') + r'''
 #include "ts_compute_monitor.h"
 #include "cJSON.h"
 #ifndef ESP_ERR_NOT_ALLOWED
@@ -27,7 +29,8 @@ typedef struct fixture_ws {ws_callback_t callback;void *arg;pthread_t thread;boo
 
 static SemaphoreHandle_t init_entered,init_release,entry_entered,entry_release,create_entered,create_release;
 static SemaphoreHandle_t notify_entered,notify_release,cleanup_entered;
-static atomic_bool hold_notify,worker_deleted;
+static atomic_bool hold_notify,hold_delete;
+static SemaphoreHandle_t delete_entered,delete_release,delete_done;
 static SemaphoreHandle_t http_entered,http_release,retry_entered,callback_entered,callback_release,tail_entered,tail_release;
 static atomic_bool hold_init,hold_entry,hold_create,hold_http,hold_callback,hold_tail,control_done;
 static atomic_int mode,http_calls,http_cleanup,ws_creates,ws_destroys,ws_alive,provider_live,provider_removals;
@@ -47,7 +50,7 @@ static SemaphoreHandle_t notification(TaskHandle_t task) {
 }
 static int xTaskNotifyGive(TaskHandle_t task){
  if(hold_notify){xSemaphoreGive(notify_entered);assert(xSemaphoreTake(notify_release,portMAX_DELAY));}
- assert(!worker_deleted);return xSemaphoreGive(notification(task));
+ assert(!task->deleted);return xSemaphoreGive(notification(task));
 }
 static unsigned ulTaskNotifyTake(int clear,unsigned timeout){
  (void)clear;int i=atomic_fetch_add(&retry_count,1);assert(i<16);retry_ms[i]=timeout;
@@ -61,12 +64,15 @@ static void held_entry(void *arg){
  worker_fn(worker_arg);
 }
 static int controlled_create(void (*fn)(void *),const char *name,unsigned stack,void *arg,unsigned priority,TaskHandle_t *out){
- worker_deleted=false;worker_fn=fn;worker_arg=arg;
+ worker_fn=fn;worker_arg=arg;
  int ret=xTaskCreate(held_entry,name,stack,NULL,priority,out);
  if(ret==pdPASS&&hold_create){xSemaphoreGive(create_entered);assert(xSemaphoreTake(create_release,portMAX_DELAY));}
  return ret;
 }
-static void worker_delete(TaskHandle_t task){worker_deleted=true;vTaskDelete(task);}
+static void worker_delete(TaskHandle_t task){
+ bool delayed=hold_delete;if(delayed){xSemaphoreGive(delete_entered);assert(xSemaphoreTake(delete_release,portMAX_DELAY));}
+ current_task->deleted=true;if(delayed)xSemaphoreGive(delete_done);vTaskDelete(task);
+}
 static void *context_alloc(size_t n,size_t size){
  if(hold_init){xSemaphoreGive(init_entered);assert(xSemaphoreTake(init_release,portMAX_DELAY));}
  return calloc(n,size);
@@ -240,6 +246,17 @@ int main(void){
  for(unsigned i=0;i<sizeof(signals)/sizeof(signals[0]);i++)*signals[i]=semaphore(true);
  after_binary_give=tail_gate;
 
+ /* Stop has joined the last context access, but old self-delete can run later. */
+ delete_entered=xSemaphoreCreateBinary();delete_release=xSemaphoreCreateBinary();delete_done=xSemaphoreCreateBinary();
+ reset();mode=1;hold_delete=true;assert(ts_compute_monitor_init(NULL)==ESP_OK);assert(ts_compute_monitor_start()==ESP_OK);
+ assert(xSemaphoreTake(retry_entered,portMAX_DELAY));assert(ts_compute_monitor_stop()==ESP_OK);
+ assert(xSemaphoreTake(delete_entered,portMAX_DELAY));hold_delete=false;
+ assert(ts_compute_monitor_start()==ESP_OK);assert(xSemaphoreTake(retry_entered,portMAX_DELAY));
+ xSemaphoreGive(delete_release);assert(xSemaphoreTake(delete_done,portMAX_DELAY));
+ assert(ts_compute_monitor_stop()==ESP_OK);assert(ts_compute_monitor_deinit()==ESP_OK);join_workers();
+ vSemaphoreDelete(delete_entered);vSemaphoreDelete(delete_release);vSemaphoreDelete(delete_done);
+ puts("PASS old worker self-delete after restart does not invalidate the new notification target");
+
  reset();ts_compute_config_t current=config(12345);
  strcpy(current.server_ip,"custom.fixture.invalid");current.server_port=23456;
  current.startup_delay_ms=0;current.heartbeat_timeout_ms=777;current.auto_start=false;current.update_temp_source=false;
@@ -321,7 +338,7 @@ int main(void){
 
  reset();hold_notify=true;assert(ts_compute_monitor_init(NULL)==ESP_OK);assert(ts_compute_monitor_start()==ESP_OK);
  WAIT_UNTIL(data_posts>0);t=begin_control(1);assert(xSemaphoreTake(notify_entered,portMAX_DELAY));
- assert(xSemaphoreTake(cleanup_entered,portMAX_DELAY));assert(s_ctx->data_mutex->owner&&!worker_deleted&&!control_done);
+ assert(xSemaphoreTake(cleanup_entered,portMAX_DELAY));assert(s_ctx->data_mutex->owner&&!s_ctx->task_handle->deleted&&!control_done);
  xSemaphoreGive(notify_release);assert(!pthread_join(t,NULL));assert(control_result==ESP_OK);join_workers();
  puts("PASS stop publishes cancellation and notifies under the final-exit mutex; the task handle remains alive through notification");
 
