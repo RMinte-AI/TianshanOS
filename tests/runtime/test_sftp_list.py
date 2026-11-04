@@ -1,5 +1,6 @@
 """Production SFTP list API and CLI with controlled remote-directory boundary."""
 from test_console_lifecycle import body, run_native, IDF
+from pathlib import Path
 code=r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -49,3 +50,79 @@ int main(void){
 }
 '''
 run_native(code,[IDF/'components/json/cJSON/cJSON.c'])
+
+# Execute the actual F70 connection helpers as well; SSH transport/keystore are
+# leaves. One authentication waits while another request connects and frees its key.
+keys = r'''
+#define _POSIX_C_SOURCE 200809L
+#include <assert.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include "cJSON.h"
+#include "ts_ssh_client.h"
+#include "ts_sftp.h"
+struct ts_ssh_session_s {ts_ssh_config_t config;};
+struct ts_sftp_session_s {int unused;};
+static _Thread_local unsigned failure,request_id,key_len,freed,created,destroyed,disconnected,closed;
+static _Thread_local char *owned;
+static _Thread_local bool concurrent;
+static pthread_mutex_t gate=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t changed=PTHREAD_COND_INITIALIZER;
+static bool first_authenticating,second_finished;
+static const char *key_name(void){return request_id?"second-key":"first-key";}
+esp_err_t ts_keystore_load_private_key(const char *id,char **data,size_t *len){
+    if(failure==1)return ESP_FAIL;assert(!owned&&!strcmp(id,key_name()));
+    *data=owned=strdup(id);*len=key_len=strlen(id)+1;return ESP_OK;
+}
+esp_err_t ts_ssh_session_create(const ts_ssh_config_t *config,ts_ssh_session_t *session){
+    if(failure==2)return ESP_FAIL;
+    *session=malloc(sizeof(**session));(*session)->config=*config;created++;return ESP_OK;
+}
+esp_err_t ts_ssh_session_destroy(ts_ssh_session_t session){destroyed++;free(session);return ESP_OK;}
+esp_err_t ts_ssh_disconnect(ts_ssh_session_t session){disconnected++;return ESP_OK;}
+esp_err_t ts_ssh_connect(ts_ssh_session_t session){
+    const ts_ssh_config_t *c=&session->config;
+    assert(!strcmp(c->host,request_id?"host-b":"host-a")&&!strcmp(c->username,"user"));
+    if(concurrent&&!request_id){pthread_mutex_lock(&gate);first_authenticating=true;pthread_cond_broadcast(&changed);
+        while(!second_finished)pthread_cond_wait(&changed,&gate);pthread_mutex_unlock(&gate);}
+    if(c->auth_method==TS_SSH_AUTH_PASSWORD)assert(!strcmp(c->auth.password,"password"));
+    else if(c->auth.key.private_key){assert(c->auth.key.private_key==(void*)owned&&!strcmp((char*)c->auth.key.private_key,key_name()));}
+    else assert(!strcmp(c->auth.key.private_key_path,"/key.pem"));
+    return failure==3?ESP_FAIL:ESP_OK;
+}
+esp_err_t ts_sftp_open(ts_ssh_session_t ssh,ts_sftp_session_t *sftp){if(failure==4)return ESP_FAIL;*sftp=malloc(sizeof(**sftp));return ESP_OK;}
+esp_err_t ts_sftp_close(ts_sftp_session_t sftp){closed++;free(sftp);return ESP_OK;}
+static void free_key(void *p){assert(p==owned);for(unsigned i=0;i<key_len;i++)assert(!owned[i]);freed++;free(p);owned=NULL;}
+#define free free_key
+'''
+keys += ''.join(body('components/ts_api/src/ts_api_sftp.c', n) for n in
+                ['configure_ssh_from_params', 'connect_sftp', 'close_sftp'])
+# close_sftp only uses the transport destruction leaves, not free directly.
+keys += r'''
+#undef free
+static void run_request(unsigned auth){
+    freed=created=destroyed=disconnected=closed=0;assert(!owned);
+    cJSON *p=cJSON_CreateObject();cJSON_AddStringToObject(p,"host",request_id?"host-b":"host-a");cJSON_AddStringToObject(p,"user","user");
+    cJSON_AddStringToObject(p,auth==0?"keyid":auth==1?"password":"keypath",auth==0?key_name():auth==1?"password":"/key.pem");
+    ts_ssh_session_t ssh=NULL;ts_sftp_session_t sftp=NULL;esp_err_t ret=connect_sftp(p,&ssh,&sftp);
+    assert(ret==(failure?ESP_FAIL:ESP_OK));assert(!owned&&freed==(auth==0&&failure!=1));
+    if(!failure)close_sftp(ssh,sftp);
+    assert(created==destroyed&&closed==!failure&&disconnected==(!failure||failure==4));
+    cJSON_Delete(p);
+}
+static void *worker(void *arg){request_id=(unsigned)(uintptr_t)arg;concurrent=true;run_request(0);
+    if(request_id){pthread_mutex_lock(&gate);second_finished=true;pthread_cond_broadcast(&changed);pthread_mutex_unlock(&gate);}return NULL;}
+int main(void){
+    for(failure=0;failure<=4;failure++)run_request(0);
+    failure=0;run_request(1);run_request(2);
+    pthread_t first,second;assert(!pthread_create(&first,NULL,worker,(void*)0));
+    pthread_mutex_lock(&gate);while(!first_authenticating)pthread_cond_wait(&changed,&gate);pthread_mutex_unlock(&gate);
+    assert(!pthread_create(&second,NULL,worker,(void*)1));assert(!pthread_join(first,NULL)&&!pthread_join(second,NULL));
+    puts("PASS F70 real SFTP helpers: overlapping keys, password/path, load/create/auth/open failures, key wiped/freed once and session cleanup");
+}
+'''
+run_native(keys, [IDF/'components/json/cJSON/cJSON.c'], {
+    name: Path('components/ts_security/include', name).read_text()
+    for name in ['ts_ssh_client.h', 'ts_sftp.h']})

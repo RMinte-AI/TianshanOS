@@ -171,8 +171,10 @@ typedef struct {esp_netif_dns_type_t dns_type;esp_netif_dns_info_t *dns_info;} e
 #define ESP_IP_IS_ANY(ip) ((ip).u_addr.ip4.addr==0)
 /* Real SDK public wrapper enforces the nonzero-address contract before IPC. */
 static unsigned dns_writes[2];
+static int dns_failure_kind = -1;
 static esp_err_t esp_netif_set_dns_info_api(esp_netif_api_msg_t *msg) {
     esp_netif_dns_param_t *p=msg->data;
+    if(p->dns_type==dns_failure_kind)return ESP_ERR_INVALID_STATE;
     if(fail_now(FAIL_DNS_ADDRESS))return ESP_FAIL;
     dns_writes[p->dns_type]++;
     msg->esp_netif->dhcps->dns_server[p->dns_type].addr=p->dns_info->ip.u_addr.ip4.addr;return ESP_OK;
@@ -376,6 +378,7 @@ static void setup(bool erase_nvs) {
     netifs_exist=eth_netif_exists=true;s_link_up=true;initialize_eth_intent();check_start_table=false;console_text[0]=0;
     fail_stage=FAIL_NONE;stop_calls=start_calls=apply_dispatches=0;after_dispatch=NULL;
     memset(dns_writes,0,sizeof(dns_writes));
+    dns_failure_kind=-1;
     model_tick=100;status_reads_before_failure=-1;started_notifications=stopped_notifications=0;
     fail_read_key=fail_write_key=NULL;fail_open_read=missing_namespace=fail_commit=false;fail_cleanup_stop=false;
     if(erase_nvs){memset(kv,0,sizeof(kv));kv_count=commits=0;}

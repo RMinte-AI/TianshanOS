@@ -27,6 +27,7 @@ static bool s_auto_temp_enabled = true;
 static int64_t now_ms;
 static bool inside_timer;
 static bool temp_mutex_busy;
+static bool variable_mutex_busy;
 static float pwm_output;
 typedef struct {
     int64_t last_update_ms;
@@ -42,11 +43,12 @@ static int temp_mutex_take(SemaphoreHandle_t mutex, int ticks) {
 }
 static void temp_mutex_give(SemaphoreHandle_t mutex) {}
 static esp_err_t ts_variable_get_info(const char *name, ts_variable_info_t *info) {
-    assert(!inside_timer); /* Timer must use the nonblocking variant. */
+    assert(!inside_timer&&!variable_mutex_busy); /* Never wait on a busy variable leaf. */
     *info = variable;
     return ESP_OK;
 }
 static esp_err_t ts_variable_get_info_try(const char *name, ts_variable_info_t *info) {
+    if(variable_mutex_busy)return ESP_ERR_INVALID_STATE;
     *info = variable;
     return ESP_OK;
 }
@@ -165,14 +167,16 @@ int main(void) {
     assert(s_fans[0].current_duty == 0 && pwm_output == 0);
     puts("PASS disabled fan: temperature monitoring stays fresh; output remains zero");
 
-    setup(TS_FAN_MODE_MANUAL);
-    temp_mutex_busy = true;
-    tick(2000, 49.5, true);
-    assert(s_fans[0].current_duty == 37);
-    temp_mutex_busy = false;
-    tick(3000, 49.5, true);
-    assert_temperature(495, true);
-    puts("PASS busy temperature service: nonblocking timer, manual output preserved, refresh resumes");
+    for(unsigned busy=0;busy<2;busy++){
+        setup(TS_FAN_MODE_MANUAL);
+        temp_mutex_busy=busy==0;variable_mutex_busy=busy==1;
+        tick(2000, 49.5, true);
+        ts_temp_data_t unavailable;inside_timer=true;ts_temp_get_effective_nonblocking(&unavailable);inside_timer=false;
+        assert(!unavailable.valid&&s_fans[0].current_duty==37);
+        temp_mutex_busy=variable_mutex_busy=false;
+        tick(3000, 49.5, true);assert_temperature(495, true);
+    }
+    puts("PASS busy temperature/variable service: real nonblocking getter invalid while busy, manual output preserved, refresh resumes");
 
     setup(TS_FAN_MODE_AUTO);
     for (int second = 2; second <= 25; second++) {

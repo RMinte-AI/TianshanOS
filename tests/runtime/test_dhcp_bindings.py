@@ -36,12 +36,16 @@ def network_sources(output, manager, driver, network, console):
         (function(manager, n) for n in manager_names if re.search(r'^(?:static )?[\w *]+\b' + n + r'\([^;]*?\)\s*\{', manager, re.M)), key=manager.index))))
     (output / 'eth_creation.inc').write_text(function(driver, 'create_eth_netif_with_dhcps'))
     init = function(driver, 'ts_eth_init')
-    creation = re.findall(r'^\s*s_eth_netif = create_eth_netif_with_dhcps\([^;]*;', init, re.M)
-    assert len(creation) == 1, 'ETH init must create exactly one netif from its supplied configuration'
-    (output / 'eth_init_creation.inc').write_text(creation[0] + '\n' + '\n'.join(re.findall(r'^    s_driver_stop_complete = [^;]+;', init, re.M)))
+    calls = list(re.finditer(r'^    [^\n]*create_eth_netif_with_dhcps\(', init, re.M))
+    assert len(calls) == 1, 'ETH init must have one netif creation call'
+    begin = calls[0].start()
+    end = init.index('    /* ', begin)
+    # Include the production call AND error propagation; the whole factory above
+    # supplies DNS writes and cleanup. Hardware registration/installation is a leaf.
+    (output / 'eth_init_creation.inc').write_text(init[begin:end] + '\n'.join(re.findall(r'^    s_driver_stop_complete = [^;]+;', init, re.M)))
     (output / 'eth_events.inc').write_text('\n\n'.join(function(driver, n) for n in
         ['dhcp_start_task', 'eth_event_handler', 'ts_eth_start', 'ts_eth_stop']))
-    (output / 'network_setter.inc').write_text('\n'.join(function(network, n) for n in ['get_netif', 'ts_net_set_ip_info', 'ts_net_get_status']))
+    (output / 'network_setter.inc').write_text('\n'.join(function(network, n) for n in ['get_netif', 'ts_net_get_ip_info', 'ts_net_set_ip_info', 'ts_net_get_status']))
     (output / 'network_cli.inc').write_text('\n'.join(function(console,n) for n in ['do_net_set','do_net_ip','do_net_start','do_net_stop','do_net_restart']))
 
 
@@ -79,6 +83,7 @@ struct netif;
 #define ip4_addr_isany_val(a) ((a).addr==0)
 #define ipaddr_addr inet_addr
 #define ip4addr_aton(s,a) inet_pton(AF_INET,s,&(a)->addr)
+#define ip4addr_ntoa(a) inet_ntoa((struct in_addr){.s_addr=(a)->addr})
 ''')
     (stubs / 'esp_wifi_types.h').write_text('#pragma once\ntypedef int wifi_auth_mode_t;\n')
     (stubs / 'esp_err.h').write_text('''#pragma once
@@ -146,7 +151,8 @@ typedef esp_err_t (*esp_netif_callback_fn)(void *);
         (ROOT / 'components/ts_console/commands/ts_cmd_net.c').read_text())
     api = (ROOT / 'components/ts_api/src/ts_api_dhcp.c').read_text()
     (output / 'dhcp_status_api.inc').write_text('\n'.join(function(api, n) for n in ['iface_name', 'add_recovery_status', 'api_dhcp_status']))
-    (output / 'status_api.inc').write_text(function((ROOT / 'components/ts_api/src/ts_api_network.c').read_text(), 'add_eth_config_status'))
+    (output / 'status_api.inc').write_text('static char s_ip_str[16];\n' + function(network, 'ts_net_ip_to_str') + '\n'.join(function(
+        (ROOT / 'components/ts_api/src/ts_api_network.c').read_text(), n) for n in ['add_eth_config_status', 'add_ip_info_to_json']))
     (output / 'network_service.inc').write_text('\n'.join(function((ROOT / 'main/ts_services.c').read_text(), n) for n in ['network_service_init','network_service_start','network_service_stop']))
     (output / 'service_api.inc').write_text('\n'.join(function((ROOT / 'components/ts_api/src/ts_api_service.c').read_text(), n) for n in ['api_service_start','api_service_stop','api_service_restart']))
     wifi = (ROOT / 'components/ts_net/src/ts_wifi.c').read_text()

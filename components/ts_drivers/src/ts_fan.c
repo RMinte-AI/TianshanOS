@@ -580,21 +580,11 @@ static esp_err_t apply_adaptive_auto(fan_instance_t *fan, const ts_temp_data_t *
     return ret;
 }
 
-static esp_err_t apply_auto_immediate(fan_instance_t *fan)
+static esp_err_t apply_auto_immediate(fan_instance_t *fan, const ts_temp_data_t *temp_data)
 {
-    ts_temp_data_t temp_data = {0};
-    const ts_temp_data_t *auto_temp = NULL;
-
-    if (s_auto_temp_enabled) {
-        ts_temp_get_effective(&temp_data);
-        if (is_temp_data_basic_valid(&temp_data)) {
-            fan->temperature = temp_data.value;
-        }
-        auto_temp = &temp_data;
-    }
-
+    if (is_temp_data_basic_valid(temp_data)) fan->temperature = temp_data->value;
     reset_adaptive_auto_state(fan);
-    return apply_adaptive_auto(fan, auto_temp);
+    return apply_adaptive_auto(fan, temp_data);
 }
 
 /**
@@ -970,6 +960,10 @@ esp_err_t ts_fan_configure(ts_fan_id_t fan, const ts_fan_config_t *config)
 esp_err_t ts_fan_set_mode(ts_fan_id_t fan, ts_fan_mode_t mode)
 {
     if (fan >= TS_FAN_MAX) return ESP_ERR_INVALID_ARG;
+    ts_temp_data_t temp_data = {0};
+    if (s_auto_temp_enabled && (mode == TS_FAN_MODE_AUTO || mode == TS_FAN_MODE_CURVE)) {
+        ts_temp_get_effective_nonblocking(&temp_data);
+    }
     if (!fan_lock(fan)) return ESP_ERR_INVALID_STATE;
     if (!s_fans[fan].initialized) {
         fan_unlock(fan);
@@ -995,13 +989,9 @@ esp_err_t ts_fan_set_mode(ts_fan_id_t fan, ts_fan_mode_t mode)
         s_fans[fan].last_speed_change_time = 0;  /* 允许立即调速 */
         
         if (mode == TS_FAN_MODE_AUTO) {
-            ret = apply_auto_immediate(&s_fans[fan]);
-        } else if (s_auto_temp_enabled) {
-            ts_temp_data_t temp_data;
-            int16_t current_temp = ts_temp_get_effective(&temp_data);
-            if (is_temp_data_basic_valid(&temp_data)) {
-                s_fans[fan].temperature = current_temp;
-            }
+            ret = apply_auto_immediate(&s_fans[fan], &temp_data);
+        } else if (is_temp_data_basic_valid(&temp_data)) {
+            s_fans[fan].temperature = temp_data.value;
         }
         
         TS_LOGI(TAG, "Fan %d mode -> %d: hysteresis reset, temp=%d", 
@@ -1401,7 +1391,10 @@ esp_err_t ts_fan_load_config(void)
             TS_LOGW(TAG, "Fan %d config version mismatch, skipping", i);
             continue;
         }
-        
+        ts_temp_data_t temp_data = {0};
+        if (s_auto_temp_enabled && cfg.mode == TS_FAN_MODE_AUTO) {
+            ts_temp_get_effective_nonblocking(&temp_data);
+        }
         if (!fan_lock(i)) continue;
         if (!s_fans[i].initialized) {
             fan_unlock(i);
@@ -1422,7 +1415,7 @@ esp_err_t ts_fan_load_config(void)
                cfg.curve_points * sizeof(ts_fan_curve_point_t));
         
         if (s_fans[i].mode == TS_FAN_MODE_AUTO && s_fans[i].pwm) {
-            ret = apply_auto_immediate(&s_fans[i]);
+            ret = apply_auto_immediate(&s_fans[i], &temp_data);
         } else if (s_fans[i].mode == TS_FAN_MODE_MANUAL && s_fans[i].pwm) {
             ret = update_pwm(&s_fans[i], cfg.duty);
         } else if (s_fans[i].mode == TS_FAN_MODE_OFF && s_fans[i].pwm) {

@@ -1,4 +1,4 @@
-"""Production console/service lifecycle with SDK linenoise and local RTOS/UART fixtures."""
+"""Production console/output/service lifecycle with local linenoise and RTOS/UART fixtures."""
 from pathlib import Path
 import os
 import re
@@ -10,7 +10,7 @@ IDF = Path(os.environ.get('IDF_PATH', '/Users/massif/esp/v5.5.2/esp-idf'))
 
 def body(path, name):
     source = Path(path).read_text()
-    match = re.search(r'^(?:static )?[\w *]+\b' + name + r'\([^;]*?\)\s*\{', source, re.M)
+    match = re.search(r'^(?:static )?\w[\w *]*\b' + name + r'\([^;]*?\)\s*\{', source, re.M)
     assert match, name
     return source[match.start():source.index('\n}', match.end()) + 2] + '\n'
 
@@ -125,7 +125,7 @@ def run_native(code, extra_sources=(), extra_headers=None):
                         '-Itests/runtime/rule_pack/stubs', '-Icomponents/ts_core/ts_service/include',
                         '-Icomponents/ts_console/include', '-Icomponents/ts_drivers/include',
                         '-Icomponents/ts_api/include', '-I' + str(IDF / 'components/json/cJSON'),
-                        '-I' + str(IDF / 'components/console/linenoise'),
+                        '-Icomponents/ts_console/linenoise',
                         str(root / 'test.c'), *map(str, extra_sources), '-pthread', '-lm', '-o', str(root / 'test')], check=True)
         subprocess.run([str(root / 'test')], cwd=root, check=True, timeout=45)
 
@@ -211,7 +211,13 @@ static int callback_result;
 static int controlled_callback(ts_service_handle_t h,void *u) {(void)h;(void)u;return callback_result;}
 static bool command_finished(void) {xSemaphoreTake(s_console.mutex,portMAX_DELAY);bool done=!s_console.command_active;xSemaphoreGive(s_console.mutex);return done;}
 static void command(const char *text) {int before=commands;feed(text);WAIT_UNTIL(commands>before);if(strcmp(text,"long\n"))WAIT_UNTIL(command_finished());}
+static size_t capacity_read_count;
+static ssize_t capacity_read(int fd,void *data,size_t size){*(char*)data=capacity_read_count++<256?'x':'\n';return 1;}
 int main(void) {
+    /* Real local linenoise allocation, read loop, sanitize and returned NUL. */
+    linenoiseSetDumbMode(1);linenoiseSetReadFunction(capacity_read);assert(linenoiseSetMaxLineLen(256)==0);
+    char *full=linenoise("");assert(full&&strlen(full)==256&&full[256]=='\0');linenoiseFree(full);
+    assert(linenoiseSetMaxLineLen(1024)==0);linenoiseSetReadFunction(read);
     command_entered=xSemaphoreCreateBinary();command_release=xSemaphoreCreateBinary();line_entered=xSemaphoreCreateBinary();line_release=xSemaphoreCreateBinary();
     tail_entered=xSemaphoreCreateBinary();tail_release=xSemaphoreCreateBinary();after_binary_give=pause_tail;
     assert(ts_service_init()==ESP_OK);
@@ -263,15 +269,74 @@ int main(void) {
     vSemaphoreDelete(command_entered);vSemaphoreDelete(command_release);vSemaphoreDelete(line_entered);vSemaphoreDelete(line_release);
     vSemaphoreDelete(tail_entered);vSemaphoreDelete(tail_release);
     assert(ts_service_deinit()==ESP_OK);
-    puts("PASS actual console/service/SDK linenoise: idle, slow/partial input, history, stop/restart, busy, failure, handoff");
+    puts("PASS actual console/service/local linenoise: maximum line+NUL, idle, slow/partial input, history, stop/restart, busy, failure, handoff");
 }
 '''
     headers = {
         'esp_console.h': '#pragma once\n#include <stddef.h>\ntypedef int (*esp_console_cmd_func_t)(int,char **);\ntypedef struct {int max_cmdline_args,max_cmdline_length,hint_color,hint_bold;} esp_console_config_t;\ntypedef struct {const char *command,*help,*hint;esp_console_cmd_func_t func;void *argtable;} esp_console_cmd_t;\n',
         'sdkconfig.h': '#define CONFIG_CONSOLE_UART_DEFAULT 1\n#define CONFIG_IDF_TARGET_LINUX 1\n',
+        'esp_heap_caps.h': '#pragma once\n#include <stdlib.h>\n#define MALLOC_CAP_SPIRAM 1\n#define MALLOC_CAP_8BIT 2\n#define heap_caps_malloc(n,c) malloc(n)\n#define heap_caps_calloc(n,s,c) calloc(n,s)\n#define heap_caps_realloc(p,n,c) realloc(p,n)\n',
     }
-    run_native(code, [IDF / 'components/console/linenoise/linenoise.c', IDF / 'components/json/cJSON/cJSON.c'], headers)
+    run_native(code, [Path('components/ts_console/linenoise/linenoise.c').resolve(), IDF / 'components/json/cJSON/cJSON.c'], headers)
+
+
+def check_output():
+    code = r'''
+#define _POSIX_C_SOURCE 200809L
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <unistd.h>
+#include "ts_console.h"
+#define MALLOC_CAP_SPIRAM 1
+#define MALLOC_CAP_8BIT 2
+static struct {ts_console_output_cb_t output_cb;void *output_user_data;} s_console;
+static const ts_console_exec_context_t *current;
+const ts_console_exec_context_t *ts_console_current_context(void){return current;}
+static unsigned allocation_mode,allocations,frees,route;
+static char captured[20096];static size_t captured_len;
+static void capture(const char *data,size_t len,void *user){assert((uintptr_t)user==route);memcpy(captured+captured_len,data,len);captured_len+=len;captured[captured_len]=0;}
+static void *output_psram(size_t n,unsigned caps){if(allocation_mode)return NULL;allocations++;return malloc(n);}
+static void *output_malloc(size_t n){if(allocation_mode==2)return NULL;allocations++;return malloc(n);}
+static void output_free(void *p){frees++;free(p);}
+#define heap_caps_malloc output_psram
+#define malloc output_malloc
+#define free output_free
+'''
+    source = Path('components/ts_console/src/ts_console.c').read_text()
+    code += source[source.index('#define TS_CONSOLE_MAX_OUTPUT'):source.index('int ts_console_printf(')]
+    code += body('components/ts_console/src/ts_console.c', 'ts_console_printf')
+    code += body('components/ts_console/src/ts_console.c', 'ts_console_error')
+    code += r'''
+#undef malloc
+#undef free
+int main(void){
+    char input[20002],wire[20096];FILE *sink=tmpfile();assert(sink);fflush(stdout);int original=dup(fileno(stdout));assert(original>=0&&dup2(fileno(sink),fileno(stdout))>=0);
+    s_console.output_cb=capture;s_console.output_user_data=(void*)1;
+    const ts_console_exec_context_t context={.output=capture,.user_data=(void*)2};
+    for(unsigned which=0;which<5;which++){
+        size_t length=which==0?100:which==1?16384:20001;
+        for(size_t i=0;i<length;i++)input[i]=which<2?'a':"\xe4\xb8\xad"[i%3];input[length]=0;
+        allocation_mode=which==3?1:which==4?2:0;allocations=frees=0;captured_len=0;
+        current=which%2?&context:NULL;route=current?2:1;
+        long before=ftell(sink);int printed=which==4?ts_console_error("%s",input):ts_console_printf("%s",input);fflush(stdout);
+        size_t prefix=which==4?7:0,limit=which==4?511:16384,shown=length+prefix;
+        if(shown>limit)shown=prefix+(limit-prefix)/3*3;
+        assert(allocations==frees&&printed==(int)captured_len);
+        if(prefix)assert(!memcmp(captured,"Error: ",prefix));assert(!memcmp(captured+prefix,input,shown-prefix));
+        if(length+prefix>limit){char notice[96];snprintf(notice,sizeof(notice),"\n[console output truncated: %zu of %zu bytes shown]\n",shown,length+prefix);assert(!strcmp(captured+shown,notice));}
+        else assert(captured_len==length+prefix);
+        assert(!fseek(sink,before,SEEK_SET));assert(fread(wire,1,captured_len,sink)==captured_len&&!memcmp(wire,captured,captured_len));assert(!fseek(sink,0,SEEK_END));
+    }
+    fflush(stdout);assert(dup2(original,fileno(stdout))>=0);close(original);fclose(sink);
+    puts("PASS F44 real formatter/emitter: stack, exact cap, UTF8 truncation, heap fallback/OOM, prefix, context/global callback equals stdout");
+}
+'''
+    run_native(code, extra_headers={'esp_console.h': '#pragma once\ntypedef int (*esp_console_cmd_func_t)(int,char**);\n'})
 
 
 if __name__ == '__main__':
+    check_output()
     main()

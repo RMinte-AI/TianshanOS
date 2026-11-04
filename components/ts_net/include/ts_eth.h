@@ -24,6 +24,7 @@ typedef struct {
     int gpio_rst;
     int spi_clock_mhz;
     esp_netif_ip_info_t ip_info; /**< Validated host address, owned by ts_net. */
+    uint32_t dns[2]; /**< Host MAIN/BACKUP DNS; zero means unspecified. */
 } ts_eth_config_t;
 
 #define TS_ETH_DEFAULT_CONFIG() { \

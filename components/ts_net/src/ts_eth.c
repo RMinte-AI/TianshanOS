@@ -159,8 +159,9 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base,
  * - 设置静态 IP 配置
  * - 使用标准以太网网络栈
  */
-static esp_netif_t *create_eth_netif_with_dhcps(const esp_netif_ip_info_t *ip_info)
+static esp_err_t create_eth_netif_with_dhcps(const ts_eth_config_t *config, esp_netif_t **out)
 {
+    *out = NULL;
     /* 
      * 基础配置 - 参考 sta2eth/ethernet_iface.c:347-353
      * 关键：使用 ESP_NETIF_DHCP_SERVER 标志而不是 ESP_NETIF_DHCP_CLIENT
@@ -168,7 +169,7 @@ static esp_netif_t *create_eth_netif_with_dhcps(const esp_netif_ip_info_t *ip_in
      */
     esp_netif_inherent_config_t base_cfg = {
         .flags = ESP_NETIF_DHCP_SERVER,      /* DHCP 服务器模式 */
-        .ip_info = ip_info,             /* 静态 IP */
+        .ip_info = &config->ip_info,         /* 静态 IP */
         .get_ip_event = 0,                   /* 不需要 get IP 事件 */
         .lost_ip_event = 0,                  /* 不需要 lost IP 事件 */
         .if_key = "ETH_DHCPS",               /* 接口标识 - ts_dhcp_server.c 通过此 key 查找 */
@@ -186,12 +187,25 @@ static esp_netif_t *create_eth_netif_with_dhcps(const esp_netif_ip_info_t *ip_in
     esp_netif_t *netif = esp_netif_new(&cfg);
     if (!netif) {
         TS_LOGE(TAG, "Failed to create Ethernet netif");
-        return NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Complete host initialization before DHCP restores its pool DNS override. */
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!config->dns[i]) continue;
+        esp_netif_dns_info_t dns = {.ip.type = ESP_IPADDR_TYPE_V4};
+        dns.ip.u_addr.ip4.addr = config->dns[i];
+        esp_err_t ret = esp_netif_set_dns_info(netif, i ? ESP_NETIF_DNS_BACKUP : ESP_NETIF_DNS_MAIN, &dns);
+        if (ret != ESP_OK) {
+            esp_netif_destroy(netif);
+            return ret;
+        }
     }
     
     TS_LOGI(TAG, "Created Ethernet netif with DHCP server mode");
     
-    return netif;
+    *out = netif;
+    return ESP_OK;
 }
 
 esp_err_t ts_eth_init(const ts_eth_config_t *config)
@@ -215,10 +229,10 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config)
     }
     
     // Create netif with DHCP server support - 必须在注册事件处理器前创建
-    s_eth_netif = create_eth_netif_with_dhcps(&config->ip_info);
-    if (!s_eth_netif) {
-        TS_LOGE(TAG, "Failed to create eth netif");
-        return ESP_FAIL;
+    esp_err_t ret = create_eth_netif_with_dhcps(config, &s_eth_netif);
+    if (ret != ESP_OK) {
+        TS_LOGE(TAG, "Failed to initialize eth netif: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     /* 
@@ -240,7 +254,7 @@ esp_err_t ts_eth_init(const ts_eth_config_t *config)
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
-    esp_err_t ret = spi_bus_initialize(config->spi_host, &buscfg, SPI_DMA_CH_AUTO);
+    ret = spi_bus_initialize(config->spi_host, &buscfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         TS_LOGE(TAG, "SPI bus init failed: %s", esp_err_to_name(ret));
         return ret;

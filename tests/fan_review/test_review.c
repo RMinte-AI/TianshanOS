@@ -38,6 +38,19 @@ static bool s_auto_temp_enabled = true;
 static bool s_initialized = true;
 #define TS_EVT_TEMP_UPDATED 1
 typedef struct {int id; const void *data;} ts_event_t;
+#define TS_EVENT_BASE_TEMP 1
+typedef void *esp_timer_handle_t, *ts_event_handler_handle_t;
+typedef struct {void (*callback)(void *);const char *name;} esp_timer_create_args_t;
+static esp_timer_handle_t s_update_timer;
+static ts_event_handler_handle_t s_temp_event_handle;
+static SemaphoreHandle_t xSemaphoreCreateMutexStatic(StaticSemaphore_t *storage){return storage;}
+static int esp_timer_create(const esp_timer_create_args_t *args,void **timer){*timer=(void*)1;return ESP_OK;}
+static int esp_timer_start_periodic(void *timer,unsigned us){return ESP_OK;}
+static int esp_timer_stop(void *timer){return ESP_OK;}
+static int esp_timer_delete(void *timer){return ESP_OK;}
+static void temp_event_handler(const ts_event_t *,void *);
+static int ts_event_register(int base,int id,void (*handler)(const ts_event_t *,void *),void *arg,void **handle){*handle=(void*)1;return ESP_OK;}
+static int ts_event_unregister(void *handle){return ESP_OK;}
 static ts_temp_data_t input;
 static int64_t now_ms;
 static float output[TS_FAN_MAX];
@@ -56,6 +69,8 @@ static bool paused, release_auto, caller_waiting;
 static int pause_stage, caller_action;
 static _Thread_local bool timer_thread, caller_thread;
 static _Thread_local unsigned clock_calls;
+static pthread_mutex_t temperature_mutex=PTHREAD_MUTEX_INITIALIZER;
+static bool pause_destroy,check_pwm_lifetime,pwm_alive;
 static void pause_auto(int stage) {
     if (!timer_thread || pause_stage != stage) return;
     assert(host_locks_held == 1);
@@ -72,21 +87,35 @@ static int64_t esp_timer_get_time(void) {
     return now_ms*1000;
 }
 static uint32_t xTaskGetTickCount(void) {return now_ms;}
-int16_t ts_temp_get_effective(ts_temp_data_t *data) {*data=input;return input.value;}
-int16_t ts_temp_get_effective_nonblocking(ts_temp_data_t *data) {return ts_temp_get_effective(data);}
+int16_t ts_temp_get_effective(ts_temp_data_t *data) {
+    assert(!host_locks_held && "temperature read under fan mutex");
+    pthread_mutex_lock(&temperature_mutex);*data=input;pthread_mutex_unlock(&temperature_mutex);return data->value;
+}
+int16_t ts_temp_get_effective_nonblocking(ts_temp_data_t *data) {
+    assert(!host_locks_held && "temperature read under fan mutex");
+    int ret=pthread_mutex_trylock(&temperature_mutex);
+    if(ret==EBUSY){*data=(ts_temp_data_t){0};return 0;}
+    assert(!ret);*data=input;pthread_mutex_unlock(&temperature_mutex);return data->value;
+}
 static esp_err_t ts_pwm_set_duty(ts_pwm_handle_t pwm,float duty) {
+    if(check_pwm_lifetime)assert(pwm_alive);
     pause_auto(2);
     if(hal_result==ESP_OK)output[(uintptr_t)pwm-1]=duty;
     pause_auto(3);
     return hal_result;
 }
-static ts_pwm_handle_t ts_pwm_create_raw(int pin,const char *name) {return (void *)(uintptr_t)(pin+1);}
+static ts_pwm_handle_t ts_pwm_create_raw(int pin,const char *name) {pwm_alive=true;return (void *)(uintptr_t)(pin+1);}
 static esp_err_t ts_pwm_configure(ts_pwm_handle_t pwm,const ts_pwm_config_t *cfg) {output[(uintptr_t)pwm-1]=cfg->initial_duty;return ESP_OK;}
-static void ts_pwm_destroy(ts_pwm_handle_t pwm) {}
+static void ts_pwm_destroy(ts_pwm_handle_t pwm) {
+    if(pause_destroy){pthread_mutex_lock(&gate);paused=true;pthread_cond_broadcast(&gate_changed);
+        while(!release_auto)pthread_cond_wait(&gate_changed,&gate);pthread_mutex_unlock(&gate);}
+    pwm_alive=false;
+}
 static ts_gpio_handle_t ts_gpio_create_raw(int pin,const char *name) {return NULL;}
 static void ts_gpio_configure(ts_gpio_handle_t g,const ts_gpio_config_t *cfg) {}
 static void ts_gpio_set_isr_callback(ts_gpio_handle_t g,void (*fn)(ts_gpio_handle_t,void*),void *arg) {}
 static void ts_gpio_intr_enable(ts_gpio_handle_t g) {}
+static void ts_gpio_destroy(ts_gpio_handle_t g) {}
 static void tach_isr_callback(ts_gpio_handle_t g,void *arg) {}
 static esp_err_t nvs_open(const char *name,int mode,nvs_handle_t *nvs) {assert(!host_locks_held);*nvs=1;return nvs_open_result;}
 static esp_err_t nvs_set_blob(nvs_handle_t nvs,const char *key,const void *data,size_t len) {
@@ -126,6 +155,7 @@ static void ts_api_result_free(ts_api_result_t *result){}
 #include "console_core.inc"
 
 static void setup(int duty) {
+    s_initialized=true;
     memset(s_fans,0,sizeof(s_fans));now_ms=100000;hal_result=ESP_OK;have_saved=false;
     nvs_open_result=nvs_commit_result=module_result=ESP_OK;
     blob_calls=commit_calls=close_calls=module_calls=fail_blob_call=0;module_registered=true;
@@ -319,6 +349,41 @@ static void check_handoffs(void) {
     tick(102000,488,true);assert(output[0]==35);tick(106000,488,true);assert(output[0]==40);
     record("F69_G_curve_event_interval",0);s_auto_temp_enabled=true;
 }
+
+static void check_temperature_contention(void){
+    for(unsigned entry=0;entry<3;entry++){
+        setup(37);
+        if(entry==2)assert(ts_fan_save_full_config(0)==ESP_OK);
+        s_fans[0].mode=TS_FAN_MODE_MANUAL;
+        assert(!pthread_mutex_lock(&temperature_mutex));
+        assert((entry==2?ts_fan_load_config():ts_fan_set_mode(0,entry?TS_FAN_MODE_CURVE:TS_FAN_MODE_AUTO))==ESP_OK);
+        if(entry==1)assert(s_fans[0].temperature==488);
+        else assert(s_fans[0].temp_stale&&s_fans[0].current_duty==25);
+        fan_update_callback(NULL);assert(ts_fan_emergency_full()==ESP_OK);
+        assert(s_fans[0].current_duty==100&&!host_locks_held);
+        assert(!pthread_mutex_unlock(&temperature_mutex));
+        char name[64];snprintf(name,sizeof(name),"P2_temperature_busy_entry%u_timer_emergency_complete",entry);record(name,0);
+    }
+}
+static void *deinitialize_fan(void *arg){assert(ts_fan_deinit()==ESP_OK);return NULL;}
+static void *control_after_deinit(void *arg){caller_thread=true;assert(ts_fan_set_duty(0,60)==ESP_ERR_INVALID_STATE);return NULL;}
+static void check_driver_lifecycle(void){
+    s_initialized=false;for(unsigned i=0;i<TS_FAN_MAX;i++)s_fan_mutex[i]=NULL;
+    assert(ts_fan_init()==ESP_OK);
+    ts_fan_config_t config=s_fans[0].config;config.gpio_pwm=0;config.gpio_tach=-1;
+    assert(ts_fan_configure(0,&config)==ESP_OK);SemaphoreHandle_t kept=s_fan_mutex[0];
+    check_pwm_lifetime=pause_destroy=true;paused=release_auto=caller_waiting=false;host_lock_waiting=note_waiting;
+    pthread_t destroyer,control;assert(!pthread_create(&destroyer,NULL,deinitialize_fan,NULL));
+    pthread_mutex_lock(&gate);while(!paused)pthread_cond_wait(&gate_changed,&gate);pthread_mutex_unlock(&gate);
+    assert(!pthread_create(&control,NULL,control_after_deinit,NULL));
+    pthread_mutex_lock(&gate);while(!caller_waiting)pthread_cond_wait(&gate_changed,&gate);
+    release_auto=true;pthread_cond_broadcast(&gate_changed);pthread_mutex_unlock(&gate);
+    assert(!pthread_join(destroyer,NULL)&&!pthread_join(control,NULL));
+    assert(!pwm_alive&&!s_fans[0].pwm&&s_fan_mutex[0]==kept);
+    pause_destroy=check_pwm_lifetime=false;host_lock_waiting=NULL;
+    assert(ts_fan_init()==ESP_OK&&s_fan_mutex[0]==kept);assert(ts_fan_deinit()==ESP_OK);
+    puts("{\"case\":\"fan_real_init_deinit_waiting_control_and_reinit\",\"passed\":true}");
+}
 int main(int argc,char **argv) {
     if(argc>1&&!strcmp(argv[1],"cadence")) {
         check=true;setup(37);input.source=TS_TEMP_SOURCE_MANUAL;tick(100000,950,true);tick(101000,890,true);
@@ -336,7 +401,7 @@ int main(int argc,char **argv) {
         record("R1_configured_cadence",0);return 0;
     }
     check=argc>1&&!strcmp(argv[1],"check");
-    if(check){check_save_results();check_handoffs();}
+    if(check){check_save_results();check_handoffs();check_temperature_contention();check_driver_lifecycle();}
     setup(37);tick(100000,950,true);tick(101000,890,true);tick(161000,890,true);
     record("R1_gap60",0);if(check)assert(s_fans[0].guard_active&&output[0]==100);
     /* Cached reads are valid observations, not fictitious new sensor reports. */

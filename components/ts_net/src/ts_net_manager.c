@@ -483,6 +483,8 @@ esp_err_t ts_net_manager_init(void)
         }
         if (ret == ESP_OK) {
             eth_hw_config.ip_info = host;
+            eth_hw_config.dns[0] = s_state.eth_config.static_ip.dns1[0] ? ipaddr_addr(s_state.eth_config.static_ip.dns1) : 0;
+            eth_hw_config.dns[1] = s_state.eth_config.static_ip.dns2[0] ? ipaddr_addr(s_state.eth_config.static_ip.dns2) : 0;
             ret = ts_eth_init(&eth_hw_config);
             if (ret == ESP_OK) {
                 s_state.eth_status.state = TS_NET_STATE_INITIALIZED;

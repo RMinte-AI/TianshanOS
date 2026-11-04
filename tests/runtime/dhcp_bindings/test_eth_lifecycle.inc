@@ -33,7 +33,7 @@ typedef struct {unsigned flags;const esp_netif_ip_info_t *ip_info;int get_ip_eve
 typedef struct {const esp_netif_inherent_config_t *base;void *driver,*stack;} esp_netif_config_t;
 static esp_netif_t *s_eth_netif;
 static esp_eth_handle_t s_eth_handle=(void*)1;
-static unsigned created_count, driver_stops, driver_starts;
+static unsigned created_count, destroyed_count, driver_stops, driver_starts;
 static bool driver_running, fail_driver_stop, partial_driver_stop, fail_driver_start;
 static unsigned driver_stop_attempts;
 static bool s_driver_stop_complete;
@@ -82,6 +82,10 @@ static esp_netif_t *esp_netif_new(const esp_netif_config_t *config){
     servers[1].state=DHCPS_HANDLE_CREATED;servers[1].dhcps_lease_time=DHCPS_LEASE_TIME_DEF;
     netifs[1]=(esp_netif_t){.dhcps=&servers[1],.ip_info=&infos[1],.status=ESP_NETIF_DHCP_INIT};
     eth_netif_exists=true;return &netifs[1];
+}
+static void esp_netif_destroy(esp_netif_t *netif){
+    assert(netif==&netifs[1]&&!driver_running);destroyed_count++;
+    drain(&servers[1]);eth_netif_exists=false;
 }
 #include "eth_creation.inc"
 esp_err_t ts_eth_init(const ts_eth_config_t *config){
@@ -222,7 +226,7 @@ static void seed_dhcp_eth(const char *prefix){
 static void hardware_reset(void){
     boot_defaults(false);memset(&manager_state,0,sizeof(manager_state));
     s_state.initialized=false;s_state.mutex=NULL;eth_netif_exists=false;s_eth_netif=NULL;s_link_up=false;
-    created_count=driver_starts=driver_stops=0;events_count=0;driver_running=false;
+    created_count=destroyed_count=driver_starts=driver_stops=0;events_count=0;driver_running=false;
     driver_stop_hook=NULL;fail_driver_stop=partial_driver_stop=fail_driver_start=false;driver_stop_attempts=0;
     s_driver_stop_complete=false;wifi_present=true;wifi_running=false;wifi_sdk_mode=WIFI_MODE_STA;s_mode=TS_WIFI_MODE_OFF;wifi_failure=-1;scan_failure=0;scan_cleanup_failure=false;memset(wifi_calls,0,sizeof(wifi_calls));reset_registry();
     delayed_count=0;started_notifications=stopped_notifications=0;
@@ -256,7 +260,36 @@ static void prepare_pool(const char *prefix){
     assert(ts_dhcp_server_set_config(1,&config)==ESP_OK);
 }
 static void check_eth_lifecycle(void){
+    for(unsigned custom=0;custom<2;custom++){
+    setup(true);seed_network("192.168.50.1","192.168.50.254",TS_NET_IP_MODE_STATIC);
+    nvs_set_str(2,"eth_dns1","9.9.9.9");seed_dhcp_eth("192.168.50");if(!custom)set_saved_string(1,5,"");
+    hardware_reset();assert(ts_net_manager_init()==ESP_OK&&ts_dhcp_server_init()==ESP_OK);
+    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_OK);deliver_events();run_delayed_task();
+    ts_net_ip_info_t cold_dns={0};assert(ts_net_get_ip_info(TS_NET_IF_ETH,&cold_dns)==ESP_OK);
+    uint32_t expected=inet_addr(custom?"8.8.8.8":"9.9.9.9");
+    assert(cold_dns.dns1==expected&&dns_writes[0]==(custom?2:1));
+    cJSON *visible=cJSON_CreateObject();add_ip_info_to_json(visible,&cold_dns);
+    assert(!strcmp(cJSON_GetObjectItem(visible,"dns1")->valuestring,custom?"8.8.8.8":"9.9.9.9"));cJSON_Delete(visible);
+    assert(option_value(&servers[1],DHCP_OPTION_DNS_SERVER,true)==inet_addr(custom?"8.8.8.8":"192.168.50.1"));
+    assert(ts_dhcp_server_load_config()==ESP_OK);
+    assert(ts_net_get_ip_info(TS_NET_IF_ETH,&cold_dns)==ESP_OK&&cold_dns.dns1==expected);
+    }
+    record("P2_cold_boot_same_host_DNS_readback_pool_override_empty_offer_and_reload");
+    for(unsigned kind=0;kind<2;kind++){
+        setup(true);hardware_reset();size_t nvs_size=kv_count;unsigned char stored[sizeof(kv)];memcpy(stored,kv,sizeof(kv));
+        ts_eth_config_t config=TS_ETH_DEFAULT_CONFIG();config.ip_info=infos[1];
+        config.dns[0]=inet_addr("9.9.9.9");config.dns[1]=inet_addr("1.1.1.1");dns_failure_kind=kind;
+        assert(ts_eth_init(&config)==ESP_ERR_INVALID_STATE);
+        assert(!s_eth_netif&&!eth_netif_exists&&created_count==1&&destroyed_count==1&&!driver_starts);
+        assert(kv_count==nvs_size&&!memcmp(stored,kv,sizeof(kv)));
+    }
+    setup(true);seed_network("192.168.50.1","192.168.50.254",TS_NET_IP_MODE_STATIC);hardware_reset();dns_failure_kind=0;
+    assert(ts_net_manager_init()==ESP_OK);ts_net_if_status_t failed;
+    assert(ts_net_manager_get_if_status(TS_NET_IF_ETH,&failed)==ESP_OK&&failed.state==TS_NET_STATE_ERROR);
+    assert(ts_net_manager_start(TS_NET_IF_ETH)==ESP_ERR_NOT_FOUND&&!driver_starts&&destroyed_count==1);
+    record("P2_DNS_main_backup_failure_propagates_cleans_netif_and_manager_does_not_start");
     assert(boot_eth(true)==0);
+    ts_net_ip_info_t host_dns={0};assert(ts_net_get_ip_info(TS_NET_IF_ETH,&host_dns)==ESP_OK&&host_dns.dns1==inet_addr("8.8.8.8"));
     assert(driver_running&&s_link_up&&netifs[1].status!=ESP_NETIF_DHCP_STARTED);
     ts_dhcp_status_t blocked;assert(ts_dhcp_server_get_status(1,&blocked)==ESP_OK&&blocked.restore_error!=ESP_OK);
     assert(servers[1].ts_bindings.count==0&&ts_dhcp_server_save_config()!=ESP_OK);

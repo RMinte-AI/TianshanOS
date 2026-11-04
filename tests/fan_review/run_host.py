@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='fan-review-') as tmp:
              'get_adaptive_temperatures', 'record_auto_temp_sample', 'calculate_auto_slope',
              'apply_auto_rate_limit', 'update_response_learning', 'apply_adaptive_auto',
              'apply_auto_immediate', 'apply_curve_with_hysteresis', 'update_pwm',
-             'fan_update_callback', 'ts_fan_configure', 'ts_fan_set_mode', 'ts_fan_set_duty',
+             'fan_update_callback', 'ts_fan_init', 'ts_fan_deinit', 'ts_fan_configure', 'ts_fan_set_mode', 'ts_fan_set_duty',
              'ts_fan_enable', 'ts_fan_get_status', 'ts_fan_emergency_full',
              'ts_fan_save_config', 'ts_fan_save_full_config', 'ts_fan_load_config',
              'ts_fan_get_config', 'ts_fan_set_temperature', 'temp_event_handler', 'ts_fan_set_limits', 'ts_fan_set_curve', 'ts_fan_set_hysteresis']
